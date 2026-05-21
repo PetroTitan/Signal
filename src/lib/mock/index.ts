@@ -4,3 +4,4 @@ export * from "./products";
 export * from "./accounts";
 export * from "./weekly-plan";
 export * from "./risk";
+export * from "./content-assets";
