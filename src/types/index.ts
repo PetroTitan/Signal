@@ -8,3 +8,7 @@ export * from "./scheduling";
 export * from "./risk";
 export * from "./analytics";
 export * from "./command-center";
+export * from "./discoverability";
+export * from "./content-intelligence";
+export * from "./comment-intelligence";
+export * from "./activity";

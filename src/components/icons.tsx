@@ -129,6 +129,68 @@ export function ChevronRightIcon(p: IconProps) {
   );
 }
 
+export function InsightIcon(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <path d="M12 2v3" />
+      <path d="M5 5l2 2" />
+      <path d="M19 5l-2 2" />
+      <circle cx="12" cy="12" r="5" />
+      <path d="M10 21h4" />
+      <path d="M10 17h4" />
+    </svg>
+  );
+}
+
+export function CommentIcon(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <path d="M21 12c0 4.4-4 8-9 8-1.2 0-2.4-.2-3.5-.6L4 21l1.6-4.5C4.5 15.2 4 13.7 4 12c0-4.4 4-8 9-8s8 3.6 8 8z" />
+    </svg>
+  );
+}
+
+export function DiscussionIcon(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5z" />
+    </svg>
+  );
+}
+
+export function OpportunityIcon(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <path d="M12 2L4 7l8 5 8-5-8-5z" />
+      <path d="m4 12 8 5 8-5" />
+      <path d="m4 17 8 5 8-5" />
+    </svg>
+  );
+}
+
+export function SearchIcon(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-4.35-4.35" />
+    </svg>
+  );
+}
+
+export function DiscoverabilityIcon(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="m9 9 6 6" />
+      <path d="m15 9-6 6" />
+      <path d="M12 3v3" />
+      <path d="M12 18v3" />
+      <path d="M3 12h3" />
+      <path d="M18 12h3" />
+    </svg>
+  );
+}
+
 export function PlatformsIcon(p: IconProps) {
   return (
     <svg {...base} {...p}>

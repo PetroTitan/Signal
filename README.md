@@ -46,6 +46,20 @@ Reddit, X, LinkedIn.
 
 See [docs/architecture/mvp-architecture.md](docs/architecture/mvp-architecture.md) for the source layout and conventions.
 
+## Operations command center, activity, search, workflow
+
+The [/dashboard](src/app/(app)/dashboard/page.tsx) leads with four operational panels — `NextBestActions`, `SystemHealth`, `WhatChangedThisWeek`, and `ItemsNeedingJudgment` — so the founder lands on actionable judgment surfaces.
+
+- [/activity](src/app/(app)/activity/page.tsx) — internal operational timeline derived from live state. Filterable by layer and severity. No fake analytics.
+- [/search](src/app/(app)/search/page.tsx) — deterministic search across products, accounts, items, backlog, insights, content assets, risk signals, and docs. Topbar carries a search affordance from every route.
+- [/workflow](src/app/(app)/workflow/page.tsx) — Signal's twelve-stage operating loop, useful for onboarding and architecture review.
+
+An explainability layer (`Explain` + eight `Why*` wrappers in `src/components/explain.tsx`) gives every engine a calm, consistent way to surface "why this happened" inline.
+
+A pre-Supabase state-readiness audit captures which entities are stable, which are derived, and what the eventual table boundaries should look like.
+
+See [docs/architecture/operational-stabilization.md](docs/architecture/operational-stabilization.md), [docs/architecture/explainability-layer.md](docs/architecture/explainability-layer.md), [docs/architecture/state-readiness-audit.md](docs/architecture/state-readiness-audit.md), [docs/product/global-activity-timeline.md](docs/product/global-activity-timeline.md), [docs/product/internal-search.md](docs/product/internal-search.md), and [docs/product/workflow-map.md](docs/product/workflow-map.md).
+
 ## Weekly approval concept
 
 Signal compresses every growth decision into a single weekly checkpoint:
@@ -72,9 +86,23 @@ All three are consumed by a small React Context + useReducer store. Every mutati
 
 ## Platform command centers
 
-Three platform-native lenses over the same shared core — Reddit, X, and LinkedIn. The overview at [/platforms](src/app/(app)/platforms/page.tsx) compares the three; each platform has its own command center with strategy, accounts, queue, risk rules, a 10-module playbook, opportunities, and an OAuth-not-yet-enabled card. Signal does not become a generic universal dashboard — each platform is treated on its own terms.
+Four platform-native lenses over the same shared core. Three are social — Reddit, X, LinkedIn — and one is search-only — Google. The overview at [/platforms](src/app/(app)/platforms/page.tsx) compares them; each command center has its own strategy, accounts (where applicable), queue, risk or opportunity surface, a 10-module playbook, and an OAuth-not-yet-enabled card. Signal does not become a generic universal dashboard — each surface is treated on its own terms.
 
-See [docs/architecture/one-core-platform-command-centers.md](docs/architecture/one-core-platform-command-centers.md), [docs/platforms/command-centers.md](docs/platforms/command-centers.md), [docs/platforms/reddit-command-center.md](docs/platforms/reddit-command-center.md), [docs/platforms/x-command-center.md](docs/platforms/x-command-center.md), and [docs/platforms/linkedin-command-center.md](docs/platforms/linkedin-command-center.md).
+See [docs/architecture/one-core-platform-command-centers.md](docs/architecture/one-core-platform-command-centers.md), [docs/platforms/command-centers.md](docs/platforms/command-centers.md), [docs/platforms/reddit-command-center.md](docs/platforms/reddit-command-center.md), [docs/platforms/x-command-center.md](docs/platforms/x-command-center.md), [docs/platforms/linkedin-command-center.md](docs/platforms/linkedin-command-center.md), and [docs/platforms/google-visibility-command-center.md](docs/platforms/google-visibility-command-center.md).
+
+## Content intelligence
+
+Signal is insight-first, not output-first. A small library of `SourceInsight` rows — founder observations, product lessons, support patterns, industry patterns — drives every suggestion. The content intelligence engine produces platform-native opportunities, draft variants, and a content-memory summary; the comment intelligence engine produces discussion opportunities (with explicit participate / watch / **skip** recommendations) and calm comment and reply drafts gated by a conversation risk layer. No external AI API, no auto-publishing, no fake engagement.
+
+Routes: [/content-intelligence](src/app/(app)/content-intelligence/page.tsx), [/opportunities](src/app/(app)/opportunities/page.tsx), [/discussions](src/app/(app)/discussions/page.tsx), [/comments](src/app/(app)/comments/page.tsx).
+
+See [docs/architecture/content-intelligence-architecture.md](docs/architecture/content-intelligence-architecture.md), [docs/content-intelligence/source-insights.md](docs/content-intelligence/source-insights.md), [docs/content-intelligence/platform-adapters.md](docs/content-intelligence/platform-adapters.md), [docs/content-intelligence/content-memory.md](docs/content-intelligence/content-memory.md), [docs/comment-intelligence/comment-engine.md](docs/comment-intelligence/comment-engine.md), and [docs/comment-intelligence/conversation-risk-layer.md](docs/comment-intelligence/conversation-risk-layer.md).
+
+## Search & discoverability operations
+
+Google is treated as a search & discoverability surface, not a publishing one. [/platforms/google](src/app/(app)/platforms/google/page.tsx) hosts visibility, content freshness, topical coverage, internal linking, evergreen content, under-promoted content, and YouTube planning. A top-level [/discoverability](src/app/(app)/discoverability/page.tsx) dashboard adds the cross-channel lens: search-to-social, social-to-search, topic cluster gaps, and refresh windows. No Search Console API, no YouTube API, no indexing API, no automated publishing.
+
+See [docs/discoverability/search-discoverability-operations.md](docs/discoverability/search-discoverability-operations.md).
 
 ## Backlog and cadence protection
 

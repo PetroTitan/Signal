@@ -14,7 +14,20 @@ import {
   SettingsIcon,
   BacklogIcon,
   PlatformsIcon,
+  SearchIcon,
+  DiscoverabilityIcon,
+  InsightIcon,
+  CommentIcon,
+  DiscussionIcon,
+  OpportunityIcon,
 } from "./icons";
+
+type NavItem = {
+  href: string;
+  label: string;
+  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+  exact?: boolean;
+};
 
 const groups: { label: string; items: NavItem[] }[] = [
   {
@@ -25,16 +38,27 @@ const groups: { label: string; items: NavItem[] }[] = [
       { href: "/approval-queue", label: "Approval queue", icon: ApprovalIcon },
       { href: "/scheduler", label: "Scheduler", icon: SchedulerIcon },
       { href: "/backlog", label: "Backlog", icon: BacklogIcon },
-      { href: "/risk-center", label: "Risk center", icon: RiskIcon },
+      { href: "/activity", label: "Activity", icon: PlanIcon },
     ],
   },
   {
-    label: "Platform command centers",
+    label: "Intelligence",
     items: [
-      { href: "/platforms", label: "Overview", icon: PlatformsIcon, exact: true },
+      { href: "/content-intelligence", label: "Content intelligence", icon: InsightIcon },
+      { href: "/opportunities", label: "Opportunities", icon: OpportunityIcon },
+      { href: "/discussions", label: "Discussions", icon: DiscussionIcon },
+      { href: "/comments", label: "Comments", icon: CommentIcon },
+      { href: "/discoverability", label: "Discoverability", icon: DiscoverabilityIcon },
+    ],
+  },
+  {
+    label: "Platforms",
+    items: [
+      { href: "/platforms", label: "Platform overview", icon: PlatformsIcon, exact: true },
       { href: "/platforms/reddit", label: "Reddit", icon: PlatformsIcon },
       { href: "/platforms/x", label: "X", icon: PlatformsIcon },
       { href: "/platforms/linkedin", label: "LinkedIn", icon: PlatformsIcon },
+      { href: "/platforms/google", label: "Google visibility", icon: SearchIcon },
     ],
   },
   {
@@ -42,18 +66,13 @@ const groups: { label: string; items: NavItem[] }[] = [
     items: [
       { href: "/products", label: "Products", icon: ProductsIcon },
       { href: "/accounts", label: "Accounts", icon: AccountsIcon },
+      { href: "/risk-center", label: "Risk center", icon: RiskIcon },
       { href: "/analytics", label: "Analytics", icon: AnalyticsIcon },
+      { href: "/workflow", label: "Workflow", icon: PlatformsIcon },
       { href: "/settings", label: "Settings", icon: SettingsIcon },
     ],
   },
 ];
-
-type NavItem = {
-  href: string;
-  label: string;
-  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
-  exact?: boolean;
-};
 
 export function Sidebar() {
   const pathname = usePathname();

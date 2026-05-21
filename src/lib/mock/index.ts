@@ -4,3 +4,6 @@ export * from "./products";
 export * from "./accounts";
 export * from "./weekly-plan";
 export * from "./risk";
+export * from "./content-assets";
+export * from "./source-insights";
+export * from "./discussions";

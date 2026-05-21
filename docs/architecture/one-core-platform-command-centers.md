@@ -1,20 +1,36 @@
-# One operational core, three platform command centers
+# One operational core, four platform command centers
 
-Signal's architecture is intentionally split:
+Signal's architecture is intentionally split into three layers:
 
 - **One operational core** — the weekly planner, approval engine, scheduler, risk engine, backlog, store, and onboarding all run independently of any platform.
-- **Three platform command centers** — Reddit, X, and LinkedIn each have a route that interprets the same shared state through a platform-native lens.
+- **Three social command centers** — Reddit, X, and LinkedIn each have a route that interprets the same shared state through a platform-native lens.
+- **One search & discoverability surface** — Google, plus a top-level `/discoverability` dashboard.
 
-Signal is not a generic universal social dashboard. Each platform has its own strategy, content formats, cadence policy, risk rules, and playbook. The command centers expose that surface without duplicating the workflow underneath.
+Signal is not a generic universal social dashboard. Each platform has its own strategy, content formats, cadence policy, risk rules, and playbook. Google is not crammed into the social model; it sits as its own discoverability layer.
+
+## Social vs discoverability
+
+The four command centers split into two layers because they operate on different things:
+
+| Aspect | Social (Reddit / X / LinkedIn) | Search (Google) |
+|---|---|---|
+| Unit of work | A post, thread, or reply on an account | A content asset on a domain |
+| Cadence | Per-account per-week, with cooldown | Per-asset refresh windows |
+| Approval | Item-level via the weekly approval queue | n/a — content is not approved here |
+| Risk engine | Per-item, deterministic | n/a — opportunities, not risk |
+| Scheduler | Time-of-day windows per platform | n/a |
+| Pipeline | weekly planner → scheduler → publishing | discoverability lens → opportunity → social cross-reference |
+
+Treating Google as a fourth social platform would force a publishing model onto a search surface and dilute the operational core. Treating the three social platforms identically would erase the texture that makes each one distinct.
 
 ## Why this shape
 
 Two failure modes shaped the design:
 
-1. **One generic dashboard** loses the texture of each platform. Reddit is community-first; X rewards replies; LinkedIn demands polish. A single feed-style UI flattens all of that into a posting queue.
-2. **One product per platform** duplicates state and decisions. The founder would need to plan a Reddit week, an X week, and a LinkedIn week separately — and the risk engine would have to live in three places.
+1. **One generic dashboard** loses the texture of each platform. Reddit is community-first; X rewards replies; LinkedIn demands polish; Google is about visibility and freshness, not cadence. A single feed-style UI flattens all of that.
+2. **One product per platform** duplicates state and decisions. The founder would need to plan a Reddit week, an X week, a LinkedIn week separately, and somehow integrate "SEO" alongside — and the risk engine would have to live in four places.
 
-The split puts the **decisions** (approve, delay, redistribute, save to backlog) in one place and lets the **interpretation** of those decisions live per platform.
+The split puts the **decisions** (approve, delay, redistribute, save to backlog) in one place and lets the **interpretation** of those decisions live per platform. Discoverability sits next to the social loop, not inside it.
 
 ## What the core owns
 
@@ -28,7 +44,7 @@ Anything that mutates state, schedules an item, scores risk, or moves an item be
 
 Pages that use these — dashboard, weekly plan, approval queue, scheduler, backlog, risk center, accounts — work the same regardless of which platform is involved.
 
-## What the platform command centers own
+## What the social command centers own
 
 In `src/core/platforms/` and `src/components/command-center.tsx`:
 
@@ -45,9 +61,21 @@ In `src/core/platforms/` and `src/components/command-center.tsx`:
 
 These are pure functions. They never mutate state.
 
+## What the search & discoverability layer owns
+
+In `src/core/discoverability/`:
+
+- `calculateFreshnessStatus(asset)` — classifies an asset as fresh / evergreen / needs_refresh / stale / under_promoted from age, incoming links, mock search position, and amplification.
+- `buildVisibilitySnapshot(productId, assets)` — per-product composite visibility score.
+- `buildTopicalClusters(productId, assets)` — clusters with coverage flags.
+- `calculateDiscoverabilityOpportunities(assets, products)` — typed opportunity rows (search-to-social, social-to-search, evergreen distribution, freshness refresh, internal linking, topic cluster gaps).
+- `buildYouTubeIdeas(product)` and `buildYouTubeCadencePlan(product)` — planning-only seeds.
+
+These are also pure functions and never mutate state.
+
 ## What is intentionally not automated yet
 
-Platform command centers do not:
+The command centers do not:
 
 - Publish content.
 - Sign into a platform.
@@ -55,15 +83,23 @@ Platform command centers do not:
 - Auto-restore items from the backlog.
 - Generate new content with an LLM.
 
-Each of these is reserved for future phases behind clearly named placeholders (e.g. the OAuth card, the `Data not yet connected` analytics block, and the `placeholder`-status playbook modules).
+The discoverability layer additionally does not:
+
+- Call Google Search Console.
+- Call the YouTube API.
+- Call an indexing API.
+- Auto-update content.
+
+Each of these is reserved for future phases behind clearly named placeholders (the OAuth card, the `Data not yet connected` block, and `placeholder`-status playbook modules).
 
 ## Future OAuth and API integration boundaries
 
 When a platform's official API ships:
 
-- `getPlatformContentFormats`, `getPlatformPlaybook`, and `getPlatformRiskRules` stay where they are — they're operational policy.
+- The pure getters in `src/core/platforms/` and `src/core/discoverability/` stay where they are — they're operational policy.
 - A new `PlatformAdapter` lives under `src/core/platforms/<platform>/adapter.ts` and implements `authorize()`, `publish()`, and `fetchEngagement()` (see [platform-adapters.md](../platforms/platform-adapters.md)).
+- For Google, the adapter implements `authorize()` and `fetchVisibility()`; no `publish()` exists by design.
 - The OAuth card on each command center becomes the active connect surface.
-- Analytics placeholders are replaced by data from WebmasterID once it is wired.
+- The WebmasterID placeholder block is replaced by live data once that integration is wired.
 
 Until then, the command centers are lenses over the same store, not separate stacks.
