@@ -11,3 +11,4 @@ export * from "./command-center";
 export * from "./discoverability";
 export * from "./content-intelligence";
 export * from "./comment-intelligence";
+export * from "./activity";
