@@ -21,6 +21,7 @@ import {
   SystemHealth,
   WhatChangedThisWeek,
 } from "@/components/operations-panels";
+import { OnboardingChecklist } from "@/components/onboarding-checklist";
 import { platforms } from "@/lib/mock";
 import type { PlatformId } from "@/types";
 
@@ -319,6 +320,8 @@ export default function DashboardPage() {
             </div>
           </section>
         </div>
+
+        <OnboardingChecklist />
       </div>
     </>
   );
