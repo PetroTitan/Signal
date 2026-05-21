@@ -76,6 +76,14 @@ Four platform-native lenses over the same shared core. Three are social — Redd
 
 See [docs/architecture/one-core-platform-command-centers.md](docs/architecture/one-core-platform-command-centers.md), [docs/platforms/command-centers.md](docs/platforms/command-centers.md), [docs/platforms/reddit-command-center.md](docs/platforms/reddit-command-center.md), [docs/platforms/x-command-center.md](docs/platforms/x-command-center.md), [docs/platforms/linkedin-command-center.md](docs/platforms/linkedin-command-center.md), and [docs/platforms/google-visibility-command-center.md](docs/platforms/google-visibility-command-center.md).
 
+## Content intelligence
+
+Signal is insight-first, not output-first. A small library of `SourceInsight` rows — founder observations, product lessons, support patterns, industry patterns — drives every suggestion. The content intelligence engine produces platform-native opportunities, draft variants, and a content-memory summary; the comment intelligence engine produces discussion opportunities (with explicit participate / watch / **skip** recommendations) and calm comment and reply drafts gated by a conversation risk layer. No external AI API, no auto-publishing, no fake engagement.
+
+Routes: [/content-intelligence](src/app/(app)/content-intelligence/page.tsx), [/opportunities](src/app/(app)/opportunities/page.tsx), [/discussions](src/app/(app)/discussions/page.tsx), [/comments](src/app/(app)/comments/page.tsx).
+
+See [docs/architecture/content-intelligence-architecture.md](docs/architecture/content-intelligence-architecture.md), [docs/content-intelligence/source-insights.md](docs/content-intelligence/source-insights.md), [docs/content-intelligence/platform-adapters.md](docs/content-intelligence/platform-adapters.md), [docs/content-intelligence/content-memory.md](docs/content-intelligence/content-memory.md), [docs/comment-intelligence/comment-engine.md](docs/comment-intelligence/comment-engine.md), and [docs/comment-intelligence/conversation-risk-layer.md](docs/comment-intelligence/conversation-risk-layer.md).
+
 ## Search & discoverability operations
 
 Google is treated as a search & discoverability surface, not a publishing one. [/platforms/google](src/app/(app)/platforms/google/page.tsx) hosts visibility, content freshness, topical coverage, internal linking, evergreen content, under-promoted content, and YouTube planning. A top-level [/discoverability](src/app/(app)/discoverability/page.tsx) dashboard adds the cross-channel lens: search-to-social, social-to-search, topic cluster gaps, and refresh windows. No Search Console API, no YouTube API, no indexing API, no automated publishing.
