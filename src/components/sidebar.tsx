@@ -16,6 +16,10 @@ import {
   PlatformsIcon,
   SearchIcon,
   DiscoverabilityIcon,
+  InsightIcon,
+  CommentIcon,
+  DiscussionIcon,
+  OpportunityIcon,
 } from "./icons";
 
 const groups: { label: string; items: NavItem[] }[] = [
@@ -44,6 +48,15 @@ const groups: { label: string; items: NavItem[] }[] = [
     items: [
       { href: "/platforms/google", label: "Google visibility", icon: SearchIcon },
       { href: "/discoverability", label: "Discoverability", icon: DiscoverabilityIcon },
+    ],
+  },
+  {
+    label: "Content intelligence",
+    items: [
+      { href: "/content-intelligence", label: "Insights", icon: InsightIcon },
+      { href: "/opportunities", label: "Opportunities", icon: OpportunityIcon },
+      { href: "/discussions", label: "Discussions", icon: DiscussionIcon },
+      { href: "/comments", label: "Comments", icon: CommentIcon },
     ],
   },
   {
