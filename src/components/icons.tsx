@@ -129,6 +129,17 @@ export function ChevronRightIcon(p: IconProps) {
   );
 }
 
+export function PlatformsIcon(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18" />
+      <path d="M12 3a13 13 0 0 1 0 18" />
+      <path d="M12 3a13 13 0 0 0 0 18" />
+    </svg>
+  );
+}
+
 export function BacklogIcon(p: IconProps) {
   return (
     <svg {...base} {...p}>
