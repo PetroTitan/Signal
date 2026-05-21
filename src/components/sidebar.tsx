@@ -13,6 +13,7 @@ import {
   AnalyticsIcon,
   SettingsIcon,
   BacklogIcon,
+  PlatformsIcon,
 } from "./icons";
 
 const groups: { label: string; items: NavItem[] }[] = [
@@ -25,6 +26,15 @@ const groups: { label: string; items: NavItem[] }[] = [
       { href: "/scheduler", label: "Scheduler", icon: SchedulerIcon },
       { href: "/backlog", label: "Backlog", icon: BacklogIcon },
       { href: "/risk-center", label: "Risk center", icon: RiskIcon },
+    ],
+  },
+  {
+    label: "Platform command centers",
+    items: [
+      { href: "/platforms", label: "Overview", icon: PlatformsIcon, exact: true },
+      { href: "/platforms/reddit", label: "Reddit", icon: PlatformsIcon },
+      { href: "/platforms/x", label: "X", icon: PlatformsIcon },
+      { href: "/platforms/linkedin", label: "LinkedIn", icon: PlatformsIcon },
     ],
   },
   {
@@ -42,6 +52,7 @@ type NavItem = {
   href: string;
   label: string;
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+  exact?: boolean;
 };
 
 export function Sidebar() {
@@ -67,9 +78,10 @@ export function Sidebar() {
               {group.label}
             </div>
             <ul className="space-y-0.5">
-              {group.items.map(({ href, label, icon: Icon }) => {
-                const active =
-                  pathname === href || pathname.startsWith(href + "/");
+              {group.items.map(({ href, label, icon: Icon, exact }) => {
+                const active = exact
+                  ? pathname === href
+                  : pathname === href || pathname.startsWith(href + "/");
                 return (
                   <li key={href}>
                     <Link
