@@ -46,6 +46,20 @@ Reddit, X, LinkedIn.
 
 See [docs/architecture/mvp-architecture.md](docs/architecture/mvp-architecture.md) for the source layout and conventions.
 
+## Operations command center, activity, search, workflow
+
+The [/dashboard](src/app/(app)/dashboard/page.tsx) leads with four operational panels — `NextBestActions`, `SystemHealth`, `WhatChangedThisWeek`, and `ItemsNeedingJudgment` — so the founder lands on actionable judgment surfaces.
+
+- [/activity](src/app/(app)/activity/page.tsx) — internal operational timeline derived from live state. Filterable by layer and severity. No fake analytics.
+- [/search](src/app/(app)/search/page.tsx) — deterministic search across products, accounts, items, backlog, insights, content assets, risk signals, and docs. Topbar carries a search affordance from every route.
+- [/workflow](src/app/(app)/workflow/page.tsx) — Signal's twelve-stage operating loop, useful for onboarding and architecture review.
+
+An explainability layer (`Explain` + eight `Why*` wrappers in `src/components/explain.tsx`) gives every engine a calm, consistent way to surface "why this happened" inline.
+
+A pre-Supabase state-readiness audit captures which entities are stable, which are derived, and what the eventual table boundaries should look like.
+
+See [docs/architecture/operational-stabilization.md](docs/architecture/operational-stabilization.md), [docs/architecture/explainability-layer.md](docs/architecture/explainability-layer.md), [docs/architecture/state-readiness-audit.md](docs/architecture/state-readiness-audit.md), [docs/product/global-activity-timeline.md](docs/product/global-activity-timeline.md), [docs/product/internal-search.md](docs/product/internal-search.md), and [docs/product/workflow-map.md](docs/product/workflow-map.md).
+
 ## Weekly approval concept
 
 Signal compresses every growth decision into a single weekly checkpoint:
