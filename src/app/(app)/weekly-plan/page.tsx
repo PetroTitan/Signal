@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import { Topbar } from "@/components/topbar";
 import { PlatformBadge, RiskBadge } from "@/components/badges";
+import { EligibilityBadge } from "@/components/eligibility-badge";
 import { useSignal } from "@/core/store";
 import { summarizePlan } from "@/core/approval";
 import { formatDateRange, formatDateTime } from "@/lib/format";
@@ -74,6 +75,11 @@ function Row({ item }: { item: WeeklyPlanItem }) {
         <div className="text-ink-900">{acc?.displayName}</div>
         {acc?.handle ? (
           <div className="text-xs text-ink-500">{acc.handle}</div>
+        ) : null}
+        {acc ? (
+          <div className="mt-1">
+            <EligibilityBadge status={acc.status} compact />
+          </div>
         ) : null}
       </Td>
       <Td>{product?.name}</Td>

@@ -8,6 +8,7 @@ import {
   RiskBadge,
   AccountStatusBadge,
 } from "@/components/badges";
+import { EligibilityBadge } from "@/components/eligibility-badge";
 import { useSignal } from "@/core/store";
 import { summarizePlan } from "@/core/approval";
 import { platformLoad } from "@/core/scheduler";
@@ -228,9 +229,10 @@ export default function DashboardPage() {
                     <div className="text-sm font-medium text-ink-900 truncate">
                       {a.displayName}
                     </div>
-                    <div className="flex items-center gap-2 mt-0.5">
+                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                       <PlatformBadge platform={a.platform} />
                       <AccountStatusBadge status={a.status} />
+                      <EligibilityBadge status={a.status} compact />
                     </div>
                   </div>
                   <div className="text-xs text-ink-500 shrink-0">
