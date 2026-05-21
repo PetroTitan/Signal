@@ -129,6 +129,16 @@ export function ChevronRightIcon(p: IconProps) {
   );
 }
 
+export function BacklogIcon(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <rect x="3" y="6" width="18" height="13" rx="2" />
+      <path d="M3 10h18" />
+      <path d="M8 14h6" />
+    </svg>
+  );
+}
+
 export function LockIcon(p: IconProps) {
   return (
     <svg {...base} {...p}>

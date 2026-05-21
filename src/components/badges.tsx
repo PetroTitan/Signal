@@ -12,14 +12,18 @@ export function PlatformBadge({ platform }: { platform: PlatformId }) {
   return <span className={`badge ${tone}`}>{label}</span>;
 }
 
-export function RiskBadge({ level }: { level: RiskLevel }) {
+export function RiskBadge({ level, score }: { level: RiskLevel; score?: number }) {
   const cls =
     level === "low"
       ? "badge-low"
       : level === "medium"
         ? "badge-medium"
-        : "badge-high";
-  const label = level.charAt(0).toUpperCase() + level.slice(1) + " risk";
+        : level === "high"
+          ? "badge-high"
+          : "badge bg-ink-900 text-white";
+  const baseLabel =
+    level === "blocked" ? "Blocked" : level.charAt(0).toUpperCase() + level.slice(1) + " risk";
+  const label = typeof score === "number" ? `${baseLabel} · ${score}` : baseLabel;
   return <span className={cls}>{label}</span>;
 }
 

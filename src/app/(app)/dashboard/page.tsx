@@ -1,85 +1,96 @@
+"use client";
+
 import Link from "next/link";
+import { useMemo } from "react";
 import { Topbar } from "@/components/topbar";
 import {
   PlatformBadge,
   RiskBadge,
   AccountStatusBadge,
 } from "@/components/badges";
-import {
-  accounts,
-  currentWeeklyPlan,
-  products,
-  productsById,
-  riskEvents,
-  weeklyPlanItems,
-  platforms,
-} from "@/lib/mock";
+import { useSignal } from "@/core/store";
+import { summarizePlan } from "@/core/approval";
+import { platformLoad } from "@/core/scheduler";
 import { formatDateRange, formatDateTime, relativeFromNow } from "@/lib/format";
 import { ChevronRightIcon } from "@/components/icons";
+import { CadenceCallout } from "@/components/cadence-callout";
+import { platforms } from "@/lib/mock";
+import type { PlatformId } from "@/types";
 
 export default function DashboardPage() {
-  const pendingItems = weeklyPlanItems.filter(
-    (i) => i.status === "pending_approval",
+  const { state } = useSignal();
+  const summary = useMemo(() => summarizePlan(state.items), [state.items]);
+  const load = useMemo(() => platformLoad(state.items), [state.items]);
+
+  const pendingItems = useMemo(
+    () => state.items.filter((i) => i.status === "pending_approval"),
+    [state.items],
   );
-  const upcoming = [...weeklyPlanItems]
-    .filter((i) => i.status === "approved" || i.status === "scheduled")
-    .sort(
-      (a, b) =>
-        new Date(a.scheduledFor).getTime() - new Date(b.scheduledFor).getTime(),
-    )
-    .slice(0, 4);
+  const upcoming = useMemo(
+    () =>
+      [...state.items]
+        .filter((i) => i.status === "approved" || i.status === "scheduled")
+        .sort(
+          (a, b) =>
+            new Date(a.scheduledFor).getTime() -
+            new Date(b.scheduledFor).getTime(),
+        )
+        .slice(0, 4),
+    [state.items],
+  );
 
-  const platformDistribution = platforms.map((p) => ({
-    platform: p,
-    count: weeklyPlanItems.filter((i) => i.platform === p.id).length,
-  }));
-
-  const activeAccounts = accounts.filter((a) => a.status === "active").length;
-  const warmingAccounts = accounts.filter((a) => a.status === "warming").length;
-  const plannedAccounts = accounts.filter(
+  const accountValues = useMemo(
+    () => Object.values(state.accountsById),
+    [state.accountsById],
+  );
+  const activeAccounts = accountValues.filter((a) => a.status === "active").length;
+  const warmingAccounts = accountValues.filter((a) => a.status === "warming").length;
+  const plannedAccounts = accountValues.filter(
     (a) =>
       a.status === "planned" ||
       a.status === "setup_needed" ||
       a.status === "awaiting_manual_creation",
   ).length;
 
-  const highRisk = riskEvents.filter((r) => r.level === "high").length;
-  const mediumRisk = riskEvents.filter((r) => r.level === "medium").length;
+  const highRisk =
+    (summary.byRisk.high ?? 0) + (summary.byRisk.blocked ?? 0);
+  const mediumRisk = summary.byRisk.medium ?? 0;
 
   return (
     <>
       <Topbar
         title="Operations dashboard"
-        description={`Week of ${formatDateRange(currentWeeklyPlan.weekStartIso, currentWeeklyPlan.weekEndIso)}. ${currentWeeklyPlan.pendingCount} items awaiting your review.`}
+        description={`Week of ${formatDateRange(state.plan.weekStartIso, state.plan.weekEndIso)}. ${pendingItems.length} item${pendingItems.length === 1 ? "" : "s"} awaiting your review.`}
         actions={
           <>
             <Link href="/weekly-plan" className="btn">
               Open weekly plan
             </Link>
             <Link href="/approval-queue" className="btn-primary">
-              Review {currentWeeklyPlan.pendingCount} pending
+              Review {pendingItems.length} pending
             </Link>
           </>
         }
       />
 
       <div className="px-6 lg:px-8 py-6 space-y-6 max-w-7xl">
-        {/* Top stat row */}
+        <CadenceCallout />
+
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <StatCard
             label="This week's plan"
-            value={`${currentWeeklyPlan.itemCount} items`}
-            sub={`${currentWeeklyPlan.approvedCount} approved · ${currentWeeklyPlan.pendingCount} pending`}
+            value={`${summary.total} items`}
+            sub={`${summary.byStatus.approved ?? 0} approved · ${summary.byStatus.pending_approval ?? 0} pending`}
           />
           <StatCard
             label="Connected accounts"
-            value={`${activeAccounts + warmingAccounts} / ${accounts.length}`}
+            value={`${activeAccounts + warmingAccounts} / ${accountValues.length}`}
             sub={`${warmingAccounts} warming · ${plannedAccounts} planned`}
           />
           <StatCard
-            label="Active products"
-            value={`${products.length}`}
-            sub="Spanning analytics, finance, utility, consulting"
+            label="Backlog"
+            value={`${state.backlog.length}`}
+            sub="Held for future weeks"
           />
           <StatCard
             label="Risk signals"
@@ -90,16 +101,15 @@ export default function DashboardPage() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Pending approvals */}
           <section className="card lg:col-span-2">
             <Header
               title="Pending approvals"
-              hint={`${pendingItems.length} items waiting for your single weekly review`}
+              hint={`${pendingItems.length} item${pendingItems.length === 1 ? "" : "s"} waiting for your single weekly review`}
               link={{ href: "/approval-queue", label: "Open queue" }}
             />
             <ul className="row-divider">
               {pendingItems.map((item) => {
-                const product = productsById[item.productId];
+                const product = state.productsById[item.productId];
                 return (
                   <li
                     key={item.id}
@@ -109,9 +119,9 @@ export default function DashboardPage() {
                       <div className="flex items-center gap-2 flex-wrap mb-1">
                         <PlatformBadge platform={item.platform} />
                         <span className="text-xs text-ink-500">
-                          {product.name}
+                          {product?.name}
                         </span>
-                        <RiskBadge level={item.riskLevel} />
+                        <RiskBadge level={item.risk.level} score={item.risk.score} />
                       </div>
                       <div className="text-sm font-medium text-ink-900 truncate">
                         {item.draft.hook}
@@ -132,35 +142,35 @@ export default function DashboardPage() {
             </ul>
           </section>
 
-          {/* Platform distribution */}
           <section className="card">
             <Header
-              title="Platform distribution"
-              hint="This week's planned items"
+              title="Platform load"
+              hint="This week vs. sustainable cadence"
             />
             <ul className="px-5 py-4 space-y-3">
-              {platformDistribution.map(({ platform, count }) => {
-                const pct = Math.round(
-                  (count / Math.max(weeklyPlanItems.length, 1)) * 100,
-                );
+              {platforms.map((platform) => {
+                const info = load[platform.id as PlatformId];
+                const pct = Math.min(100, Math.round((info.count / info.max) * 100));
+                const tone = info.isOver
+                  ? "bg-amber-500"
+                  : info.isApproachingMax
+                    ? "bg-amber-400"
+                    : "bg-signal-500";
                 return (
                   <li key={platform.id}>
                     <div className="flex items-center justify-between mb-1.5">
                       <div className="flex items-center gap-2">
                         <PlatformBadge platform={platform.id} />
                         <span className="text-xs text-ink-500">
-                          suggested {platform.cadenceGuidance.suggestedPostsPerWeek}/wk
+                          {info.count}/{info.suggested} suggested
                         </span>
                       </div>
                       <span className="text-sm font-medium text-ink-800">
-                        {count}
+                        {info.count}
                       </span>
                     </div>
                     <div className="h-1.5 bg-ink-100 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-signal-500"
-                        style={{ width: `${pct}%` }}
-                      />
+                      <div className={`h-full ${tone}`} style={{ width: `${pct}%` }} />
                     </div>
                   </li>
                 );
@@ -170,7 +180,6 @@ export default function DashboardPage() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Upcoming */}
           <section className="card lg:col-span-2">
             <Header
               title="Upcoming this week"
@@ -179,7 +188,7 @@ export default function DashboardPage() {
             />
             <ul className="row-divider">
               {upcoming.map((item) => {
-                const product = productsById[item.productId];
+                const product = state.productsById[item.productId];
                 return (
                   <li
                     key={item.id}
@@ -192,7 +201,7 @@ export default function DashboardPage() {
                       <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                         <PlatformBadge platform={item.platform} />
                         <span className="text-xs text-ink-500">
-                          {product.name}
+                          {product?.name}
                         </span>
                       </div>
                       <div className="text-sm text-ink-800 truncate">
@@ -202,14 +211,18 @@ export default function DashboardPage() {
                   </li>
                 );
               })}
+              {upcoming.length === 0 ? (
+                <li className="px-5 py-4 text-sm text-ink-500">
+                  Nothing approved yet for this week.
+                </li>
+              ) : null}
             </ul>
           </section>
 
-          {/* Account readiness */}
           <section className="card">
             <Header title="Accounts" link={{ href: "/accounts", label: "Manage" }} />
             <ul className="row-divider">
-              {accounts.slice(0, 5).map((a) => (
+              {accountValues.slice(0, 5).map((a) => (
                 <li key={a.id} className="px-5 py-3 flex items-center gap-3">
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium text-ink-900 truncate">
@@ -229,29 +242,45 @@ export default function DashboardPage() {
           </section>
         </div>
 
-        {/* Bottom row: risk + analytics readiness */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <section className="card lg:col-span-2">
             <Header
               title="Risk signals"
-              hint="Cadence, tone, and account fatigue checks"
+              hint="Live signals computed from this week's plan"
               link={{ href: "/risk-center", label: "Open risk center" }}
             />
             <ul className="row-divider">
-              {riskEvents.slice(0, 4).map((r) => (
-                <li key={r.id} className="px-5 py-3.5">
-                  <div className="flex items-center gap-2 mb-1">
-                    <RiskBadge level={r.level} />
-                    <span className="text-xs text-ink-500 capitalize">
-                      {r.category.replace(/_/g, " ")}
-                    </span>
-                  </div>
-                  <div className="text-sm text-ink-800">{r.summary}</div>
-                  <div className="text-xs text-ink-500 mt-1">
-                    {r.recommendation}
-                  </div>
+              {state.items
+                .filter(
+                  (i) => i.risk.level === "high" || i.risk.level === "blocked",
+                )
+                .slice(0, 4)
+                .map((item) => {
+                  const product = state.productsById[item.productId];
+                  return (
+                    <li key={item.id} className="px-5 py-3.5">
+                      <div className="flex items-center gap-2 mb-1">
+                        <RiskBadge level={item.risk.level} score={item.risk.score} />
+                        <span className="text-xs text-ink-500">
+                          {product?.name}
+                        </span>
+                      </div>
+                      <div className="text-sm text-ink-800">
+                        {item.draft.hook}
+                      </div>
+                      <div className="text-xs text-ink-500 mt-1">
+                        {item.risk.recommendation}
+                      </div>
+                    </li>
+                  );
+                })}
+              {state.items.filter(
+                (i) => i.risk.level === "high" || i.risk.level === "blocked",
+              ).length === 0 ? (
+                <li className="px-5 py-4 text-sm text-ink-500">
+                  No high-risk items this week.
                 </li>
-              ))}
+              ) : null}
             </ul>
           </section>
 

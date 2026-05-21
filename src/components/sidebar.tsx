@@ -12,6 +12,7 @@ import {
   RiskIcon,
   AnalyticsIcon,
   SettingsIcon,
+  BacklogIcon,
 } from "./icons";
 
 const groups: { label: string; items: NavItem[] }[] = [
@@ -22,6 +23,7 @@ const groups: { label: string; items: NavItem[] }[] = [
       { href: "/weekly-plan", label: "Weekly plan", icon: PlanIcon },
       { href: "/approval-queue", label: "Approval queue", icon: ApprovalIcon },
       { href: "/scheduler", label: "Scheduler", icon: SchedulerIcon },
+      { href: "/backlog", label: "Backlog", icon: BacklogIcon },
       { href: "/risk-center", label: "Risk center", icon: RiskIcon },
     ],
   },
