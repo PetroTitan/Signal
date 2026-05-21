@@ -1,6 +1,28 @@
-import type { GrowthAccount } from "@/types";
+import { buildSetupKit } from "@/core/onboarding/kits";
+import type {
+  AccountRole,
+  AccountStatus,
+  ChecklistItem,
+  GrowthAccount,
+  PlatformId,
+} from "@/types";
+import { productsById } from "./products";
 
-export const accounts: GrowthAccount[] = [
+interface SeedAccount {
+  id: string;
+  platform: PlatformId;
+  productId: string;
+  role: AccountRole;
+  handle: string | null;
+  displayName: string;
+  status: AccountStatus;
+  oauthConnected: boolean;
+  createdAt: string;
+  lastActivityAt: string | null;
+  checklistOverrides?: Partial<Record<string, boolean>>;
+}
+
+const seeds: SeedAccount[] = [
   {
     id: "acc_petro_x_founder",
     platform: "x",
@@ -9,30 +31,17 @@ export const accounts: GrowthAccount[] = [
     handle: "@petro_helperg",
     displayName: "Petro · HELPERG",
     status: "active",
-    readinessScore: 92,
     oauthConnected: true,
-    setup: {
-      usernameIdeas: ["petro_helperg", "petro_builds", "ptr_helperg"],
-      bioSuggestions: [
-        "Building HELPERG and a handful of small SaaS tools. Operator notes only.",
-        "Solo operator. Growth and product. Writing what I learn building HELPERG.",
-      ],
-      avatarBrief: "Neutral portrait, daylight, soft background.",
-      coverBrief: "Calm gradient with single product mark.",
-      checklist: [
-        { label: "Display name set", done: true },
-        { label: "Bio finalized", done: true },
-        { label: "Avatar uploaded", done: true },
-        { label: "Pinned post chosen", done: true },
-      ],
-      warmUpPlan: [
-        "Day 1-2: reply to 5 founder threads per day",
-        "Day 3-4: publish one short observation",
-        "Day 5-7: post first long-form thread",
-      ],
-    },
     createdAt: "2025-09-04T10:12:00.000Z",
     lastActivityAt: "2026-05-20T16:42:00.000Z",
+    checklistOverrides: {
+      manual_account_created: true,
+      email_verified: true,
+      "2fa_enabled": true,
+      profile_completed: true,
+      first_warmup_planned: true,
+      ready_for_planning: true,
+    },
   },
   {
     id: "acc_petro_linkedin_founder",
@@ -42,27 +51,17 @@ export const accounts: GrowthAccount[] = [
     handle: "petro-helperg",
     displayName: "Petro — HELPERG",
     status: "active",
-    readinessScore: 88,
     oauthConnected: true,
-    setup: {
-      usernameIdeas: [],
-      bioSuggestions: [
-        "Founder, HELPERG. Operator notes on small SaaS, growth, analytics.",
-      ],
-      avatarBrief: "Same portrait as X account, consistent brand.",
-      coverBrief: "Subtle banner: 'HELPERG — small SaaS, sustainable growth'.",
-      checklist: [
-        { label: "Headline set", done: true },
-        { label: "Featured section curated", done: true },
-        { label: "About section written", done: true },
-      ],
-      warmUpPlan: [
-        "Week 1: comment on 3 industry posts per day",
-        "Week 2: publish first long-form essay",
-      ],
-    },
     createdAt: "2025-09-04T10:12:00.000Z",
     lastActivityAt: "2026-05-19T11:05:00.000Z",
+    checklistOverrides: {
+      manual_account_created: true,
+      email_verified: true,
+      "2fa_enabled": true,
+      profile_completed: true,
+      first_warmup_planned: true,
+      ready_for_planning: true,
+    },
   },
   {
     id: "acc_wmi_x_product",
@@ -72,29 +71,16 @@ export const accounts: GrowthAccount[] = [
     handle: "@webmasterid",
     displayName: "WebmasterID",
     status: "warming",
-    readinessScore: 71,
     oauthConnected: true,
-    setup: {
-      usernameIdeas: ["webmasterid", "wmi_analytics", "webmasterid_io"],
-      bioSuggestions: [
-        "Identity-aware analytics. See the split between bots, AI agents, and humans hitting your site.",
-        "Analytics for the agentic web. Built by HELPERG.",
-      ],
-      avatarBrief: "Wordmark on dark slate, single accent color.",
-      coverBrief: "Annotated dashboard screenshot with bot/agent/human split.",
-      checklist: [
-        { label: "Display name set", done: true },
-        { label: "Bio finalized", done: true },
-        { label: "Avatar uploaded", done: true },
-        { label: "Pinned thread drafted", done: false },
-      ],
-      warmUpPlan: [
-        "Week 1: reply to 3 analytics-related posts per day",
-        "Week 2: publish one product-context observation per week",
-      ],
-    },
     createdAt: "2026-03-01T09:30:00.000Z",
     lastActivityAt: "2026-05-18T14:00:00.000Z",
+    checklistOverrides: {
+      manual_account_created: true,
+      email_verified: true,
+      "2fa_enabled": true,
+      profile_completed: true,
+      first_warmup_planned: true,
+    },
   },
   {
     id: "acc_wmi_reddit_research",
@@ -104,29 +90,15 @@ export const accounts: GrowthAccount[] = [
     handle: "u/wmi_observer",
     displayName: "wmi_observer",
     status: "ready_to_connect",
-    readinessScore: 54,
     oauthConnected: false,
-    setup: {
-      usernameIdeas: ["wmi_observer", "agentic_traffic", "bot_or_human"],
-      bioSuggestions: [
-        "I look at how AI agents reach websites. Sharing what I find.",
-      ],
-      avatarBrief: "Abstract waveform. No product logo.",
-      coverBrief: "n/a",
-      checklist: [
-        { label: "Account created manually", done: true },
-        { label: "Karma above 50", done: false },
-        { label: "Subreddit subscriptions chosen", done: true },
-        { label: "OAuth connection pending", done: false },
-      ],
-      warmUpPlan: [
-        "Weeks 1-2: only comment in r/SaaS, r/analytics, r/webdev",
-        "Weeks 3-4: one helpful link-free post per week",
-        "Week 5+: introduce product only when contextually relevant",
-      ],
-    },
     createdAt: "2026-04-15T09:00:00.000Z",
     lastActivityAt: null,
+    checklistOverrides: {
+      manual_account_created: true,
+      email_verified: true,
+      "2fa_enabled": true,
+      profile_completed: true,
+    },
   },
   {
     id: "acc_cw_x_product",
@@ -136,28 +108,16 @@ export const accounts: GrowthAccount[] = [
     handle: "@cashworkspace",
     displayName: "Cash Workspace",
     status: "connected",
-    readinessScore: 65,
     oauthConnected: true,
-    setup: {
-      usernameIdeas: ["cashworkspace", "cash_workspace", "cw_app"],
-      bioSuggestions: [
-        "Cash flow workspace for solo operators. Free for personal use.",
-      ],
-      avatarBrief: "Mark only, off-white background.",
-      coverBrief: "Single screenshot of monthly view.",
-      checklist: [
-        { label: "Display name set", done: true },
-        { label: "Bio finalized", done: true },
-        { label: "Avatar uploaded", done: true },
-        { label: "Warm-up replies started", done: false },
-      ],
-      warmUpPlan: [
-        "Week 1-2: comments only",
-        "Week 3: first observation post",
-      ],
-    },
     createdAt: "2026-04-22T13:00:00.000Z",
     lastActivityAt: "2026-05-15T09:20:00.000Z",
+    checklistOverrides: {
+      manual_account_created: true,
+      email_verified: true,
+      "2fa_enabled": true,
+      profile_completed: true,
+      oauth_connected: true,
+    },
   },
   {
     id: "acc_tp_reddit_community",
@@ -167,25 +127,7 @@ export const accounts: GrowthAccount[] = [
     handle: null,
     displayName: "TwinPhone community account",
     status: "awaiting_manual_creation",
-    readinessScore: 25,
     oauthConnected: false,
-    setup: {
-      usernameIdeas: ["twinphone_team", "second_line_dev", "twinphone_app"],
-      bioSuggestions: [
-        "Two phones, one device. I help people set up TwinPhone.",
-      ],
-      avatarBrief: "Simple line illustration of a phone.",
-      coverBrief: "n/a",
-      checklist: [
-        { label: "Account created manually", done: false },
-        { label: "Email verified", done: false },
-        { label: "Karma above 50", done: false },
-      ],
-      warmUpPlan: [
-        "Comment in r/iphone, r/Android about call-routing problems",
-        "Avoid product mentions for first 3 weeks",
-      ],
-    },
     createdAt: "2026-05-04T15:00:00.000Z",
     lastActivityAt: null,
   },
@@ -197,25 +139,7 @@ export const accounts: GrowthAccount[] = [
     handle: null,
     displayName: "PDF tools support",
     status: "planned",
-    readinessScore: 10,
     oauthConnected: false,
-    setup: {
-      usernameIdeas: ["pdftools_help", "pdftools_app", "pdftools_studio"],
-      bioSuggestions: [
-        "Support and tips for PDF tools. We answer in this thread.",
-      ],
-      avatarBrief: "Single glyph icon.",
-      coverBrief: "n/a",
-      checklist: [
-        { label: "Account created manually", done: false },
-        { label: "Display name set", done: false },
-        { label: "Bio finalized", done: false },
-        { label: "Avatar uploaded", done: false },
-      ],
-      warmUpPlan: [
-        "Quietly reply to PDF questions for two weeks before publishing",
-      ],
-    },
     createdAt: "2026-05-12T08:00:00.000Z",
     lastActivityAt: null,
   },
@@ -227,28 +151,74 @@ export const accounts: GrowthAccount[] = [
     handle: "u/printerapps_help",
     displayName: "printerapps_help",
     status: "setup_needed",
-    readinessScore: 35,
     oauthConnected: false,
-    setup: {
-      usernameIdeas: ["printerapps_help", "labelprinter_help"],
-      bioSuggestions: [
-        "Helping people get printers working. I built a small set of tools.",
-      ],
-      avatarBrief: "Plain printer outline.",
-      coverBrief: "n/a",
-      checklist: [
-        { label: "Account created manually", done: true },
-        { label: "Karma above 50", done: false },
-        { label: "Subreddit subscriptions chosen", done: false },
-      ],
-      warmUpPlan: [
-        "First 2 weeks: only answer printer setup questions, no product link",
-      ],
-    },
     createdAt: "2026-05-01T11:00:00.000Z",
     lastActivityAt: null,
+    checklistOverrides: {
+      manual_account_created: true,
+    },
   },
 ];
+
+function applyOverrides(
+  baseChecklist: ChecklistItem[],
+  overrides?: Partial<Record<string, boolean>>,
+): ChecklistItem[] {
+  if (!overrides) return baseChecklist;
+  return baseChecklist.map((item) =>
+    overrides[item.id] === undefined
+      ? item
+      : { ...item, done: !!overrides[item.id] },
+  );
+}
+
+function readinessFor(checklist: ChecklistItem[]): number {
+  const weights: Record<string, number> = {
+    kit_generated: 5,
+    manual_account_created: 20,
+    email_verified: 10,
+    "2fa_enabled": 10,
+    profile_completed: 15,
+    first_warmup_planned: 10,
+    oauth_connected: 15,
+    ready_for_planning: 15,
+  };
+  const max = Object.values(weights).reduce((a, b) => a + b, 0);
+  const total = checklist.reduce(
+    (sum, item) => sum + (item.done ? (weights[item.id] ?? 5) : 0),
+    0,
+  );
+  return Math.round((total / max) * 100);
+}
+
+function build(seed: SeedAccount): GrowthAccount {
+  const product = productsById[seed.productId];
+  const kit = buildSetupKit({
+    platform: seed.platform,
+    product,
+    role: seed.role,
+    existingHandle: seed.handle,
+    generatedAt: seed.createdAt,
+  });
+  const checklist = applyOverrides(kit.checklist, seed.checklistOverrides);
+  const setup = { ...kit, checklist };
+  return {
+    id: seed.id,
+    platform: seed.platform,
+    productId: seed.productId,
+    role: seed.role,
+    handle: seed.handle,
+    displayName: seed.displayName,
+    status: seed.status,
+    readinessScore: readinessFor(checklist),
+    oauthConnected: seed.oauthConnected,
+    setup,
+    createdAt: seed.createdAt,
+    lastActivityAt: seed.lastActivityAt,
+  };
+}
+
+export const accounts: GrowthAccount[] = seeds.map(build);
 
 export const accountsById = Object.fromEntries(
   accounts.map((a) => [a.id, a]),
