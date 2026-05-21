@@ -78,11 +78,19 @@ Cadence protection messages surface on the dashboard, the approval queue, and th
 
 See [docs/product/backlog-system.md](docs/product/backlog-system.md) and [docs/product/cadence-protection.md](docs/product/cadence-protection.md).
 
-## Future: OAuth-first account model
+## Account setup assistant
 
-Every account in Signal will connect through the platform's official authorization flow. Signal will never ask for, store, or transmit platform passwords. Until the OAuth providers are wired in, the accounts page exposes the model and the disabled connect controls.
+The accounts page hosts a four-step wizard at [/accounts/new](src/app/(app)/accounts/new/page.tsx): pick a platform, pick a product, pick a role, generate a setup kit. The kit covers usernames, display names, three bios, an about/profile block, avatar and cover briefs, ten content ideas, ten comment ideas, a 14-day warm-up plan, and a manual setup checklist with eight stable steps.
 
-See [docs/platforms/platform-adapters.md](docs/platforms/platform-adapters.md).
+The detail page renders the full kit and exposes click-to-toggle checklist items, status actions (move to warming/active, mark ready for planning, pause/resume), and a "refresh setup kit" action that regenerates the kit while preserving progress.
+
+See [docs/product/account-onboarding.md](docs/product/account-onboarding.md), [docs/product/account-readiness-scoring.md](docs/product/account-readiness-scoring.md), and [docs/product/account-warm-up-workflow.md](docs/product/account-warm-up-workflow.md).
+
+## OAuth-first account model
+
+Every account in Signal will connect through the platform's official authorization flow. Signal will never ask for passwords, cookies, session tokens, 2FA codes, or recovery codes. Until OAuth providers are wired in, the accounts page exposes the model and the disabled connect controls.
+
+See [docs/platforms/oauth-first-principle.md](docs/platforms/oauth-first-principle.md) and [docs/platforms/platform-adapters.md](docs/platforms/platform-adapters.md).
 
 ## Future: WebmasterID integration
 
