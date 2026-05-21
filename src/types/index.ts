@@ -7,3 +7,4 @@ export * from "./approval";
 export * from "./scheduling";
 export * from "./risk";
 export * from "./analytics";
+export * from "./command-center";
