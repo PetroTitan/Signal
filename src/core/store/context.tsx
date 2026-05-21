@@ -9,9 +9,12 @@ import {
   type ReactNode,
 } from "react";
 import type {
+  AccountRole,
+  AccountStatus,
   ApprovalEvent,
   BacklogItem,
   GrowthAccount,
+  PlatformId,
   ProductProfile,
   WeeklyPlan,
   WeeklyPlanItem,
@@ -135,6 +138,66 @@ export function useApprovalActions() {
       [dispatch],
     ),
   };
+}
+
+export function useAccountActions() {
+  const dispatch = useDispatch();
+  return {
+    createAccount: useCallback(
+      (input: {
+        platform: PlatformId;
+        productId: string;
+        role: AccountRole;
+        displayName?: string;
+        handle?: string | null;
+      }): string => {
+        const slugFragment =
+          input.productId.replace(/^prod_/, "").replace(/_/g, "-");
+        const id = `acc_${slugFragment}_${input.platform}_${Date.now().toString(36)}`;
+        dispatch({
+          type: "create_account",
+          input: { ...input, id },
+        });
+        return id;
+      },
+      [dispatch],
+    ),
+    setStatus: useCallback(
+      (accountId: string, status: AccountStatus) =>
+        dispatch({ type: "set_account_status", accountId, status }),
+      [dispatch],
+    ),
+    toggleChecklistItem: useCallback(
+      (accountId: string, checklistItemId: string, done?: boolean) =>
+        dispatch({
+          type: "toggle_checklist_item",
+          accountId,
+          checklistItemId,
+          done,
+        }),
+      [dispatch],
+    ),
+    regenerateKit: useCallback(
+      (accountId: string) =>
+        dispatch({ type: "regenerate_setup_kit", accountId }),
+      [dispatch],
+    ),
+    markReadyForPlanning: useCallback(
+      (accountId: string) =>
+        dispatch({ type: "mark_ready_for_planning", accountId }),
+      [dispatch],
+    ),
+  };
+}
+
+export function useAccounts(): GrowthAccount[] {
+  const { state } = useSignal();
+  return useMemo(() => Object.values(state.accountsById), [state.accountsById]);
+}
+
+export function useAccount(id: string): GrowthAccount | undefined {
+  const { state } = useSignal();
+  return state.accountsById[id];
 }
 
 function groupByStatus(items: WeeklyPlanItem[]): Record<WeeklyPlanItem["status"], WeeklyPlanItem[]> {

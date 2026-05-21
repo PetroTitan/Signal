@@ -1,7 +1,10 @@
 import type {
+  AccountRole,
+  AccountStatus,
   ApprovalEvent,
   BacklogItem,
   GrowthAccount,
+  PlatformId,
   ProductProfile,
   WeeklyPlan,
   WeeklyPlanItem,
@@ -17,6 +20,7 @@ import {
 } from "../approval/transitions";
 import { redistributeAll } from "../scheduler/distribute";
 import { scoreAllItems } from "../risk/score";
+import { buildSetupKit, computeReadiness } from "../onboarding";
 
 export interface SignalState {
   plan: WeeklyPlan;
@@ -41,7 +45,27 @@ export type SignalAction =
   | { type: "resume"; itemId: string }
   | { type: "duplicate_next_week"; itemId: string }
   | { type: "restore_from_backlog"; backlogId: string }
-  | { type: "redistribute" };
+  | { type: "redistribute" }
+  | {
+      type: "create_account";
+      input: {
+        id: string;
+        platform: PlatformId;
+        productId: string;
+        role: AccountRole;
+        displayName?: string;
+        handle?: string | null;
+      };
+    }
+  | { type: "set_account_status"; accountId: string; status: AccountStatus }
+  | {
+      type: "toggle_checklist_item";
+      accountId: string;
+      checklistItemId: string;
+      done?: boolean;
+    }
+  | { type: "regenerate_setup_kit"; accountId: string }
+  | { type: "mark_ready_for_planning"; accountId: string };
 
 const actor = "petro@helperg.com";
 
@@ -209,9 +233,132 @@ export function reducer(state: SignalState, action: SignalAction): SignalState {
       });
     }
 
+    case "create_account": {
+      const product = state.productsById[action.input.productId];
+      if (!product) return state;
+      if (state.accountsById[action.input.id]) return state;
+      const now = new Date().toISOString();
+      const id = action.input.id;
+      const kit = buildSetupKit({
+        platform: action.input.platform,
+        product,
+        role: action.input.role,
+        existingHandle: action.input.handle ?? null,
+        generatedAt: now,
+      });
+      const displayName =
+        action.input.displayName?.trim() ||
+        kit.displayNameSuggestions[0] ||
+        `${product.name} ${action.input.role}`;
+      const account: GrowthAccount = {
+        id,
+        platform: action.input.platform,
+        productId: action.input.productId,
+        role: action.input.role,
+        handle: action.input.handle ?? null,
+        displayName,
+        status: "planned",
+        readinessScore: computeReadinessForKit(kit.checklist),
+        oauthConnected: false,
+        setup: kit,
+        createdAt: now,
+        lastActivityAt: null,
+      };
+      return rescoreAndMeta({
+        ...state,
+        accountsById: { ...state.accountsById, [account.id]: account },
+      });
+    }
+
+    case "set_account_status": {
+      const account = state.accountsById[action.accountId];
+      if (!account) return state;
+      const next: GrowthAccount = { ...account, status: action.status };
+      return rescoreAndMeta({
+        ...state,
+        accountsById: { ...state.accountsById, [account.id]: next },
+      });
+    }
+
+    case "toggle_checklist_item": {
+      const account = state.accountsById[action.accountId];
+      if (!account) return state;
+      const checklist = account.setup.checklist.map((c) =>
+        c.id === action.checklistItemId
+          ? { ...c, done: action.done ?? !c.done }
+          : c,
+      );
+      const next: GrowthAccount = {
+        ...account,
+        setup: { ...account.setup, checklist },
+        readinessScore: computeReadinessForKit(checklist),
+      };
+      return rescoreAndMeta({
+        ...state,
+        accountsById: { ...state.accountsById, [account.id]: next },
+      });
+    }
+
+    case "regenerate_setup_kit": {
+      const account = state.accountsById[action.accountId];
+      if (!account) return state;
+      const product = state.productsById[account.productId];
+      if (!product) return state;
+      const fresh = buildSetupKit({
+        platform: account.platform,
+        product,
+        role: account.role,
+        existingHandle: account.handle,
+        generatedAt: new Date().toISOString(),
+      });
+      const mergedChecklist = fresh.checklist.map((c) => {
+        const existing = account.setup.checklist.find((p) => p.id === c.id);
+        return existing ? { ...c, done: existing.done } : c;
+      });
+      const next: GrowthAccount = {
+        ...account,
+        setup: { ...fresh, checklist: mergedChecklist },
+        readinessScore: computeReadinessForKit(mergedChecklist),
+      };
+      return rescoreAndMeta({
+        ...state,
+        accountsById: { ...state.accountsById, [account.id]: next },
+      });
+    }
+
+    case "mark_ready_for_planning": {
+      const account = state.accountsById[action.accountId];
+      if (!account) return state;
+      const checklist = account.setup.checklist.map((c) =>
+        c.id === "ready_for_planning" ? { ...c, done: true } : c,
+      );
+      const nextStatus: AccountStatus =
+        account.status === "warming" || account.status === "active"
+          ? account.status
+          : account.oauthConnected
+            ? "connected"
+            : "ready_to_connect";
+      const next: GrowthAccount = {
+        ...account,
+        setup: { ...account.setup, checklist },
+        status: nextStatus,
+        readinessScore: computeReadinessForKit(checklist),
+      };
+      return rescoreAndMeta({
+        ...state,
+        accountsById: { ...state.accountsById, [account.id]: next },
+      });
+    }
+
     default:
       return state;
   }
+}
+
+function computeReadinessForKit(checklist: GrowthAccount["setup"]["checklist"]): number {
+  return computeReadiness({
+    setup: { checklist },
+  } as GrowthAccount);
 }
 
 function mutateItem(
