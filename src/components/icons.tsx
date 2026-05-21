@@ -129,6 +129,29 @@ export function ChevronRightIcon(p: IconProps) {
   );
 }
 
+export function SearchIcon(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-4.35-4.35" />
+    </svg>
+  );
+}
+
+export function DiscoverabilityIcon(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="m9 9 6 6" />
+      <path d="m15 9-6 6" />
+      <path d="M12 3v3" />
+      <path d="M12 18v3" />
+      <path d="M3 12h3" />
+      <path d="M18 12h3" />
+    </svg>
+  );
+}
+
 export function PlatformsIcon(p: IconProps) {
   return (
     <svg {...base} {...p}>

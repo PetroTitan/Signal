@@ -14,6 +14,8 @@ import {
   SettingsIcon,
   BacklogIcon,
   PlatformsIcon,
+  SearchIcon,
+  DiscoverabilityIcon,
 } from "./icons";
 
 const groups: { label: string; items: NavItem[] }[] = [
@@ -35,6 +37,13 @@ const groups: { label: string; items: NavItem[] }[] = [
       { href: "/platforms/reddit", label: "Reddit", icon: PlatformsIcon },
       { href: "/platforms/x", label: "X", icon: PlatformsIcon },
       { href: "/platforms/linkedin", label: "LinkedIn", icon: PlatformsIcon },
+    ],
+  },
+  {
+    label: "Search & discoverability",
+    items: [
+      { href: "/platforms/google", label: "Google visibility", icon: SearchIcon },
+      { href: "/discoverability", label: "Discoverability", icon: DiscoverabilityIcon },
     ],
   },
   {

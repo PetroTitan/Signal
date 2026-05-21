@@ -13,7 +13,12 @@ import {
   getPlatformRecommendations,
   getPlatformStrategy,
 } from "@/core/platforms";
-import { platforms as platformList } from "@/lib/mock";
+import {
+  buildVisibilitySnapshot,
+  calculateDiscoverabilityOpportunities,
+  calculateFreshnessStatus,
+} from "@/core/discoverability";
+import { contentAssets, platforms as platformList } from "@/lib/mock";
 import type { PlatformId } from "@/types";
 
 const platformIds: PlatformId[] = ["reddit", "x", "linkedin"];
@@ -29,7 +34,7 @@ export default function PlatformsOverview() {
     <>
       <Topbar
         title="Platform command centers"
-        description="One operational core, three platform-native lenses. Each platform has its own strategy, cadence, and risk profile."
+        description="One operational core, four platform-native lenses. Three social surfaces plus a search & discoverability layer."
       />
 
       <div className="px-6 lg:px-8 py-6 max-w-7xl space-y-6">
@@ -126,6 +131,7 @@ export default function PlatformsOverview() {
               </Link>
             );
           })}
+          <GoogleCard />
         </div>
 
         <ComparisonTable />
@@ -134,19 +140,104 @@ export default function PlatformsOverview() {
   );
 }
 
+function GoogleCard() {
+  const { state } = useSignal();
+  const products = Object.values(state.productsById);
+  const visibility =
+    products.length === 0
+      ? 0
+      : Math.round(
+          products
+            .map((p) => buildVisibilitySnapshot(p.id, contentAssets).discoverabilityScore)
+            .reduce((a, b) => a + b, 0) / products.length,
+        );
+  const opportunities = calculateDiscoverabilityOpportunities(
+    contentAssets,
+    products,
+  );
+  const high = opportunities.filter((o) => o.impact === "high").length;
+  const medium = opportunities.filter((o) => o.impact === "medium").length;
+  const fresh = contentAssets.filter(
+    (a) => calculateFreshnessStatus(a).status === "fresh",
+  ).length;
+  const stale = contentAssets.filter(
+    (a) => calculateFreshnessStatus(a).status === "stale",
+  ).length;
+  const evergreen = contentAssets.filter(
+    (a) => calculateFreshnessStatus(a).status === "evergreen",
+  ).length;
+  const topRec = opportunities[0];
+  return (
+    <Link
+      href="/platforms/google"
+      className="card hover:border-signal-300 hover:shadow transition-all p-5 group"
+    >
+      <div className="flex items-center justify-between mb-2">
+        <span className="badge bg-ink-900 text-white">Google</span>
+        <span className="text-xs text-ink-500">discoverability</span>
+      </div>
+      <div className="text-base font-semibold text-ink-900 mb-1">
+        Search &amp; discoverability operations
+      </div>
+      <p className="text-xs text-ink-600 leading-snug line-clamp-3 mb-3">
+        Not a publishing platform. Visibility, content freshness, topical
+        coverage, and YouTube planning sit here.
+      </p>
+
+      <div className="grid grid-cols-3 gap-2 mb-3">
+        <Mini label="Discoverability" value={`${visibility}%`} />
+        <Mini label="Assets" value={`${contentAssets.length}`} />
+        <Mini
+          label="Opportunities"
+          value={`${high + medium}`}
+          warn={high > 0}
+        />
+      </div>
+      <div className="grid grid-cols-3 gap-2 mb-3">
+        <Mini label="Fresh" value={`${fresh}`} />
+        <Mini label="Evergreen" value={`${evergreen}`} />
+        <Mini label="Stale" value={`${stale}`} warn={stale > 0} />
+      </div>
+
+      {topRec ? (
+        <div
+          className={`text-xs rounded-md px-3 py-2 ${
+            topRec.impact === "high"
+              ? "bg-red-50 text-ink-900"
+              : topRec.impact === "medium"
+                ? "bg-amber-50 text-ink-800"
+                : "bg-signal-50/60 text-ink-800"
+          }`}
+        >
+          <div className="stat-label mb-0.5">Top opportunity</div>
+          <div className="leading-snug">{topRec.title}</div>
+        </div>
+      ) : null}
+
+      <div className="text-xs text-signal-700 font-medium mt-3 inline-flex items-center gap-1 group-hover:text-signal-800">
+        Open command center
+        <ChevronRightIcon width={12} height={12} />
+      </div>
+      <div className="text-[11px] text-ink-500 mt-2">
+        Google is treated as a discoverability surface, not a publishing one.
+      </div>
+    </Link>
+  );
+}
+
 function Intro() {
   return (
     <div className="card border-signal-200 bg-signal-50/30 p-4 text-sm leading-relaxed">
       <div className="font-semibold text-ink-900 mb-1">
-        One operational core. Three platform-native lenses.
+        One operational core. Four platform-native lenses.
       </div>
       <p className="text-ink-700">
         Signal&apos;s weekly planner, approval queue, scheduler, risk engine,
-        and backlog stay shared across platforms. Each command center applies
-        a platform-specific strategy and surfaces the items, risks, and
-        opportunities relevant to that platform. Signal does not become a
-        generic universal dashboard — each platform is treated on its own
-        terms.
+        and backlog stay shared. Three social command centers (Reddit, X,
+        LinkedIn) apply platform-specific strategy. A fourth lens — Google —
+        runs as search &amp; discoverability operations, not as a publishing
+        platform. Signal does not become a generic universal dashboard; each
+        surface is treated on its own terms.
       </p>
     </div>
   );
@@ -186,7 +277,8 @@ function ComparisonTable() {
           How the platforms differ
         </div>
         <p className="text-xs text-ink-500 mt-0.5">
-          Strategic role, voice, cadence shape, and link tolerance at a glance.
+          Strategic role, voice, cadence, and Google&apos;s separate
+          discoverability nature at a glance.
         </p>
       </header>
       <table className="w-full text-sm">
@@ -196,12 +288,22 @@ function ComparisonTable() {
             <th className="text-left px-4 py-2.5">Reddit</th>
             <th className="text-left px-4 py-2.5">X</th>
             <th className="text-left px-4 py-2.5">LinkedIn</th>
+            <th className="text-left px-4 py-2.5">Google</th>
           </tr>
         </thead>
         <tbody className="row-divider">
           <Row
+            label="Surface type"
+            values={["Social", "Social", "Social", "Search / discoverability"]}
+          />
+          <Row
             label="Strategic role"
-            values={["Community depth", "Founder voice", "B2B trust"]}
+            values={[
+              "Community depth",
+              "Founder voice",
+              "B2B trust",
+              "Visibility & freshness",
+            ]}
           />
           <Row
             label="Voice"
@@ -209,30 +311,38 @@ function ComparisonTable() {
               "Calm, community-native",
               "Sharp, founder-native",
               "Professional, restrained",
+              "n/a — content layer",
             ]}
           />
           <Row
-            label="Suggested cadence"
-            values={["2/week", "7/week", "3/week"]}
+            label="Cadence shape"
+            values={[
+              "2/week suggested",
+              "7/week suggested",
+              "3/week suggested",
+              "Refresh windows, not cadence",
+            ]}
           />
           <Row
-            label="Maximum cadence"
-            values={["4/week", "14/week", "5/week"]}
-          />
-          <Row
-            label="Cooldown between posts"
-            values={["36h per account", "6h per account", "24h per account"]}
+            label="Cooldown"
+            values={[
+              "36h per account",
+              "6h per account",
+              "24h per account",
+              "Per-asset refresh window",
+            ]}
           />
           <Row
             label="Link tolerance"
-            values={["Very low", "Low", "Medium"]}
+            values={["Very low", "Low", "Medium", "Internal links matter"]}
           />
           <Row
-            label="Approval gate emphasis"
+            label="Gate emphasis"
             values={[
               "Direct-link risk",
               "Hook repetition + bursts",
               "Polish + credibility",
+              "Discoverability opportunities",
             ]}
           />
         </tbody>
@@ -241,13 +351,20 @@ function ComparisonTable() {
   );
 }
 
-function Row({ label, values }: { label: string; values: [string, string, string] }) {
+function Row({
+  label,
+  values,
+}: {
+  label: string;
+  values: [string, string, string, string];
+}) {
   return (
     <tr>
       <td className="px-4 py-2.5 text-ink-700 font-medium">{label}</td>
       <td className="px-4 py-2.5 text-ink-800">{values[0]}</td>
       <td className="px-4 py-2.5 text-ink-800">{values[1]}</td>
       <td className="px-4 py-2.5 text-ink-800">{values[2]}</td>
+      <td className="px-4 py-2.5 text-ink-800">{values[3]}</td>
     </tr>
   );
 }
