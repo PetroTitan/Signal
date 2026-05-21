@@ -72,9 +72,15 @@ All three are consumed by a small React Context + useReducer store. Every mutati
 
 ## Platform command centers
 
-Three platform-native lenses over the same shared core — Reddit, X, and LinkedIn. The overview at [/platforms](src/app/(app)/platforms/page.tsx) compares the three; each platform has its own command center with strategy, accounts, queue, risk rules, a 10-module playbook, opportunities, and an OAuth-not-yet-enabled card. Signal does not become a generic universal dashboard — each platform is treated on its own terms.
+Four platform-native lenses over the same shared core. Three are social — Reddit, X, LinkedIn — and one is search-only — Google. The overview at [/platforms](src/app/(app)/platforms/page.tsx) compares them; each command center has its own strategy, accounts (where applicable), queue, risk or opportunity surface, a 10-module playbook, and an OAuth-not-yet-enabled card. Signal does not become a generic universal dashboard — each surface is treated on its own terms.
 
-See [docs/architecture/one-core-platform-command-centers.md](docs/architecture/one-core-platform-command-centers.md), [docs/platforms/command-centers.md](docs/platforms/command-centers.md), [docs/platforms/reddit-command-center.md](docs/platforms/reddit-command-center.md), [docs/platforms/x-command-center.md](docs/platforms/x-command-center.md), and [docs/platforms/linkedin-command-center.md](docs/platforms/linkedin-command-center.md).
+See [docs/architecture/one-core-platform-command-centers.md](docs/architecture/one-core-platform-command-centers.md), [docs/platforms/command-centers.md](docs/platforms/command-centers.md), [docs/platforms/reddit-command-center.md](docs/platforms/reddit-command-center.md), [docs/platforms/x-command-center.md](docs/platforms/x-command-center.md), [docs/platforms/linkedin-command-center.md](docs/platforms/linkedin-command-center.md), and [docs/platforms/google-visibility-command-center.md](docs/platforms/google-visibility-command-center.md).
+
+## Search & discoverability operations
+
+Google is treated as a search & discoverability surface, not a publishing one. [/platforms/google](src/app/(app)/platforms/google/page.tsx) hosts visibility, content freshness, topical coverage, internal linking, evergreen content, under-promoted content, and YouTube planning. A top-level [/discoverability](src/app/(app)/discoverability/page.tsx) dashboard adds the cross-channel lens: search-to-social, social-to-search, topic cluster gaps, and refresh windows. No Search Console API, no YouTube API, no indexing API, no automated publishing.
+
+See [docs/discoverability/search-discoverability-operations.md](docs/discoverability/search-discoverability-operations.md).
 
 ## Backlog and cadence protection
 
