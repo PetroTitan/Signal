@@ -15,6 +15,12 @@ import { platformLoad } from "@/core/scheduler";
 import { formatDateRange, formatDateTime, relativeFromNow } from "@/lib/format";
 import { ChevronRightIcon } from "@/components/icons";
 import { CadenceCallout } from "@/components/cadence-callout";
+import {
+  ItemsNeedingJudgment,
+  NextBestActions,
+  SystemHealth,
+  WhatChangedThisWeek,
+} from "@/components/operations-panels";
 import { platforms } from "@/lib/mock";
 import type { PlatformId } from "@/types";
 
@@ -76,6 +82,18 @@ export default function DashboardPage() {
 
       <div className="px-6 lg:px-8 py-6 space-y-6 max-w-7xl">
         <CadenceCallout />
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2">
+            <NextBestActions />
+          </div>
+          <SystemHealth />
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <ItemsNeedingJudgment />
+          <WhatChangedThisWeek />
+        </div>
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <StatCard
