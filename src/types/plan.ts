@@ -17,9 +17,17 @@ export type WeeklyPlanItemStatus =
   | "scheduled"
   | "published"
   | "skipped"
-  | "backlog";
+  | "backlog"
+  | "paused";
 
-export type RiskLevel = "low" | "medium" | "high";
+export type RiskLevel = "low" | "medium" | "high" | "blocked";
+
+export interface RiskScore {
+  score: number;
+  level: RiskLevel;
+  reasons: string[];
+  recommendation: string;
+}
 
 export interface ContentDraft {
   id: string;
@@ -39,8 +47,7 @@ export interface WeeklyPlanItem {
   draft: ContentDraft;
   scheduledFor: string;
   status: WeeklyPlanItemStatus;
-  riskLevel: RiskLevel;
-  riskNotes: string[];
+  risk: RiskScore;
 }
 
 export interface WeeklyPlan {
@@ -48,8 +55,19 @@ export interface WeeklyPlan {
   workspaceId: string;
   weekStartIso: string;
   weekEndIso: string;
-  itemCount: number;
-  approvedCount: number;
-  pendingCount: number;
   status: "drafting" | "awaiting_approval" | "approved" | "in_progress" | "complete";
+}
+
+export interface BacklogItem {
+  id: string;
+  workspaceId: string;
+  accountId: string;
+  productId: string;
+  platform: PlatformId;
+  contentType: ContentType;
+  draft: ContentDraft;
+  risk: RiskScore;
+  movedFromPlanItemId: string | null;
+  reason: string;
+  movedAt: string;
 }
