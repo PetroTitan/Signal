@@ -1,8 +1,10 @@
 # Signal
 
-Sustainable growth operations for founders and SaaS teams.
+Founder growth infrastructure. Calm, operational, OAuth-first.
 
-Signal is an AI-assisted growth operations platform. It does one thing well: turn a founder's intention to "show up consistently" into a calm weekly workflow — a single plan, a single approval, and an organic distribution across the week.
+Signal is an AI-assisted growth operations platform for founders and SaaS teams. It treats organic presence as an operational problem — one that benefits from calm cadence, clean approval, and platform-native participation, not from posting volume.
+
+Public surfaces: [/about](src/app/(marketing)/about/page.tsx), [/philosophy](src/app/(marketing)/philosophy/page.tsx), [/how-it-works](src/app/(marketing)/how-it-works/page.tsx), [/security](src/app/(marketing)/security/page.tsx).
 
 ## Product philosophy
 
