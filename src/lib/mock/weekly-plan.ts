@@ -1,13 +1,17 @@
-import type { WeeklyPlan, WeeklyPlanItem } from "@/types";
+import type { BacklogItem, RiskScore, WeeklyPlan, WeeklyPlanItem } from "@/types";
+
+const seedRisk: RiskScore = {
+  score: 0,
+  level: "low",
+  reasons: [],
+  recommendation: "Safe to publish on schedule.",
+};
 
 export const currentWeeklyPlan: WeeklyPlan = {
   id: "plan_2026_w21",
   workspaceId: "ws_helperg",
   weekStartIso: "2026-05-18T00:00:00.000Z",
   weekEndIso: "2026-05-24T23:59:59.000Z",
-  itemCount: 9,
-  approvedCount: 4,
-  pendingCount: 5,
   status: "awaiting_approval",
 };
 
@@ -28,8 +32,7 @@ export const weeklyPlanItems: WeeklyPlanItem[] = [
     },
     scheduledFor: "2026-05-19T15:00:00.000Z",
     status: "approved",
-    riskLevel: "low",
-    riskNotes: [],
+    risk: seedRisk,
   },
   {
     id: "item_002",
@@ -47,10 +50,7 @@ export const weeklyPlanItems: WeeklyPlanItem[] = [
     },
     scheduledFor: "2026-05-20T14:30:00.000Z",
     status: "pending_approval",
-    riskLevel: "low",
-    riskNotes: [
-      "Promotional but contextual. CTA matches product profile.",
-    ],
+    risk: seedRisk,
   },
   {
     id: "item_003",
@@ -68,10 +68,7 @@ export const weeklyPlanItems: WeeklyPlanItem[] = [
     },
     scheduledFor: "2026-05-21T16:00:00.000Z",
     status: "pending_approval",
-    riskLevel: "medium",
-    riskNotes: [
-      "Account still warming. Recommended: post only after first 5 comments this week.",
-    ],
+    risk: seedRisk,
   },
   {
     id: "item_004",
@@ -89,8 +86,7 @@ export const weeklyPlanItems: WeeklyPlanItem[] = [
     },
     scheduledFor: "2026-05-20T09:00:00.000Z",
     status: "approved",
-    riskLevel: "low",
-    riskNotes: [],
+    risk: seedRisk,
   },
   {
     id: "item_005",
@@ -108,10 +104,7 @@ export const weeklyPlanItems: WeeklyPlanItem[] = [
     },
     scheduledFor: "2026-05-22T13:00:00.000Z",
     status: "pending_approval",
-    riskLevel: "medium",
-    riskNotes: [
-      "Comparative claim against a competitor — consider softening.",
-    ],
+    risk: seedRisk,
   },
   {
     id: "item_006",
@@ -129,8 +122,7 @@ export const weeklyPlanItems: WeeklyPlanItem[] = [
     },
     scheduledFor: "2026-05-19T18:30:00.000Z",
     status: "approved",
-    riskLevel: "low",
-    riskNotes: [],
+    risk: seedRisk,
   },
   {
     id: "item_007",
@@ -148,8 +140,7 @@ export const weeklyPlanItems: WeeklyPlanItem[] = [
     },
     scheduledFor: "2026-05-21T11:30:00.000Z",
     status: "approved",
-    riskLevel: "low",
-    riskNotes: [],
+    risk: seedRisk,
   },
   {
     id: "item_008",
@@ -167,10 +158,7 @@ export const weeklyPlanItems: WeeklyPlanItem[] = [
     },
     scheduledFor: "2026-05-23T15:00:00.000Z",
     status: "pending_approval",
-    riskLevel: "medium",
-    riskNotes: [
-      "Second WebmasterID promotional post this week — consider spacing to next week.",
-    ],
+    risk: seedRisk,
   },
   {
     id: "item_009",
@@ -188,9 +176,47 @@ export const weeklyPlanItems: WeeklyPlanItem[] = [
     },
     scheduledFor: "2026-05-24T17:00:00.000Z",
     status: "pending_approval",
-    riskLevel: "high",
-    riskNotes: [
-      "Account is in planned status. Publishing not advised until warm-up complete.",
-    ],
+    risk: seedRisk,
+  },
+];
+
+export const initialBacklog: BacklogItem[] = [
+  {
+    id: "bk_seed_001",
+    workspaceId: "ws_helperg",
+    accountId: "acc_wmi_x_product",
+    productId: "prod_webmasterid",
+    platform: "x",
+    contentType: "case_study",
+    draft: {
+      id: "draft_bk_001",
+      hook: "A week of agent traffic, broken down by user-agent family",
+      body: "Reserved follow-up case study. Not promoted to the current week so WebmasterID X is not over-saturated.",
+      cta: null,
+      trackingLinkId: null,
+    },
+    risk: seedRisk,
+    movedFromPlanItemId: null,
+    reason: "Reserved to keep next week's WebmasterID cadence balanced.",
+    movedAt: "2026-05-15T10:00:00.000Z",
+  },
+  {
+    id: "bk_seed_002",
+    workspaceId: "ws_helperg",
+    accountId: "acc_petro_linkedin_founder",
+    productId: "prod_helperg",
+    platform: "linkedin",
+    contentType: "long_form_article",
+    draft: {
+      id: "draft_bk_002",
+      hook: "Why I publish nothing on weekends",
+      body: "Personal essay drafted but held — LinkedIn cadence for HELPERG is already on plan this week.",
+      cta: null,
+      trackingLinkId: null,
+    },
+    risk: seedRisk,
+    movedFromPlanItemId: null,
+    reason: "Held to avoid burst activity on the HELPERG LinkedIn account.",
+    movedAt: "2026-05-16T08:00:00.000Z",
   },
 ];
