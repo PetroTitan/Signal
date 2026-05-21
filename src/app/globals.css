@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #f6f7f9;
+  --foreground: #13171c;
+}
+
+html,
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@layer components {
+  .card {
+    @apply bg-white border border-ink-100 rounded-lg shadow-card;
+  }
+  .card-padded {
+    @apply card p-5;
+  }
+  .badge {
+    @apply inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full;
+  }
+  .badge-neutral {
+    @apply badge bg-ink-100 text-ink-700;
+  }
+  .badge-info {
+    @apply badge bg-signal-50 text-signal-700;
+  }
+  .badge-low {
+    @apply badge bg-emerald-50 text-emerald-700;
+  }
+  .badge-medium {
+    @apply badge bg-amber-50 text-amber-700;
+  }
+  .badge-high {
+    @apply badge bg-red-50 text-red-700;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center text-sm font-medium px-3 py-1.5 rounded-md border border-ink-200 bg-white text-ink-800 hover:bg-ink-50 transition-colors focus:outline-none focus:ring-2 focus:ring-signal-300 focus:ring-offset-1;
+  }
+  .btn-primary {
+    @apply btn bg-signal-600 border-signal-600 text-white hover:bg-signal-700 hover:border-signal-700;
+  }
+  .btn-ghost {
+    @apply btn border-transparent bg-transparent hover:bg-ink-100;
+  }
+  .section-title {
+    @apply text-xs font-semibold tracking-wide text-ink-500 uppercase;
+  }
+  .stat-label {
+    @apply text-xs uppercase tracking-wide text-ink-500 font-medium;
+  }
+  .stat-value {
+    @apply text-2xl font-semibold text-ink-900;
+  }
+  .row-divider > * + * {
+    @apply border-t border-ink-100;
+  }
+}
