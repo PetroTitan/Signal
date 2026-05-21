@@ -70,6 +70,12 @@ Signal's operational heart is three pure TypeScript modules in `src/core/`:
 
 All three are consumed by a small React Context + useReducer store. Every mutation rescores the entire plan and re-derives plan status.
 
+## Platform command centers
+
+Three platform-native lenses over the same shared core — Reddit, X, and LinkedIn. The overview at [/platforms](src/app/(app)/platforms/page.tsx) compares the three; each platform has its own command center with strategy, accounts, queue, risk rules, a 10-module playbook, opportunities, and an OAuth-not-yet-enabled card. Signal does not become a generic universal dashboard — each platform is treated on its own terms.
+
+See [docs/architecture/one-core-platform-command-centers.md](docs/architecture/one-core-platform-command-centers.md), [docs/platforms/command-centers.md](docs/platforms/command-centers.md), [docs/platforms/reddit-command-center.md](docs/platforms/reddit-command-center.md), [docs/platforms/x-command-center.md](docs/platforms/x-command-center.md), and [docs/platforms/linkedin-command-center.md](docs/platforms/linkedin-command-center.md).
+
 ## Backlog and cadence protection
 
 The [/backlog](src/app/(app)/backlog/page.tsx) page holds items Signal would not publish this week — saved by the founder, deferred because cadence is full, or blocked because the account is still in setup. Restoring an item runs the scheduler again and rescores the week.
