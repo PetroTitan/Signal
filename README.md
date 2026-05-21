@@ -54,8 +54,29 @@ Signal compresses every growth decision into a single weekly checkpoint:
 2. You review the plan once, in the approval queue.
 3. Approved items distribute across the week with cooldown and cadence awareness.
 4. The risk center flags drift from product tone and platform rhythm.
+5. Items that exceed safe capacity move to the backlog instead of being fired anyway.
 
 No daily notifications. No urgency. One review.
+
+See [docs/product/weekly-approval-workflow.md](docs/product/weekly-approval-workflow.md).
+
+## The engines
+
+Signal's operational heart is three pure TypeScript modules in `src/core/`:
+
+- **Scheduler** ([docs/architecture/scheduler.md](docs/architecture/scheduler.md)) — slot generation, account cooldown, platform cadence, and a redistribution algorithm that places items in promotional-weight order so educational content gets the prime slots and link-bearing posts get the safer ones.
+- **Risk engine v1** ([docs/risk-engine/risk-scoring-v1.md](docs/risk-engine/risk-scoring-v1.md)) — deterministic 0–100 scoring with a level (low / medium / high / blocked), reasons, and a calm recommendation. No model calls, no randomness.
+- **Approval engine** — pure state transitions for every approval-queue action, plus a plan summarizer for the weekly overview.
+
+All three are consumed by a small React Context + useReducer store. Every mutation rescores the entire plan and re-derives plan status.
+
+## Backlog and cadence protection
+
+The [/backlog](src/app/(app)/backlog/page.tsx) page holds items Signal would not publish this week — saved by the founder, deferred because cadence is full, or blocked because the account is still in setup. Restoring an item runs the scheduler again and rescores the week.
+
+Cadence protection messages surface on the dashboard, the approval queue, and the scheduler. They are calm and concrete: *"You already scheduled enough X content this week. Signal will hold further items in the backlog."*
+
+See [docs/product/backlog-system.md](docs/product/backlog-system.md) and [docs/product/cadence-protection.md](docs/product/cadence-protection.md).
 
 ## Future: OAuth-first account model
 
