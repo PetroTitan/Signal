@@ -33,15 +33,36 @@ function toProduct(row: ProductRow): Product {
   };
 }
 
-export async function listProducts(workspaceId: string): Promise<Product[]> {
+/**
+ * List active (non-archived) products for the workspace. Pass
+ * `includeArchived: true` to get everything.
+ */
+export async function listProducts(
+  workspaceId: string,
+  options: { includeArchived?: boolean } = {},
+): Promise<Product[]> {
   const supabase = createSupabaseServerClient();
-  const { data, error } = await supabase
+  let query = supabase
     .from("products")
     .select("*")
-    .eq("workspace_id", workspaceId)
-    .order("created_at", { ascending: true });
+    .eq("workspace_id", workspaceId);
+  if (!options.includeArchived) {
+    query = query.neq("status", "archived");
+  }
+  const { data, error } = await query.order("created_at", { ascending: true });
   if (error) throw fromPostgres(error, "Failed to list products.");
   return ((data ?? []) as unknown as ProductRow[]).map(toProduct);
+}
+
+export async function archiveProduct(input: {
+  workspaceId: string;
+  productId: string;
+}): Promise<Product> {
+  return updateProduct({
+    workspaceId: input.workspaceId,
+    productId: input.productId,
+    status: "archived",
+  });
 }
 
 export async function getProductById(

@@ -37,17 +37,56 @@ function toAccount(row: GrowthAccountRow): GrowthAccountRecord {
   };
 }
 
+/**
+ * List active (non-archived) accounts for the workspace. Pass
+ * `includeArchived: true` to get everything.
+ */
 export async function listAccounts(
   workspaceId: string,
+  options: { includeArchived?: boolean } = {},
+): Promise<GrowthAccountRecord[]> {
+  const supabase = createSupabaseServerClient();
+  let query = supabase
+    .from("growth_accounts")
+    .select("*")
+    .eq("workspace_id", workspaceId);
+  if (!options.includeArchived) {
+    query = query.neq("status", "archived");
+  }
+  const { data, error } = await query.order("created_at", { ascending: true });
+  if (error) throw fromPostgres(error, "Failed to list accounts.");
+  return ((data ?? []) as unknown as GrowthAccountRow[]).map(toAccount);
+}
+
+/**
+ * List active accounts for a single platform. Used by the platform
+ * command-center pages.
+ */
+export async function listAccountsByPlatform(
+  workspaceId: string,
+  platform: string,
 ): Promise<GrowthAccountRecord[]> {
   const supabase = createSupabaseServerClient();
   const { data, error } = await supabase
     .from("growth_accounts")
     .select("*")
     .eq("workspace_id", workspaceId)
+    .eq("platform", platform)
+    .neq("status", "archived")
     .order("created_at", { ascending: true });
   if (error) throw fromPostgres(error, "Failed to list accounts.");
   return ((data ?? []) as unknown as GrowthAccountRow[]).map(toAccount);
+}
+
+export async function archiveAccount(input: {
+  workspaceId: string;
+  accountId: string;
+}): Promise<GrowthAccountRecord> {
+  return updateAccount({
+    workspaceId: input.workspaceId,
+    accountId: input.accountId,
+    status: "archived",
+  });
 }
 
 export async function getAccountById(
