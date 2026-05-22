@@ -723,6 +723,191 @@ export interface ExecutionAuthorizationInsert {
   metadata?: Record<string, unknown>;
 }
 
+// =====================================================================
+// Phase E2 — Execution Engine
+// =====================================================================
+
+export type ExecutionQueueStatus =
+  | "draft"
+  | "ready"
+  | "running"
+  | "paused"
+  | "completed"
+  | "cancelled"
+  | "failed";
+
+export type ExecutionItemStatus =
+  | "pending_authorization"
+  | "authorized"
+  | "scheduled"
+  | "ready"
+  | "running"
+  | "completed"
+  | "blocked"
+  | "backlogged"
+  | "skipped"
+  | "paused"
+  | "failed"
+  | "cancelled";
+
+export type ExecutionItemRiskLevel =
+  | "low"
+  | "medium"
+  | "high"
+  | "blocked";
+
+export type ExecutionLogSeverity = "debug" | "info" | "warning" | "error";
+
+export type ExecutionAttemptStatus =
+  | "started"
+  | "succeeded"
+  | "failed"
+  | "skipped"
+  | "blocked";
+
+export interface ExecutionQueueRow {
+  id: string;
+  workspace_id: string;
+  contract_id: string;
+  created_by: string | null;
+  title: string;
+  status: ExecutionQueueStatus;
+  week_start: string;
+  week_end: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+export interface ExecutionQueueInsert {
+  id?: string;
+  workspace_id: string;
+  contract_id: string;
+  created_by?: string | null;
+  title: string;
+  status?: ExecutionQueueStatus;
+  week_start: string;
+  week_end: string;
+  metadata?: Record<string, unknown>;
+}
+export interface ExecutionQueueUpdate {
+  title?: string;
+  status?: ExecutionQueueStatus;
+  week_start?: string;
+  week_end?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ExecutionItemRow {
+  id: string;
+  workspace_id: string;
+  queue_id: string;
+  contract_id: string;
+  source_entity_type: string | null;
+  source_entity_id: string | null;
+  product_id: string | null;
+  account_id: string | null;
+  platform: string | null;
+  action_type: string;
+  title: string | null;
+  body: string | null;
+  link_url: string | null;
+  scheduled_at: string | null;
+  status: ExecutionItemStatus;
+  risk_score: number | null;
+  risk_level: ExecutionItemRiskLevel | null;
+  authorization_id: string | null;
+  attempt_count: number;
+  max_attempts: number;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+export interface ExecutionItemInsert {
+  id?: string;
+  workspace_id: string;
+  queue_id: string;
+  contract_id: string;
+  source_entity_type?: string | null;
+  source_entity_id?: string | null;
+  product_id?: string | null;
+  account_id?: string | null;
+  platform?: string | null;
+  action_type: string;
+  title?: string | null;
+  body?: string | null;
+  link_url?: string | null;
+  scheduled_at?: string | null;
+  status?: ExecutionItemStatus;
+  risk_score?: number | null;
+  risk_level?: ExecutionItemRiskLevel | null;
+  authorization_id?: string | null;
+  attempt_count?: number;
+  max_attempts?: number;
+  metadata?: Record<string, unknown>;
+}
+export interface ExecutionItemUpdate {
+  status?: ExecutionItemStatus;
+  scheduled_at?: string | null;
+  risk_score?: number | null;
+  risk_level?: ExecutionItemRiskLevel | null;
+  authorization_id?: string | null;
+  attempt_count?: number;
+  max_attempts?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ExecutionLogRow {
+  id: string;
+  workspace_id: string;
+  queue_id: string | null;
+  execution_item_id: string | null;
+  event_type: string;
+  severity: ExecutionLogSeverity;
+  message: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+export interface ExecutionLogInsert {
+  id?: string;
+  workspace_id: string;
+  queue_id?: string | null;
+  execution_item_id?: string | null;
+  event_type: string;
+  severity?: ExecutionLogSeverity;
+  message: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ExecutionAttemptRow {
+  id: string;
+  workspace_id: string;
+  execution_item_id: string;
+  attempt_number: number;
+  status: ExecutionAttemptStatus;
+  started_at: string;
+  finished_at: string | null;
+  error_summary: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+export interface ExecutionAttemptInsert {
+  id?: string;
+  workspace_id: string;
+  execution_item_id: string;
+  attempt_number: number;
+  status: ExecutionAttemptStatus;
+  started_at?: string;
+  finished_at?: string | null;
+  error_summary?: string | null;
+  metadata?: Record<string, unknown>;
+}
+export interface ExecutionAttemptUpdate {
+  status?: ExecutionAttemptStatus;
+  finished_at?: string | null;
+  error_summary?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
 export interface Database {
   public: {
     Tables: {
@@ -850,6 +1035,30 @@ export interface Database {
         Row: ExecutionAuthorizationRow;
         Insert: ExecutionAuthorizationInsert;
         Update: Partial<ExecutionAuthorizationInsert>;
+        Relationships: [];
+      };
+      execution_queues: {
+        Row: ExecutionQueueRow;
+        Insert: ExecutionQueueInsert;
+        Update: ExecutionQueueUpdate;
+        Relationships: [];
+      };
+      execution_items: {
+        Row: ExecutionItemRow;
+        Insert: ExecutionItemInsert;
+        Update: ExecutionItemUpdate;
+        Relationships: [];
+      };
+      execution_logs: {
+        Row: ExecutionLogRow;
+        Insert: ExecutionLogInsert;
+        Update: Partial<ExecutionLogInsert>;
+        Relationships: [];
+      };
+      execution_attempts: {
+        Row: ExecutionAttemptRow;
+        Insert: ExecutionAttemptInsert;
+        Update: ExecutionAttemptUpdate;
         Relationships: [];
       };
     };
