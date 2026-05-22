@@ -38,6 +38,137 @@ export type PipelineActionResult = ActionResult<{
   results: CheckResult[];
   durationMs: number;
 }>;
+export type SupabaseProbeActionResult = ActionResult<{
+  probeId: string;
+  operationRunId: string;
+  status: "healthy" | "degraded" | "failed";
+  mode: "internal_db_probe" | "operator_bridge" | "direct_mcp";
+  capabilities: Record<string, "verified" | "missing" | "not_tested">;
+  evidence: Record<string, unknown>;
+}>;
+
+export async function runSupabaseProbeAction(
+  _prev: SupabaseProbeActionResult,
+  _formData: FormData,
+): Promise<SupabaseProbeActionResult> {
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    const { runSupabaseDataPlaneProbe } = await import(
+      "@/repositories/mcp-connectors/supabase-mcp-connector"
+    );
+    const {
+      completeProbe,
+      failProbe,
+      openProbe,
+    } = await import(
+      "@/repositories/mcp-connectors/supabase-mcp-probe-repository"
+    );
+    const { recordActivity } = await import(
+      "@/repositories/activity-repository"
+    );
+
+    const operationRun = await openOperationRun({
+      workspaceId,
+      operationType: "smoke_test_run",
+      initialStatus: "running",
+      inputSummary: "Phase E2.7 — Supabase MCP connector probe (internal_db_probe)",
+    });
+    const probe = await openProbe({
+      workspaceId,
+      connectorType: "supabase_mcp",
+      mode: "internal_db_probe",
+    });
+
+    try {
+      const result = await runSupabaseDataPlaneProbe({ workspaceId });
+      await completeProbe({
+        workspaceId,
+        probeId: probe.id,
+        result,
+      });
+      await closeOperationRun({
+        workspaceId,
+        runId: operationRun.id,
+        status: result.status === "failed" ? "failed" : "completed",
+        outputSummary: `mode=${result.mode}; status=${result.status}; ${Object.entries(
+          result.capabilities,
+        )
+          .map(([k, v]) => `${k}=${v}`)
+          .join("; ")}`,
+        metadata: {
+          probe_id: probe.id,
+          mode: result.mode,
+          health: result.status,
+          evidence: result.evidence,
+        },
+      });
+      try {
+        await recordActivity({
+          workspaceId,
+          eventType: "mcp.supabase_probe_completed",
+          entityType: "mcp_connector_probe",
+          entityId: probe.id,
+          title: `Supabase probe ${result.status}`,
+          description: `mode=${result.mode}; ${result.evidence.required_tables_missing.length} missing table(s).`,
+          metadata: { probe_id: probe.id, operation_run_id: operationRun.id },
+        });
+      } catch (err) {
+        console.error("[supabase-probe] activity log failed", err);
+      }
+      revalidatePath("/settings/mcp");
+      revalidatePath("/activity");
+      return actionOk({
+        probeId: probe.id,
+        operationRunId: operationRun.id,
+        status: result.status,
+        mode: result.mode,
+        capabilities: result.capabilities as Record<
+          string,
+          "verified" | "missing" | "not_tested"
+        >,
+        evidence: result.evidence as unknown as Record<string, unknown>,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Probe failed.";
+      await failProbe({
+        workspaceId,
+        probeId: probe.id,
+        errorSummary: message,
+      }).catch(() => {});
+      await closeOperationRun({
+        workspaceId,
+        runId: operationRun.id,
+        status: "failed",
+        errorSummary: message,
+      }).catch(() => {});
+      try {
+        await recordActivity({
+          workspaceId,
+          eventType: "mcp.supabase_probe_failed",
+          entityType: "mcp_connector_probe",
+          entityId: probe.id,
+          title: "Supabase probe failed",
+          description: message,
+          metadata: { probe_id: probe.id, operation_run_id: operationRun.id },
+        });
+      } catch (logErr) {
+        console.error("[supabase-probe] activity log failed", logErr);
+      }
+      return actionFail(message);
+    }
+  } catch (err) {
+    return actionFail(
+      err instanceof RepositoryError
+        ? err.message
+        : err instanceof Error
+        ? err.message
+        : "Probe failed.",
+    );
+  }
+}
 
 export async function approveMcpOperationAction(
   _prev: ApproveResult,
@@ -141,6 +272,7 @@ export async function runMcpCheckAction(
     "oauth_safety_check",
     "execution_safety_check",
     "weekly_contract_check",
+    "supabase_mcp_probe_check",
     "execution_dry_run_smoke",
     "production_smoke_test",
   ]);
@@ -175,6 +307,7 @@ export async function runMcpCheckAction(
             | "oauth_safety_check"
             | "execution_safety_check"
             | "weekly_contract_check"
+            | "supabase_mcp_probe_check"
             | "execution_dry_run_smoke"
             | "production_smoke_test");
 

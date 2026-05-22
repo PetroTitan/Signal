@@ -1016,6 +1016,74 @@ export interface OAuthStateTokenInsert {
   expires_at?: string;
 }
 
+// =====================================================================
+// Phase E2.7 — MCP connector probes
+// =====================================================================
+
+export type McpConnectorType =
+  | "supabase_mcp"
+  | "github_mcp"
+  | "vercel_manual";
+
+export type McpProbeMode =
+  | "direct_mcp"
+  | "operator_bridge"
+  | "internal_db_probe";
+
+export type McpProbeStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "expired"
+  | "rejected";
+
+export type McpProbeHealth = "healthy" | "degraded" | "failed" | "unknown";
+
+export interface McpConnectorProbeRow {
+  id: string;
+  workspace_id: string;
+  connector_type: McpConnectorType;
+  mode: McpProbeMode;
+  status: McpProbeStatus;
+  requested_by: string | null;
+  completed_by: string | null;
+  capability_results: Record<string, unknown>;
+  health_status: McpProbeHealth | null;
+  error_summary: string | null;
+  evidence: Record<string, unknown>;
+  expires_at: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface McpConnectorProbeInsert {
+  id?: string;
+  workspace_id: string;
+  connector_type: McpConnectorType;
+  mode?: McpProbeMode;
+  status?: McpProbeStatus;
+  requested_by?: string | null;
+  completed_by?: string | null;
+  capability_results?: Record<string, unknown>;
+  health_status?: McpProbeHealth | null;
+  error_summary?: string | null;
+  evidence?: Record<string, unknown>;
+  expires_at?: string | null;
+  completed_at?: string | null;
+}
+
+export interface McpConnectorProbeUpdate {
+  status?: McpProbeStatus;
+  completed_by?: string | null;
+  capability_results?: Record<string, unknown>;
+  health_status?: McpProbeHealth | null;
+  error_summary?: string | null;
+  evidence?: Record<string, unknown>;
+  expires_at?: string | null;
+  completed_at?: string | null;
+}
+
 export interface Database {
   public: {
     Tables: {
@@ -1179,6 +1247,12 @@ export interface Database {
         Row: OAuthStateTokenRow;
         Insert: OAuthStateTokenInsert;
         Update: Partial<OAuthStateTokenInsert>;
+        Relationships: [];
+      };
+      mcp_connector_probes: {
+        Row: McpConnectorProbeRow;
+        Insert: McpConnectorProbeInsert;
+        Update: McpConnectorProbeUpdate;
         Relationships: [];
       };
     };

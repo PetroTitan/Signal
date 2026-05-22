@@ -27,6 +27,8 @@ import { MCP_CHECKS } from "./_check-catalog";
 import { RunCheckButton } from "./_run-check-button";
 import { ApproveButton, RejectForm } from "./_approval-controls";
 import { VerificationPipelineButton } from "./_pipeline-button";
+import { SupabaseProbeCard } from "./_supabase-probe-card";
+import { getLatestProbe } from "@/repositories/mcp-connectors/supabase-mcp-probe-repository";
 
 export const dynamic = "force-dynamic";
 
@@ -36,12 +38,17 @@ export default async function McpSettingsPage() {
   let runs: Awaited<ReturnType<typeof listRecentOperationRuns>> = [];
   let pending: Awaited<ReturnType<typeof listPendingApprovals>> = [];
 
+  let latestSupabaseProbe: Awaited<ReturnType<typeof getLatestProbe>> = null;
   if (supabaseReady) {
     membership = await getPrimaryWorkspace();
     if (membership) {
-      [runs, pending] = await Promise.all([
+      [runs, pending, latestSupabaseProbe] = await Promise.all([
         listRecentOperationRuns(membership.workspace.id, 20),
         listPendingApprovals(membership.workspace.id, 20),
+        getLatestProbe({
+          workspaceId: membership.workspace.id,
+          connectorType: "supabase_mcp",
+        }),
       ]);
     }
   }
@@ -107,6 +114,34 @@ export default async function McpSettingsPage() {
             ))}
           </ul>
         </section>
+
+        {/* PHASE E2.7 — SUPABASE MCP PROBE */}
+        <SupabaseProbeCard
+          latestStatus={
+            (latestSupabaseProbe?.healthStatus as
+              | "healthy"
+              | "degraded"
+              | "failed"
+              | "unknown"
+              | null) ?? null
+          }
+          latestMode={
+            (latestSupabaseProbe?.mode as
+              | "internal_db_probe"
+              | "operator_bridge"
+              | "direct_mcp"
+              | null) ?? null
+          }
+          latestCheckedAt={latestSupabaseProbe?.completedAt ?? null}
+          latestSummary={latestSupabaseProbe?.errorSummary ?? ""}
+          latestCapabilities={
+            (latestSupabaseProbe?.capabilityResults as Record<
+              string,
+              "verified" | "missing" | "not_tested"
+            > | null) ?? null
+          }
+          latestEvidence={latestSupabaseProbe?.evidence ?? null}
+        />
 
         {/* PHASE E2.5 — VERIFICATION PIPELINE */}
         <VerificationPipelineButton />

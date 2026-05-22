@@ -24,6 +24,7 @@ import {
   runOAuthSafetyCheck,
   runWeeklyContractCheck,
 } from "./safety-checks";
+import { runSupabaseMcpProbeCheck } from "./supabase-probe-check";
 import { runE2ESmokeTest } from "./e2e-pipeline";
 
 /**
@@ -41,6 +42,7 @@ export async function runSingleCheck(
     | "oauth_safety_check"
     | "execution_safety_check"
     | "weekly_contract_check"
+    | "supabase_mcp_probe_check"
     | "execution_dry_run_smoke"
     | "production_smoke_test",
 ): Promise<CheckResult> {
@@ -63,6 +65,8 @@ export async function runSingleCheck(
       return runExecutionSafetyCheck();
     case "weekly_contract_check":
       return runWeeklyContractCheck();
+    case "supabase_mcp_probe_check":
+      return runSupabaseMcpProbeCheck();
     case "production_smoke_test":
       return runProductionSmokeTest();
     case "execution_dry_run_smoke": {
@@ -129,6 +133,7 @@ export async function runFullVerificationPipeline(): Promise<VerificationReport>
     results.push(await runWeeklyContractCheck());
     results.push(await runExecutionSafetyCheck());
     results.push(await runOAuthSafetyCheck());
+    results.push(await runSupabaseMcpProbeCheck());
     results.push(await runProductionSmokeTest());
 
     const e2e = await runE2ESmokeTest();

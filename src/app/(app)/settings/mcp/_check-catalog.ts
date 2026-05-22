@@ -100,6 +100,14 @@ export const MCP_CHECKS: McpCheckDef[] = [
     wired: true,
   },
   {
+    key: "supabase_mcp_probe_check",
+    label: "Supabase MCP probe",
+    description:
+      "Reads the data plane through Signal's authenticated session (internal_db_probe mode). Verifies tables, RLS, and read-only SQL — never claims direct MCP unless the bridge is wired.",
+    operationType: null,
+    wired: true,
+  },
+  {
     key: "execution_dry_run_smoke",
     label: "End-to-end execution dry-run",
     description:
