@@ -313,6 +313,23 @@ Every production-impacting operation requires approval. Migration apply and simi
 
 The companion `/imports` surface is the assisted-import landing page. The extraction engine itself runs through Claude Code / Codex / Claude Opus and is not yet wired in this build — the page says so explicitly.
 
+## Execution engine
+
+`/execution` is the durable runner for an approved weekly contract. Phase E2 ships the engine in **dry-run only** mode — no external platform APIs are called, no publishing happens. The runner evaluates each item against the active contract, records the verdict to `execution_authorizations`, walks the state machine, and writes the result to `execution_logs` and `execution_attempts`.
+
+Hard guarantees:
+
+- no active contract → no execution
+- no `allowed` authorization → no execution
+- no confirmed plan item → no execution
+- no external platform calls
+- no silent failures — every attempt writes an `execution_attempts` row
+- every denial logs the reason code
+
+The four tables (`execution_queues`, `execution_items`, `execution_logs`, `execution_attempts`) are workspace-scoped, RLS-protected, and append-only where it matters (logs are read+insert only; attempts allow updates but not deletes). The state machines for queues and items live in `src/core/execution-engine/execution-state-machine.ts` and return typed transition verdicts instead of throwing.
+
+See [docs/execution/execution-engine.md](docs/execution/execution-engine.md), [docs/execution/dry-run-mode.md](docs/execution/dry-run-mode.md), [docs/execution/execution-state-machine.md](docs/execution/execution-state-machine.md), [docs/execution/contract-authorization.md](docs/execution/contract-authorization.md), [docs/execution/queue-and-items.md](docs/execution/queue-and-items.md), [docs/execution/retry-policy.md](docs/execution/retry-policy.md), and [docs/execution/execution-logs.md](docs/execution/execution-logs.md).
+
 ## Weekly operating contract
 
 Signal's core operational model is "the user approves once per week, and Signal may then operate for 7 days within explicitly approved boundaries." `/weekly-contracts` is the surface for drafting, approving (with a confirmation phrase), activating, pausing, and revoking those envelopes. The contract scopes execution to specific accounts, products, platforms, allowed action types, risk ceiling, cadence ceilings, and execution windows.

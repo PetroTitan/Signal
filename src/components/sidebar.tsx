@@ -39,6 +39,7 @@ const groups: { label: string; items: NavItem[] }[] = [
       { href: "/dashboard", label: "Dashboard", icon: DashboardIcon },
       { href: "/weekly-plan", label: "Weekly plan", icon: PlanIcon },
       { href: "/approval-queue", label: "Approval queue", icon: ApprovalIcon },
+      { href: "/execution", label: "Execution", icon: SchedulerIcon },
       { href: "/scheduler", label: "Scheduler", icon: SchedulerIcon },
       { href: "/backlog", label: "Backlog", icon: BacklogIcon },
       { href: "/activity", label: "Activity", icon: PlanIcon },
