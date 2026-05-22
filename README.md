@@ -162,6 +162,47 @@ Every account in Signal will connect through the platform's official authorizati
 
 See [docs/platforms/oauth-first-principle.md](docs/platforms/oauth-first-principle.md) and [docs/platforms/platform-adapters.md](docs/platforms/platform-adapters.md).
 
+## AI integration readiness
+
+Signal ships in **local preview mode**. The AI architecture is wired end-to-end behind a typed provider interface so that switching to a real model later is a small, contained change:
+
+- `AiProvider` interface with typed `generate<U>(useCase, input)` and discriminated structured outputs.
+- `MockAiProvider` (deterministic, in-browser) used by today's UI and tests.
+- `OpenAiProviderPlaceholder` that returns `provider_not_connected` until the server-side route handler ships.
+- Ten allowed use cases (`ALLOWED_AI_USE_CASES`) and eleven explicitly blocked use cases — no autonomous agents, no auto-publishing, no fake metrics.
+- Cost policy: no AI on render, human-triggered only, max 3 variants per request.
+- Safety policy: blocked outputs are filtered before any model would be called.
+
+No `OPENAI_API_KEY` is read at runtime. No outbound HTTP calls are made. The settings page exposes the active provider, its connection status, and the allowed use cases.
+
+See [docs/ai/ai-integration-readiness.md](docs/ai/ai-integration-readiness.md), [docs/ai/prompt-contracts.md](docs/ai/prompt-contracts.md), [docs/ai/cost-policy.md](docs/ai/cost-policy.md), and [docs/ai/safety-policy.md](docs/ai/safety-policy.md).
+
+## Account authentication readiness
+
+Platform connections live behind the same provider pattern. `ConnectionProvider` is the interface; `MockConnectionProvider` returns every channel in `not_connected` state today. When OAuth is enabled, the real implementation slots in behind the same contract — the settings UI does not change.
+
+- Seven connection statuses (`not_connected`, `pending_authorization`, `connected`, `expired`, `revoked`, `error`, `unsupported`).
+- Per-platform capability profiles distinguishing social participation from search discoverability.
+- Planned OAuth scopes per platform, with publishing scopes marked explicitly.
+- A `CONNECTION_POLICY` `neverAsk` list that encodes Signal's trust posture in code: no passwords, cookies, session tokens, 2FA codes, recovery codes, browser fingerprints, or proxy configuration.
+- The settings page lists each channel with its status, capability summary, and a disabled "Connect via official OAuth" button.
+
+See [docs/platforms/account-authentication-readiness.md](docs/platforms/account-authentication-readiness.md) and [docs/platforms/platform-capability-matrix.md](docs/platforms/platform-capability-matrix.md).
+
+## Operational safety layer
+
+Account health is encoded as constants and pure helpers in `src/core/operational-safety/`:
+
+- `ACCOUNT_HEALTH_POLICY` — warm-up window, max direct-link ratio, high-velocity threshold, suggested quiet days.
+- `recommendCadenceDelay()` and `calculateAccountCalmScore()` — cadence safety.
+- `shouldSuppressLink()` — per-platform link tolerance.
+- `detectCrossPlatformSimilarity()` — Jaccard token similarity across platforms to catch drift.
+- `shouldRecommendSilence()` and `countQuietDays()` — calm-period recommendations.
+
+These helpers are deterministic and do not call any model. They are the substrate the AI and platform layers compose against.
+
+See [docs/safety/account-health-first.md](docs/safety/account-health-first.md), [docs/safety/operational-safety-layer.md](docs/safety/operational-safety-layer.md), and [docs/architecture/ai-and-auth-boundaries.md](docs/architecture/ai-and-auth-boundaries.md).
+
 ## Future: WebmasterID integration
 
 Every Signal-generated outbound link reserves a structured set of parameters (`utm_source`, `utm_medium`, `utm_campaign`, `signal_campaign_id`, `signal_item_id`, `product_id`, `platform`, `account_id`). When WebmasterID is connected, the analytics page will resolve these into per-product and per-account attribution. Until then, the page shows "data not yet connected." Signal does not fake numbers.
