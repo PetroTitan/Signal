@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Topbar } from "@/components/topbar";
 import { NEVER_EXTRACT_FIELDS } from "@/core/mcp-operations";
+import { PrepareImportForm } from "./_prepare-form";
 
 export const dynamic = "force-dynamic";
 
@@ -39,44 +40,57 @@ export default function ImportsPage() {
           </ol>
         </section>
 
-        <section className="card p-5">
-          <h2 className="text-sm font-semibold text-ink-900">Product import</h2>
-          <p className="text-xs text-ink-600 mt-1 leading-relaxed">
-            The import UI surface for products is being built. The
-            extraction contract is already defined; see{" "}
-            <code className="font-mono text-xs">
-              src/core/mcp-operations/screenshot-import-contracts.ts
-            </code>
-            .
-          </p>
-          <div className="mt-4 rounded-md border border-dashed border-ink-200 p-4 text-xs text-ink-500 leading-relaxed">
-            <div className="font-medium text-ink-700 mb-1">
-              Coming in this surface:
-            </div>
-            <ul className="list-disc list-inside space-y-0.5">
-              <li>Paste / upload source.</li>
-              <li>Extracted-fields preview with per-field confidence.</li>
-              <li>Confirm-before-save controls.</li>
-            </ul>
+        <section className="card p-5 space-y-3">
+          <div>
+            <h2 className="text-sm font-semibold text-ink-900">Product import</h2>
+            <p className="text-xs text-ink-600 mt-1 leading-relaxed">
+              Paste a product description or landing-page copy. Signal records
+              the request as a <code className="font-mono text-[11px]">product_profile_suggest</code>{" "}
+              operation in <code className="font-mono text-[11px]">pending_approval</code>.
+              The extraction runs in the operator&apos;s connected assistant;
+              fields land as <code className="font-mono text-[11px]">pending_review</code>{" "}
+              and require confirmation before they reach plans.
+            </p>
           </div>
-          <Link
-            href="/products"
-            className="btn mt-4 inline-flex"
-          >
-            Use the manual form
+          <PrepareImportForm
+            kind="product"
+            label="Product description / landing-page copy"
+            placeholder="Paste the product overview, what it does, who it's for, primary CTA…"
+          />
+          <Link href="/products" className="text-[11px] text-signal-700 hover:underline">
+            Or use the manual product form →
           </Link>
         </section>
 
-        <section className="card p-5">
-          <h2 className="text-sm font-semibold text-ink-900">Account import</h2>
-          <p className="text-xs text-ink-600 mt-1 leading-relaxed">
-            Account imports work the same way, but never touch the
-            platform&apos;s login flow. The screenshot is processed
-            in-memory and never saved.
-          </p>
-          <Link href="/accounts" className="btn mt-4 inline-flex">
-            Use the manual form
+        <section className="card p-5 space-y-3">
+          <div>
+            <h2 className="text-sm font-semibold text-ink-900">Account import</h2>
+            <p className="text-xs text-ink-600 mt-1 leading-relaxed">
+              Paste an account&apos;s public bio + display name. Signal never
+              asks for passwords, cookies, or session tokens — the assistant
+              maps the visible profile fields and a human confirms before any
+              record is saved.
+            </p>
+          </div>
+          <PrepareImportForm
+            kind="account"
+            label="Account bio / public profile text"
+            placeholder="Paste the platform + display name + bio + visible profile metadata…"
+          />
+          <Link href="/accounts" className="text-[11px] text-signal-700 hover:underline">
+            Or use the manual account form →
           </Link>
+        </section>
+
+        <section className="card p-5 border-dashed border-ink-200 bg-ink-50/40">
+          <h2 className="text-sm font-semibold text-ink-900">
+            Screenshot upload
+          </h2>
+          <p className="text-xs text-ink-600 mt-1 leading-relaxed">
+            Screenshot upload is intentionally not enabled in this phase.
+            Phase E3 OAuth and Phase E4 extraction will land it together with
+            no-raw-storage defaults. For now, paste the visible text above.
+          </p>
         </section>
 
         <section className="card p-5 border-amber-200 bg-amber-50/40">
