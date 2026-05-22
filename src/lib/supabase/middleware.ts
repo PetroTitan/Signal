@@ -38,15 +38,27 @@ function isPublicPath(pathname: string): boolean {
 
 /**
  * Edge middleware that refreshes the Supabase session cookie on every
- * request and redirects unauthenticated users away from protected app
- * routes. Returns the response untouched if Supabase is not configured —
- * in that case every route renders, which is the desired behavior for
- * local development without env vars.
+ * request and gates protected app routes.
+ *
+ * Fail-closed: if the Supabase env is missing or invalid, protected
+ * routes redirect to `/login`. Public marketing routes and `/login` /
+ * `/signup` / `/auth/*` still render — `/login` is where the user
+ * sees the config notice that explains what's misconfigured.
  */
 export async function updateSession(request: NextRequest) {
+  const pathname = request.nextUrl.pathname;
   const env = readSupabaseEnv();
+
   if (!env) {
-    return NextResponse.next({ request });
+    if (isPublicPath(pathname)) {
+      return NextResponse.next({ request });
+    }
+    const redirect = request.nextUrl.clone();
+    redirect.pathname = "/login";
+    redirect.search = "";
+    redirect.searchParams.set("reason", "auth_unavailable");
+    redirect.searchParams.set("next", pathname);
+    return NextResponse.redirect(redirect);
   }
 
   let response = NextResponse.next({ request });
@@ -68,15 +80,23 @@ export async function updateSession(request: NextRequest) {
     },
   });
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  const pathname = request.nextUrl.pathname;
+  let user: Awaited<ReturnType<typeof supabase.auth.getUser>>["data"]["user"] = null;
+  try {
+    const result = await supabase.auth.getUser();
+    user = result.data.user;
+  } catch (err) {
+    // If we can't even ask Supabase whether the user is authenticated,
+    // treat them as anonymous and let the redirect logic below send
+    // them to /login. We never let a network or auth failure expose a
+    // protected route.
+    console.error("[middleware] supabase.auth.getUser failed", err);
+    user = null;
+  }
 
   if (!user && !isPublicPath(pathname)) {
     const redirect = request.nextUrl.clone();
     redirect.pathname = "/login";
+    redirect.search = "";
     redirect.searchParams.set("next", pathname);
     return NextResponse.redirect(redirect);
   }

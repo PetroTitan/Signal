@@ -1,5 +1,8 @@
 import { redirect } from "next/navigation";
-import { createSupabaseServerClient, isSupabaseConfigured } from "@/lib/supabase";
+import {
+  createSupabaseServerClient,
+  isSupabaseConfigured,
+} from "@/lib/supabase";
 import {
   createWorkspace,
   getPrimaryWorkspace,
@@ -14,17 +17,24 @@ export default async function AppLayout({
 }: {
   children: React.ReactNode;
 }) {
-  // When Supabase isn't configured (e.g. local dev without env), render
-  // the shell without a workspace session. The demo path still works in
-  // that case; new DB-backed surfaces show a config notice instead.
+  // Fail-closed: a missing or invalid Supabase env means we cannot
+  // verify the user. Middleware redirects most traffic before we ever
+  // reach this layout, but the redirect here is the backstop. Demo
+  // mode does not bypass auth — it only seeds fixtures inside the
+  // authenticated shell.
   if (!isSupabaseConfigured()) {
-    return <SignalShell>{children}</SignalShell>;
+    redirect("/login?reason=auth_unavailable");
   }
 
   const supabase = createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user: Awaited<ReturnType<typeof supabase.auth.getUser>>["data"]["user"] = null;
+  try {
+    const result = await supabase.auth.getUser();
+    user = result.data.user;
+  } catch (err) {
+    console.error("[app/layout] supabase.auth.getUser failed", err);
+    user = null;
+  }
   if (!user) {
     redirect("/login");
   }
