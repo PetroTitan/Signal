@@ -126,6 +126,40 @@ export async function listItemsForQueue(
   return ((data ?? []) as unknown as ExecutionItemRow[]).map(toItem);
 }
 
+export async function listUpcomingScheduledItems(
+  workspaceId: string,
+  limit = 20,
+): Promise<ExecutionItem[]> {
+  const supabase = createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("execution_items")
+    .select("*")
+    .eq("workspace_id", workspaceId)
+    .eq("status", "scheduled")
+    .order("scheduled_at", { ascending: true })
+    .limit(limit);
+  if (error)
+    throw fromPostgres(error, "Failed to list upcoming scheduled items.");
+  return ((data ?? []) as unknown as ExecutionItemRow[]).map(toItem);
+}
+
+export async function listRecentResultItems(
+  workspaceId: string,
+  limit = 20,
+): Promise<ExecutionItem[]> {
+  const supabase = createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("execution_items")
+    .select("*")
+    .eq("workspace_id", workspaceId)
+    .in("status", ["completed", "failed", "blocked", "skipped"])
+    .order("updated_at", { ascending: false })
+    .limit(limit);
+  if (error)
+    throw fromPostgres(error, "Failed to list recent execution items.");
+  return ((data ?? []) as unknown as ExecutionItemRow[]).map(toItem);
+}
+
 async function applyItemUpdate(
   workspaceId: string,
   itemId: string,

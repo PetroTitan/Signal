@@ -408,6 +408,36 @@ The four tables (`execution_queues`, `execution_items`, `execution_logs`, `execu
 
 See [docs/execution/execution-engine.md](docs/execution/execution-engine.md), [docs/execution/dry-run-mode.md](docs/execution/dry-run-mode.md), [docs/execution/execution-state-machine.md](docs/execution/execution-state-machine.md), [docs/execution/contract-authorization.md](docs/execution/contract-authorization.md), [docs/execution/queue-and-items.md](docs/execution/queue-and-items.md), [docs/execution/retry-policy.md](docs/execution/retry-policy.md), and [docs/execution/execution-logs.md](docs/execution/execution-logs.md).
 
+## Simple weekly publishing (Phase F1)
+
+`/weekly-plan` ends with one button: **Approve weekly plan**. Approving promotes every `pending_approval` item to a scheduled `execution_item` under the active weekly contract. From there, [`/api/scheduler/tick`](src/app/api/scheduler/tick/route.ts) runs on a Vercel Cron schedule (`*/5 * * * *`), pulls eligible items, runs the policy gate, and either publishes (dry-run by default) or marks the item `skipped`/`blocked`/`failed` with a reason code.
+
+The publishing pipeline lives in `src/core/publishing/`:
+
+- `publishing-types.ts` — `PublishRequest`, `PublishOutcome`, fixed reason-code enum.
+- `publishing-result.ts` — pure constructors (`publishOk`, `publishSkip`, `publishBlocked`, `publishFail`, `publishNotImplemented`).
+- `publishing-policy.ts` — the **single source of truth** for all safety gates. Returns `null` (pass) or a `PublishOutcome` on first failure.
+- `publish-reddit.ts` — fully implemented; `POST oauth.reddit.com/api/submit` for text + link posts.
+- `publish-x.ts`, `publish-linkedin.ts` — stubs returning `not_implemented`.
+- `publishing-runner.ts` — orchestrator: policy → publisher → outcome.
+- `publishing-scheduler.ts` — one-shot batch (`tickOnce`) used by the cron route.
+
+Hard guarantees inherited from the policy gate:
+
+- workspace must have `execution_mode='live'` (defaults to `dry_run`)
+- workspace must have `publishing_enabled=true`
+- an active weekly contract must include the item's account / product / platform
+- account `review_status='confirmed'`
+- product `review_status='confirmed'`
+- `platform_connections.status='connected'`
+- `platform_connections.access_token_encrypted IS NOT NULL`
+- item `risk_level != 'blocked'`
+- `scheduled_for <= now`
+
+Any failure short-circuits and writes a reason code to `execution_logs`. Until the OAuth token cipher is wired (Phase E3 follow-up), every connection has `access_token_encrypted=NULL` and the gate refuses with `no_token` — so no real POST goes out, even in `live` mode. This is intentional.
+
+See [docs/publishing/simple-weekly-workflow.md](docs/publishing/simple-weekly-workflow.md), [docs/publishing/reddit-publishing.md](docs/publishing/reddit-publishing.md), [docs/publishing/publishing-safety.md](docs/publishing/publishing-safety.md), and [docs/publishing/oauth-requirements.md](docs/publishing/oauth-requirements.md).
+
 ## Weekly operating contract
 
 Signal's core operational model is "the user approves once per week, and Signal may then operate for 7 days within explicitly approved boundaries." `/weekly-contracts` is the surface for drafting, approving (with a confirmation phrase), activating, pausing, and revoking those envelopes. The contract scopes execution to specific accounts, products, platforms, allowed action types, risk ceiling, cadence ceilings, and execution windows.
