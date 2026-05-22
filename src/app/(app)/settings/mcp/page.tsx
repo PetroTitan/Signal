@@ -22,6 +22,7 @@ import {
 import { MCP_CHECKS } from "./_check-catalog";
 import { RunCheckButton } from "./_run-check-button";
 import { ApproveButton, RejectForm } from "./_approval-controls";
+import { VerificationPipelineButton } from "./_pipeline-button";
 
 export const dynamic = "force-dynamic";
 
@@ -85,6 +86,9 @@ export default async function McpSettingsPage() {
           </ul>
         </section>
 
+        {/* PHASE E2.5 — VERIFICATION PIPELINE */}
+        <VerificationPipelineButton />
+
         {/* PART 3 — CHECK RUNNER */}
         <section className="card">
           <header className="px-5 py-3.5 border-b border-ink-100">
@@ -127,7 +131,7 @@ export default async function McpSettingsPage() {
                   </div>
                   <div className="shrink-0">
                     <RunCheckButton
-                      operationType={check.operationType}
+                      checkKey={check.key}
                       wired={check.wired}
                     />
                   </div>

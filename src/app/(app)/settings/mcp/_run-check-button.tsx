@@ -6,16 +6,16 @@ import { runMcpCheckAction, type RunCheckResult } from "./_actions";
 const initial: RunCheckResult = { ok: false, error: "" };
 
 export function RunCheckButton({
-  operationType,
+  checkKey,
   wired,
 }: {
-  operationType: string | null;
+  checkKey: string;
   wired: boolean;
 }) {
   const [state, formAction] = useFormState(runMcpCheckAction, initial);
   const safe = state ?? initial;
 
-  if (!wired || !operationType) {
+  if (!wired) {
     return (
       <button
         type="button"
@@ -31,7 +31,7 @@ export function RunCheckButton({
   return (
     <form action={formAction} className="flex flex-col gap-1">
       <div className="flex items-center gap-2">
-        <input type="hidden" name="operation_type" value={operationType} />
+        <input type="hidden" name="operation_type" value={checkKey} />
         <Submit />
       </div>
       {safe.ok ? (
@@ -39,7 +39,7 @@ export function RunCheckButton({
           className={`text-[11px] ${safe.checkOk ? "text-green-700" : "text-red-700"}`}
         >
           {safe.checkOk ? "Completed." : "Check failed."}{" "}
-          {safe.notes.length > 0 ? safe.notes.join(" ") : null}
+          {safe.notes.length > 0 ? safe.notes[0] : null}
         </p>
       ) : safe.error ? (
         <p className="text-[11px] text-red-700">{safe.error}</p>
