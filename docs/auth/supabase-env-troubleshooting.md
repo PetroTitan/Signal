@@ -73,7 +73,17 @@ After setting the env vars in Vercel:
 
 ## What about demo mode?
 
-`NEXT_PUBLIC_SIGNAL_DEMO_MODE=true` does **not** mask a broken Supabase env on the auth pages. `/login` and `/signup` always require valid Supabase env to function. Demo mode only affects which fixture data renders inside the authenticated app shell.
+`NEXT_PUBLIC_SIGNAL_DEMO_MODE=true` does **not** mask a broken Supabase env on the auth pages, and it does **not** bypass authentication. `/login` and `/signup` always require valid Supabase env to function. Demo mode only affects which fixture data the React store renders **inside** the authenticated app shell — anonymous users never reach the app shell in any mode.
+
+## Fail-closed route protection
+
+The middleware and the `(app)` layout both fail closed:
+
+- **Middleware (`src/middleware.ts` → `src/lib/supabase/middleware.ts`):** when env is missing or invalid, requests to any protected route are redirected to `/login?reason=auth_unavailable`. Public routes (`/`, `/about`, `/philosophy`, `/security`, `/how-it-works`, `/login`, `/signup`, `/auth/*`) still render — `/login` shows the amber config notice with the exact failing check.
+- **`(app)/layout.tsx`:** if env is misconfigured at render time, the layout redirects to `/login?reason=auth_unavailable` before any DB call. If the user is anonymous, the layout redirects to `/login`. This is the backstop in case middleware somehow doesn't run for a route.
+- **`supabase.auth.getUser()` failures** (network errors, expired tokens) are treated as anonymous — the user is sent to `/login`, never granted access to a protected route.
+
+Anonymous access to any protected route is impossible under valid or invalid env.
 
 ## Security boundary
 
