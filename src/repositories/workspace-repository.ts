@@ -1,12 +1,9 @@
 import "server-only";
 import { createSupabaseServerClient } from "@/lib/supabase";
 import type {
-  WorkspaceInsert,
-  WorkspaceMemberInsert,
   WorkspaceMemberRow,
   WorkspaceRow,
   WorkspaceRole,
-  WorkspaceSettingsInsert,
 } from "@/lib/supabase/types";
 import { fromPostgres, notAuthenticated, notFound } from "./errors";
 
@@ -70,6 +67,18 @@ export async function getPrimaryWorkspace(): Promise<WorkspaceMembership | null>
   return list[0] ?? null;
 }
 
+/**
+ * Atomically create a workspace + owner membership + settings + initial
+ * activity row, all under the authenticated user's session.
+ *
+ * Uses the `public.bootstrap_workspace(text)` SECURITY DEFINER RPC. The
+ * RPC reads `auth.uid()` internally, so the user can only ever create a
+ * workspace that belongs to themselves — no service-role key, no RLS
+ * weakening. This avoids the `INSERT…RETURNING *` RLS pitfall the
+ * previous Node-side path hit (RETURNING gets filtered by the SELECT
+ * policy on `workspaces`, which requires `is_workspace_member`, which
+ * hasn't been set yet during bootstrap).
+ */
 export async function createWorkspace(input: {
   name: string;
 }): Promise<Workspace> {
@@ -79,44 +88,15 @@ export async function createWorkspace(input: {
   } = await supabase.auth.getUser();
   if (!user) throw notAuthenticated();
 
-  const workspaceInsert: WorkspaceInsert = {
-    name: input.name,
-    created_by: user.id,
-  };
-  const { data: workspaceData, error: insertError } = await supabase
-    .from("workspaces")
-    .insert(workspaceInsert as never)
-    .select("*")
-    .single();
-  if (insertError || !workspaceData) {
-    throw fromPostgres(insertError, "Failed to create workspace.");
-  }
-  const workspace = workspaceData as unknown as WorkspaceRow;
-
-  const memberInsert: WorkspaceMemberInsert = {
-    workspace_id: workspace.id,
-    user_id: user.id,
-    role: "owner",
-  };
-  const { error: memberError } = await supabase
-    .from("workspace_members")
-    .insert(memberInsert as never);
-  if (memberError) {
-    throw fromPostgres(memberError, "Failed to add workspace member.");
+  const { data: workspaceId, error: rpcError } = await supabase.rpc(
+    "bootstrap_workspace",
+    { workspace_name: input.name } as never,
+  );
+  if (rpcError || !workspaceId) {
+    throw fromPostgres(rpcError, "Failed to create workspace.");
   }
 
-  const settingsInsert: WorkspaceSettingsInsert = {
-    workspace_id: workspace.id,
-    demo_mode: false,
-  };
-  const { error: settingsError } = await supabase
-    .from("workspace_settings")
-    .insert(settingsInsert as never);
-  if (settingsError) {
-    throw fromPostgres(settingsError, "Failed to seed workspace settings.");
-  }
-
-  return toWorkspace(workspace);
+  return getWorkspaceById(workspaceId as unknown as string);
 }
 
 export async function renameWorkspace(input: {

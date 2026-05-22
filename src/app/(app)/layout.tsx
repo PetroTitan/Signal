@@ -8,9 +8,10 @@ import {
   getPrimaryWorkspace,
 } from "@/repositories/workspace-repository";
 import { getSettings } from "@/repositories/settings-repository";
-import { recordActivity } from "@/repositories/activity-repository";
+import { RepositoryError } from "@/repositories/errors";
 import { WorkspaceSessionProvider } from "@/core/workspace-session";
 import { SignalShell } from "@/components/signal-shell";
+import { BootstrapFailedNotice } from "./_bootstrap-failed";
 
 export default async function AppLayout({
   children,
@@ -27,7 +28,8 @@ export default async function AppLayout({
   }
 
   const supabase = createSupabaseServerClient();
-  let user: Awaited<ReturnType<typeof supabase.auth.getUser>>["data"]["user"] = null;
+  let user: Awaited<ReturnType<typeof supabase.auth.getUser>>["data"]["user"] =
+    null;
   try {
     const result = await supabase.auth.getUser();
     user = result.data.user;
@@ -39,22 +41,33 @@ export default async function AppLayout({
     redirect("/login");
   }
 
-  let membership = await getPrimaryWorkspace();
-  if (!membership) {
-    const workspace = await createWorkspace({ name: "Signal Workspace" });
-    await recordActivity({
-      workspaceId: workspace.id,
-      eventType: "workspace.created",
-      entityType: "workspace",
-      entityId: workspace.id,
-      title: "Workspace created",
-      description: "Your first workspace was created.",
-    });
+  // Bootstrap is the post-auth danger zone. If it throws, we render a
+  // controlled error UI inside the auth shell rather than letting a raw
+  // 500 reach the user. The user can sign out from there.
+  let membership: Awaited<ReturnType<typeof getPrimaryWorkspace>> = null;
+  let bootstrapError: string | null = null;
+
+  try {
     membership = await getPrimaryWorkspace();
+    if (!membership) {
+      await createWorkspace({ name: "Signal Workspace" });
+      membership = await getPrimaryWorkspace();
+    }
+  } catch (err) {
+    console.error("[app/layout] workspace bootstrap failed", err);
+    bootstrapError =
+      err instanceof RepositoryError
+        ? err.message
+        : "Workspace bootstrap failed. Try refreshing in a moment.";
   }
 
-  if (!membership) {
-    redirect("/login");
+  if (bootstrapError || !membership) {
+    return (
+      <BootstrapFailedNotice
+        userEmail={user.email ?? null}
+        message={bootstrapError ?? "Workspace not found after bootstrap."}
+      />
+    );
   }
 
   const settings = await getSettings(membership.workspace.id);
