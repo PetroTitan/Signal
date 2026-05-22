@@ -1,10 +1,18 @@
-import type { PlatformConnectionHealth, PlatformConnectionStatus } from "./connection-status";
+import type {
+  ConnectionDegradationMode,
+  PlatformConnectionHealth,
+  PlatformConnectionStatus,
+} from "./connection-status";
 import type {
   PlatformCapability,
   SupportedChannel,
 } from "./platform-capabilities";
+import type { ConnectionHealthRecord } from "./connection-health";
+
+export const PLATFORM_CONNECTION_SCHEMA_VERSION = 1;
 
 export interface PlatformConnection {
+  schemaVersion: number;
   id: string;
   workspaceId: string;
   channel: SupportedChannel;
@@ -19,6 +27,9 @@ export interface PlatformConnection {
   lastCheckedAt: string | null;
   healthStatus: PlatformConnectionHealth;
   capabilities: PlatformCapability[];
+  health: ConnectionHealthRecord;
+  degradationMode: ConnectionDegradationMode;
+  recoveryAction: string | null;
 }
 
 export type PlatformConnectionSummary = Pick<

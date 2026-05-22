@@ -1,7 +1,11 @@
-import type { PlatformConnection } from "./connection-types";
+import {
+  PLATFORM_CONNECTION_SCHEMA_VERSION,
+  type PlatformConnection,
+} from "./connection-types";
 import type { SupportedChannel } from "./platform-capabilities";
 import { PLATFORM_CAPABILITY_PROFILES } from "./platform-capabilities";
 import { connectionError, type ConnectionError } from "./connection-errors";
+import { DEFAULT_HEALTH_RECORD } from "./connection-health";
 
 export interface ConnectionProvider {
   list(workspaceId: string): Promise<PlatformConnection[]>;
@@ -33,8 +37,10 @@ function buildPlaceholder(
   channel: SupportedChannel,
 ): PlatformConnection {
   const profile = PLATFORM_CAPABILITY_PROFILES[channel];
+  const connectionId = `conn_${channel}`;
   return {
-    id: `conn_${channel}`,
+    schemaVersion: PLATFORM_CONNECTION_SCHEMA_VERSION,
+    id: connectionId,
     workspaceId,
     channel,
     accountId: null,
@@ -50,5 +56,11 @@ function buildPlaceholder(
     capabilities: profile.capabilities
       .filter((c) => c.state === "available")
       .map((c) => c.capability),
+    health: {
+      ...DEFAULT_HEALTH_RECORD,
+      connectionId,
+    },
+    degradationMode: "none",
+    recoveryAction: null,
   };
 }
