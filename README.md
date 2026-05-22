@@ -63,6 +63,28 @@ Phase C adds the stateful SaaS foundation:
 
 See [docs/database/supabase-auth-foundation.md](docs/database/supabase-auth-foundation.md), [docs/database/phase-c-migrations.md](docs/database/phase-c-migrations.md), [docs/database/repository-layer.md](docs/database/repository-layer.md), [docs/database/real-empty-state.md](docs/database/real-empty-state.md), [docs/auth/email-password-auth.md](docs/auth/email-password-auth.md), and [docs/security/rls-phase-c.md](docs/security/rls-phase-c.md).
 
+## Persistence expansion (Phase D)
+
+Phase D moves the weekly operations into Supabase:
+
+- Seven new tables: `weekly_plans`, `weekly_plan_items`, `approval_events`, `backlog_items`, `scheduled_items`, `risk_events`, `draft_variants`. Each is RLS-protected and workspace-scoped, reusing the `is_workspace_member` / `is_workspace_owner` helpers from Phase C.
+- Six new repositories under `src/repositories/`: weekly-plan, approval, backlog, scheduled-item, risk-event, draft-variant.
+- `/weekly-plan`, `/approval-queue`, and `/backlog` are now DB-backed server components. Each has an honest empty state and inline server-action forms.
+- Approvals are append-only: every approve / reject / send-to-backlog / restore writes an `approval_events` row plus an `activity_events` row.
+- `/scheduler`, `/risk-center`, and `/dashboard` still render from the in-memory React store — their persistence migration is a later phase. The DB tables already exist so it slots in without another migration.
+
+Apply Phase C + Phase D migrations with:
+
+```
+supabase db push
+```
+
+Both must be applied in order. The Phase D RLS migration depends on Phase C's helpers.
+
+AI runtime, platform OAuth, publishing, Stripe, background jobs, and WebmasterID analytics ingestion remain **not implemented**.
+
+See [docs/database/phase-d-persistence-expansion.md](docs/database/phase-d-persistence-expansion.md), [docs/database/phase-d-migrations.md](docs/database/phase-d-migrations.md), [docs/database/weekly-plan-persistence.md](docs/database/weekly-plan-persistence.md), [docs/database/approval-backlog-scheduler-persistence.md](docs/database/approval-backlog-scheduler-persistence.md), [docs/database/risk-draft-persistence.md](docs/database/risk-draft-persistence.md), and [docs/database/activity-events-phase-d.md](docs/database/activity-events-phase-d.md).
+
 ### Environment
 
 Copy `.env.example` to `.env.local` and fill in:
