@@ -189,6 +189,33 @@ Platform connections live behind the same provider pattern. `ConnectionProvider`
 
 See [docs/platforms/account-authentication-readiness.md](docs/platforms/account-authentication-readiness.md) and [docs/platforms/platform-capability-matrix.md](docs/platforms/platform-capability-matrix.md).
 
+## AI memory and context pipeline
+
+Signal does not send giant prompts. Memory is structured, compressed, and retrieved per task:
+
+- Eight typed entity kinds in `src/types/memory/`: `WorkspaceMemory`, `PlatformMemory`, `ProductMemory`, `AccountMemory`, `HistoricalPattern`, `RiskMemory`, `AiPreference`, `BlockedPhrase`. Every entity carries `schemaVersion`, `lastUpdatedAt`, and `active` so schemas can evolve without losing history.
+- `MockMemoryRetriever` ranks and caps memory by task token budget before any context reaches a model. Same query + same snapshot = same items, deterministic.
+- `assembleContext()` flattens ranked memory into ordered layers (`system`, `workspace`, `platform`, `product`, `account`, `insight`, `risk`, `constraints`) with per-layer token counts.
+- `TOKEN_BUDGETS` caps every use case: 2k for short rewrites, 3k for adaptations, up to 5k for draft variants. No use case can grow its budget at runtime.
+- `compressEventsToPatterns()` collapses raw events into compact `HistoricalPattern` rows with confidence + support count. Patterns are recomputed, never appended unbounded.
+- The pipeline is: retrieve → rank → compress → assemble → validate budget → provider → structured output → risk review → human approval. No autonomous loop wraps it.
+
+A debug surface at [/settings/ai-memory](src/app/(app)/settings/ai-memory/page.tsx) shows active entities, estimated token sizes, the retrieved ranking, and the assembled context layers for any allowed use case.
+
+See [docs/ai/memory-architecture.md](docs/ai/memory-architecture.md), [docs/ai/context-pipeline.md](docs/ai/context-pipeline.md), [docs/ai/token-budgets.md](docs/ai/token-budgets.md), and [docs/database/memory-schema-plan.md](docs/database/memory-schema-plan.md).
+
+## Long-lived connections and one-time setup
+
+Signal is designed to feel like durable infrastructure. Configure once, reuse context safely, recover gracefully:
+
+- Connection statuses expanded to cover the long-lived lifecycle: `not_connected`, `ready_to_connect`, `pending_authorization`, `connected`, `healthy`, `degraded`, `expired`, `revoked`, `reauthorization_required`, `disabled`, `error`. Helpers (`isHealthy`, `needsUserAction`, `publishingAllowed`) classify them.
+- Every connection carries a typed `ConnectionHealthRecord` with refresh expiry, failure counter, recovery action, and degradation mode. `deriveConnectionState()` derives the live triple from explicit lifecycle states and the health record.
+- Three consecutive failed syncs drop the connection to `draft_only` mode. Drafts and schedules are preserved. Signal never retries aggressively.
+- Memory and connection schemas carry `schemaVersion` so they can evolve in place without losing history or invalidating past approved drafts.
+- UI copy is realistic — "configure once," "may occasionally require reauthorization," "falls back to draft-only mode" — never "works forever" or "no bugs."
+
+See [docs/architecture/one-time-setup-principle.md](docs/architecture/one-time-setup-principle.md) and [docs/platforms/long-lived-connections.md](docs/platforms/long-lived-connections.md).
+
 ## Operational safety layer
 
 Account health is encoded as constants and pure helpers in `src/core/operational-safety/`:
