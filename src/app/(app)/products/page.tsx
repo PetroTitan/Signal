@@ -4,6 +4,7 @@ import { isSupabaseConfigured } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { listProducts } from "@/repositories/product-repository";
 import { ProductCreateForm } from "./_create-form";
+import { ArchiveProductButton } from "./_archive-button";
 
 export const dynamic = "force-dynamic";
 
@@ -88,7 +89,10 @@ export default async function ProductsPage() {
                       </p>
                     ) : null}
                   </div>
-                  <span className="badge-neutral capitalize">{p.status}</span>
+                  <div className="flex flex-col items-end gap-1 shrink-0">
+                    <span className="badge-neutral capitalize">{p.status}</span>
+                    <ArchiveProductButton productId={p.id} />
+                  </div>
                 </li>
               ))}
             </ul>

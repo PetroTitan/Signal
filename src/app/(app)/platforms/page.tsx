@@ -1,41 +1,54 @@
-"use client";
-
-import { useMemo } from "react";
 import Link from "next/link";
 import { Topbar } from "@/components/topbar";
 import { PlatformBadge } from "@/components/badges";
 import { ChevronRightIcon } from "@/components/icons";
-import { DemoLabel } from "@/components/empty-state";
-import { useSignal } from "@/core/store";
-import { useDataMode } from "@/core/data-mode";
-import {
-  calculatePlatformCadenceLoad,
-  calculatePlatformReadiness,
-  getPlatformCadencePolicy,
-  getPlatformRecommendations,
-  getPlatformStrategy,
-} from "@/core/platforms";
-import {
-  buildVisibilitySnapshot,
-  calculateDiscoverabilityOpportunities,
-  calculateFreshnessStatus,
-} from "@/core/discoverability";
-import {
-  contentAssets as allContentAssets,
-  platforms as platformList,
-} from "@/lib/mock";
-import { useDemoData } from "@/lib/demo-data";
+import { isSupabaseConfigured } from "@/lib/supabase";
+import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
+import { listAccounts } from "@/repositories/account-repository";
+import { getPlatformStrategy } from "@/core/platforms";
 import type { PlatformId } from "@/types";
+
+export const dynamic = "force-dynamic";
 
 const platformIds: PlatformId[] = ["reddit", "x", "linkedin"];
 
-export default function PlatformsOverview() {
-  const { state } = useSignal();
-  const dataMode = useDataMode();
-  const accounts = useMemo(
-    () => Object.values(state.accountsById),
-    [state.accountsById],
-  );
+export default async function PlatformsOverview() {
+  if (!isSupabaseConfigured()) {
+    return (
+      <>
+        <Topbar
+          title="Platforms"
+          description="Persistence not configured."
+        />
+        <div className="px-6 lg:px-10 py-12 max-w-3xl">
+          <div className="card p-5 text-sm text-ink-600">
+            Supabase is not configured for this deployment.
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  const membership = await getPrimaryWorkspace();
+  if (!membership) {
+    return (
+      <>
+        <Topbar title="Platforms" description="No workspace found." />
+        <div className="px-6 lg:px-10 py-12 max-w-3xl text-sm text-ink-600">
+          Create a workspace to start connecting platforms.
+        </div>
+      </>
+    );
+  }
+
+  const accounts = await listAccounts(membership.workspace.id);
+  const accountsByPlatform = new Map<string, number>();
+  for (const a of accounts) {
+    accountsByPlatform.set(
+      a.platform,
+      (accountsByPlatform.get(a.platform) ?? 0) + 1,
+    );
+  }
 
   return (
     <>
@@ -45,126 +58,23 @@ export default function PlatformsOverview() {
       />
 
       <div className="px-6 lg:px-10 py-8 max-w-6xl space-y-6">
-        {dataMode.isDemo ? <DemoLabel /> : null}
-
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {platformIds.map((id) => {
             const strategy = getPlatformStrategy(id);
-            const platform = platformList.find((p) => p.id === id);
-            const accountsForPlatform = accounts.filter(
-              (a) => a.platform === id,
-            );
-            const itemsForPlatform = state.items.filter(
-              (i) => i.platform === id,
-            );
-            const hasPlatformData =
-              accountsForPlatform.length > 0 || itemsForPlatform.length > 0;
-
-            if (!hasPlatformData) {
-              return (
-                <PlatformOverviewEmptyCard
-                  key={id}
-                  id={id}
-                  title={strategy.strategicRole}
-                  description={strategy.shortDescription}
-                  note={platform?.notes[0]}
-                />
-              );
-            }
-
-            const readiness = calculatePlatformReadiness(id, accounts);
-            const load = calculatePlatformCadenceLoad(id, state.items);
-            const cadence = getPlatformCadencePolicy(id);
-            const blocked = itemsForPlatform.filter(
-              (i) => i.risk.level === "blocked",
-            ).length;
-            const high = itemsForPlatform.filter(
-              (i) => i.risk.level === "high",
-            ).length;
-            const medium = itemsForPlatform.filter(
-              (i) => i.risk.level === "medium",
-            ).length;
-            const recs = getPlatformRecommendations({
-              platform: id,
-              accounts,
-              items: state.items,
-              backlog: state.backlog,
-            });
-            const topRec = recs[0];
+            const count = accountsByPlatform.get(id) ?? 0;
             return (
-              <Link
+              <PlatformOverviewCard
                 key={id}
-                href={`/platforms/${id}`}
-                className="card hover:border-signal-300 hover:shadow transition-all p-5 group"
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <PlatformBadge platform={id} />
-                  <span className="text-xs text-ink-500">
-                    {cadence.cadenceMode} cadence
-                  </span>
-                </div>
-                <div className="text-base font-semibold text-ink-900 mb-1">
-                  {strategy.strategicRole}
-                </div>
-                <p className="text-xs text-ink-600 leading-snug line-clamp-3 mb-3">
-                  {strategy.shortDescription}
-                </p>
-
-                <div className="grid grid-cols-3 gap-2 mb-3">
-                  <Mini
-                    label="Readiness"
-                    value={`${readiness.overallScore}%`}
-                  />
-                  <Mini
-                    label="Accounts"
-                    value={`${readiness.accountsEligible}/${readiness.accountsTotal}`}
-                  />
-                  <Mini
-                    label="Cadence"
-                    value={`${load.count}/${cadence.suggestedPostsPerWeek}`}
-                    warn={load.isOver}
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 mb-3">
-                  <Mini label="Scheduled" value={`${itemsForPlatform.length}`} />
-                  <Mini
-                    label="Risk"
-                    value={`${blocked + high}`}
-                    sub={`${medium} medium`}
-                    warn={blocked + high > 0}
-                  />
-                </div>
-
-                {topRec ? (
-                  <div
-                    className={`text-xs rounded-md px-3 py-2 ${
-                      topRec.level === "block"
-                        ? "bg-red-50 text-ink-900"
-                        : topRec.level === "warn"
-                          ? "bg-amber-50 text-ink-800"
-                          : "bg-signal-50/60 text-ink-800"
-                    }`}
-                  >
-                    <div className="stat-label mb-0.5">Next action</div>
-                    <div className="leading-snug">{topRec.text}</div>
-                  </div>
-                ) : null}
-
-                <div className="text-xs text-signal-700 font-medium mt-3 inline-flex items-center gap-1 group-hover:text-signal-800">
-                  Open command center
-                  <ChevronRightIcon width={12} height={12} />
-                </div>
-
-                {platform ? (
-                  <div className="text-[11px] text-ink-500 mt-2">
-                    {platform.notes[0]}
-                  </div>
-                ) : null}
-              </Link>
+                id={id}
+                title={strategy.strategicRole}
+                description={strategy.shortDescription}
+                accountCount={count}
+              />
             );
           })}
-          <GoogleCard isDemo={dataMode.isDemo} />
+          <GoogleOverviewCard
+            accountCount={accountsByPlatform.get("google") ?? 0}
+          />
         </div>
 
         <ComparisonTable />
@@ -173,16 +83,16 @@ export default function PlatformsOverview() {
   );
 }
 
-function PlatformOverviewEmptyCard({
+function PlatformOverviewCard({
   id,
   title,
   description,
-  note,
+  accountCount,
 }: {
   id: PlatformId;
   title: string;
   description: string;
-  note?: string;
+  accountCount: number;
 }) {
   return (
     <Link
@@ -191,85 +101,36 @@ function PlatformOverviewEmptyCard({
     >
       <div className="flex items-center justify-between mb-2">
         <PlatformBadge platform={id} />
-        <span className="text-xs text-ink-500">not connected</span>
+        <span className="text-xs text-ink-500">
+          {accountCount === 0
+            ? "not connected"
+            : `${accountCount} account${accountCount === 1 ? "" : "s"}`}
+        </span>
       </div>
       <div className="text-base font-semibold text-ink-900 mb-1">{title}</div>
       <p className="text-xs text-ink-600 leading-snug line-clamp-3 mb-4">
         {description}
       </p>
-      <div className="text-xs text-ink-500 rounded-md border border-dashed border-ink-200 px-3 py-2 leading-relaxed">
-        No connected accounts yet. Connect through official OAuth when
-        integrations are enabled.
-      </div>
+      {accountCount === 0 ? (
+        <div className="text-xs text-ink-500 rounded-md border border-dashed border-ink-200 px-3 py-2 leading-relaxed">
+          No connected accounts yet. Add one in{" "}
+          <span className="text-signal-700">/accounts</span>.
+        </div>
+      ) : (
+        <div className="text-xs text-ink-500 rounded-md border border-ink-100 bg-ink-50/60 px-3 py-2 leading-relaxed">
+          {accountCount} account{accountCount === 1 ? "" : "s"} saved. OAuth
+          not yet enabled.
+        </div>
+      )}
       <div className="text-xs text-signal-700 font-medium mt-3 inline-flex items-center gap-1 group-hover:text-signal-800">
-        Open platform page
+        Open command center
         <ChevronRightIcon width={12} height={12} />
       </div>
-      {note ? (
-        <div className="text-[11px] text-ink-500 mt-2">{note}</div>
-      ) : null}
     </Link>
   );
 }
 
-function GoogleCard({ isDemo }: { isDemo: boolean }) {
-  const { state } = useSignal();
-  const contentAssets = useDemoData(allContentAssets);
-  const products = Object.values(state.productsById);
-
-  if (!isDemo && contentAssets.length === 0 && products.length === 0) {
-    return (
-      <Link
-        href="/platforms/google"
-        className="card hover:border-signal-300 hover:shadow transition-all p-5 group"
-      >
-        <div className="flex items-center justify-between mb-2">
-          <span className="badge bg-ink-900 text-white">Google</span>
-          <span className="text-xs text-ink-500">not connected</span>
-        </div>
-        <div className="text-base font-semibold text-ink-900 mb-1">
-          Search &amp; discoverability operations
-        </div>
-        <p className="text-xs text-ink-600 leading-snug line-clamp-3 mb-4">
-          Not a publishing platform. Visibility, content freshness, topical
-          coverage, and YouTube planning sit here.
-        </p>
-        <div className="text-xs text-ink-500 rounded-md border border-dashed border-ink-200 px-3 py-2 leading-relaxed">
-          Data not connected yet. Search Console integration ships when
-          available.
-        </div>
-        <div className="text-xs text-signal-700 font-medium mt-3 inline-flex items-center gap-1 group-hover:text-signal-800">
-          Open command center
-          <ChevronRightIcon width={12} height={12} />
-        </div>
-      </Link>
-    );
-  }
-
-  const visibility =
-    products.length === 0
-      ? 0
-      : Math.round(
-          products
-            .map((p) => buildVisibilitySnapshot(p.id, contentAssets).discoverabilityScore)
-            .reduce((a, b) => a + b, 0) / products.length,
-        );
-  const opportunities = calculateDiscoverabilityOpportunities(
-    contentAssets,
-    products,
-  );
-  const high = opportunities.filter((o) => o.impact === "high").length;
-  const medium = opportunities.filter((o) => o.impact === "medium").length;
-  const fresh = contentAssets.filter(
-    (a) => calculateFreshnessStatus(a).status === "fresh",
-  ).length;
-  const stale = contentAssets.filter(
-    (a) => calculateFreshnessStatus(a).status === "stale",
-  ).length;
-  const evergreen = contentAssets.filter(
-    (a) => calculateFreshnessStatus(a).status === "evergreen",
-  ).length;
-  const topRec = opportunities[0];
+function GoogleOverviewCard({ accountCount }: { accountCount: number }) {
   return (
     <Link
       href="/platforms/google"
@@ -277,80 +138,26 @@ function GoogleCard({ isDemo }: { isDemo: boolean }) {
     >
       <div className="flex items-center justify-between mb-2">
         <span className="badge bg-ink-900 text-white">Google</span>
-        <span className="text-xs text-ink-500">discoverability</span>
+        <span className="text-xs text-ink-500">
+          {accountCount === 0 ? "not connected" : `${accountCount} saved`}
+        </span>
       </div>
       <div className="text-base font-semibold text-ink-900 mb-1">
         Search &amp; discoverability operations
       </div>
-      <p className="text-xs text-ink-600 leading-snug line-clamp-3 mb-3">
+      <p className="text-xs text-ink-600 leading-snug line-clamp-3 mb-4">
         Not a publishing platform. Visibility, content freshness, topical
         coverage, and YouTube planning sit here.
       </p>
-
-      <div className="grid grid-cols-3 gap-2 mb-3">
-        <Mini label="Discoverability" value={`${visibility}%`} />
-        <Mini label="Assets" value={`${contentAssets.length}`} />
-        <Mini
-          label="Opportunities"
-          value={`${high + medium}`}
-          warn={high > 0}
-        />
+      <div className="text-xs text-ink-500 rounded-md border border-dashed border-ink-200 px-3 py-2 leading-relaxed">
+        Data not connected yet. Search Console integration ships when
+        available.
       </div>
-      <div className="grid grid-cols-3 gap-2 mb-3">
-        <Mini label="Fresh" value={`${fresh}`} />
-        <Mini label="Evergreen" value={`${evergreen}`} />
-        <Mini label="Stale" value={`${stale}`} warn={stale > 0} />
-      </div>
-
-      {topRec ? (
-        <div
-          className={`text-xs rounded-md px-3 py-2 ${
-            topRec.impact === "high"
-              ? "bg-red-50 text-ink-900"
-              : topRec.impact === "medium"
-                ? "bg-amber-50 text-ink-800"
-                : "bg-signal-50/60 text-ink-800"
-          }`}
-        >
-          <div className="stat-label mb-0.5">Top opportunity</div>
-          <div className="leading-snug">{topRec.title}</div>
-        </div>
-      ) : null}
-
       <div className="text-xs text-signal-700 font-medium mt-3 inline-flex items-center gap-1 group-hover:text-signal-800">
         Open command center
         <ChevronRightIcon width={12} height={12} />
       </div>
-      <div className="text-[11px] text-ink-500 mt-2">
-        Google is treated as a discoverability surface, not a publishing one.
-      </div>
     </Link>
-  );
-}
-
-function Mini({
-  label,
-  value,
-  sub,
-  warn,
-}: {
-  label: string;
-  value: string;
-  sub?: string;
-  warn?: boolean;
-}) {
-  return (
-    <div className="rounded-md bg-ink-50/70 px-2.5 py-1.5">
-      <div className="text-[10px] uppercase tracking-wide text-ink-500 font-semibold">
-        {label}
-      </div>
-      <div
-        className={`text-sm font-semibold ${warn ? "text-amber-700" : "text-ink-900"}`}
-      >
-        {value}
-      </div>
-      {sub ? <div className="text-[10px] text-ink-500">{sub}</div> : null}
-    </div>
   );
 }
 
@@ -409,26 +216,8 @@ function ComparisonTable() {
             ]}
           />
           <Row
-            label="Cooldown"
-            values={[
-              "36h per account",
-              "6h per account",
-              "24h per account",
-              "Per-asset refresh window",
-            ]}
-          />
-          <Row
             label="Link tolerance"
             values={["Very low", "Low", "Medium", "Internal links matter"]}
-          />
-          <Row
-            label="Gate emphasis"
-            values={[
-              "Direct-link risk",
-              "Hook repetition + bursts",
-              "Polish + credibility",
-              "Discoverability opportunities",
-            ]}
           />
         </tbody>
       </table>

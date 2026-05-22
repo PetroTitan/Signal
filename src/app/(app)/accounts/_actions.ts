@@ -1,7 +1,11 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { createAccount } from "@/repositories/account-repository";
+import {
+  archiveAccount,
+  createAccount,
+  getAccountById,
+} from "@/repositories/account-repository";
 import { recordActivity } from "@/repositories/activity-repository";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { listProducts } from "@/repositories/product-repository";
@@ -13,6 +17,7 @@ import {
 } from "@/lib/forms/action-result";
 
 export type CreateAccountResult = ActionResult<{ accountId: string }>;
+export type ArchiveAccountResult = ActionResult<{ accountId: string }>;
 
 export async function createAccountAction(
   _prevState: CreateAccountResult,
@@ -79,6 +84,61 @@ export async function createAccountAction(
         ? error.message
         : "Could not create account.";
     console.error("[createAccountAction] failed", error);
+    return actionFail(message);
+  }
+}
+
+export async function archiveAccountAction(
+  _prev: ArchiveAccountResult,
+  formData: FormData,
+): Promise<ArchiveAccountResult> {
+  const accountId = String(formData.get("account_id") ?? "").trim();
+  if (!accountId) return actionFail("Account id is required.");
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+
+    let displayName = "Account";
+    let platform = "";
+    try {
+      const existing = await getAccountById(membership.workspace.id, accountId);
+      displayName = existing.displayName ?? existing.handle ?? "Account";
+      platform = existing.platform;
+    } catch {
+      // Non-fatal — still try the archive.
+    }
+
+    const archived = await archiveAccount({
+      workspaceId: membership.workspace.id,
+      accountId,
+    });
+
+    try {
+      await recordActivity({
+        workspaceId: membership.workspace.id,
+        eventType: "account.archived",
+        entityType: "account",
+        entityId: archived.id,
+        title: `Account "${displayName}" archived`,
+        description: platform ? `Platform: ${platform}.` : null,
+      });
+    } catch (err) {
+      console.error("[archiveAccountAction] activity log failed", err);
+    }
+
+    revalidatePath("/accounts");
+    revalidatePath("/dashboard");
+    revalidatePath("/activity");
+    revalidatePath("/platforms");
+    if (platform) revalidatePath(`/platforms/${platform}`);
+    return actionOk({ accountId: archived.id });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : "Could not archive account.";
+    console.error("[archiveAccountAction] failed", error);
     return actionFail(message);
   }
 }

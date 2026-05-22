@@ -4,6 +4,7 @@ import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { listAccounts } from "@/repositories/account-repository";
 import { listProducts } from "@/repositories/product-repository";
 import { AccountCreateForm } from "./_create-form";
+import { ArchiveAccountButton } from "./_archive-button";
 
 export const dynamic = "force-dynamic";
 
@@ -99,6 +100,7 @@ export default async function AccountsPage() {
                     <span className="text-[11px] text-ink-500">
                       {a.connectionStatus.replace(/_/g, " ")}
                     </span>
+                    <ArchiveAccountButton accountId={a.id} />
                   </div>
                 </li>
               ))}
