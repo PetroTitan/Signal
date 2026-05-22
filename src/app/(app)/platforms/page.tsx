@@ -18,7 +18,11 @@ import {
   calculateDiscoverabilityOpportunities,
   calculateFreshnessStatus,
 } from "@/core/discoverability";
-import { contentAssets, platforms as platformList } from "@/lib/mock";
+import {
+  contentAssets as allContentAssets,
+  platforms as platformList,
+} from "@/lib/mock";
+import { useDemoData } from "@/lib/demo-data";
 import type { PlatformId } from "@/types";
 
 const platformIds: PlatformId[] = ["reddit", "x", "linkedin"];
@@ -141,6 +145,7 @@ export default function PlatformsOverview() {
 
 function GoogleCard() {
   const { state } = useSignal();
+  const contentAssets = useDemoData(allContentAssets);
   const products = Object.values(state.productsById);
   const visibility =
     products.length === 0

@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo } from "react";
 import { Topbar } from "@/components/topbar";
 import { useSignal } from "@/core/store";
-import { sourceInsights } from "@/lib/mock";
+import { sourceInsights as allSourceInsights } from "@/lib/mock";
+import { useDemoData } from "@/lib/demo-data";
 import type { SourceInsight } from "@/types";
 
 const categoryLabels: Record<SourceInsight["category"], string> = {
@@ -22,7 +22,7 @@ const categoryLabels: Record<SourceInsight["category"], string> = {
 export default function ContentIntelligencePage() {
   const { state } = useSignal();
   const productsById = state.productsById;
-  const insights = useMemo(() => sourceInsights, []);
+  const insights = useDemoData(allSourceInsights);
 
   return (
     <>

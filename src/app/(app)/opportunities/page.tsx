@@ -6,7 +6,11 @@ import { PlatformBadge } from "@/components/badges";
 import { useSignal } from "@/core/store";
 import { buildOpportunitiesForInsight } from "@/core/content-intelligence";
 import { adaptToGoogle } from "@/core/platform-adapters";
-import { contentAssets, sourceInsights } from "@/lib/mock";
+import {
+  contentAssets as allContentAssets,
+  sourceInsights as allSourceInsights,
+} from "@/lib/mock";
+import { useDemoData } from "@/lib/demo-data";
 import type {
   ContentOpportunity,
   DiscoverabilityOpportunity,
@@ -21,6 +25,9 @@ export default function OpportunitiesPage() {
   const { state } = useSignal();
   const [tab, setTab] = useState<Tab>("all");
 
+  const sourceInsights = useDemoData(allSourceInsights);
+  const contentAssets = useDemoData(allContentAssets);
+
   const aggregate = useMemo(() => {
     const content: ContentOpportunity[] = [];
     const google: DiscoverabilityOpportunity[] = [];
@@ -33,7 +40,7 @@ export default function OpportunitiesPage() {
       );
     }
     return { content, google };
-  }, [state.productsById]);
+  }, [state.productsById, sourceInsights, contentAssets]);
 
   const counts = useMemo(() => {
     return {

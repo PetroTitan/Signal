@@ -10,17 +10,24 @@ import { deriveActivity, deriveDiscussionActivity } from "@/core/activity";
 import { evaluateDiscussion } from "@/core/comment-intelligence";
 import { calculateDiscoverabilityOpportunities } from "@/core/discoverability";
 import {
-  contentAssets,
-  discussionSeeds,
-  riskEvents,
-  sourceInsights,
+  contentAssets as allContentAssets,
+  discussionSeeds as allDiscussionSeeds,
+  riskEvents as allRiskEvents,
+  sourceInsights as allSourceInsights,
 } from "@/lib/mock";
+import { useDemoData } from "@/lib/demo-data";
 import { relativeFromNow } from "@/lib/format";
 import type { ActivityEvent } from "@/types";
 
 export function NextBestActions() {
   const { state } = useSignal();
-  const actions = useMemo(() => collectActions(state), [state]);
+  const sourceInsights = useDemoData(allSourceInsights);
+  const discussionSeeds = useDemoData(allDiscussionSeeds);
+  const contentAssets = useDemoData(allContentAssets);
+  const actions = useMemo(
+    () => collectActions(state, { sourceInsights, discussionSeeds, contentAssets }),
+    [state, sourceInsights, discussionSeeds, contentAssets],
+  );
   if (actions.length === 0) {
     return (
       <section className="card">
@@ -78,7 +85,15 @@ interface ActionRow {
   tone: "info" | "warn" | "block";
 }
 
-function collectActions(state: ReturnType<typeof useSignal>["state"]): ActionRow[] {
+function collectActions(
+  state: ReturnType<typeof useSignal>["state"],
+  data: {
+    sourceInsights: typeof allSourceInsights;
+    discussionSeeds: typeof allDiscussionSeeds;
+    contentAssets: typeof allContentAssets;
+  },
+): ActionRow[] {
+  const { sourceInsights, discussionSeeds, contentAssets } = data;
   const out: ActionRow[] = [];
   const products = Object.values(state.productsById);
 
@@ -292,6 +307,10 @@ function collectHealth(state: ReturnType<typeof useSignal>["state"]): HealthChec
 
 export function WhatChangedThisWeek() {
   const { state } = useSignal();
+  const sourceInsights = useDemoData(allSourceInsights);
+  const discussionSeeds = useDemoData(allDiscussionSeeds);
+  const contentAssets = useDemoData(allContentAssets);
+  const riskEvents = useDemoData(allRiskEvents);
   const recent = useMemo<ActivityEvent[]>(() => {
     const products = Object.values(state.productsById);
     const evaluatedDiscussions = discussionSeeds.map((seed) =>
@@ -324,7 +343,7 @@ export function WhatChangedThisWeek() {
           new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime(),
       )
       .slice(0, 6);
-  }, [state]);
+  }, [state, sourceInsights, discussionSeeds, contentAssets, riskEvents]);
 
   if (recent.length === 0) {
     return (

@@ -7,7 +7,11 @@ import { PlatformBadge } from "@/components/badges";
 import { ChevronRightIcon } from "@/components/icons";
 import { useSignal } from "@/core/store";
 import { evaluateDiscussion } from "@/core/comment-intelligence";
-import { discussionSeeds, sourceInsights } from "@/lib/mock";
+import {
+  discussionSeeds as allDiscussionSeeds,
+  sourceInsights as allSourceInsights,
+} from "@/lib/mock";
+import { useDemoData } from "@/lib/demo-data";
 import type {
   DiscussionOpportunity,
   ParticipationRecommendation,
@@ -25,6 +29,9 @@ export default function DiscussionsPage() {
     "all",
   );
 
+  const discussionSeeds = useDemoData(allDiscussionSeeds);
+  const sourceInsights = useDemoData(allSourceInsights);
+
   const evaluated = useMemo(() => {
     const products = Object.values(state.productsById);
     return discussionSeeds.map((seed) =>
@@ -34,7 +41,7 @@ export default function DiscussionsPage() {
         products,
       }),
     );
-  }, [state.productsById]);
+  }, [state.productsById, discussionSeeds, sourceInsights]);
 
   const filtered = useMemo(() => {
     const sorted = [...evaluated].sort(

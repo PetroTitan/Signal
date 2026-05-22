@@ -4,7 +4,8 @@ import { useMemo } from "react";
 import { Topbar } from "@/components/topbar";
 import { useSignal } from "@/core/store";
 import { calculateDiscoverabilityOpportunities } from "@/core/discoverability";
-import { contentAssets } from "@/lib/mock";
+import { contentAssets as allContentAssets } from "@/lib/mock";
+import { useDemoData } from "@/lib/demo-data";
 import type { DiscoverabilityOpportunity } from "@/types";
 
 export default function DiscoverabilityPage() {
@@ -14,9 +15,11 @@ export default function DiscoverabilityPage() {
     [state.productsById],
   );
 
+  const contentAssets = useDemoData(allContentAssets);
+
   const opportunities = useMemo(
     () => calculateDiscoverabilityOpportunities(contentAssets, products),
-    [products],
+    [products, contentAssets],
   );
 
   const top = opportunities.slice(0, 6);

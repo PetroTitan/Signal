@@ -9,7 +9,11 @@ import {
   buildReplyDrafts,
   evaluateDiscussion,
 } from "@/core/comment-intelligence";
-import { discussionSeeds, sourceInsights } from "@/lib/mock";
+import {
+  discussionSeeds as allDiscussionSeeds,
+  sourceInsights as allSourceInsights,
+} from "@/lib/mock";
+import { useDemoData } from "@/lib/demo-data";
 import type {
   CommentDraft,
   ConversationRiskLevel,
@@ -26,6 +30,9 @@ const riskTones: Record<ConversationRiskLevel, string> = {
 
 export default function CommentsPage() {
   const { state } = useSignal();
+
+  const discussionSeeds = useDemoData(allDiscussionSeeds);
+  const sourceInsights = useDemoData(allSourceInsights);
 
   const drafts = useMemo(() => {
     const products = Object.values(state.productsById);
@@ -59,7 +66,7 @@ export default function CommentsPage() {
       rows.push({ opportunity: opp, comments, replies });
     }
     return rows;
-  }, [state.productsById]);
+  }, [state.productsById, discussionSeeds, sourceInsights]);
 
   return (
     <>

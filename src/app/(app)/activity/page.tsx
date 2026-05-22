@@ -11,11 +11,12 @@ import { useSignal } from "@/core/store";
 import { deriveActivity, deriveDiscussionActivity } from "@/core/activity";
 import { evaluateDiscussion } from "@/core/comment-intelligence";
 import {
-  contentAssets,
-  discussionSeeds,
-  riskEvents,
-  sourceInsights,
+  contentAssets as allContentAssets,
+  discussionSeeds as allDiscussionSeeds,
+  riskEvents as allRiskEvents,
+  sourceInsights as allSourceInsights,
 } from "@/lib/mock";
+import { useDemoData } from "@/lib/demo-data";
 import { formatDateTime, relativeFromNow } from "@/lib/format";
 import type {
   ActivityEvent,
@@ -56,6 +57,11 @@ export default function ActivityPage() {
   const [layer, setLayer] = useState<LayerFilter>("all");
   const [severity, setSeverity] = useState<SeverityFilter>("all");
 
+  const sourceInsights = useDemoData(allSourceInsights);
+  const discussionSeeds = useDemoData(allDiscussionSeeds);
+  const contentAssets = useDemoData(allContentAssets);
+  const riskEvents = useDemoData(allRiskEvents);
+
   const events = useMemo(() => {
     const products = Object.values(state.productsById);
     const evaluatedDiscussions = discussionSeeds.map((seed) =>
@@ -85,6 +91,10 @@ export default function ActivityPage() {
         new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime(),
     );
   }, [
+    sourceInsights,
+    discussionSeeds,
+    contentAssets,
+    riskEvents,
     state.plan,
     state.items,
     state.backlog,

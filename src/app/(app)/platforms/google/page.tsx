@@ -13,7 +13,8 @@ import {
   calculateDiscoverabilityOpportunities,
   calculateFreshnessStatus,
 } from "@/core/discoverability";
-import { contentAssets } from "@/lib/mock";
+import { contentAssets as allContentAssets } from "@/lib/mock";
+import { useDemoData } from "@/lib/demo-data";
 import type {
   ContentAsset,
   DiscoverabilityOpportunity,
@@ -52,9 +53,14 @@ export default function GoogleVisibilityCommandCenter() {
     [state.productsById],
   );
 
+  const contentAssets = useDemoData(allContentAssets);
   const assets = useMemo(
-    () => contentAssets.map((a) => ({ ...a, freshness: calculateFreshnessStatus(a).status })),
-    [],
+    () =>
+      contentAssets.map((a) => ({
+        ...a,
+        freshness: calculateFreshnessStatus(a).status,
+      })),
+    [contentAssets],
   );
 
   const aggregate = useMemo(() => {
