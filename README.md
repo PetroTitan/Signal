@@ -297,6 +297,25 @@ These helpers are deterministic and do not call any model. They are the substrat
 
 See [docs/safety/account-health-first.md](docs/safety/account-health-first.md), [docs/safety/operational-safety-layer.md](docs/safety/operational-safety-layer.md), and [docs/architecture/ai-and-auth-boundaries.md](docs/architecture/ai-and-auth-boundaries.md).
 
+## Signal MCP server
+
+Phase F0 inverts the integration. Signal is **not** the agent — Signal exposes a workspace-scoped MCP HTTP bridge at `/api/mcp` so external operators (Claude Code, Codex, Claude Opus) can call a narrow, audited tool surface.
+
+The bridge ships with:
+
+- 17 tools (8 read + 5 prepare/write-pending + 4 verification/dry-run).
+- 11 explicitly blocked names that always return a structured `blocked` response.
+- 13 allowed scopes + 5 blocked scopes; the operator-token UI refuses to mint tokens containing any blocked scope.
+- One audit row per call in `mcp_tool_calls` (workspace-scoped, append-only).
+
+Tokens (`sigt_<43 base64url chars>`) are minted from `/settings/mcp/tokens` and shown to the operator exactly once. Signal stores only the SHA-256 hash; never the plaintext.
+
+Write-pending tools (`signal.products.prepare`, `signal.accounts.prepare`, `signal.weekly_plan.prepare_item`, `signal.imports.prepare_mapping`) create rows with `review_status='pending_review'` and `source='mcp_operation'`. They never confirm, activate, publish, or bypass approval.
+
+The HTTP bridge needs `SUPABASE_SERVICE_ROLE_KEY` set server-side. When unset, `/api/mcp` returns 503 honestly. The key is never bundled to the client; it is imported only by `src/lib/supabase/service-role.ts` and used only by `src/mcp/` and `src/repositories/mcp-server/`.
+
+See [docs/mcp-server/signal-mcp-server.md](docs/mcp-server/signal-mcp-server.md), [docs/mcp-server/operator-token-setup.md](docs/mcp-server/operator-token-setup.md), [docs/mcp-server/claude-code-config.md](docs/mcp-server/claude-code-config.md), [docs/mcp-server/codex-config.md](docs/mcp-server/codex-config.md), [docs/mcp-server/tool-permissions.md](docs/mcp-server/tool-permissions.md), [docs/mcp-server/security-model.md](docs/mcp-server/security-model.md), and [docs/mcp-server/tool-reference.md](docs/mcp-server/tool-reference.md).
+
 ## Operator bridge runtime
 
 Phase E2.8 ships the first real bridge between Signal and operator-run AI assistants (Claude Code, Codex, Claude Opus). `/operator-bridge` lets the operator create a structured task, copy a deterministic prompt into their assistant, then paste the assistant's JSON envelope back. Signal validates the envelope (schema + request_id + one-shot nonce + forbidden-fields scan), consumes the nonce, and stores the audit row.
