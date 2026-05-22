@@ -17,6 +17,8 @@ export interface GrowthAccountRecord {
   role: string | null;
   status: string;
   connectionStatus: string;
+  source: string;
+  reviewStatus: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -32,6 +34,8 @@ function toAccount(row: GrowthAccountRow): GrowthAccountRecord {
     role: row.role,
     status: row.status,
     connectionStatus: row.connection_status,
+    source: row.source,
+    reviewStatus: row.review_status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

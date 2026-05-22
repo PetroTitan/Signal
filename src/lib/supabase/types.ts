@@ -43,6 +43,8 @@ export interface ProductRow {
   summary: string | null;
   category: string | null;
   status: string;
+  source: string;
+  review_status: string;
   created_at: string;
   updated_at: string;
 }
@@ -55,6 +57,8 @@ export interface ProductInsert {
   summary?: string | null;
   category?: string | null;
   status?: string;
+  source?: string;
+  review_status?: string;
 }
 
 export interface ProductUpdate {
@@ -63,6 +67,8 @@ export interface ProductUpdate {
   summary?: string | null;
   category?: string | null;
   status?: string;
+  source?: string;
+  review_status?: string;
 }
 
 export interface GrowthAccountRow {
@@ -75,6 +81,8 @@ export interface GrowthAccountRow {
   role: string | null;
   status: string;
   connection_status: string;
+  source: string;
+  review_status: string;
   created_at: string;
   updated_at: string;
 }
@@ -89,6 +97,8 @@ export interface GrowthAccountInsert {
   role?: string | null;
   status?: string;
   connection_status?: string;
+  source?: string;
+  review_status?: string;
 }
 
 export interface GrowthAccountUpdate {
@@ -98,6 +108,8 @@ export interface GrowthAccountUpdate {
   role?: string | null;
   status?: string;
   connection_status?: string;
+  source?: string;
+  review_status?: string;
 }
 
 export interface WorkspaceSettingsRow {
@@ -135,6 +147,7 @@ export interface ActivityEventRow {
   title: string;
   description: string | null;
   metadata: Record<string, unknown>;
+  source: string;
   created_at: string;
 }
 
@@ -147,6 +160,60 @@ export interface ActivityEventInsert {
   entity_id?: string | null;
   title: string;
   description?: string | null;
+  metadata?: Record<string, unknown>;
+  source?: string;
+  operation_id?: string | null;
+  review_status?: string | null;
+}
+
+// =====================================================================
+// MCP operations layer
+// =====================================================================
+
+export interface McpOperationRunRow {
+  id: string;
+  workspace_id: string;
+  actor_user_id: string | null;
+  operation_type: string;
+  risk_level: string;
+  approval_mode: string;
+  status: string;
+  input_summary: string | null;
+  output_summary: string | null;
+  error_summary: string | null;
+  requires_user_approval: boolean;
+  approved_at: string | null;
+  approved_by: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface McpOperationRunInsert {
+  id?: string;
+  workspace_id: string;
+  actor_user_id?: string | null;
+  operation_type: string;
+  risk_level: string;
+  approval_mode: string;
+  status?: string;
+  input_summary?: string | null;
+  output_summary?: string | null;
+  error_summary?: string | null;
+  requires_user_approval?: boolean;
+  approved_at?: string | null;
+  approved_by?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface McpOperationRunUpdate {
+  status?: string;
+  input_summary?: string | null;
+  output_summary?: string | null;
+  error_summary?: string | null;
+  requires_user_approval?: boolean;
+  approved_at?: string | null;
+  approved_by?: string | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -501,6 +568,12 @@ export interface Database {
         Row: DraftVariantRow;
         Insert: DraftVariantInsert;
         Update: DraftVariantUpdate;
+        Relationships: [];
+      };
+      mcp_operation_runs: {
+        Row: McpOperationRunRow;
+        Insert: McpOperationRunInsert;
+        Update: McpOperationRunUpdate;
         Relationships: [];
       };
     };
