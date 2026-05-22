@@ -18,6 +18,10 @@ const PUBLIC_PATH_PREFIXES = [
   // token, not a Supabase cookie. The route handler does its own
   // auth; the middleware must not redirect to /login.
   "/api/mcp",
+  // Phase F1: scheduler tick is triggered by Vercel Cron / curl with a
+  // shared secret. The route handler enforces the secret; the
+  // middleware must not redirect to /login.
+  "/api/scheduler",
 ];
 
 const PUBLIC_EXACT_PATHS = new Set<string>([

@@ -9,6 +9,7 @@ import {
 import { listProducts } from "@/repositories/product-repository";
 import { listAccounts } from "@/repositories/account-repository";
 import { CreateItemForm } from "./_create-item-form";
+import { ApprovePlanForm } from "./_approve-plan-form";
 
 export const dynamic = "force-dynamic";
 
@@ -19,10 +20,28 @@ const STATUS_LABELS: Record<string, string> = {
   rejected: "rejected",
   scheduled: "scheduled",
   published: "published",
+  failed: "failed",
   skipped: "skipped",
   backlog: "backlog",
   paused: "paused",
 };
+
+const STATUS_BADGE: Record<string, string> = {
+  draft: "badge-neutral",
+  pending_approval: "badge-medium",
+  approved: "badge-info",
+  rejected: "badge-neutral",
+  scheduled: "badge-info",
+  published: "badge-low",
+  failed: "badge-high",
+  skipped: "badge-neutral",
+  backlog: "badge-neutral",
+  paused: "badge-neutral",
+};
+
+function badgeClass(status: string): string {
+  return STATUS_BADGE[status] ?? "badge-neutral";
+}
 
 export default async function WeeklyPlanPage() {
   if (!isSupabaseConfigured()) {
@@ -63,6 +82,13 @@ export default async function WeeklyPlanPage() {
 
   const items = plan ? await listPlanItems(workspaceId, plan.id) : [];
 
+  const pendingCount = items.filter((i) => i.status === "pending_approval")
+    .length;
+  const counts = items.reduce<Record<string, number>>((acc, it) => {
+    acc[it.status] = (acc[it.status] ?? 0) + 1;
+    return acc;
+  }, {});
+
   return (
     <>
       <Topbar
@@ -97,50 +123,65 @@ export default async function WeeklyPlanPage() {
             </p>
           </section>
         ) : (
-          <section className="card">
-            <header className="px-5 py-3.5 border-b border-ink-100 flex items-center justify-between">
-              <div>
-                <div className="text-sm font-semibold text-ink-900">
-                  {plan.title}
-                </div>
-                <div className="text-xs text-ink-500 mt-0.5">
-                  Week of {plan.weekStart} · status: {plan.status}
-                </div>
-              </div>
-              <div className="text-xs text-ink-500">
-                {items.length} item{items.length === 1 ? "" : "s"}
-              </div>
-            </header>
-            <ul className="row-divider">
-              {items.map((it) => (
-                <li
-                  key={it.id}
-                  className="px-5 py-3.5 flex items-start justify-between gap-4"
-                >
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium text-ink-900">
-                      {it.title ?? "Untitled"}
-                    </div>
-                    <div className="text-xs text-ink-500 mt-0.5">
-                      {it.platform ?? "—"}
-                      {it.contentType ? ` · ${it.contentType}` : ""}
-                      {it.scheduledAt
-                        ? ` · ${new Date(it.scheduledAt).toLocaleString()}`
-                        : ""}
-                    </div>
-                    {it.body ? (
-                      <p className="text-xs text-ink-700 mt-1 line-clamp-2">
-                        {it.body}
-                      </p>
-                    ) : null}
+          <>
+            {pendingCount > 0 && plan ? (
+              <ApprovePlanForm
+                planId={plan.id}
+                pendingCount={pendingCount}
+              />
+            ) : null}
+            <section className="card">
+              <header className="px-5 py-3.5 border-b border-ink-100 flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-ink-900">
+                    {plan.title}
                   </div>
-                  <span className="badge-neutral text-[10px]">
-                    {STATUS_LABELS[it.status] ?? it.status}
+                  <div className="text-xs text-ink-500 mt-0.5">
+                    Week of {plan.weekStart} · status: {plan.status}
+                  </div>
+                </div>
+                <div className="text-xs text-ink-500">
+                  {items.length} item{items.length === 1 ? "" : "s"}
+                </div>
+              </header>
+              <div className="px-5 py-2.5 border-b border-ink-100 flex flex-wrap gap-2 text-[10px]">
+                {Object.entries(counts).map(([status, n]) => (
+                  <span key={status} className={`${badgeClass(status)}`}>
+                    {STATUS_LABELS[status] ?? status} · {n}
                   </span>
-                </li>
-              ))}
-            </ul>
-          </section>
+                ))}
+              </div>
+              <ul className="row-divider">
+                {items.map((it) => (
+                  <li
+                    key={it.id}
+                    className="px-5 py-3.5 flex items-start justify-between gap-4"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-ink-900">
+                        {it.title ?? "Untitled"}
+                      </div>
+                      <div className="text-xs text-ink-500 mt-0.5">
+                        {it.platform ?? "—"}
+                        {it.contentType ? ` · ${it.contentType}` : ""}
+                        {it.scheduledAt
+                          ? ` · ${new Date(it.scheduledAt).toLocaleString()}`
+                          : ""}
+                      </div>
+                      {it.body ? (
+                        <p className="text-xs text-ink-700 mt-1 line-clamp-2">
+                          {it.body}
+                        </p>
+                      ) : null}
+                    </div>
+                    <span className={`${badgeClass(it.status)} text-[10px]`}>
+                      {STATUS_LABELS[it.status] ?? it.status}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          </>
         )}
 
         <CreateItemForm
