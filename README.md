@@ -297,6 +297,22 @@ These helpers are deterministic and do not call any model. They are the substrat
 
 See [docs/safety/account-health-first.md](docs/safety/account-health-first.md), [docs/safety/operational-safety-layer.md](docs/safety/operational-safety-layer.md), and [docs/architecture/ai-and-auth-boundaries.md](docs/architecture/ai-and-auth-boundaries.md).
 
+## Operator bridge runtime
+
+Phase E2.8 ships the first real bridge between Signal and operator-run AI assistants (Claude Code, Codex, Claude Opus). `/operator-bridge` lets the operator create a structured task, copy a deterministic prompt into their assistant, then paste the assistant's JSON envelope back. Signal validates the envelope (schema + request_id + one-shot nonce + forbidden-fields scan), consumes the nonce, and stores the audit row.
+
+The bridge is **not** an agent API:
+
+- Signal never reaches into Claude / Codex / Opus.
+- The assistant runs outside Signal in the operator's own environment.
+- The assistant's `recommended_next_action` never executes automatically.
+- Nonces are one-shot, workspace-scoped, and time-bound (24 h default).
+- Every submission persists — successful and rejected — so the audit trail is complete.
+
+Three workspace-scoped tables back the bridge: `operator_bridge_requests`, `operator_bridge_results`, `operator_bridge_nonces`. Every bridge request opens an `mcp_operation_runs` row so the bridge plugs into the existing approval-gates surface on `/settings/mcp`. Risk-level mapping: `safe_read → no_approval_needed`, `local_write / remote_write → approval_required`, `production_impacting → explicit_text_confirmation_required`, `blocked → refused`.
+
+See [docs/operator-bridge/operator-bridge-runtime.md](docs/operator-bridge/operator-bridge-runtime.md), [docs/operator-bridge/signed-result-contract.md](docs/operator-bridge/signed-result-contract.md), [docs/operator-bridge/claude-code-operator-flow.md](docs/operator-bridge/claude-code-operator-flow.md), [docs/operator-bridge/codex-operator-flow.md](docs/operator-bridge/codex-operator-flow.md), [docs/operator-bridge/security-model.md](docs/operator-bridge/security-model.md), and [docs/operator-bridge/result-validation.md](docs/operator-bridge/result-validation.md).
+
 ## Supabase MCP connector probe
 
 Phase E2.7 turns the Supabase connector status into a real probe. The **Run Supabase probe** button on `/settings/mcp` verifies the data plane through Signal's own authenticated session (mode `internal_db_probe`), records a `mcp_connector_probes` row, an `mcp_operation_runs` row, and a `mcp.supabase_probe_completed` activity event.

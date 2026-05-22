@@ -422,6 +422,26 @@ export default async function McpSettingsPage() {
           </Link>
         </section>
 
+        {/* PHASE E2.8 — OPERATOR BRIDGE CTA */}
+        <section className="card p-5 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-sm font-semibold text-ink-900">
+              Operator bridge
+            </h2>
+            <p className="text-xs text-ink-600 mt-1 leading-relaxed">
+              Send a structured task to Claude Code / Codex / Opus and paste
+              the signed result back. Claude/Codex run outside Signal —
+              Signal verifies the nonce + schema and stores the audit row.
+            </p>
+          </div>
+          <Link
+            href="/operator-bridge"
+            className="btn-primary text-xs whitespace-nowrap"
+          >
+            Open operator bridge
+          </Link>
+        </section>
+
         {/* OPERATIONS TABLE (REFERENCE) */}
         <section className="card overflow-x-auto">
           <header className="px-5 py-3.5 border-b border-ink-100">

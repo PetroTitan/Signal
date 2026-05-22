@@ -22,8 +22,13 @@ export default function ImportsPage() {
             The contract, mapping types, and review pipeline are in place, but
             the extraction engine that turns a screenshot or pasted text into
             structured fields runs through Claude Code / Codex / Claude Opus
-            and is not yet wired in this build. Use the manual forms below for
-            now.
+            and is not yet wired in this build. Use the manual forms below
+            for now — or send the task through the{" "}
+            <Link href="/operator-bridge" className="text-signal-700 underline">
+              operator bridge
+            </Link>
+            , which records a structured request the assistant can pick up
+            and post back a verified result for.
           </p>
         </section>
 
