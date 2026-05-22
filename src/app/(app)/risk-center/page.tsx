@@ -3,13 +3,16 @@
 import { useMemo } from "react";
 import { Topbar } from "@/components/topbar";
 import { PlatformBadge, RiskBadge } from "@/components/badges";
+import { DemoLabel, NotConnectedState } from "@/components/empty-state";
 import { useApprovalActions, useSignal } from "@/core/store";
+import { useDataMode } from "@/core/data-mode";
 import { formatDateTime } from "@/lib/format";
 import type { WeeklyPlanItem } from "@/types";
 
 export default function RiskCenterPage() {
   const { state } = useSignal();
   const actions = useApprovalActions();
+  const dataMode = useDataMode();
 
   const breakdown = useMemo(() => {
     const buckets = {
@@ -25,6 +28,20 @@ export default function RiskCenterPage() {
     return buckets;
   }, [state.items]);
 
+  if (!dataMode.isDemo && state.items.length === 0) {
+    return (
+      <>
+        <Topbar
+          title="Risk center"
+          description="Live cadence, tone, and account-fatigue checks."
+        />
+        <div className="px-6 lg:px-8 py-8 max-w-3xl">
+          <NotConnectedState variant="noRiskItems" />
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <Topbar
@@ -33,6 +50,7 @@ export default function RiskCenterPage() {
       />
 
       <div className="px-6 lg:px-8 py-6 max-w-6xl space-y-6">
+        {dataMode.isDemo ? <DemoLabel /> : null}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <Tile label="Blocked" count={breakdown.blocked.length} tone="blocked" />
           <Tile label="High" count={breakdown.high.length} tone="high" />

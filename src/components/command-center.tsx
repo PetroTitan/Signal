@@ -563,3 +563,40 @@ export function OAuthFutureCard({ platform }: { platform: PlatformId }) {
     </section>
   );
 }
+
+export function PlatformNotConnectedPanel({
+  platform,
+}: {
+  platform: PlatformId;
+}) {
+  const strategy = getPlatformStrategy(platform);
+  const platformName =
+    platform === "x" ? "X" : platform === "reddit" ? "Reddit" : "LinkedIn";
+  return (
+    <section className="card p-6 max-w-2xl mx-auto space-y-4">
+      <div className="flex items-center gap-3">
+        <PlatformBadge platform={platform} />
+        <div className="text-sm font-semibold text-ink-900">
+          No connected {platformName} accounts yet
+        </div>
+      </div>
+      <p className="text-sm text-ink-600 leading-relaxed">
+        {strategy.shortDescription}
+      </p>
+      <div className="text-xs text-ink-500 rounded-md border border-dashed border-ink-200 px-3 py-2 leading-relaxed">
+        Add an account, then connect through official {platformName} OAuth
+        when integrations are enabled. Signal never asks for passwords,
+        cookies, session tokens, 2FA codes, or recovery codes.
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Link href="/accounts/new" className="btn-primary">
+          Add {platformName} account
+        </Link>
+        <Link href="/accounts" className="btn">
+          View accounts
+        </Link>
+      </div>
+      <OAuthFutureCard platform={platform} />
+    </section>
+  );
+}

@@ -3,13 +3,19 @@
 import { useMemo } from "react";
 import { Topbar } from "@/components/topbar";
 import { PlatformBadge } from "@/components/badges";
+import { DemoLabel, NotConnectedState } from "@/components/empty-state";
 import { useSignal } from "@/core/store";
+import { useDataMode } from "@/core/data-mode";
 import {
   buildCommentDrafts,
   buildReplyDrafts,
   evaluateDiscussion,
 } from "@/core/comment-intelligence";
-import { discussionSeeds, sourceInsights } from "@/lib/mock";
+import {
+  discussionSeeds as allDiscussionSeeds,
+  sourceInsights as allSourceInsights,
+} from "@/lib/mock";
+import { useDemoData } from "@/lib/demo-data";
 import type {
   CommentDraft,
   ConversationRiskLevel,
@@ -26,6 +32,10 @@ const riskTones: Record<ConversationRiskLevel, string> = {
 
 export default function CommentsPage() {
   const { state } = useSignal();
+  const dataMode = useDataMode();
+
+  const discussionSeeds = useDemoData(allDiscussionSeeds);
+  const sourceInsights = useDemoData(allSourceInsights);
 
   const drafts = useMemo(() => {
     const products = Object.values(state.productsById);
@@ -59,7 +69,21 @@ export default function CommentsPage() {
       rows.push({ opportunity: opp, comments, replies });
     }
     return rows;
-  }, [state.productsById]);
+  }, [state.productsById, discussionSeeds, sourceInsights]);
+
+  if (!dataMode.isDemo && discussionSeeds.length === 0 && !dataMode.hasAccounts) {
+    return (
+      <>
+        <Topbar
+          title="Comments"
+          description="Drafts ready for review once accounts are connected."
+        />
+        <div className="px-6 lg:px-10 py-8 max-w-3xl">
+          <NotConnectedState variant="noPlatformActivity" />
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -69,6 +93,7 @@ export default function CommentsPage() {
       />
 
       <div className="px-6 lg:px-10 py-8 space-y-4 max-w-4xl">
+        {dataMode.isDemo ? <DemoLabel /> : null}
         {drafts.length === 0 ? (
           <div className="text-sm text-ink-500 py-12 text-center">
             No drafts. Open discussions to see where to participate.

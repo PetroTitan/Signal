@@ -5,7 +5,8 @@ import { useMemo } from "react";
 import { SectionHeader } from "./section-header";
 import { CheckIcon, ChevronRightIcon, DotIcon } from "./icons";
 import { useSignal } from "@/core/store";
-import { sourceInsights } from "@/lib/mock";
+import { sourceInsights as allSourceInsights } from "@/lib/mock";
+import { useDemoData } from "@/lib/demo-data";
 
 interface ChecklistRow {
   id: string;
@@ -18,6 +19,7 @@ interface ChecklistRow {
 
 export function OnboardingChecklist() {
   const { state } = useSignal();
+  const sourceInsights = useDemoData(allSourceInsights);
   const rows: ChecklistRow[] = useMemo(() => {
     const products = Object.values(state.productsById);
     const accounts = Object.values(state.accountsById);
@@ -87,7 +89,7 @@ export function OnboardingChecklist() {
         hrefLabel: "Open discoverability",
       },
     ];
-  }, [state]);
+  }, [state, sourceInsights]);
 
   const completed = rows.filter((r) => r.done).length;
   const pct = Math.round((completed / rows.length) * 100);

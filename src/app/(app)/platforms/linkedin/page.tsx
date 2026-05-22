@@ -9,21 +9,46 @@ import {
   ContentQueueForPlatform,
   OAuthFutureCard,
   OpportunitiesList,
+  PlatformNotConnectedPanel,
   PlatformStats,
   PlaybookGrid,
   RecommendationsCallout,
   RiskRulesList,
   StrategyHeader,
 } from "@/components/command-center";
+import { DemoLabel } from "@/components/empty-state";
 import { useSignal } from "@/core/store";
+import { useDataMode } from "@/core/data-mode";
 import type { WeeklyPlanItem } from "@/types";
 
 export default function LinkedInCommandCenter() {
   const { state } = useSignal();
+  const dataMode = useDataMode();
   const items = useMemo(
     () => state.items.filter((i) => i.platform === "linkedin"),
     [state.items],
   );
+  const linkedinAccounts = useMemo(
+    () =>
+      Object.values(state.accountsById).filter(
+        (a) => a.platform === "linkedin",
+      ),
+    [state.accountsById],
+  );
+
+  if (!dataMode.isDemo && linkedinAccounts.length === 0 && items.length === 0) {
+    return (
+      <>
+        <Topbar
+          title="LinkedIn command center"
+          description="B2B trust layer. Quality over frequency. Founder credibility comes first."
+        />
+        <div className="px-6 lg:px-8 py-8 max-w-7xl">
+          <PlatformNotConnectedPanel platform="linkedin" />
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -33,6 +58,7 @@ export default function LinkedInCommandCenter() {
       />
 
       <div className="px-6 lg:px-8 py-6 max-w-7xl space-y-6">
+        {dataMode.isDemo ? <DemoLabel /> : null}
         <StrategyHeader platform="linkedin" />
         <PlatformStats platform="linkedin" />
         <RecommendationsCallout platform="linkedin" />

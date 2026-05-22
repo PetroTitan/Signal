@@ -69,13 +69,21 @@ export default function AccountsPage() {
       <div className="px-6 lg:px-10 py-8 max-w-5xl space-y-6">
         <TrustPanel />
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <Stat label="Total" value={counts.all} />
-          <Stat label="Eligible for planning" value={counts.eligible} tone="emerald" />
-          <Stat label="In setup" value={counts.in_setup} tone="amber" />
-          <Stat label="Paused" value={counts.paused} tone="ink" />
-        </div>
-
+        {accounts.length === 0 ? (
+          <div className="text-center py-16 max-w-md mx-auto">
+            <h2 className="text-base font-semibold text-ink-900">
+              No connected accounts yet
+            </h2>
+            <p className="text-sm text-ink-500 mt-2 leading-relaxed">
+              Create the account manually on the platform, then connect it
+              through OAuth when integrations are enabled.
+            </p>
+            <Link href="/accounts/new" className="btn-primary mt-5 inline-flex">
+              Add account
+            </Link>
+          </div>
+        ) : (
+        <>
         <FilterBar filter={filter} setFilter={setFilter} counts={counts} />
 
         <section className="card">
@@ -87,7 +95,7 @@ export default function AccountsPage() {
           </div>
           {visible.length === 0 ? (
             <div className="px-5 py-6 text-sm text-ink-500">
-              Nothing in this view.
+              Nothing in this filter.
             </div>
           ) : (
             <ul className="row-divider">
@@ -137,6 +145,8 @@ export default function AccountsPage() {
             </ul>
           )}
         </section>
+        </>
+        )}
       </div>
     </>
   );
@@ -180,28 +190,4 @@ function FilterBar({
   );
 }
 
-function Stat({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: number;
-  tone?: "emerald" | "amber" | "ink";
-}) {
-  const toneClass =
-    tone === "emerald"
-      ? "text-emerald-700"
-      : tone === "amber"
-        ? "text-amber-700"
-        : tone === "ink"
-          ? "text-ink-700"
-          : "text-ink-900";
-  return (
-    <div className="card-padded">
-      <div className="stat-label">{label}</div>
-      <div className={`text-2xl font-semibold mt-1 ${toneClass}`}>{value}</div>
-    </div>
-  );
-}
 

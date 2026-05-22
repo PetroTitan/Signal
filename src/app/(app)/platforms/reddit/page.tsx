@@ -9,19 +9,28 @@ import {
   ContentQueueForPlatform,
   OAuthFutureCard,
   OpportunitiesList,
+  PlatformNotConnectedPanel,
   PlatformStats,
   PlaybookGrid,
   RecommendationsCallout,
   RiskRulesList,
   StrategyHeader,
 } from "@/components/command-center";
+import { DemoLabel } from "@/components/empty-state";
 import { useSignal } from "@/core/store";
+import { useDataMode } from "@/core/data-mode";
 
 export default function RedditCommandCenter() {
   const { state } = useSignal();
+  const dataMode = useDataMode();
   const items = useMemo(
     () => state.items.filter((i) => i.platform === "reddit"),
     [state.items],
+  );
+  const redditAccounts = useMemo(
+    () =>
+      Object.values(state.accountsById).filter((a) => a.platform === "reddit"),
+    [state.accountsById],
   );
 
   const comments = items.filter((i) => i.contentType === "comment_reply");
@@ -37,6 +46,20 @@ export default function RedditCommandCenter() {
       ? 0
       : Math.round((comments.length / items.length) * 100);
 
+  if (!dataMode.isDemo && redditAccounts.length === 0 && items.length === 0) {
+    return (
+      <>
+        <Topbar
+          title="Reddit command center"
+          description="Community-first. Comments before posts. Links last."
+        />
+        <div className="px-6 lg:px-8 py-8 max-w-7xl">
+          <PlatformNotConnectedPanel platform="reddit" />
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <Topbar
@@ -45,6 +68,7 @@ export default function RedditCommandCenter() {
       />
 
       <div className="px-6 lg:px-8 py-6 max-w-7xl space-y-6">
+        {dataMode.isDemo ? <DemoLabel /> : null}
         <StrategyHeader platform="reddit" />
         <PlatformStats platform="reddit" />
 

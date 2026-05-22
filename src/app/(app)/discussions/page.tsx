@@ -5,9 +5,15 @@ import Link from "next/link";
 import { Topbar } from "@/components/topbar";
 import { PlatformBadge } from "@/components/badges";
 import { ChevronRightIcon } from "@/components/icons";
+import { DemoLabel, NotConnectedState } from "@/components/empty-state";
 import { useSignal } from "@/core/store";
+import { useDataMode } from "@/core/data-mode";
 import { evaluateDiscussion } from "@/core/comment-intelligence";
-import { discussionSeeds, sourceInsights } from "@/lib/mock";
+import {
+  discussionSeeds as allDiscussionSeeds,
+  sourceInsights as allSourceInsights,
+} from "@/lib/mock";
+import { useDemoData } from "@/lib/demo-data";
 import type {
   DiscussionOpportunity,
   ParticipationRecommendation,
@@ -21,9 +27,13 @@ const recommendationTones: Record<ParticipationRecommendation, string> = {
 
 export default function DiscussionsPage() {
   const { state } = useSignal();
+  const dataMode = useDataMode();
   const [filter, setFilter] = useState<"all" | ParticipationRecommendation>(
     "all",
   );
+
+  const discussionSeeds = useDemoData(allDiscussionSeeds);
+  const sourceInsights = useDemoData(allSourceInsights);
 
   const evaluated = useMemo(() => {
     const products = Object.values(state.productsById);
@@ -34,7 +44,7 @@ export default function DiscussionsPage() {
         products,
       }),
     );
-  }, [state.productsById]);
+  }, [state.productsById, discussionSeeds, sourceInsights]);
 
   const filtered = useMemo(() => {
     const sorted = [...evaluated].sort(
@@ -44,6 +54,20 @@ export default function DiscussionsPage() {
     return sorted.filter((d) => d.recommendation === filter);
   }, [evaluated, filter]);
 
+  if (!dataMode.isDemo && discussionSeeds.length === 0 && !dataMode.hasAccounts) {
+    return (
+      <>
+        <Topbar
+          title="Discussions"
+          description="Surfaces here once accounts are connected."
+        />
+        <div className="px-6 lg:px-10 py-8 max-w-3xl">
+          <NotConnectedState variant="noPlatformActivity" />
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <Topbar
@@ -52,6 +76,7 @@ export default function DiscussionsPage() {
       />
 
       <div className="px-6 lg:px-10 py-8 space-y-6 max-w-4xl">
+        {dataMode.isDemo ? <DemoLabel /> : null}
         <FilterBar
           filter={filter}
           setFilter={setFilter}

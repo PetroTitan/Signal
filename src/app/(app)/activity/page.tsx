@@ -7,15 +7,18 @@ import { PlatformBadge } from "@/components/badges";
 import { EmptyState } from "@/components/empty-state";
 import { SectionHeader } from "@/components/section-header";
 import { ChevronRightIcon } from "@/components/icons";
+import { DemoLabel, NotConnectedState } from "@/components/empty-state";
 import { useSignal } from "@/core/store";
+import { useDataMode } from "@/core/data-mode";
 import { deriveActivity, deriveDiscussionActivity } from "@/core/activity";
 import { evaluateDiscussion } from "@/core/comment-intelligence";
 import {
-  contentAssets,
-  discussionSeeds,
-  riskEvents,
-  sourceInsights,
+  contentAssets as allContentAssets,
+  discussionSeeds as allDiscussionSeeds,
+  riskEvents as allRiskEvents,
+  sourceInsights as allSourceInsights,
 } from "@/lib/mock";
+import { useDemoData } from "@/lib/demo-data";
 import { formatDateTime, relativeFromNow } from "@/lib/format";
 import type {
   ActivityEvent,
@@ -53,8 +56,14 @@ const severityTones: Record<ActivitySeverity, string> = {
 
 export default function ActivityPage() {
   const { state } = useSignal();
+  const dataMode = useDataMode();
   const [layer, setLayer] = useState<LayerFilter>("all");
   const [severity, setSeverity] = useState<SeverityFilter>("all");
+
+  const sourceInsights = useDemoData(allSourceInsights);
+  const discussionSeeds = useDemoData(allDiscussionSeeds);
+  const contentAssets = useDemoData(allContentAssets);
+  const riskEvents = useDemoData(allRiskEvents);
 
   const events = useMemo(() => {
     const products = Object.values(state.productsById);
@@ -85,6 +94,10 @@ export default function ActivityPage() {
         new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime(),
     );
   }, [
+    sourceInsights,
+    discussionSeeds,
+    contentAssets,
+    riskEvents,
     state.plan,
     state.items,
     state.backlog,
@@ -112,6 +125,20 @@ export default function ActivityPage() {
     };
   }, [events]);
 
+  if (!dataMode.isDemo && !dataMode.hasAnyOperationalData) {
+    return (
+      <>
+        <Topbar
+          title="Activity"
+          description="Internal operational timeline. Surfaces here once accounts are connected."
+        />
+        <div className="px-6 lg:px-8 py-8 max-w-3xl">
+          <NotConnectedState variant="noActivity" />
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <Topbar
@@ -120,6 +147,7 @@ export default function ActivityPage() {
       />
 
       <div className="px-6 lg:px-8 py-6 max-w-7xl space-y-6">
+        {dataMode.isDemo ? <DemoLabel /> : null}
         <Intro />
 
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">

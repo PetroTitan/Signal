@@ -57,6 +57,8 @@ Signal's seed data is small on purpose. The product is designed to render gracef
 - When data isn't available, the UI says "Data not yet connected."
 - Real persistence arrives later through the phased Supabase plan in [docs/database/](docs/database/).
 
+Normal product mode shows only data the user created, connected, imported, or approved. Demo data is gated behind explicit demo mode and every page that displays it renders a `Demo preview — This data is not connected to real accounts` label. The boundary lives in [src/core/data-mode/](src/core/data-mode/); pages branch on `useDataMode()` and render the canonical `NotConnectedState` instead of computing fake `0/0` cards.
+
 See [docs/product/pre-final-cleanup.md](docs/product/pre-final-cleanup.md), [docs/product/demo-data-policy.md](docs/product/demo-data-policy.md), and [docs/product/ui-realism-guidelines.md](docs/product/ui-realism-guidelines.md).
 
 ## Database planning status
@@ -161,6 +163,90 @@ See [docs/product/account-onboarding.md](docs/product/account-onboarding.md), [d
 Every account in Signal will connect through the platform's official authorization flow. Signal will never ask for passwords, cookies, session tokens, 2FA codes, or recovery codes. Until OAuth providers are wired in, the accounts page exposes the model and the disabled connect controls.
 
 See [docs/platforms/oauth-first-principle.md](docs/platforms/oauth-first-principle.md) and [docs/platforms/platform-adapters.md](docs/platforms/platform-adapters.md).
+
+## AI integration readiness
+
+Signal ships in **local preview mode**. The AI architecture is wired end-to-end behind a typed provider interface so that switching to a real model later is a small, contained change:
+
+- `AiProvider` interface with typed `generate<U>(useCase, input)` and discriminated structured outputs.
+- `MockAiProvider` (deterministic, in-browser) used by today's UI and tests.
+- `OpenAiProviderPlaceholder` that returns `provider_not_connected` until the server-side route handler ships.
+- Ten allowed use cases (`ALLOWED_AI_USE_CASES`) and eleven explicitly blocked use cases — no autonomous agents, no auto-publishing, no fake metrics.
+- Cost policy: no AI on render, human-triggered only, max 3 variants per request.
+- Safety policy: blocked outputs are filtered before any model would be called.
+
+No `OPENAI_API_KEY` is read at runtime. No outbound HTTP calls are made. The settings page exposes the active provider, its connection status, and the allowed use cases.
+
+See [docs/ai/ai-integration-readiness.md](docs/ai/ai-integration-readiness.md), [docs/ai/prompt-contracts.md](docs/ai/prompt-contracts.md), [docs/ai/cost-policy.md](docs/ai/cost-policy.md), and [docs/ai/safety-policy.md](docs/ai/safety-policy.md).
+
+## Account authentication readiness
+
+Platform connections live behind the same provider pattern. `ConnectionProvider` is the interface; `MockConnectionProvider` returns every channel in `not_connected` state today. When OAuth is enabled, the real implementation slots in behind the same contract — the settings UI does not change.
+
+- Seven connection statuses (`not_connected`, `pending_authorization`, `connected`, `expired`, `revoked`, `error`, `unsupported`).
+- Per-platform capability profiles distinguishing social participation from search discoverability.
+- Planned OAuth scopes per platform, with publishing scopes marked explicitly.
+- A `CONNECTION_POLICY` `neverAsk` list that encodes Signal's trust posture in code: no passwords, cookies, session tokens, 2FA codes, recovery codes, browser fingerprints, or proxy configuration.
+- The settings page lists each channel with its status, capability summary, and a disabled "Connect via official OAuth" button.
+
+See [docs/platforms/account-authentication-readiness.md](docs/platforms/account-authentication-readiness.md) and [docs/platforms/platform-capability-matrix.md](docs/platforms/platform-capability-matrix.md).
+
+## AI memory and context pipeline
+
+Signal does not send giant prompts. Memory is structured, compressed, and retrieved per task:
+
+- Eight typed entity kinds in `src/types/memory/`: `WorkspaceMemory`, `PlatformMemory`, `ProductMemory`, `AccountMemory`, `HistoricalPattern`, `RiskMemory`, `AiPreference`, `BlockedPhrase`. Every entity carries `schemaVersion`, `lastUpdatedAt`, and `active` so schemas can evolve without losing history.
+- `MockMemoryRetriever` ranks and caps memory by task token budget before any context reaches a model. Same query + same snapshot = same items, deterministic.
+- `assembleContext()` flattens ranked memory into ordered layers (`system`, `workspace`, `platform`, `product`, `account`, `insight`, `risk`, `constraints`) with per-layer token counts.
+- `TOKEN_BUDGETS` caps every use case: 2k for short rewrites, 3k for adaptations, up to 5k for draft variants. No use case can grow its budget at runtime.
+- `compressEventsToPatterns()` collapses raw events into compact `HistoricalPattern` rows with confidence + support count. Patterns are recomputed, never appended unbounded.
+- The pipeline is: retrieve → rank → compress → assemble → validate budget → provider → structured output → risk review → human approval. No autonomous loop wraps it.
+
+A debug surface at [/settings/ai-memory](src/app/(app)/settings/ai-memory/page.tsx) shows active entities, estimated token sizes, the retrieved ranking, and the assembled context layers for any allowed use case.
+
+See [docs/ai/memory-architecture.md](docs/ai/memory-architecture.md), [docs/ai/context-pipeline.md](docs/ai/context-pipeline.md), [docs/ai/token-budgets.md](docs/ai/token-budgets.md), and [docs/database/memory-schema-plan.md](docs/database/memory-schema-plan.md).
+
+## Regional operations
+
+Signal supports workspace-level regional routing: one stable operational region per workspace, with calm regional publishing windows, deterministic region-consistency scoring, and an optional outbound network profile for businesses that operate from a different network than the device running Signal.
+
+- Nine supported regions in `src/core/geo/region-policy.ts` (US East/Central/West, EU West/Central, UK, Japan, APAC, Global) with default timezone, language, business-hour bounds, and cadence profile.
+- Three geo modes: `local_only`, `regional_operations`, `international_operations`.
+- Default publishing windows per region in `src/core/geo/timezone-routing.ts` — morning + evening for US, morning + afternoon for EU/UK/JP/APAC, UTC working hours for global.
+- Subtle regional cadence hints in `src/core/geo/regional-cadence.ts` (tone / pacing / discoverability) feed into the platform-adaptation contract without faking localization.
+- `scoreRegionConsistency()` produces a deterministic 0–1 score across six signals (timezone alignment, publishing window consistency, region stability, routing stability, cadence consistency, language alignment).
+- Optional `NetworkProfile` carries label, region, protocol (HTTP/HTTPS/SOCKS5), host, port, masked credentials. The browser never sees plaintext; credentials are encrypted server-side. No rotation, no pools, no marketplace.
+- Settings UI at [/settings/network](src/app/(app)/settings/network/page.tsx) — calm, mobile-friendly, enterprise-clean. Configure once.
+
+This is operational infrastructure, **not** anti-detect tooling, stealth automation, fingerprint spoofing, browser masking, cookie/session management, proxy farming, or rotation. Regional routing never bypasses approval, cadence, or risk checks.
+
+See [docs/geo/workspace-region-architecture.md](docs/geo/workspace-region-architecture.md), [docs/geo/regional-routing.md](docs/geo/regional-routing.md), [docs/geo/network-profile-system.md](docs/geo/network-profile-system.md), [docs/safety/region-consistency.md](docs/safety/region-consistency.md), and [docs/platforms/geo-aware-operations.md](docs/platforms/geo-aware-operations.md).
+
+## Long-lived connections and one-time setup
+
+Signal is designed to feel like durable infrastructure. Configure once, reuse context safely, recover gracefully:
+
+- Connection statuses expanded to cover the long-lived lifecycle: `not_connected`, `ready_to_connect`, `pending_authorization`, `connected`, `healthy`, `degraded`, `expired`, `revoked`, `reauthorization_required`, `disabled`, `error`. Helpers (`isHealthy`, `needsUserAction`, `publishingAllowed`) classify them.
+- Every connection carries a typed `ConnectionHealthRecord` with refresh expiry, failure counter, recovery action, and degradation mode. `deriveConnectionState()` derives the live triple from explicit lifecycle states and the health record.
+- Three consecutive failed syncs drop the connection to `draft_only` mode. Drafts and schedules are preserved. Signal never retries aggressively.
+- Memory and connection schemas carry `schemaVersion` so they can evolve in place without losing history or invalidating past approved drafts.
+- UI copy is realistic — "configure once," "may occasionally require reauthorization," "falls back to draft-only mode" — never "works forever" or "no bugs."
+
+See [docs/architecture/one-time-setup-principle.md](docs/architecture/one-time-setup-principle.md) and [docs/platforms/long-lived-connections.md](docs/platforms/long-lived-connections.md).
+
+## Operational safety layer
+
+Account health is encoded as constants and pure helpers in `src/core/operational-safety/`:
+
+- `ACCOUNT_HEALTH_POLICY` — warm-up window, max direct-link ratio, high-velocity threshold, suggested quiet days.
+- `recommendCadenceDelay()` and `calculateAccountCalmScore()` — cadence safety.
+- `shouldSuppressLink()` — per-platform link tolerance.
+- `detectCrossPlatformSimilarity()` — Jaccard token similarity across platforms to catch drift.
+- `shouldRecommendSilence()` and `countQuietDays()` — calm-period recommendations.
+
+These helpers are deterministic and do not call any model. They are the substrate the AI and platform layers compose against.
+
+See [docs/safety/account-health-first.md](docs/safety/account-health-first.md), [docs/safety/operational-safety-layer.md](docs/safety/operational-safety-layer.md), and [docs/architecture/ai-and-auth-boundaries.md](docs/architecture/ai-and-auth-boundaries.md).
 
 ## Future: WebmasterID integration
 

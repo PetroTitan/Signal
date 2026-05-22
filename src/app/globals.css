@@ -90,4 +90,7 @@ textarea:focus-visible,
   .row-divider > * + * {
     @apply border-t border-ink-100;
   }
+  .input {
+    @apply text-sm px-2.5 py-1.5 rounded-md border border-ink-200 bg-white text-ink-800 placeholder:text-ink-400 focus:outline-none focus:ring-2 focus:ring-signal-300 focus:ring-offset-1;
+  }
 }

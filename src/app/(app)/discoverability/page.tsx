@@ -2,24 +2,47 @@
 
 import { useMemo } from "react";
 import { Topbar } from "@/components/topbar";
+import { DemoLabel, NotConnectedState } from "@/components/empty-state";
 import { useSignal } from "@/core/store";
+import { useDataMode } from "@/core/data-mode";
 import { calculateDiscoverabilityOpportunities } from "@/core/discoverability";
-import { contentAssets } from "@/lib/mock";
+import { contentAssets as allContentAssets } from "@/lib/mock";
+import { useDemoData } from "@/lib/demo-data";
 import type { DiscoverabilityOpportunity } from "@/types";
 
 export default function DiscoverabilityPage() {
   const { state } = useSignal();
+  const dataMode = useDataMode();
   const products = useMemo(
     () => Object.values(state.productsById),
     [state.productsById],
   );
 
+  const contentAssets = useDemoData(allContentAssets);
+
   const opportunities = useMemo(
     () => calculateDiscoverabilityOpportunities(contentAssets, products),
-    [products],
+    [products, contentAssets],
   );
 
   const top = opportunities.slice(0, 6);
+
+  if (!dataMode.isDemo && products.length === 0 && contentAssets.length === 0) {
+    return (
+      <>
+        <Topbar
+          title="Discoverability"
+          description="Visibility, freshness, and topical coverage."
+        />
+        <div className="px-6 lg:px-10 py-8 max-w-3xl">
+          <NotConnectedState variant="noDiscoverability">
+            No fake rankings, traffic, indexed pages, or impressions are
+            shown. WebmasterID and Search Console integrate later.
+          </NotConnectedState>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -29,6 +52,7 @@ export default function DiscoverabilityPage() {
       />
 
       <div className="px-6 lg:px-10 py-8 space-y-4 max-w-4xl">
+        {dataMode.isDemo ? <DemoLabel /> : null}
         {top.length === 0 ? (
           <div className="text-sm text-ink-500 py-12 text-center">
             No discoverability opportunities right now.

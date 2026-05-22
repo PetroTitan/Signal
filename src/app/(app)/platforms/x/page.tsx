@@ -9,18 +9,22 @@ import {
   ContentQueueForPlatform,
   OAuthFutureCard,
   OpportunitiesList,
+  PlatformNotConnectedPanel,
   PlatformStats,
   PlaybookGrid,
   RecommendationsCallout,
   RiskRulesList,
   StrategyHeader,
 } from "@/components/command-center";
+import { DemoLabel } from "@/components/empty-state";
 import { useSignal } from "@/core/store";
+import { useDataMode } from "@/core/data-mode";
 import { accountWeeklyCount } from "@/core/scheduler";
 import { getPlatformCadencePolicy } from "@/core/platforms";
 
 export default function XCommandCenter() {
   const { state } = useSignal();
+  const dataMode = useDataMode();
   const accounts = useMemo(
     () =>
       Object.values(state.accountsById).filter((a) => a.platform === "x"),
@@ -39,6 +43,20 @@ export default function XCommandCenter() {
       i.contentType === "announcement" || i.contentType === "case_study",
   );
 
+  if (!dataMode.isDemo && accounts.length === 0 && items.length === 0) {
+    return (
+      <>
+        <Topbar
+          title="X command center"
+          description="Founder voice. Replies first. Threads when they matter."
+        />
+        <div className="px-6 lg:px-8 py-8 max-w-7xl">
+          <PlatformNotConnectedPanel platform="x" />
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <Topbar
@@ -47,6 +65,7 @@ export default function XCommandCenter() {
       />
 
       <div className="px-6 lg:px-8 py-6 max-w-7xl space-y-6">
+        {dataMode.isDemo ? <DemoLabel /> : null}
         <StrategyHeader platform="x" />
         <PlatformStats platform="x" />
         <RecommendationsCallout platform="x" />

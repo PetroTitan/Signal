@@ -9,7 +9,12 @@ import { SectionHeader } from "@/components/section-header";
 import { ChevronRightIcon } from "@/components/icons";
 import { useSignal } from "@/core/store";
 import { searchAll, type SearchResult, type SearchEntityType } from "@/core/search";
-import { contentAssets, riskEvents, sourceInsights } from "@/lib/mock";
+import {
+  contentAssets as allContentAssets,
+  riskEvents as allRiskEvents,
+  sourceInsights as allSourceInsights,
+} from "@/lib/mock";
+import { useDemoData } from "@/lib/demo-data";
 
 const entityLabels: Record<SearchEntityType, string> = {
   product: "Product",
@@ -38,6 +43,10 @@ export default function SearchPage() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | SearchEntityType>("all");
 
+  const sourceInsights = useDemoData(allSourceInsights);
+  const contentAssets = useDemoData(allContentAssets);
+  const riskEvents = useDemoData(allRiskEvents);
+
   const results = useMemo(() => {
     const out = searchAll({
       query,
@@ -54,6 +63,9 @@ export default function SearchPage() {
   }, [
     query,
     filter,
+    sourceInsights,
+    contentAssets,
+    riskEvents,
     state.productsById,
     state.accountsById,
     state.items,

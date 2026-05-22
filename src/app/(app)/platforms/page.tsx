@@ -5,7 +5,9 @@ import Link from "next/link";
 import { Topbar } from "@/components/topbar";
 import { PlatformBadge } from "@/components/badges";
 import { ChevronRightIcon } from "@/components/icons";
+import { DemoLabel } from "@/components/empty-state";
 import { useSignal } from "@/core/store";
+import { useDataMode } from "@/core/data-mode";
 import {
   calculatePlatformCadenceLoad,
   calculatePlatformReadiness,
@@ -18,13 +20,18 @@ import {
   calculateDiscoverabilityOpportunities,
   calculateFreshnessStatus,
 } from "@/core/discoverability";
-import { contentAssets, platforms as platformList } from "@/lib/mock";
+import {
+  contentAssets as allContentAssets,
+  platforms as platformList,
+} from "@/lib/mock";
+import { useDemoData } from "@/lib/demo-data";
 import type { PlatformId } from "@/types";
 
 const platformIds: PlatformId[] = ["reddit", "x", "linkedin"];
 
 export default function PlatformsOverview() {
   const { state } = useSignal();
+  const dataMode = useDataMode();
   const accounts = useMemo(
     () => Object.values(state.accountsById),
     [state.accountsById],
@@ -38,17 +45,45 @@ export default function PlatformsOverview() {
       />
 
       <div className="px-6 lg:px-10 py-8 max-w-6xl space-y-6">
+        {dataMode.isDemo ? <DemoLabel /> : null}
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {platformIds.map((id) => {
+            const strategy = getPlatformStrategy(id);
+            const platform = platformList.find((p) => p.id === id);
+            const accountsForPlatform = accounts.filter(
+              (a) => a.platform === id,
+            );
+            const itemsForPlatform = state.items.filter(
+              (i) => i.platform === id,
+            );
+            const hasPlatformData =
+              accountsForPlatform.length > 0 || itemsForPlatform.length > 0;
+
+            if (!hasPlatformData) {
+              return (
+                <PlatformOverviewEmptyCard
+                  key={id}
+                  id={id}
+                  title={strategy.strategicRole}
+                  description={strategy.shortDescription}
+                  note={platform?.notes[0]}
+                />
+              );
+            }
+
             const readiness = calculatePlatformReadiness(id, accounts);
             const load = calculatePlatformCadenceLoad(id, state.items);
             const cadence = getPlatformCadencePolicy(id);
-            const strategy = getPlatformStrategy(id);
-            const items = state.items.filter((i) => i.platform === id);
-            const blocked = items.filter((i) => i.risk.level === "blocked").length;
-            const high = items.filter((i) => i.risk.level === "high").length;
-            const medium = items.filter((i) => i.risk.level === "medium").length;
+            const blocked = itemsForPlatform.filter(
+              (i) => i.risk.level === "blocked",
+            ).length;
+            const high = itemsForPlatform.filter(
+              (i) => i.risk.level === "high",
+            ).length;
+            const medium = itemsForPlatform.filter(
+              (i) => i.risk.level === "medium",
+            ).length;
             const recs = getPlatformRecommendations({
               platform: id,
               accounts,
@@ -56,7 +91,6 @@ export default function PlatformsOverview() {
               backlog: state.backlog,
             });
             const topRec = recs[0];
-            const platform = platformList.find((p) => p.id === id);
             return (
               <Link
                 key={id}
@@ -93,7 +127,7 @@ export default function PlatformsOverview() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-2 mb-3">
-                  <Mini label="Scheduled" value={`${items.length}`} />
+                  <Mini label="Scheduled" value={`${itemsForPlatform.length}`} />
                   <Mini
                     label="Risk"
                     value={`${blocked + high}`}
@@ -130,7 +164,7 @@ export default function PlatformsOverview() {
               </Link>
             );
           })}
-          <GoogleCard />
+          <GoogleCard isDemo={dataMode.isDemo} />
         </div>
 
         <ComparisonTable />
@@ -139,9 +173,79 @@ export default function PlatformsOverview() {
   );
 }
 
-function GoogleCard() {
+function PlatformOverviewEmptyCard({
+  id,
+  title,
+  description,
+  note,
+}: {
+  id: PlatformId;
+  title: string;
+  description: string;
+  note?: string;
+}) {
+  return (
+    <Link
+      href={`/platforms/${id}`}
+      className="card hover:border-signal-300 hover:shadow transition-all p-5 group"
+    >
+      <div className="flex items-center justify-between mb-2">
+        <PlatformBadge platform={id} />
+        <span className="text-xs text-ink-500">not connected</span>
+      </div>
+      <div className="text-base font-semibold text-ink-900 mb-1">{title}</div>
+      <p className="text-xs text-ink-600 leading-snug line-clamp-3 mb-4">
+        {description}
+      </p>
+      <div className="text-xs text-ink-500 rounded-md border border-dashed border-ink-200 px-3 py-2 leading-relaxed">
+        No connected accounts yet. Connect through official OAuth when
+        integrations are enabled.
+      </div>
+      <div className="text-xs text-signal-700 font-medium mt-3 inline-flex items-center gap-1 group-hover:text-signal-800">
+        Open platform page
+        <ChevronRightIcon width={12} height={12} />
+      </div>
+      {note ? (
+        <div className="text-[11px] text-ink-500 mt-2">{note}</div>
+      ) : null}
+    </Link>
+  );
+}
+
+function GoogleCard({ isDemo }: { isDemo: boolean }) {
   const { state } = useSignal();
+  const contentAssets = useDemoData(allContentAssets);
   const products = Object.values(state.productsById);
+
+  if (!isDemo && contentAssets.length === 0 && products.length === 0) {
+    return (
+      <Link
+        href="/platforms/google"
+        className="card hover:border-signal-300 hover:shadow transition-all p-5 group"
+      >
+        <div className="flex items-center justify-between mb-2">
+          <span className="badge bg-ink-900 text-white">Google</span>
+          <span className="text-xs text-ink-500">not connected</span>
+        </div>
+        <div className="text-base font-semibold text-ink-900 mb-1">
+          Search &amp; discoverability operations
+        </div>
+        <p className="text-xs text-ink-600 leading-snug line-clamp-3 mb-4">
+          Not a publishing platform. Visibility, content freshness, topical
+          coverage, and YouTube planning sit here.
+        </p>
+        <div className="text-xs text-ink-500 rounded-md border border-dashed border-ink-200 px-3 py-2 leading-relaxed">
+          Data not connected yet. Search Console integration ships when
+          available.
+        </div>
+        <div className="text-xs text-signal-700 font-medium mt-3 inline-flex items-center gap-1 group-hover:text-signal-800">
+          Open command center
+          <ChevronRightIcon width={12} height={12} />
+        </div>
+      </Link>
+    );
+  }
+
   const visibility =
     products.length === 0
       ? 0
