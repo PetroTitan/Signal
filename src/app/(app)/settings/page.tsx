@@ -22,7 +22,7 @@ import { useEffect, useState } from "react";
 
 export default function SettingsPage() {
   const { state } = useSignal();
-  const { demoMode, setDemoMode } = useDemoMode();
+  const { demoMode, setDemoMode, forcedByEnv } = useDemoMode();
   const products = useMemo(
     () => Object.values(state.productsById),
     [state.productsById],
@@ -50,19 +50,32 @@ export default function SettingsPage() {
           <h2 className="text-sm font-semibold text-ink-900">Demo data</h2>
           <p className="text-xs text-ink-600 mt-1 leading-relaxed">
             Off by default. Signal shows real empty states unless this is on.
+            {forcedByEnv
+              ? " This deployment forces demo mode on via NEXT_PUBLIC_SIGNAL_DEMO_MODE — the toggle is disabled here."
+              : ""}
           </p>
           <div className="mt-4 flex items-center justify-between gap-3">
             <div className="text-sm text-ink-800">
               {demoMode ? "Demo data is on" : "Demo data is off"}
+              {forcedByEnv ? (
+                <span className="ml-2 text-[11px] text-ink-500">
+                  (env-forced)
+                </span>
+              ) : null}
             </div>
             <button
               type="button"
               role="switch"
               aria-checked={demoMode}
-              onClick={() => setDemoMode(!demoMode)}
+              aria-disabled={forcedByEnv}
+              disabled={forcedByEnv}
+              onClick={() => {
+                if (forcedByEnv) return;
+                setDemoMode(!demoMode);
+              }}
               className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
                 demoMode ? "bg-signal-600" : "bg-ink-200"
-              }`}
+              } ${forcedByEnv ? "opacity-60 cursor-not-allowed" : ""}`}
             >
               <span
                 className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
