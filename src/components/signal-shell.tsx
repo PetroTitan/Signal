@@ -10,18 +10,8 @@ import {
   initialBacklog,
   products as mockProducts,
   weeklyPlanItems as mockWeeklyPlanItems,
-  workspace as mockWorkspace,
 } from "@/lib/mock";
-import type { GrowthAccount, ProductProfile, Workspace } from "@/types";
-
-const emptyWorkspace: Workspace = {
-  id: "ws_empty",
-  name: "Your workspace",
-  ownerName: "",
-  ownerEmail: "",
-  createdAt: new Date(0).toISOString(),
-  philosophy: "Sustainable organic presence over posting volume.",
-};
+import type { GrowthAccount, ProductProfile } from "@/types";
 
 export function SignalShell({ children }: { children: React.ReactNode }) {
   return (
@@ -77,5 +67,3 @@ function DemoBanner() {
   );
 }
 
-// Suppress unused-import lint when workspace seed is needed in a future patch.
-void emptyWorkspace;

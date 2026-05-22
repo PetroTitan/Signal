@@ -245,9 +245,9 @@ function Hints() {
     <div className="card-padded text-sm text-ink-700 space-y-2 leading-relaxed">
       <div className="text-ink-900 font-medium">Try searching for:</div>
       <ul className="space-y-1 text-ink-700">
-        <li>· A product name or domain (&quot;WebmasterID&quot;, &quot;cashworkspace.com&quot;)</li>
-        <li>· An account handle (&quot;@webmasterid&quot;, &quot;u/wmi_observer&quot;)</li>
-        <li>· A platform (&quot;reddit&quot;, &quot;linkedin&quot;)</li>
+        <li>· A product name or domain</li>
+        <li>· An account handle</li>
+        <li>· A platform (&quot;reddit&quot;, &quot;linkedin&quot;, &quot;x&quot;)</li>
         <li>· A status (&quot;backlog&quot;, &quot;pending&quot;, &quot;warming&quot;)</li>
         <li>· An insight category (&quot;founder observation&quot;, &quot;support pattern&quot;)</li>
       </ul>
