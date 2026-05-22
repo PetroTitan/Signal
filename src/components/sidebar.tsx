@@ -21,6 +21,7 @@ import {
   DiscussionIcon,
   OpportunityIcon,
 } from "./icons";
+import { BrandMark } from "./brand-mark";
 
 type NavItem = {
   href: string;
@@ -79,15 +80,14 @@ export function Sidebar() {
 
   return (
     <aside className="hidden lg:flex w-60 shrink-0 flex-col border-r border-ink-100 bg-white">
-      <div className="px-5 py-5 border-b border-ink-100">
-        <Link href="/dashboard" className="flex items-center gap-2.5">
-          <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-ink-900 text-white text-[11px] font-semibold tracking-wide">
-            SG
-          </span>
-          <div className="leading-tight">
-            <div className="text-sm font-semibold text-ink-900">Signal</div>
-            <div className="text-[11px] text-ink-500">Growth operations</div>
-          </div>
+      <div className="px-5 py-5">
+        <Link
+          href="/dashboard"
+          className="inline-flex items-center gap-2 text-ink-900"
+          aria-label="Signal home"
+        >
+          <BrandMark size={20} />
+          <span className="text-sm font-semibold tracking-tight">Signal</span>
         </Link>
       </div>
       <nav className="flex-1 px-3 py-4 overflow-y-auto">
@@ -125,10 +125,6 @@ export function Sidebar() {
           </div>
         ))}
       </nav>
-      <div className="px-4 py-4 border-t border-ink-100 text-[11px] text-ink-500 leading-relaxed">
-        <div className="font-medium text-ink-700 mb-0.5">Sustainable cadence</div>
-        Signal plans weekly. Approve once. Stay calm.
-      </div>
     </aside>
   );
 }

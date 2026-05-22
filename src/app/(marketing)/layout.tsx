@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { BrandMark } from "@/components/brand-mark";
 
 const marketingLinks = [
   { href: "/about", label: "About" },
@@ -18,13 +19,11 @@ export default function MarketingLayout({
         <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
           <Link
             href="/"
-            className="flex items-center gap-2.5"
+            className="inline-flex items-center gap-2 text-ink-900"
             aria-label="Signal home"
           >
-            <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-ink-900 text-white text-[11px] font-semibold tracking-wide">
-              SG
-            </span>
-            <span className="text-sm font-semibold text-ink-900">Signal</span>
+            <BrandMark size={20} />
+            <span className="text-sm font-semibold tracking-tight">Signal</span>
           </Link>
           <nav className="flex items-center gap-1 text-sm">
             {marketingLinks.map((link) => (
