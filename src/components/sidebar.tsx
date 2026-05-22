@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { signOutAction } from "@/app/(auth)/_actions";
+import { useMaybeWorkspaceSession } from "@/core/workspace-session";
 import {
   DashboardIcon,
   ProductsIcon,
@@ -77,6 +79,7 @@ const groups: { label: string; items: NavItem[] }[] = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const session = useMaybeWorkspaceSession();
 
   return (
     <aside className="hidden lg:flex w-60 shrink-0 flex-col border-r border-ink-100 bg-white">
@@ -89,6 +92,12 @@ export function Sidebar() {
           <BrandMark size={20} />
           <span className="text-sm font-semibold tracking-tight">Signal</span>
         </Link>
+        {session ? (
+          <div className="mt-2 text-[11px] text-ink-500 leading-tight truncate">
+            <div className="text-ink-700 truncate">{session.workspace.name}</div>
+            <div className="truncate">{session.user.email}</div>
+          </div>
+        ) : null}
       </div>
       <nav className="flex-1 px-3 py-4 overflow-y-auto">
         {groups.map((group) => (
@@ -125,6 +134,16 @@ export function Sidebar() {
           </div>
         ))}
       </nav>
+      {session ? (
+        <form action={signOutAction} className="border-t border-ink-100 px-3 py-3">
+          <button
+            type="submit"
+            className="w-full text-left text-xs text-ink-600 hover:text-ink-900 px-2.5 py-1.5 rounded-md hover:bg-ink-50"
+          >
+            Sign out
+          </button>
+        </form>
+      ) : null}
     </aside>
   );
 }
