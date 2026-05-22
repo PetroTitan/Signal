@@ -1,12 +1,13 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { useFormState, useFormStatus } from "react-dom";
 import {
   createPlanItemAction,
-  type CreateItemActionState,
+  type CreatePlanItemResult,
 } from "./_actions";
 
-const initial: CreateItemActionState = { ok: false, error: null };
+const initial: CreatePlanItemResult = { ok: false, error: "" };
 
 interface CreateItemFormProps {
   products: { id: string; name: string }[];
@@ -15,6 +16,15 @@ interface CreateItemFormProps {
 
 export function CreateItemForm({ products, accounts }: CreateItemFormProps) {
   const [state, formAction] = useFormState(createPlanItemAction, initial);
+  const formRef = useRef<HTMLFormElement>(null);
+
+  useEffect(() => {
+    if (state?.ok) {
+      formRef.current?.reset();
+    }
+  }, [state]);
+
+  const safe = state ?? initial;
 
   return (
     <section className="card p-5">
@@ -23,7 +33,11 @@ export function CreateItemForm({ products, accounts }: CreateItemFormProps) {
         Items land in the current week as <span className="font-mono">pending_approval</span>.
         Approve them from the approval queue.
       </p>
-      <form action={formAction} className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+      <form
+        ref={formRef}
+        action={formAction}
+        className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3"
+      >
         <label className="block md:col-span-2">
           <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500 mb-1">
             Title / hook
@@ -91,16 +105,19 @@ export function CreateItemForm({ products, accounts }: CreateItemFormProps) {
           </select>
         </label>
 
-        {state.error ? (
+        {safe.ok ? (
+          <div
+            role="status"
+            className="md:col-span-2 text-xs leading-relaxed rounded-md px-3 py-2 bg-emerald-50 text-emerald-800"
+          >
+            Added. Open the approval queue to review.
+          </div>
+        ) : safe.error ? (
           <div
             role="alert"
             className="md:col-span-2 text-xs leading-relaxed rounded-md px-3 py-2 bg-amber-50 text-amber-800"
           >
-            {state.error}
-          </div>
-        ) : state.ok ? (
-          <div className="md:col-span-2 text-xs text-emerald-700">
-            Added. Open the approval queue to review.
+            {safe.error}
           </div>
         ) : null}
 

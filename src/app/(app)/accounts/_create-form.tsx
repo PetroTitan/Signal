@@ -1,12 +1,13 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { useFormState, useFormStatus } from "react-dom";
 import {
   createAccountAction,
-  type AccountActionState,
+  type CreateAccountResult,
 } from "./_actions";
 
-const initial: AccountActionState = { ok: false, error: null };
+const initial: CreateAccountResult = { ok: false, error: "" };
 
 interface AccountCreateFormProps {
   products: { id: string; name: string }[];
@@ -14,6 +15,15 @@ interface AccountCreateFormProps {
 
 export function AccountCreateForm({ products }: AccountCreateFormProps) {
   const [state, formAction] = useFormState(createAccountAction, initial);
+  const formRef = useRef<HTMLFormElement>(null);
+
+  useEffect(() => {
+    if (state?.ok) {
+      formRef.current?.reset();
+    }
+  }, [state]);
+
+  const safe = state ?? initial;
 
   return (
     <section className="card p-5">
@@ -24,6 +34,7 @@ export function AccountCreateForm({ products }: AccountCreateFormProps) {
       </p>
 
       <form
+        ref={formRef}
         action={formAction}
         className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3"
       >
@@ -86,12 +97,19 @@ export function AccountCreateForm({ products }: AccountCreateFormProps) {
           </select>
         </label>
 
-        {state.error ? (
+        {safe.ok ? (
+          <div
+            role="status"
+            className="md:col-span-2 text-xs leading-relaxed rounded-md px-3 py-2 bg-emerald-50 text-emerald-800"
+          >
+            Account added. It shows in the list above.
+          </div>
+        ) : safe.error ? (
           <div
             role="alert"
             className="md:col-span-2 text-xs leading-relaxed rounded-md px-3 py-2 bg-amber-50 text-amber-800"
           >
-            {state.error}
+            {safe.error}
           </div>
         ) : null}
 
