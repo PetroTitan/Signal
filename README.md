@@ -297,6 +297,28 @@ These helpers are deterministic and do not call any model. They are the substrat
 
 See [docs/safety/account-health-first.md](docs/safety/account-health-first.md), [docs/safety/operational-safety-layer.md](docs/safety/operational-safety-layer.md), and [docs/architecture/ai-and-auth-boundaries.md](docs/architecture/ai-and-auth-boundaries.md).
 
+## MCP Operations Console
+
+`/settings/mcp` is Signal's operator-facing surface for the AI / MCP layer. It shows:
+
+- declared status of connected assistants (Claude Code, Codex, Claude Opus) and tools (Supabase MCP, GitHub MCP, Vercel)
+- a read-only check runner — only checks with a real implementation are clickable; the rest render disabled with **"Prepared, not connected"**
+- pending MCP approvals with explicit Approve / Reject buttons
+- recent `mcp_operation_runs` history
+- the safety boundary (allowed-without-approval, requires-approval, always-blocked)
+
+Connection status is intentionally limited to a self-declared vocabulary (`not_configured | configured | connected | unavailable | manual | placeholder`). Real connection detection is not implemented yet — until it is, the page says **"placeholder"** and never claims "Connected."
+
+Every production-impacting operation requires approval. Migration apply and similar operations require an explicit text confirmation phrase. See [docs/mcp/mcp-connector-ui.md](docs/mcp/mcp-connector-ui.md), [docs/mcp/check-runner.md](docs/mcp/check-runner.md), and [docs/mcp/operation-approval-ui.md](docs/mcp/operation-approval-ui.md).
+
+The companion `/imports` surface is the assisted-import landing page. The extraction engine itself runs through Claude Code / Codex / Claude Opus and is not yet wired in this build — the page says so explicitly.
+
+## Weekly operating contract
+
+Signal's core operational model is "the user approves once per week, and Signal may then operate for 7 days within explicitly approved boundaries." `/weekly-contracts` is the surface for drafting, approving (with a confirmation phrase), activating, pausing, and revoking those envelopes. The contract scopes execution to specific accounts, products, platforms, allowed action types, risk ceiling, cadence ceilings, and execution windows.
+
+The evaluator at `src/core/weekly-contract/contract-evaluator.ts` is pure and returns `allowed | soft_block | hard_block` with a reason code. Every evaluation is persisted to `execution_authorizations`. See [docs/contracts/weekly-operating-contract.md](docs/contracts/weekly-operating-contract.md).
+
 ## Future: WebmasterID integration
 
 Every Signal-generated outbound link reserves a structured set of parameters (`utm_source`, `utm_medium`, `utm_campaign`, `signal_campaign_id`, `signal_item_id`, `product_id`, `platform`, `account_id`). When WebmasterID is connected, the analytics page will resolve these into per-product and per-account attribution. Until then, the page shows "data not yet connected." Signal does not fake numbers.

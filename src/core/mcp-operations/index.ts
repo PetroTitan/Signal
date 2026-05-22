@@ -9,3 +9,4 @@ export * from "./operation-runner";
 export * from "./operation-report";
 export * from "./field-mapping";
 export * from "./screenshot-import-contracts";
+export * from "./connector-status";

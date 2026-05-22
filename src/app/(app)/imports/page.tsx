@@ -8,11 +8,24 @@ export default function ImportsPage() {
   return (
     <>
       <Topbar
-        title="Imports"
+        title="Import assistant"
         description="AI-assisted product and account import. Review before save."
       />
 
       <div className="px-6 lg:px-10 py-8 max-w-3xl space-y-6">
+        <section className="card p-5 border-amber-200 bg-amber-50/40">
+          <h2 className="text-sm font-semibold text-ink-900">
+            Extraction engine not connected yet
+          </h2>
+          <p className="text-xs text-ink-700 mt-1 leading-relaxed">
+            The contract, mapping types, and review pipeline are in place, but
+            the extraction engine that turns a screenshot or pasted text into
+            structured fields runs through Claude Code / Codex / Claude Opus
+            and is not yet wired in this build. Use the manual forms below for
+            now.
+          </p>
+        </section>
+
         <section className="card p-5">
           <h2 className="text-sm font-semibold text-ink-900">
             How the import assistant works

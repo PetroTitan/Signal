@@ -72,7 +72,10 @@ const groups: { label: string; items: NavItem[] }[] = [
       { href: "/risk-center", label: "Risk center", icon: RiskIcon },
       { href: "/analytics", label: "Analytics", icon: AnalyticsIcon },
       { href: "/workflow", label: "Workflow", icon: PlatformsIcon },
-      { href: "/settings", label: "Settings", icon: SettingsIcon },
+      { href: "/weekly-contracts", label: "Weekly contracts", icon: ApprovalIcon },
+      { href: "/settings/mcp", label: "MCP operations", icon: SettingsIcon },
+      { href: "/imports", label: "Import assistant", icon: InsightIcon },
+      { href: "/settings", label: "Settings", icon: SettingsIcon, exact: true },
     ],
   },
 ];

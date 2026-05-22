@@ -167,6 +167,45 @@ export async function listRecentOperationRuns(
   return ((data ?? []) as unknown as McpOperationRunRow[]).map(toRun);
 }
 
+export async function listPendingApprovals(
+  workspaceId: string,
+  limit = 30,
+): Promise<McpOperationRunRecord[]> {
+  const supabase = createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("mcp_operation_runs")
+    .select("*")
+    .eq("workspace_id", workspaceId)
+    .eq("status", "pending_approval")
+    .order("created_at", { ascending: true })
+    .limit(limit);
+  if (error) throw fromPostgres(error, "Failed to list pending MCP approvals.");
+  return ((data ?? []) as unknown as McpOperationRunRow[]).map(toRun);
+}
+
+export async function rejectOperationRun(input: {
+  workspaceId: string;
+  runId: string;
+  reason?: string;
+}): Promise<McpOperationRunRecord> {
+  const supabase = createSupabaseServerClient();
+  const patch: McpOperationRunUpdate = {
+    status: "rejected",
+    error_summary: input.reason ?? null,
+  };
+  const { data, error } = await supabase
+    .from("mcp_operation_runs")
+    .update(patch as never)
+    .eq("workspace_id", input.workspaceId)
+    .eq("id", input.runId)
+    .select("*")
+    .single();
+  if (error || !data) {
+    throw fromPostgres(error, "Failed to reject MCP operation run.");
+  }
+  return toRun(data as unknown as McpOperationRunRow);
+}
+
 export async function getOperationRunById(
   workspaceId: string,
   runId: string,
