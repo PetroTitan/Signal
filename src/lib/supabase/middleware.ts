@@ -1,6 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import { readSupabaseEnv } from "./env";
+import { logSupabaseEnvDiagnosticsOnce, readSupabaseEnv } from "./env";
 
 /**
  * Routes that do not require an authenticated session.
@@ -47,6 +47,7 @@ function isPublicPath(pathname: string): boolean {
  */
 export async function updateSession(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
+  logSupabaseEnvDiagnosticsOnce("middleware");
   const env = readSupabaseEnv();
 
   if (!env) {

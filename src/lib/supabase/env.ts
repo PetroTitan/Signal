@@ -11,16 +11,27 @@ export interface SupabasePublicEnv {
 }
 
 /**
- * Diagnostic-only report. Never includes the anon-key value. Safe to log
- * and safe to render to a user.
+ * Safe-to-log report describing what the Supabase env looked like at read
+ * time. Never includes the anon-key value or any URL credential.
  */
 export interface SupabaseConfigDiagnostics {
   urlPresent: boolean;
+  urlLength: number;
   urlParses: boolean;
   urlIsHttps: boolean;
   urlHostnameLooksLikeSupabase: boolean;
   urlHasNoPath: boolean;
+  /** Parsed components for the operator to inspect. Empty when URL did not parse. */
+  urlHostname: string;
+  urlProtocol: string;
+  /** Truncated to 80 chars to avoid leaking accidentally-pasted secrets. */
+  urlPathname: string;
+  urlHasSearch: boolean;
+  urlHasHash: boolean;
+  /** True when normalization stripped surrounding quotes or trailing slashes. */
+  urlNormalizationApplied: boolean;
   anonKeyPresent: boolean;
+  anonKeyLength: number;
   anonKeyShape:
     | "looks_like_jwt"
     | "looks_like_publishable"
@@ -41,15 +52,65 @@ export class SupabaseEnvError extends Error {
   }
 }
 
-function readVar(name: string): string | null {
-  const raw = process.env[name];
-  if (raw === undefined || raw === null) return null;
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) return null;
-  return trimmed;
+const SUPABASE_HOSTNAME_SUFFIX = ".supabase.co";
+
+// Characters that often sneak into pasted env values and corrupt URLs:
+// ZWSP, ZWNJ, ZWJ, BOM, NBSP.
+// We strip them, count it as normalization, and continue.
+const INVISIBLE_RE = /[​‌‍﻿ ]+/g;
+
+interface NormalizationResult {
+  value: string | null;
+  applied: boolean;
 }
 
-const SUPABASE_HOSTNAME_SUFFIX = ".supabase.co";
+function normalizeEnvValue(name: string): NormalizationResult {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null) {
+    return { value: null, applied: false };
+  }
+
+  let working = raw;
+  let applied = false;
+
+  // 1. Strip invisible characters anywhere in the string.
+  const withoutInvisible = working.replace(INVISIBLE_RE, "");
+  if (withoutInvisible !== working) {
+    working = withoutInvisible;
+    applied = true;
+  }
+
+  // 2. Trim Unicode whitespace from both ends.
+  const trimmed = working.trim();
+  if (trimmed !== working) {
+    working = trimmed;
+    applied = true;
+  }
+
+  // 3. Strip a single layer of surrounding quotes (Vercel-paste accidents).
+  if (working.length >= 2) {
+    const first = working[0];
+    const last = working[working.length - 1];
+    if ((first === '"' || first === "'" || first === "`") && first === last) {
+      working = working.slice(1, -1).trim();
+      applied = true;
+    }
+  }
+
+  if (working.length === 0) {
+    return { value: null, applied };
+  }
+  return { value: working, applied };
+}
+
+function normalizeUrl(value: string): { value: string; applied: boolean } {
+  // Strip any number of trailing slashes.
+  const trimmedSlash = value.replace(/\/+$/, "");
+  return {
+    value: trimmedSlash,
+    applied: trimmedSlash !== value,
+  };
+}
 
 function classifyAnonKey(
   raw: string | null,
@@ -66,17 +127,46 @@ function classifyAnonKey(
   return "unknown";
 }
 
-function diagnose(
-  rawUrl: string | null,
-  rawAnonKey: string | null,
-): SupabaseConfigDiagnostics {
+function truncate(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+interface ReadResult {
+  rawUrl: string | null;
+  rawAnonKey: string | null;
+  urlNormalizationApplied: boolean;
+  anonKeyNormalizationApplied: boolean;
+}
+
+function readVars(): ReadResult {
+  const url = normalizeEnvValue("NEXT_PUBLIC_SUPABASE_URL");
+  const key = normalizeEnvValue("NEXT_PUBLIC_SUPABASE_ANON_KEY");
+  return {
+    rawUrl: url.value,
+    rawAnonKey: key.value,
+    urlNormalizationApplied: url.applied,
+    anonKeyNormalizationApplied: key.applied,
+  };
+}
+
+function diagnose(input: ReadResult): SupabaseConfigDiagnostics {
+  const { rawUrl, rawAnonKey } = input;
   const d: SupabaseConfigDiagnostics = {
     urlPresent: !!rawUrl,
+    urlLength: rawUrl?.length ?? 0,
     urlParses: false,
     urlIsHttps: false,
     urlHostnameLooksLikeSupabase: false,
     urlHasNoPath: false,
+    urlHostname: "",
+    urlProtocol: "",
+    urlPathname: "",
+    urlHasSearch: false,
+    urlHasHash: false,
+    urlNormalizationApplied:
+      input.urlNormalizationApplied || input.anonKeyNormalizationApplied,
     anonKeyPresent: !!rawAnonKey,
+    anonKeyLength: rawAnonKey?.length ?? 0,
     anonKeyShape: classifyAnonKey(rawAnonKey),
     reason: null,
   };
@@ -86,10 +176,21 @@ function diagnose(
     return d;
   }
 
+  // Strip trailing slashes before parsing so `https://x.supabase.co/` and
+  // `https://x.supabase.co///` are both treated as base URLs. Path-bearing
+  // URLs are still rejected below.
+  const { value: prepared, applied: trailingStripped } = normalizeUrl(rawUrl);
+  if (trailingStripped) d.urlNormalizationApplied = true;
+
   let parsed: URL;
   try {
-    parsed = new URL(rawUrl);
+    parsed = new URL(prepared);
     d.urlParses = true;
+    d.urlHostname = parsed.hostname;
+    d.urlProtocol = parsed.protocol;
+    d.urlPathname = truncate(parsed.pathname, 80);
+    d.urlHasSearch = parsed.search.length > 0;
+    d.urlHasHash = parsed.hash.length > 0;
   } catch {
     d.reason =
       'NEXT_PUBLIC_SUPABASE_URL does not parse as a URL. Expected "https://<project-ref>.supabase.co".';
@@ -111,7 +212,7 @@ function diagnose(
   }
 
   d.urlHasNoPath = parsed.pathname === "" || parsed.pathname === "/";
-  if (!d.urlHasNoPath || parsed.search || parsed.hash) {
+  if (!d.urlHasNoPath || d.urlHasSearch || d.urlHasHash) {
     d.reason =
       "NEXT_PUBLIC_SUPABASE_URL must be the project base URL with no path, query, or fragment.";
     return d;
@@ -142,22 +243,19 @@ function diagnose(
  * `diagnoseSupabaseConfig()` for the diagnostic explanation.
  */
 export function readSupabaseEnv(): SupabasePublicEnv | null {
-  const rawUrl = readVar("NEXT_PUBLIC_SUPABASE_URL");
-  const rawAnonKey = readVar("NEXT_PUBLIC_SUPABASE_ANON_KEY");
-  const d = diagnose(rawUrl, rawAnonKey);
+  const input = readVars();
+  const d = diagnose(input);
   if (d.reason !== null) return null;
-  // Strip trailing slash for a consistent base URL.
-  const url = (rawUrl as string).replace(/\/+$/, "");
-  return { url, anonKey: rawAnonKey as string };
+  // Final normalized url has any trailing slashes stripped.
+  const url = (input.rawUrl as string).replace(/\/+$/, "");
+  return { url, anonKey: input.rawAnonKey as string };
 }
 
 /**
  * Diagnostic-only view. Safe to log; never returns the anon-key value.
  */
 export function diagnoseSupabaseConfig(): SupabaseConfigDiagnostics {
-  const rawUrl = readVar("NEXT_PUBLIC_SUPABASE_URL");
-  const rawAnonKey = readVar("NEXT_PUBLIC_SUPABASE_ANON_KEY");
-  return diagnose(rawUrl, rawAnonKey);
+  return diagnose(readVars());
 }
 
 export function requireSupabaseEnv(): SupabasePublicEnv {
@@ -171,4 +269,19 @@ export function requireSupabaseEnv(): SupabasePublicEnv {
 
 export function isSupabaseConfigured(): boolean {
   return readSupabaseEnv() !== null;
+}
+
+let _loggedOnce = false;
+
+/**
+ * One-time per process: log the safe diagnostics shape to the server logs.
+ * Subsequent calls are no-ops. Use only from server-side entry points
+ * (middleware, server actions). Never logs the anon-key value.
+ */
+export function logSupabaseEnvDiagnosticsOnce(source: string): void {
+  if (_loggedOnce) return;
+  _loggedOnce = true;
+  const d = diagnoseSupabaseConfig();
+  // Use console.log so it shows up in Vercel's standard log stream.
+  console.log(`[supabase-env] ${source} diagnostics`, d);
 }
