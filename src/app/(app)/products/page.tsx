@@ -1,18 +1,46 @@
-"use client";
-
-import { useMemo } from "react";
 import Link from "next/link";
 import { Topbar } from "@/components/topbar";
-import { PlatformBadge } from "@/components/badges";
-import { ChevronRightIcon } from "@/components/icons";
-import { useSignal } from "@/core/store";
+import { isSupabaseConfigured } from "@/lib/supabase";
+import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
+import { listProducts } from "@/repositories/product-repository";
+import { ProductCreateForm } from "./_create-form";
 
-export default function ProductsPage() {
-  const { state } = useSignal();
-  const products = useMemo(
-    () => Object.values(state.productsById),
-    [state.productsById],
-  );
+export const dynamic = "force-dynamic";
+
+export default async function ProductsPage() {
+  if (!isSupabaseConfigured()) {
+    return (
+      <>
+        <Topbar
+          title="Products"
+          description="Persistence not configured."
+        />
+        <div className="px-6 lg:px-10 py-12 max-w-3xl">
+          <div className="card p-5 text-sm text-ink-600">
+            Supabase is not configured for this deployment. Set
+            <code className="font-mono text-xs"> NEXT_PUBLIC_SUPABASE_URL</code>{" "}
+            and
+            <code className="font-mono text-xs"> NEXT_PUBLIC_SUPABASE_ANON_KEY</code>
+            {" "}to enable product persistence.
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  const membership = await getPrimaryWorkspace();
+  if (!membership) {
+    return (
+      <>
+        <Topbar title="Products" description="No workspace found." />
+        <div className="px-6 lg:px-10 py-12 max-w-3xl text-sm text-ink-600">
+          Create a workspace from the dashboard to start adding products.
+        </div>
+      </>
+    );
+  }
+
+  const products = await listProducts(membership.workspace.id);
 
   return (
     <>
@@ -20,63 +48,63 @@ export default function ProductsPage() {
         title="Products"
         description="Each product carries its own positioning, voice, and CTA policy."
       />
-      <div className="px-6 lg:px-10 py-8 max-w-4xl">
+      <div className="px-6 lg:px-10 py-8 max-w-3xl space-y-6">
         {products.length === 0 ? (
-          <EmptyState />
+          <section className="card p-6 text-center">
+            <h2 className="text-base font-semibold text-ink-900">
+              No products yet
+            </h2>
+            <p className="text-sm text-ink-500 mt-2 leading-relaxed max-w-md mx-auto">
+              Create your first product profile. Signal will use its positioning
+              and category when generating opportunities and drafts later.
+            </p>
+          </section>
         ) : (
-          <ul className="space-y-3">
-            {products.map((p) => (
-              <li key={p.id}>
-                <Link
-                  href={`/products/${p.slug}`}
-                  className="block card p-4 hover:border-signal-300 transition-colors"
+          <section className="card">
+            <header className="px-5 py-3.5 border-b border-ink-100 flex items-center justify-between">
+              <div className="text-sm font-semibold text-ink-900">
+                {products.length} product{products.length === 1 ? "" : "s"}
+              </div>
+              <div className="text-xs text-ink-500">
+                Workspace: {membership.workspace.name}
+              </div>
+            </header>
+            <ul className="row-divider">
+              {products.map((p) => (
+                <li
+                  key={p.id}
+                  className="px-5 py-3.5 flex items-start justify-between gap-4"
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-sm font-semibold text-ink-900">
-                          {p.name}
-                        </span>
-                        <span className="text-xs text-ink-500">{p.domain}</span>
-                      </div>
-                      <p className="text-xs text-ink-600 line-clamp-2 leading-relaxed">
-                        {p.positioning}
-                      </p>
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-ink-900 truncate">
+                      {p.name}
                     </div>
-                    <ChevronRightIcon className="text-ink-400 mt-1" />
+                    <div className="text-xs text-ink-500 mt-0.5 truncate">
+                      {p.domain ?? "—"} · {p.category ?? "uncategorized"}
+                    </div>
+                    {p.summary ? (
+                      <p className="text-xs text-ink-700 mt-1 line-clamp-2">
+                        {p.summary}
+                      </p>
+                    ) : null}
                   </div>
-                  <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                    <span className="badge-neutral text-[10px] capitalize">
-                      {p.category}
-                    </span>
-                    {p.preferredPlatforms.map((id) => (
-                      <PlatformBadge key={id} platform={id} />
-                    ))}
-                  </div>
-                </Link>
-              </li>
-            ))}
-          </ul>
+                  <span className="badge-neutral capitalize">{p.status}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
         )}
+
+        <ProductCreateForm />
+
+        <p className="text-[11px] text-ink-500 leading-relaxed">
+          Stored in Supabase under your workspace. Visible only to{" "}
+          <Link href="/settings" className="underline">
+            workspace members
+          </Link>
+          .
+        </p>
       </div>
     </>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="text-center py-16">
-      <h2 className="text-base font-semibold text-ink-900">
-        No products yet
-      </h2>
-      <p className="text-sm text-ink-500 mt-2 leading-relaxed max-w-md mx-auto">
-        Create your first product profile. Signal will use its positioning, voice,
-        and CTA policy when generating opportunities and drafts.
-      </p>
-      <p className="text-xs text-ink-400 mt-6">
-        Product creation flow is planned for a later release. Turn on Demo data in
-        Settings to explore the workflow.
-      </p>
-    </div>
   );
 }

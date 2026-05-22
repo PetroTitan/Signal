@@ -18,11 +18,14 @@ import {
   PLATFORM_CAPABILITY_PROFILES,
   type PlatformConnection,
 } from "@/core/platform-connections";
+import { useMaybeWorkspaceSession } from "@/core/workspace-session";
+import { RegionForm } from "./_region-form";
 import { useEffect, useState } from "react";
 
 export default function SettingsPage() {
   const { state } = useSignal();
   const { demoMode, setDemoMode, forcedByEnv } = useDemoMode();
+  const session = useMaybeWorkspaceSession();
   const products = useMemo(
     () => Object.values(state.productsById),
     [state.productsById],
@@ -144,7 +147,9 @@ export default function SettingsPage() {
         <section className="card p-5">
           <h2 className="text-sm font-semibold text-ink-900">Workspace</h2>
           <p className="text-xs text-ink-500 mt-1">
-            Single-workspace mode. Multi-workspace ships with Supabase.
+            {session
+              ? `${session.workspace.name} · signed in as ${session.user.email ?? "you"}.`
+              : "Single-workspace mode."}
           </p>
           <div className="mt-3 text-sm text-ink-800 space-y-1">
             <div>
@@ -164,6 +169,25 @@ export default function SettingsPage() {
             </Link>
           </div>
         </section>
+
+        {session ? (
+          <section className="card p-5">
+            <h2 className="text-sm font-semibold text-ink-900">
+              Region &amp; locale
+            </h2>
+            <p className="text-xs text-ink-600 mt-1 leading-relaxed">
+              Persisted to your workspace settings. Used by the publishing
+              window and regional cadence helpers.
+            </p>
+            <div className="mt-4">
+              <RegionForm
+                initialRegion={session.settings?.region ?? null}
+                initialTimezone={session.settings?.timezone ?? null}
+                initialLanguage={session.settings?.language ?? null}
+              />
+            </div>
+          </section>
+        ) : null}
 
         <section className="card p-5 flex items-start gap-3 text-sm">
           <span className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-signal-100 text-signal-700 shrink-0">
