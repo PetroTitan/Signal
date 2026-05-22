@@ -4,6 +4,7 @@ import { isSupabaseConfigured } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { listAccountsByPlatform } from "@/repositories/account-repository";
 import { PlatformDbAccountsCard } from "../_db-accounts-card";
+import { PlatformOAuthPanel } from "../_oauth-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +16,8 @@ export default async function XCommandCenter() {
           title="X command center"
           description="Persistence not configured."
         />
-        <div className="px-6 lg:px-8 py-8 max-w-7xl">
+        <div className="px-6 lg:px-8 py-8 max-w-3xl space-y-6">
+          <PlatformOAuthPanel platform="x" />
           <PlatformNotConnectedPanel platform="x" />
         </div>
       </>
@@ -27,7 +29,8 @@ export default async function XCommandCenter() {
     return (
       <>
         <Topbar title="X command center" description="No workspace found." />
-        <div className="px-6 lg:px-8 py-8 max-w-7xl">
+        <div className="px-6 lg:px-8 py-8 max-w-3xl space-y-6">
+          <PlatformOAuthPanel platform="x" />
           <PlatformNotConnectedPanel platform="x" />
         </div>
       </>
@@ -43,7 +46,8 @@ export default async function XCommandCenter() {
           title="X command center"
           description="Founder voice. Replies first. Threads when they matter."
         />
-        <div className="px-6 lg:px-8 py-8 max-w-7xl">
+        <div className="px-6 lg:px-8 py-8 max-w-3xl space-y-6">
+          <PlatformOAuthPanel platform="x" />
           <PlatformNotConnectedPanel platform="x" />
         </div>
       </>
@@ -57,6 +61,7 @@ export default async function XCommandCenter() {
         description="Founder voice. Replies first. Threads when they matter."
       />
       <div className="px-6 lg:px-8 py-6 max-w-3xl space-y-6">
+        <PlatformOAuthPanel platform="x" />
         <PlatformDbAccountsCard platform="x" accounts={accounts} />
         <p className="text-[11px] text-ink-500 leading-relaxed">
           Engine-driven surfaces (format mix, velocity, content queue) will

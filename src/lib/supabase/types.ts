@@ -908,6 +908,114 @@ export interface ExecutionAttemptUpdate {
   metadata?: Record<string, unknown>;
 }
 
+// =====================================================================
+// Phase E3 — Platform OAuth connections
+// =====================================================================
+
+export type OAuthPlatform = "reddit" | "x" | "linkedin";
+
+export type PlatformConnectionConnectionStatus =
+  | "not_connected"
+  | "connected"
+  | "expired"
+  | "revoked"
+  | "error"
+  | "disabled"
+  | "reauthorization_required";
+
+export type PlatformConnectionHealthStatus =
+  | "healthy"
+  | "degraded"
+  | "expired"
+  | "revoked"
+  | "unknown";
+
+export interface PlatformConnectionRow {
+  id: string;
+  workspace_id: string;
+  account_id: string | null;
+  platform: OAuthPlatform;
+  provider_account_id: string | null;
+  handle: string | null;
+  display_name: string | null;
+  connection_status: PlatformConnectionConnectionStatus;
+  scopes: string[];
+  /**
+   * Token columns are server-only. The repository layer projects these
+   * away before returning to the client. Never log, never render.
+   */
+  access_token_encrypted: string | null;
+  refresh_token_encrypted: string | null;
+  expires_at: string | null;
+  connected_at: string | null;
+  revoked_at: string | null;
+  last_checked_at: string | null;
+  health_status: PlatformConnectionHealthStatus;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlatformConnectionInsert {
+  id?: string;
+  workspace_id: string;
+  account_id?: string | null;
+  platform: OAuthPlatform;
+  provider_account_id?: string | null;
+  handle?: string | null;
+  display_name?: string | null;
+  connection_status?: PlatformConnectionConnectionStatus;
+  scopes?: string[];
+  access_token_encrypted?: string | null;
+  refresh_token_encrypted?: string | null;
+  expires_at?: string | null;
+  connected_at?: string | null;
+  revoked_at?: string | null;
+  last_checked_at?: string | null;
+  health_status?: PlatformConnectionHealthStatus;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PlatformConnectionUpdate {
+  account_id?: string | null;
+  provider_account_id?: string | null;
+  handle?: string | null;
+  display_name?: string | null;
+  connection_status?: PlatformConnectionConnectionStatus;
+  scopes?: string[];
+  access_token_encrypted?: string | null;
+  refresh_token_encrypted?: string | null;
+  expires_at?: string | null;
+  connected_at?: string | null;
+  revoked_at?: string | null;
+  last_checked_at?: string | null;
+  health_status?: PlatformConnectionHealthStatus;
+  metadata?: Record<string, unknown>;
+}
+
+export interface OAuthStateTokenRow {
+  state: string;
+  workspace_id: string;
+  user_id: string;
+  platform: OAuthPlatform;
+  account_id: string | null;
+  redirect_after: string | null;
+  code_verifier: string | null;
+  created_at: string;
+  expires_at: string;
+}
+
+export interface OAuthStateTokenInsert {
+  state: string;
+  workspace_id: string;
+  user_id: string;
+  platform: OAuthPlatform;
+  account_id?: string | null;
+  redirect_after?: string | null;
+  code_verifier?: string | null;
+  expires_at?: string;
+}
+
 export interface Database {
   public: {
     Tables: {
@@ -1059,6 +1167,18 @@ export interface Database {
         Row: ExecutionAttemptRow;
         Insert: ExecutionAttemptInsert;
         Update: ExecutionAttemptUpdate;
+        Relationships: [];
+      };
+      platform_connections: {
+        Row: PlatformConnectionRow;
+        Insert: PlatformConnectionInsert;
+        Update: PlatformConnectionUpdate;
+        Relationships: [];
+      };
+      oauth_state_tokens: {
+        Row: OAuthStateTokenRow;
+        Insert: OAuthStateTokenInsert;
+        Update: Partial<OAuthStateTokenInsert>;
         Relationships: [];
       };
     };
