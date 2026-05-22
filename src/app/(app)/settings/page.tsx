@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import Link from "next/link";
 import { Topbar } from "@/components/topbar";
 import { LockIcon } from "@/components/icons";
 import { useSignal } from "@/core/store";
@@ -116,6 +117,14 @@ export default function SettingsPage() {
           <div className="mt-3 text-[11px] text-ink-500 leading-relaxed">
             AI runs server-side when configured. Output requires human approval
             before publishing.
+          </div>
+          <div className="mt-2 text-[11px]">
+            <Link
+              href="/settings/ai-memory"
+              className="text-signal-700 underline"
+            >
+              Inspect AI memory and retrieval budget →
+            </Link>
           </div>
         </section>
 
