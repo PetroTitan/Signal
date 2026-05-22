@@ -4,6 +4,7 @@ import { isSupabaseConfigured } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { listAccountsByPlatform } from "@/repositories/account-repository";
 import { PlatformDbAccountsCard } from "../_db-accounts-card";
+import { PlatformOAuthPanel } from "../_oauth-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +16,8 @@ export default async function RedditCommandCenter() {
           title="Reddit command center"
           description="Persistence not configured."
         />
-        <div className="px-6 lg:px-8 py-8 max-w-7xl">
+        <div className="px-6 lg:px-8 py-8 max-w-3xl space-y-6">
+          <PlatformOAuthPanel platform="reddit" />
           <PlatformNotConnectedPanel platform="reddit" />
         </div>
       </>
@@ -30,7 +32,8 @@ export default async function RedditCommandCenter() {
           title="Reddit command center"
           description="No workspace found."
         />
-        <div className="px-6 lg:px-8 py-8 max-w-7xl">
+        <div className="px-6 lg:px-8 py-8 max-w-3xl space-y-6">
+          <PlatformOAuthPanel platform="reddit" />
           <PlatformNotConnectedPanel platform="reddit" />
         </div>
       </>
@@ -49,7 +52,8 @@ export default async function RedditCommandCenter() {
           title="Reddit command center"
           description="Community-first. Comments before posts. Links last."
         />
-        <div className="px-6 lg:px-8 py-8 max-w-7xl">
+        <div className="px-6 lg:px-8 py-8 max-w-3xl space-y-6">
+          <PlatformOAuthPanel platform="reddit" />
           <PlatformNotConnectedPanel platform="reddit" />
         </div>
       </>
@@ -63,6 +67,7 @@ export default async function RedditCommandCenter() {
         description="Community-first. Comments before posts. Links last."
       />
       <div className="px-6 lg:px-8 py-6 max-w-3xl space-y-6">
+        <PlatformOAuthPanel platform="reddit" />
         <PlatformDbAccountsCard platform="reddit" accounts={accounts} />
         <p className="text-[11px] text-ink-500 leading-relaxed">
           Engine-driven surfaces (cadence ratio, content queue, risk rules)

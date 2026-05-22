@@ -313,6 +313,23 @@ Every production-impacting operation requires approval. Migration apply and simi
 
 The companion `/imports` surface is the assisted-import landing page. The extraction engine itself runs through Claude Code / Codex / Claude Opus and is not yet wired in this build — the page says so explicitly.
 
+## Platform OAuth connections
+
+`/accounts` connects social accounts only through official OAuth flows. Signal **never** asks for passwords, cookies, session tokens, 2FA codes, recovery codes, browser profiles, or fingerprints.
+
+Phase E3 ships the connection foundation:
+
+- `platform_connections` (workspace-scoped, RLS) and `oauth_state_tokens` (CSRF binding).
+- A pure `src/core/platform-oauth/` module: provider configs for Reddit, X, and LinkedIn; PKCE helpers; state generation; capability matrix; connection-health evaluator.
+- Four API routes per platform: `/api/oauth/[platform]/{start,callback,disconnect,health}`.
+- UI on `/accounts` (Connect / Disconnect / Check connection) and `/platforms/{reddit,x,linkedin}` (read-only OAuth contract panel).
+
+Phase E3 does **not** publish posts, comments, or engagement signals. No write scopes are requested. There are no background jobs and no automatic token refresh.
+
+**Token storage policy** ([docs/oauth/token-storage-policy.md](docs/oauth/token-storage-policy.md)): tokens are stored encrypted or not at all. If `TOKEN_ENCRYPTION_KEY` is unset, the OAuth callback completes but the connection is recorded with `connection_status='error'` and `metadata.token_storage='not_configured'` — no plaintext is ever stored. The UI shows whether a token is present (a boolean), never the value.
+
+See [docs/oauth/platform-oauth-connections.md](docs/oauth/platform-oauth-connections.md), [docs/oauth/reddit-oauth.md](docs/oauth/reddit-oauth.md), [docs/oauth/x-oauth.md](docs/oauth/x-oauth.md), [docs/oauth/linkedin-oauth.md](docs/oauth/linkedin-oauth.md), [docs/oauth/connection-health.md](docs/oauth/connection-health.md), and [docs/oauth/oauth-env-setup.md](docs/oauth/oauth-env-setup.md).
+
 ## Execution engine
 
 `/execution` is the durable runner for an approved weekly contract. Phase E2 ships the engine in **dry-run only** mode — no external platform APIs are called, no publishing happens. The runner evaluates each item against the active contract, records the verdict to `execution_authorizations`, walks the state machine, and writes the result to `execution_logs` and `execution_attempts`.
