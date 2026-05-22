@@ -297,7 +297,19 @@ These helpers are deterministic and do not call any model. They are the substrat
 
 See [docs/safety/account-health-first.md](docs/safety/account-health-first.md), [docs/safety/operational-safety-layer.md](docs/safety/operational-safety-layer.md), and [docs/architecture/ai-and-auth-boundaries.md](docs/architecture/ai-and-auth-boundaries.md).
 
-## MCP Operations Console
+## MCP runtime + verification pipeline
+
+Phase E2.6 extends the MCP layer from informational to operational. `/settings/mcp` is now the runtime console: connector statuses (honest, never claims "Connected" without a probe), per-check buttons, a one-button **full verification pipeline** that runs 12 checks end-to-end, and a pending-approvals queue with explicit-text confirmation for production-impacting operations.
+
+The pipeline runs (in order): env, auth, RLS, DB integrity, route protection, demo boundary, weekly contract safety, execution safety, OAuth safety, workspace smoke test, end-to-end execution dry-run (with cleanup), and the PR readiness gate. Each check returns `pass` / `warning` / `fail` plus structured evidence. The verdict is one of `ready_to_merge | needs_review | blocked`.
+
+`/imports` records an `mcp_operation_runs` row with `status='pending_approval'` when an operator prepares a product or account extraction. The extraction itself runs in the operator's connected assistant — Signal does not run AI inside the runtime. No screenshots are stored, no fields are auto-applied; everything lands as `pending_review`.
+
+Production-impacting operations (`approval_mode='explicit_text_confirmation_required'`) need the operator to type the deterministic phrase `approve production operation <run_id>`. The Approve UI hides the phrase input for normal operations.
+
+See [docs/mcp/real-mcp-runtime-integration.md](docs/mcp/real-mcp-runtime-integration.md), [docs/mcp/full-verification-pipeline.md](docs/mcp/full-verification-pipeline.md), [docs/mcp/runtime-checks.md](docs/mcp/runtime-checks.md), [docs/mcp/connector-health-checks.md](docs/mcp/connector-health-checks.md), [docs/mcp/import-runtime-preparation.md](docs/mcp/import-runtime-preparation.md), and [docs/mcp/approval-gated-runtime.md](docs/mcp/approval-gated-runtime.md).
+
+## MCP Operations Console (Phase E0 / E2)
 
 `/settings/mcp` is Signal's operator-facing surface for the AI / MCP layer. It shows:
 

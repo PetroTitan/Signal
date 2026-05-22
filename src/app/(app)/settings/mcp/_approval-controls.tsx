@@ -11,16 +11,33 @@ import {
 const approveInitial: ApproveResult = { ok: false, error: "" };
 const rejectInitial: RejectResult = { ok: false, error: "" };
 
-export function ApproveButton({ runId }: { runId: string }) {
+export function ApproveButton({
+  runId,
+  approvalMode,
+}: {
+  runId: string;
+  approvalMode?: string;
+}) {
   const [state, formAction] = useFormState(
     approveMcpOperationAction,
     approveInitial,
   );
   const safe = state ?? approveInitial;
+  const requiresPhrase = approvalMode === "explicit_text_confirmation_required";
+  const expected = `approve production operation ${runId}`;
   return (
-    <form action={formAction} className="inline-flex items-center gap-2">
+    <form action={formAction} className="inline-flex items-center gap-2 flex-wrap">
       <input type="hidden" name="run_id" value={runId} />
-      <SubmitBtn label="Approve" />
+      {requiresPhrase ? (
+        <input
+          type="text"
+          name="confirmation_phrase"
+          placeholder={expected}
+          className="input text-xs min-w-[20rem]"
+          autoComplete="off"
+        />
+      ) : null}
+      <SubmitBtn label={requiresPhrase ? "Approve (production)" : "Approve"} />
       {!safe.ok && safe.error ? (
         <span className="text-[11px] text-red-700">{safe.error}</span>
       ) : null}

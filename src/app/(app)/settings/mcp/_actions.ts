@@ -44,6 +44,7 @@ export async function approveMcpOperationAction(
   formData: FormData,
 ): Promise<ApproveResult> {
   const runId = String(formData.get("run_id") ?? "").trim();
+  const phrase = String(formData.get("confirmation_phrase") ?? "").trim();
   if (!runId) return actionFail("Missing run id.");
   try {
     const membership = await getPrimaryWorkspace();
@@ -54,6 +55,26 @@ export async function approveMcpOperationAction(
       data: { user },
     } = await supabase.auth.getUser();
     if (!user) return actionFail("Not authenticated.");
+
+    // Load the run to check whether explicit-text confirmation is
+    // required. We can't trust the client to declare the approval mode
+    // — read it from the DB.
+    const { getOperationRunById } = await import(
+      "@/repositories/admin-operations/mcp-operation-repository"
+    );
+    const existing = await getOperationRunById(membership.workspace.id, runId);
+    if (existing.approvalMode === "explicit_text_confirmation_required") {
+      const { productionApprovalPhrase } = await import("@/core/mcp-runtime");
+      const expected = productionApprovalPhrase(runId);
+      if (phrase !== expected) {
+        return actionFail(
+          `This operation requires an explicit confirmation phrase. Type: "${expected}"`,
+        );
+      }
+    }
+    if (existing.approvalMode === "blocked") {
+      return actionFail("This operation is hard-blocked and cannot be approved.");
+    }
 
     const run = await approveOperationRun({
       workspaceId: membership.workspace.id,
@@ -117,6 +138,9 @@ export async function runMcpCheckAction(
     "db_integrity_check",
     "route_protection_check",
     "demo_boundary_check",
+    "oauth_safety_check",
+    "execution_safety_check",
+    "weekly_contract_check",
     "execution_dry_run_smoke",
     "production_smoke_test",
   ]);
@@ -148,6 +172,9 @@ export async function runMcpCheckAction(
             | "db_integrity_check"
             | "route_protection_check"
             | "demo_boundary_check"
+            | "oauth_safety_check"
+            | "execution_safety_check"
+            | "weekly_contract_check"
             | "execution_dry_run_smoke"
             | "production_smoke_test");
 

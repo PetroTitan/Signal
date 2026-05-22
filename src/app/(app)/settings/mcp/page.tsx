@@ -8,9 +8,6 @@ import {
 } from "@/repositories/admin-operations/mcp-operation-repository";
 import {
   APPROVAL_MODE_LABELS,
-  MCP_CONNECTORS,
-  MCP_CONNECTOR_STATUS_HINTS,
-  MCP_CONNECTOR_STATUS_LABELS,
   MCP_OPERATION_LABELS,
   MCP_OPERATION_TYPES,
   MCP_POLICY_ALLOWED_NO_APPROVAL,
@@ -19,6 +16,13 @@ import {
   RISK_LEVEL_LABELS,
   summarizeOperation,
 } from "@/core/mcp-operations";
+import {
+  ASSISTANT_LABELS,
+  RUNTIME_CONNECTOR_STATUS_HINTS,
+  RUNTIME_CONNECTOR_STATUS_LABELS,
+  RUNTIME_CAPABILITY_LABELS,
+  buildDefaultConnectorSnapshots,
+} from "@/core/mcp-runtime";
 import { MCP_CHECKS } from "./_check-catalog";
 import { RunCheckButton } from "./_run-check-button";
 import { ApproveButton, RejectForm } from "./_approval-controls";
@@ -43,6 +47,7 @@ export default async function McpSettingsPage() {
   }
 
   const operations = MCP_OPERATION_TYPES.map(summarizeOperation);
+  const connectorSnapshots = buildDefaultConnectorSnapshots(new Date().toISOString());
 
   return (
     <>
@@ -56,31 +61,48 @@ export default async function McpSettingsPage() {
         <section className="card">
           <header className="px-5 py-3.5 border-b border-ink-100">
             <div className="text-sm font-semibold text-ink-900">
-              Connector status
+              Runtime status
             </div>
             <p className="text-xs text-ink-500 mt-0.5">
-              Signal does not run an MCP client itself. These statuses are
-              self-declared until a real probe is wired.
+              Signal does not run an MCP client itself. Each row shows what
+              capabilities Signal expects the connector to support and the
+              honest connection state — never &ldquo;Connected&rdquo; without
+              verification.
             </p>
           </header>
           <ul className="row-divider">
-            {MCP_CONNECTORS.map((c) => (
+            {connectorSnapshots.map((c) => (
               <li
-                key={c.key}
+                key={c.kind}
                 className="px-5 py-3 flex items-start justify-between gap-3"
               >
                 <div className="min-w-0">
-                  <div className="text-sm text-ink-900">{c.label}</div>
+                  <div className="text-sm text-ink-900">
+                    {ASSISTANT_LABELS[c.kind]}
+                  </div>
                   <div className="text-[11px] text-ink-500 mt-0.5 leading-relaxed">
-                    {c.description}
+                    {c.note}
                   </div>
                   <div className="text-[11px] text-ink-400 mt-0.5">
-                    {MCP_CONNECTOR_STATUS_HINTS[c.status]}
+                    {RUNTIME_CONNECTOR_STATUS_HINTS[c.status]}
+                  </div>
+                  <div className="text-[10px] text-ink-400 mt-1">
+                    Capabilities:{" "}
+                    {c.capabilities
+                      .map((cap) => RUNTIME_CAPABILITY_LABELS[cap])
+                      .join(", ")}
                   </div>
                 </div>
-                <span className="badge-neutral text-[10px] whitespace-nowrap">
-                  {MCP_CONNECTOR_STATUS_LABELS[c.status]}
-                </span>
+                <div className="text-right shrink-0">
+                  <span className="badge-neutral text-[10px] whitespace-nowrap">
+                    {RUNTIME_CONNECTOR_STATUS_LABELS[c.status]}
+                  </span>
+                  {c.lastCheckedAt ? (
+                    <div className="text-[10px] text-ink-400 mt-1">
+                      Checked {c.lastCheckedAt.slice(0, 19).replace("T", " ")}
+                    </div>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ul>
@@ -196,7 +218,7 @@ export default async function McpSettingsPage() {
                     </div>
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-3">
-                    <ApproveButton runId={run.id} />
+                    <ApproveButton runId={run.id} approvalMode={run.approvalMode} />
                     <RejectForm runId={run.id} />
                   </div>
                 </li>

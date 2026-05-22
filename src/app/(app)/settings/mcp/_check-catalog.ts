@@ -76,6 +76,30 @@ export const MCP_CHECKS: McpCheckDef[] = [
     wired: true,
   },
   {
+    key: "oauth_safety_check",
+    label: "OAuth safety check",
+    description:
+      "Static-analysis probe: no publishing scopes, no token leakage in domain types, cipher gate present, state tokens one-shot, disconnect clears tokens.",
+    operationType: null,
+    wired: true,
+  },
+  {
+    key: "execution_safety_check",
+    label: "Execution safety check",
+    description:
+      "Verifies the engine refuses without active contract, external_publish is hard-blocked, dry-run declares no external calls, logs are append-only.",
+    operationType: null,
+    wired: true,
+  },
+  {
+    key: "weekly_contract_check",
+    label: "Weekly contract check",
+    description:
+      "Verifies the contract evaluator covers every reason code, gates on demo mode, and soft-blocks paused contracts.",
+    operationType: null,
+    wired: true,
+  },
+  {
     key: "execution_dry_run_smoke",
     label: "End-to-end execution dry-run",
     description:
