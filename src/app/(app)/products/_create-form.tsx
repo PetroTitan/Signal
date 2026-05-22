@@ -1,15 +1,30 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { useFormState, useFormStatus } from "react-dom";
 import {
   createProductAction,
-  type ProductActionState,
+  type CreateProductResult,
 } from "./_actions";
 
-const initial: ProductActionState = { ok: false, error: null };
+const initial: CreateProductResult = { ok: false, error: "" };
 
 export function ProductCreateForm() {
   const [state, formAction] = useFormState(createProductAction, initial);
+  const formRef = useRef<HTMLFormElement>(null);
+
+  // After a successful submit, reset the inputs so the form is ready
+  // for the next product. The list above re-renders automatically via
+  // revalidatePath in the server action.
+  useEffect(() => {
+    if (state?.ok) {
+      formRef.current?.reset();
+    }
+  }, [state]);
+
+  // Defensive: in pathological cases (action thrown unexpectedly) state
+  // could be undefined. Treat that as a no-op state.
+  const safe = state ?? initial;
 
   return (
     <section className="card p-5">
@@ -18,7 +33,11 @@ export function ProductCreateForm() {
         Name and category are enough to start. You can refine the profile
         later.
       </p>
-      <form action={formAction} className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+      <form
+        ref={formRef}
+        action={formAction}
+        className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3"
+      >
         <label className="block md:col-span-2">
           <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500 mb-1">
             Name
@@ -27,7 +46,7 @@ export function ProductCreateForm() {
             type="text"
             name="name"
             required
-            placeholder="WebmasterID"
+            placeholder="Acme Insights"
             className="input w-full"
           />
         </label>
@@ -65,12 +84,19 @@ export function ProductCreateForm() {
           />
         </label>
 
-        {state.error ? (
+        {safe.ok ? (
+          <div
+            role="status"
+            className="md:col-span-2 text-xs leading-relaxed rounded-md px-3 py-2 bg-emerald-50 text-emerald-800"
+          >
+            Product added. It shows in the list above.
+          </div>
+        ) : safe.error ? (
           <div
             role="alert"
             className="md:col-span-2 text-xs leading-relaxed rounded-md px-3 py-2 bg-amber-50 text-amber-800"
           >
-            {state.error}
+            {safe.error}
           </div>
         ) : null}
 
