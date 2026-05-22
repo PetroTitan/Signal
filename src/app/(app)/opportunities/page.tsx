@@ -4,10 +4,7 @@ import { useMemo, useState } from "react";
 import { Topbar } from "@/components/topbar";
 import { PlatformBadge } from "@/components/badges";
 import { useSignal } from "@/core/store";
-import {
-  buildOpportunitiesForInsight,
-  recentlyUsedHooks,
-} from "@/core/content-intelligence";
+import { buildOpportunitiesForInsight } from "@/core/content-intelligence";
 import { adaptToGoogle } from "@/core/platform-adapters";
 import { contentAssets, sourceInsights } from "@/lib/mock";
 import type {
@@ -23,14 +20,6 @@ type Tab = "all" | PlatformId | "google";
 export default function OpportunitiesPage() {
   const { state } = useSignal();
   const [tab, setTab] = useState<Tab>("all");
-  const products = useMemo(
-    () => Object.values(state.productsById),
-    [state.productsById],
-  );
-  const knownHooks = useMemo(
-    () => recentlyUsedHooks(state.items),
-    [state.items],
-  );
 
   const aggregate = useMemo(() => {
     const content: ContentOpportunity[] = [];
@@ -38,29 +27,13 @@ export default function OpportunitiesPage() {
     for (const insight of sourceInsights) {
       const product = state.productsById[insight.productId];
       if (!product) continue;
-      content.push(
-        ...buildOpportunitiesForInsight({ insight, product }),
-      );
+      content.push(...buildOpportunitiesForInsight({ insight, product }));
       google.push(
         ...adaptToGoogle({ insight, product, assets: contentAssets }),
       );
     }
     return { content, google };
   }, [state.productsById]);
-
-  const visibleContent = useMemo(() => {
-    const sorted = [...aggregate.content].sort(
-      (a, b) => weightFor(b.impact) - weightFor(a.impact),
-    );
-    if (tab === "all") return sorted;
-    if (tab === "google") return [];
-    return sorted.filter((o) => o.channel === tab);
-  }, [aggregate.content, tab]);
-
-  const visibleGoogle = useMemo(() => {
-    if (tab === "all" || tab === "google") return aggregate.google;
-    return [];
-  }, [aggregate.google, tab]);
 
   const counts = useMemo(() => {
     return {
@@ -72,76 +45,54 @@ export default function OpportunitiesPage() {
     };
   }, [aggregate]);
 
+  const visibleContent = useMemo(() => {
+    const sorted = [...aggregate.content].sort(
+      (a, b) => weight(b.impact) - weight(a.impact),
+    );
+    if (tab === "all") return sorted.slice(0, 8);
+    if (tab === "google") return [];
+    return sorted.filter((o) => o.channel === tab).slice(0, 8);
+  }, [aggregate.content, tab]);
+
+  const visibleGoogle = useMemo(() => {
+    if (tab === "all" || tab === "google") return aggregate.google.slice(0, 4);
+    return [];
+  }, [aggregate.google, tab]);
+
   return (
     <>
       <Topbar
         title="Opportunities"
-        description="One view across social and discoverability channels. Sorted by impact, not by volume."
+        description="What's worth doing this week, sorted by impact."
       />
 
-      <div className="px-6 lg:px-8 py-6 max-w-7xl space-y-6">
-        <Intro />
-
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          <Stat label="Total" value={counts.all} />
-          <Stat label="Reddit" value={counts.reddit} />
-          <Stat label="X" value={counts.x} />
-          <Stat label="LinkedIn" value={counts.linkedin} />
-          <Stat label="Google" value={counts.google} />
-        </div>
-
-        <FilterBar value={tab} setTab={setTab} counts={counts} />
-
+      <div className="px-6 lg:px-10 py-8 space-y-6 max-w-4xl">
+        <FilterBar tab={tab} setTab={setTab} counts={counts} />
         {visibleContent.length === 0 && visibleGoogle.length === 0 ? (
-          <div className="card-padded text-sm text-ink-500">
-            Nothing surfaced in this view.
+          <div className="text-sm text-ink-500 py-12 text-center">
+            No opportunities right now.
           </div>
         ) : (
-          <>
-            {visibleContent.length > 0 ? (
-              <ContentOpportunityList opportunities={visibleContent} knownHooks={knownHooks} />
-            ) : null}
-            {visibleGoogle.length > 0 ? (
-              <GoogleOpportunityList opportunities={visibleGoogle} />
-            ) : null}
-          </>
+          <ul className="space-y-3">
+            {visibleContent.map((o) => (
+              <ContentRow key={o.id} opportunity={o} />
+            ))}
+            {visibleGoogle.map((o) => (
+              <GoogleRow key={o.id} opportunity={o} />
+            ))}
+          </ul>
         )}
       </div>
     </>
   );
 }
 
-function Intro() {
-  return (
-    <div className="card border-signal-200 bg-signal-50/30 p-4 text-sm leading-relaxed">
-      <div className="font-semibold text-ink-900 mb-1">
-        Cross-channel opportunity surface.
-      </div>
-      <p className="text-ink-700">
-        Each insight produces multiple platform-specific opportunities and, when
-        relevant, a Google discoverability signal. Signal does not flood the
-        queue: opportunities are scored by impact, conversation potential, and
-        evergreen value. The founder still approves manually.
-      </p>
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="card-padded">
-      <div className="stat-label">{label}</div>
-      <div className="text-2xl font-semibold text-ink-900 mt-1">{value}</div>
-    </div>
-  );
-}
-
 function FilterBar({
-  value,
+  tab,
   setTab,
   counts,
 }: {
-  value: Tab;
+  tab: Tab;
   setTab: (t: Tab) => void;
   counts: Record<"all" | OpportunityChannel, number>;
 }) {
@@ -153,21 +104,21 @@ function FilterBar({
     { key: "google", label: "Google" },
   ];
   return (
-    <div className="card p-1.5 inline-flex flex-wrap gap-1">
+    <div className="inline-flex flex-wrap gap-1">
       {buttons.map((b) => (
         <button
           key={b.key}
           type="button"
           onClick={() => setTab(b.key)}
-          className={`text-xs px-2.5 py-1 rounded-md font-medium transition-colors ${
-            value === b.key
+          className={`text-xs px-3 py-1.5 rounded-md font-medium transition-colors ${
+            tab === b.key
               ? "bg-ink-900 text-white"
               : "text-ink-600 hover:bg-ink-100"
           }`}
         >
-          {b.label}{" "}
-          <span className={value === b.key ? "text-ink-300" : "text-ink-400"}>
-            ({counts[b.key]})
+          {b.label}
+          <span className={tab === b.key ? "text-ink-300 ml-1.5" : "text-ink-400 ml-1.5"}>
+            {counts[b.key]}
           </span>
         </button>
       ))}
@@ -175,113 +126,61 @@ function FilterBar({
   );
 }
 
-function ContentOpportunityList({
-  opportunities,
-  knownHooks,
-}: {
-  opportunities: ContentOpportunity[];
-  knownHooks: string[];
-}) {
+function ContentRow({ opportunity }: { opportunity: ContentOpportunity }) {
   const { state } = useSignal();
+  const product = state.productsById[opportunity.productId];
+  const platform = opportunity.channel as PlatformId;
   return (
-    <section className="card">
-      <header className="px-5 py-3.5 border-b border-ink-100">
-        <div className="text-sm font-semibold text-ink-900">
-          Social opportunities
-        </div>
-        <p className="text-xs text-ink-500 mt-0.5">
-          Insight-derived opportunities ready for draft generation.
-        </p>
-      </header>
-      <ul className="row-divider">
-        {opportunities.map((o) => {
-          const product = state.productsById[o.productId];
-          const platform = o.channel === "google" ? null : (o.channel as PlatformId);
-          return (
-            <li key={o.id} className="px-5 py-3">
-              <div className="flex items-center gap-2 mb-1 flex-wrap">
-                {platform ? <PlatformBadge platform={platform} /> : null}
-                <span className="text-xs text-ink-500 capitalize">
-                  {o.kind.replace(/_/g, " ")}
-                </span>
-                <span
-                  className={`badge ${
-                    o.impact === "high"
-                      ? "bg-red-50 text-red-700"
-                      : o.impact === "medium"
-                        ? "bg-amber-50 text-amber-700"
-                        : "bg-ink-100 text-ink-700"
-                  }`}
-                >
-                  {o.impact} impact
-                </span>
-                <span className="text-xs text-ink-500">{product?.name}</span>
-                {knownHooks.some((h) =>
-                  h.toLowerCase().includes(o.title.slice(0, 24).toLowerCase()),
-                ) ? (
-                  <span className="badge bg-amber-50 text-amber-700 text-[10px]">
-                    similar already in plan
-                  </span>
-                ) : null}
-              </div>
-              <div className="text-sm text-ink-900 font-medium">{o.title}</div>
-              <p className="text-xs text-ink-700 mt-1">{o.rationale}</p>
-            </li>
-          );
-        })}
-      </ul>
-    </section>
+    <li className="card p-4">
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        <PlatformBadge platform={platform} />
+        <span className="text-xs text-ink-500 capitalize">
+          {opportunity.kind.replace(/_/g, " ")}
+        </span>
+        <ImpactChip impact={opportunity.impact} />
+        <span className="text-xs text-ink-500 ml-auto">{product?.name}</span>
+      </div>
+      <div className="text-sm font-medium text-ink-900 leading-snug">
+        {opportunity.title}
+      </div>
+      <p className="text-xs text-ink-600 mt-1.5 leading-relaxed">
+        {opportunity.rationale}
+      </p>
+    </li>
   );
 }
 
-function GoogleOpportunityList({
-  opportunities,
-}: {
-  opportunities: DiscoverabilityOpportunity[];
-}) {
+function GoogleRow({ opportunity }: { opportunity: DiscoverabilityOpportunity }) {
   return (
-    <section className="card">
-      <header className="px-5 py-3.5 border-b border-ink-100">
-        <div className="text-sm font-semibold text-ink-900">
-          Google discoverability opportunities
-        </div>
-        <p className="text-xs text-ink-500 mt-0.5">
-          Search-to-social, freshness, internal linking, and topic-cluster
-          gaps surfaced from insights paired with content assets.
-        </p>
-      </header>
-      <ul className="row-divider">
-        {opportunities.map((o) => (
-          <li key={o.id} className="px-5 py-3">
-            <div className="flex items-center gap-2 mb-1 flex-wrap">
-              <span className="badge bg-ink-900 text-white">Google</span>
-              <span className="text-xs text-ink-500 capitalize">
-                {o.kind.replace(/_/g, " ")}
-              </span>
-              <span
-                className={`badge ${impactTone(o.impact)}`}
-              >
-                {o.impact}
-              </span>
-            </div>
-            <div className="text-sm text-ink-900 font-medium">{o.title}</div>
-            <p className="text-xs text-ink-700 mt-1">{o.detail}</p>
-            <p className="text-xs text-ink-800 mt-1 italic">{o.suggestedAction}</p>
-          </li>
-        ))}
-      </ul>
-    </section>
+    <li className="card p-4">
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        <span className="badge bg-ink-900 text-white">Google</span>
+        <span className="text-xs text-ink-500 capitalize">
+          {opportunity.kind.replace(/_/g, " ")}
+        </span>
+        <ImpactChip impact={opportunity.impact} />
+      </div>
+      <div className="text-sm font-medium text-ink-900 leading-snug">
+        {opportunity.title}
+      </div>
+      <p className="text-xs text-ink-600 mt-1.5 leading-relaxed">
+        {opportunity.detail}
+      </p>
+      <p className="text-xs text-ink-800 mt-1 italic">{opportunity.suggestedAction}</p>
+    </li>
   );
 }
 
-function impactTone(impact: OpportunityImpact): string {
-  return impact === "high"
-    ? "bg-red-50 text-red-700"
-    : impact === "medium"
-      ? "bg-amber-50 text-amber-700"
-      : "bg-ink-100 text-ink-700";
+function ImpactChip({ impact }: { impact: OpportunityImpact }) {
+  const tone =
+    impact === "high"
+      ? "bg-ink-900 text-white"
+      : impact === "medium"
+        ? "bg-ink-100 text-ink-700"
+        : "bg-ink-100 text-ink-500";
+  return <span className={`badge text-[10px] ${tone}`}>{impact}</span>;
 }
 
-function weightFor(impact: OpportunityImpact): number {
+function weight(impact: OpportunityImpact): number {
   return impact === "high" ? 3 : impact === "medium" ? 2 : 1;
 }
