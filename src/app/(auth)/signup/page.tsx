@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { AuthForm } from "../_form";
+import { SupabaseConfigNotice } from "../_config-notice";
 
 export const metadata: Metadata = { title: "Sign up" };
 
@@ -16,6 +17,7 @@ export default function SignupPage() {
             Configure once. Reuse context. Approve weekly.
           </div>
         </div>
+        <SupabaseConfigNotice />
         <AuthForm mode="signup" />
       </div>
     </main>

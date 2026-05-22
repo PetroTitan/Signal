@@ -1,8 +1,12 @@
 "use server";
 
+import { isRedirectError } from "next/dist/client/components/redirect";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { createSupabaseServerClient } from "@/lib/supabase";
+import {
+  createSupabaseServerClient,
+  SupabaseEnvError,
+} from "@/lib/supabase";
 import { createWorkspace } from "@/repositories/workspace-repository";
 import { recordActivity } from "@/repositories/activity-repository";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
@@ -10,6 +14,23 @@ import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 export interface AuthActionState {
   ok: boolean;
   error: string | null;
+}
+
+function handleUnknownAuthError(err: unknown): AuthActionState {
+  if (err instanceof SupabaseEnvError) {
+    // Server-only log. Diagnostics never contain the anon-key value.
+    console.error("[auth] Supabase env misconfigured", err.diagnostics);
+    return {
+      ok: false,
+      error:
+        "Authentication is not available right now. The Supabase project URL or anon key is misconfigured for this deployment.",
+    };
+  }
+  console.error("[auth] Unexpected error", err);
+  return {
+    ok: false,
+    error: "Authentication is temporarily unavailable. Please try again shortly.",
+  };
 }
 
 export async function signInAction(
@@ -24,14 +45,21 @@ export async function signInAction(
     return { ok: false, error: "Email and password are required." };
   }
 
-  const supabase = createSupabaseServerClient();
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) {
-    return { ok: false, error: friendlyAuthError(error.message) };
+  try {
+    const supabase = createSupabaseServerClient();
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    if (error) {
+      return { ok: false, error: friendlyAuthError(error.message) };
+    }
+    revalidatePath("/", "layout");
+    redirect(safeRedirect(next));
+  } catch (err) {
+    if (isRedirectError(err)) throw err;
+    return handleUnknownAuthError(err);
   }
-
-  revalidatePath("/", "layout");
-  redirect(safeRedirect(next));
 }
 
 export async function signUpAction(
@@ -48,10 +76,19 @@ export async function signUpAction(
     return { ok: false, error: "Password must be at least 8 characters." };
   }
 
-  const supabase = createSupabaseServerClient();
-  const { data, error } = await supabase.auth.signUp({ email, password });
-  if (error) {
-    return { ok: false, error: friendlyAuthError(error.message) };
+  let data: Awaited<
+    ReturnType<ReturnType<typeof createSupabaseServerClient>["auth"]["signUp"]>
+  >["data"];
+  try {
+    const supabase = createSupabaseServerClient();
+    const result = await supabase.auth.signUp({ email, password });
+    if (result.error) {
+      return { ok: false, error: friendlyAuthError(result.error.message) };
+    }
+    data = result.data;
+  } catch (err) {
+    if (isRedirectError(err)) throw err;
+    return handleUnknownAuthError(err);
   }
 
   // If the project requires email confirmation, signUp returns a user with
@@ -86,8 +123,13 @@ export async function signUpAction(
 }
 
 export async function signOutAction(): Promise<void> {
-  const supabase = createSupabaseServerClient();
-  await supabase.auth.signOut();
+  try {
+    const supabase = createSupabaseServerClient();
+    await supabase.auth.signOut();
+  } catch (err) {
+    // Swallow env / network errors here — we still want to redirect the user.
+    console.error("[auth] signOut error", err);
+  }
   revalidatePath("/", "layout");
   redirect("/login");
 }
