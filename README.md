@@ -297,6 +297,20 @@ These helpers are deterministic and do not call any model. They are the substrat
 
 See [docs/safety/account-health-first.md](docs/safety/account-health-first.md), [docs/safety/operational-safety-layer.md](docs/safety/operational-safety-layer.md), and [docs/architecture/ai-and-auth-boundaries.md](docs/architecture/ai-and-auth-boundaries.md).
 
+## Supabase MCP connector probe
+
+Phase E2.7 turns the Supabase connector status into a real probe. The **Run Supabase probe** button on `/settings/mcp` verifies the data plane through Signal's own authenticated session (mode `internal_db_probe`), records a `mcp_connector_probes` row, an `mcp_operation_runs` row, and a `mcp.supabase_probe_completed` activity event.
+
+The probe is read-only by construction:
+
+- Never uses the service-role key.
+- Never reads the `auth` schema.
+- Never selects encrypted-token or secret columns.
+- Never builds SQL strings.
+- Bounded per-query (8 s) and total (30 s) timeouts.
+
+The status label is honest: when running in `internal_db_probe` mode, the card shows **"DB probe healthy"** — never **"MCP connected"**. The runtime types and DB column support `direct_mcp` and `operator_bridge` modes for when a future bridge is wired. See [docs/mcp/supabase-mcp-connector-probe.md](docs/mcp/supabase-mcp-connector-probe.md), [docs/mcp/connector-probe-transport.md](docs/mcp/connector-probe-transport.md), [docs/mcp/supabase-probe-security.md](docs/mcp/supabase-probe-security.md), and [docs/mcp/internal-db-probe-vs-mcp.md](docs/mcp/internal-db-probe-vs-mcp.md).
+
 ## MCP runtime + verification pipeline
 
 Phase E2.6 extends the MCP layer from informational to operational. `/settings/mcp` is now the runtime console: connector statuses (honest, never claims "Connected" without a probe), per-check buttons, a one-button **full verification pipeline** that runs 12 checks end-to-end, and a pending-approvals queue with explicit-text confirmation for production-impacting operations.

@@ -8,3 +8,4 @@ export * from "./runtime-result";
 export * from "./runtime-report";
 export * from "./runtime-checks";
 export * from "./runtime-errors";
+export * from "./supabase-probe";
