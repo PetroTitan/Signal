@@ -204,6 +204,22 @@ A debug surface at [/settings/ai-memory](src/app/(app)/settings/ai-memory/page.t
 
 See [docs/ai/memory-architecture.md](docs/ai/memory-architecture.md), [docs/ai/context-pipeline.md](docs/ai/context-pipeline.md), [docs/ai/token-budgets.md](docs/ai/token-budgets.md), and [docs/database/memory-schema-plan.md](docs/database/memory-schema-plan.md).
 
+## Regional operations
+
+Signal supports workspace-level regional routing: one stable operational region per workspace, with calm regional publishing windows, deterministic region-consistency scoring, and an optional outbound network profile for businesses that operate from a different network than the device running Signal.
+
+- Nine supported regions in `src/core/geo/region-policy.ts` (US East/Central/West, EU West/Central, UK, Japan, APAC, Global) with default timezone, language, business-hour bounds, and cadence profile.
+- Three geo modes: `local_only`, `regional_operations`, `international_operations`.
+- Default publishing windows per region in `src/core/geo/timezone-routing.ts` — morning + evening for US, morning + afternoon for EU/UK/JP/APAC, UTC working hours for global.
+- Subtle regional cadence hints in `src/core/geo/regional-cadence.ts` (tone / pacing / discoverability) feed into the platform-adaptation contract without faking localization.
+- `scoreRegionConsistency()` produces a deterministic 0–1 score across six signals (timezone alignment, publishing window consistency, region stability, routing stability, cadence consistency, language alignment).
+- Optional `NetworkProfile` carries label, region, protocol (HTTP/HTTPS/SOCKS5), host, port, masked credentials. The browser never sees plaintext; credentials are encrypted server-side. No rotation, no pools, no marketplace.
+- Settings UI at [/settings/network](src/app/(app)/settings/network/page.tsx) — calm, mobile-friendly, enterprise-clean. Configure once.
+
+This is operational infrastructure, **not** anti-detect tooling, stealth automation, fingerprint spoofing, browser masking, cookie/session management, proxy farming, or rotation. Regional routing never bypasses approval, cadence, or risk checks.
+
+See [docs/geo/workspace-region-architecture.md](docs/geo/workspace-region-architecture.md), [docs/geo/regional-routing.md](docs/geo/regional-routing.md), [docs/geo/network-profile-system.md](docs/geo/network-profile-system.md), [docs/safety/region-consistency.md](docs/safety/region-consistency.md), and [docs/platforms/geo-aware-operations.md](docs/platforms/geo-aware-operations.md).
+
 ## Long-lived connections and one-time setup
 
 Signal is designed to feel like durable infrastructure. Configure once, reuse context safely, recover gracefully:
