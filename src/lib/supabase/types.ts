@@ -1084,6 +1084,175 @@ export interface McpConnectorProbeUpdate {
   completed_at?: string | null;
 }
 
+// =====================================================================
+// Phase E2.8 — Operator bridge runtime
+// =====================================================================
+
+export type BridgeAssistantType =
+  | "claude_code"
+  | "codex"
+  | "claude_opus"
+  | "supabase_mcp"
+  | "github_mcp"
+  | "vercel_manual";
+
+export type BridgeRequestType =
+  | "repo_check"
+  | "db_check"
+  | "rls_check"
+  | "migration_review"
+  | "pr_readiness_review"
+  | "import_mapping"
+  | "smoke_test"
+  | "deployment_review"
+  | "architecture_audit";
+
+export type BridgeRiskLevel =
+  | "safe_read"
+  | "local_write"
+  | "remote_write"
+  | "production_impacting"
+  | "blocked";
+
+export type BridgeApprovalMode =
+  | "no_approval_needed"
+  | "approval_required"
+  | "explicit_text_confirmation_required"
+  | "blocked";
+
+export type BridgeRequestStatus =
+  | "draft"
+  | "pending_operator"
+  | "copied"
+  | "running"
+  | "result_submitted"
+  | "verified"
+  | "failed_verification"
+  | "expired"
+  | "cancelled"
+  | "rejected"
+  | "completed";
+
+export type BridgeResultStatus = "submitted" | "verified" | "rejected" | "failed";
+
+export type BridgeVerificationStatus =
+  | "pending"
+  | "verified"
+  | "rejected"
+  | "failed";
+
+export type BridgeNonceStatus = "active" | "used" | "expired" | "revoked";
+
+export interface OperatorBridgeRequestRow {
+  id: string;
+  workspace_id: string;
+  operation_run_id: string | null;
+  requested_by: string | null;
+  assigned_to: string | null;
+  assistant_type: BridgeAssistantType;
+  request_type: BridgeRequestType;
+  risk_level: BridgeRiskLevel;
+  approval_mode: BridgeApprovalMode;
+  status: BridgeRequestStatus;
+  title: string;
+  task_prompt: string;
+  expected_result_schema: Record<string, unknown>;
+  allowed_capabilities: string[];
+  blocked_capabilities: string[];
+  expires_at: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+export interface OperatorBridgeRequestInsert {
+  id?: string;
+  workspace_id: string;
+  operation_run_id?: string | null;
+  requested_by?: string | null;
+  assigned_to?: string | null;
+  assistant_type: BridgeAssistantType;
+  request_type: BridgeRequestType;
+  risk_level: BridgeRiskLevel;
+  approval_mode: BridgeApprovalMode;
+  status?: BridgeRequestStatus;
+  title: string;
+  task_prompt: string;
+  expected_result_schema?: Record<string, unknown>;
+  allowed_capabilities?: string[];
+  blocked_capabilities?: string[];
+  expires_at: string;
+  metadata?: Record<string, unknown>;
+}
+export interface OperatorBridgeRequestUpdate {
+  status?: BridgeRequestStatus;
+  assigned_to?: string | null;
+  metadata?: Record<string, unknown>;
+  expires_at?: string;
+  operation_run_id?: string | null;
+}
+
+export interface OperatorBridgeResultRow {
+  id: string;
+  workspace_id: string;
+  request_id: string;
+  submitted_by: string | null;
+  assistant_type: BridgeAssistantType;
+  status: BridgeResultStatus;
+  result_summary: string;
+  result_payload: Record<string, unknown>;
+  verification_status: BridgeVerificationStatus;
+  verification_errors: string[];
+  signature: string | null;
+  signed_at: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+export interface OperatorBridgeResultInsert {
+  id?: string;
+  workspace_id: string;
+  request_id: string;
+  submitted_by?: string | null;
+  assistant_type: BridgeAssistantType;
+  status?: BridgeResultStatus;
+  result_summary: string;
+  result_payload?: Record<string, unknown>;
+  verification_status?: BridgeVerificationStatus;
+  verification_errors?: string[];
+  signature?: string | null;
+  signed_at?: string | null;
+  metadata?: Record<string, unknown>;
+}
+export interface OperatorBridgeResultUpdate {
+  status?: BridgeResultStatus;
+  verification_status?: BridgeVerificationStatus;
+  verification_errors?: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface OperatorBridgeNonceRow {
+  id: string;
+  workspace_id: string;
+  request_id: string;
+  nonce: string;
+  status: BridgeNonceStatus;
+  expires_at: string;
+  used_at: string | null;
+  created_at: string;
+}
+export interface OperatorBridgeNonceInsert {
+  id?: string;
+  workspace_id: string;
+  request_id: string;
+  nonce: string;
+  status?: BridgeNonceStatus;
+  expires_at: string;
+  used_at?: string | null;
+}
+export interface OperatorBridgeNonceUpdate {
+  status?: BridgeNonceStatus;
+  used_at?: string | null;
+}
+
 export interface Database {
   public: {
     Tables: {
@@ -1253,6 +1422,24 @@ export interface Database {
         Row: McpConnectorProbeRow;
         Insert: McpConnectorProbeInsert;
         Update: McpConnectorProbeUpdate;
+        Relationships: [];
+      };
+      operator_bridge_requests: {
+        Row: OperatorBridgeRequestRow;
+        Insert: OperatorBridgeRequestInsert;
+        Update: OperatorBridgeRequestUpdate;
+        Relationships: [];
+      };
+      operator_bridge_results: {
+        Row: OperatorBridgeResultRow;
+        Insert: OperatorBridgeResultInsert;
+        Update: OperatorBridgeResultUpdate;
+        Relationships: [];
+      };
+      operator_bridge_nonces: {
+        Row: OperatorBridgeNonceRow;
+        Insert: OperatorBridgeNonceInsert;
+        Update: OperatorBridgeNonceUpdate;
         Relationships: [];
       };
     };

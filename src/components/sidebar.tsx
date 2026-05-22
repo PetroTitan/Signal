@@ -75,6 +75,7 @@ const groups: { label: string; items: NavItem[] }[] = [
       { href: "/workflow", label: "Workflow", icon: PlatformsIcon },
       { href: "/weekly-contracts", label: "Weekly contracts", icon: ApprovalIcon },
       { href: "/settings/mcp", label: "MCP operations", icon: SettingsIcon },
+      { href: "/operator-bridge", label: "Operator bridge", icon: InsightIcon },
       { href: "/imports", label: "Import assistant", icon: InsightIcon },
       { href: "/settings", label: "Settings", icon: SettingsIcon, exact: true },
     ],
