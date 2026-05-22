@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { AuthForm } from "../_form";
+import { SupabaseConfigNotice } from "../_config-notice";
 
 export const metadata: Metadata = { title: "Sign in" };
 
@@ -21,6 +22,7 @@ export default function LoginPage({ searchParams }: LoginPageProps) {
             Calm operational growth infrastructure.
           </div>
         </div>
+        <SupabaseConfigNotice />
         <AuthForm mode="signin" next={next} />
       </div>
     </main>
