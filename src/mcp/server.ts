@@ -18,7 +18,10 @@ import {
   lookupTokenByHash,
   touchTokenLastUsed,
 } from "@/repositories/mcp-server/operator-token-repository";
-import { createSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
+import {
+  createSupabaseServiceRoleClient,
+  isServiceRoleAvailable,
+} from "@/lib/supabase/service-role";
 
 /**
  * Phase F0 — MCP HTTP bridge dispatcher.
@@ -43,6 +46,20 @@ export interface DispatchResponseEnvelope {
 export async function dispatch(
   input: DispatchRequest,
 ): Promise<DispatchResponseEnvelope> {
+  // 0) Hard precondition: the bridge cannot authenticate any token
+  //    when the service-role key is missing. Surface that honestly
+  //    instead of collapsing into "invalid_token".
+  if (!isServiceRoleAvailable()) {
+    return {
+      status: 503,
+      body: failed({
+        tool: input.tool ?? "(unknown)",
+        summary:
+          "Signal MCP server is not configured. SUPABASE_SERVICE_ROLE_KEY is unset on the server.",
+      }),
+    };
+  }
+
   // 1) Auth
   let plaintext: string;
   try {

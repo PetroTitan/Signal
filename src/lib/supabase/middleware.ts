@@ -14,6 +14,10 @@ const PUBLIC_PATH_PREFIXES = [
   "/login",
   "/signup",
   "/auth",
+  // Phase F0: external operators reach the MCP HTTP bridge via bearer
+  // token, not a Supabase cookie. The route handler does its own
+  // auth; the middleware must not redirect to /login.
+  "/api/mcp",
 ];
 
 const PUBLIC_EXACT_PATHS = new Set<string>([
