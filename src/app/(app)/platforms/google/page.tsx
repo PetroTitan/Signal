@@ -15,6 +15,8 @@ import {
 } from "@/core/discoverability";
 import { contentAssets as allContentAssets } from "@/lib/mock";
 import { useDemoData } from "@/lib/demo-data";
+import { useDataMode } from "@/core/data-mode";
+import { DemoLabel, NotConnectedState } from "@/components/empty-state";
 import type {
   ContentAsset,
   DiscoverabilityOpportunity,
@@ -48,12 +50,14 @@ const youtubeKindLabels: Record<YouTubeFormatKind, string> = {
 
 export default function GoogleVisibilityCommandCenter() {
   const { state } = useSignal();
+  const dataMode = useDataMode();
   const products = useMemo(
     () => Object.values(state.productsById),
     [state.productsById],
   );
 
   const contentAssets = useDemoData(allContentAssets);
+
   const assets = useMemo(
     () =>
       contentAssets.map((a) => ({
@@ -93,6 +97,26 @@ export default function GoogleVisibilityCommandCenter() {
     return Math.round(sum / products.length);
   }, [assets, products]);
 
+  if (!dataMode.isDemo && contentAssets.length === 0 && products.length === 0) {
+    return (
+      <>
+        <Topbar
+          title="Google visibility — search &amp; discoverability operations"
+          description="Not a publishing platform. Signal does not auto-index, auto-update, or auto-publish."
+        />
+        <div className="px-6 lg:px-8 py-8 max-w-3xl">
+          <NotConnectedState
+            variant="noDiscoverability"
+            secondary={{ href: "/accounts/new", label: "Add account" }}
+          >
+            Search Console is not connected. No fake rankings, traffic,
+            indexed pages, or impressions are shown.
+          </NotConnectedState>
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <Topbar
@@ -101,6 +125,7 @@ export default function GoogleVisibilityCommandCenter() {
       />
 
       <div className="px-6 lg:px-8 py-6 max-w-7xl space-y-6">
+        {dataMode.isDemo ? <DemoLabel /> : null}
         <Intro />
 
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
