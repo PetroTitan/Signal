@@ -33,12 +33,11 @@ export default function PlatformsOverview() {
   return (
     <>
       <Topbar
-        title="Platform command centers"
-        description="One operational core, four platform-native lenses. Three social surfaces plus a search & discoverability layer."
+        title="Platforms"
+        description="Reddit, X, LinkedIn, and Google — each on its own terms."
       />
 
-      <div className="px-6 lg:px-8 py-6 max-w-7xl space-y-6">
-        <Intro />
+      <div className="px-6 lg:px-10 py-8 max-w-6xl space-y-6">
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {platformIds.map((id) => {
@@ -222,24 +221,6 @@ function GoogleCard() {
         Google is treated as a discoverability surface, not a publishing one.
       </div>
     </Link>
-  );
-}
-
-function Intro() {
-  return (
-    <div className="card border-signal-200 bg-signal-50/30 p-4 text-sm leading-relaxed">
-      <div className="font-semibold text-ink-900 mb-1">
-        One operational core. Four platform-native lenses.
-      </div>
-      <p className="text-ink-700">
-        Signal&apos;s weekly planner, approval queue, scheduler, risk engine,
-        and backlog stay shared. Three social command centers (Reddit, X,
-        LinkedIn) apply platform-specific strategy. A fourth lens — Google —
-        runs as search &amp; discoverability operations, not as a publishing
-        platform. Signal does not become a generic universal dashboard; each
-        surface is treated on its own terms.
-      </p>
-    </div>
   );
 }
 
