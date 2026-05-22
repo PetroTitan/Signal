@@ -15,6 +15,8 @@ export interface Product {
   summary: string | null;
   category: string | null;
   status: string;
+  source: string;
+  reviewStatus: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -28,6 +30,8 @@ function toProduct(row: ProductRow): Product {
     summary: row.summary,
     category: row.category,
     status: row.status,
+    source: row.source,
+    reviewStatus: row.review_status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
