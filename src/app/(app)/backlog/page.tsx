@@ -18,9 +18,7 @@ export default function BacklogPage() {
         description="Held items, ready to come back when the cadence has room."
       />
 
-      <div className="px-6 lg:px-8 py-6 max-w-5xl space-y-6">
-        <Callout />
-
+      <div className="px-6 lg:px-10 py-8 max-w-4xl space-y-6">
         <section className="card">
           <header className="px-5 py-3.5 border-b border-ink-100 flex items-center justify-between">
             <div>
@@ -122,16 +120,3 @@ function RecentlyBacklogged({ items }: { items: WeeklyPlanItem[] }) {
   );
 }
 
-function Callout() {
-  return (
-    <div className="card border-signal-200 bg-signal-50/40">
-      <div className="p-4 text-sm text-ink-700 leading-relaxed">
-        <span className="font-semibold text-ink-900">Why we backlog.</span>{" "}
-        Signal holds items rather than firing them when cadence is full,
-        promotional saturation is reached, or an account is still warming.
-        Items here can be restored, edited, or rescheduled when the week has
-        room. Nothing here is lost.
-      </div>
-    </div>
-  );
-}

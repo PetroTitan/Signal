@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { workspace } from "@/lib/mock";
 import { SearchIcon } from "./icons";
 
 type TopbarProps = {
@@ -11,27 +10,24 @@ type TopbarProps = {
 export function Topbar({ title, description, actions }: TopbarProps) {
   return (
     <header className="border-b border-ink-100 bg-white">
-      <div className="px-6 lg:px-8 py-5 flex flex-wrap items-start justify-between gap-3">
+      <div className="px-6 lg:px-10 py-6 flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
-          <div className="flex items-center gap-2 text-xs text-ink-500 mb-1">
-            <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
-            <span>{workspace.name}</span>
-          </div>
-          <h1 className="text-xl font-semibold text-ink-900 leading-tight">
+          <h1 className="text-xl font-semibold text-ink-900 leading-tight tracking-tight">
             {title}
           </h1>
           {description ? (
-            <p className="text-sm text-ink-500 mt-1 max-w-2xl">{description}</p>
+            <p className="text-sm text-ink-500 mt-1 max-w-xl leading-relaxed">
+              {description}
+            </p>
           ) : null}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <Link
             href="/search"
             aria-label="Open search"
-            className="btn inline-flex items-center gap-2"
+            className="btn-ghost p-2"
           >
             <SearchIcon />
-            <span className="hidden sm:inline">Search</span>
           </Link>
           {actions}
         </div>

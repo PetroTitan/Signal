@@ -5,9 +5,8 @@ import { Topbar } from "@/components/topbar";
 import { PlatformBadge, RiskBadge } from "@/components/badges";
 import { CadenceCallout as LiveCadenceCallout } from "@/components/cadence-callout";
 import { useApprovalActions, useSignal } from "@/core/store";
-import { formatDateRange } from "@/lib/format";
-import { platformLoad, accountWeeklyCount } from "@/core/scheduler";
-import type { PlatformId, WeeklyPlanItem } from "@/types";
+import { accountWeeklyCount } from "@/core/scheduler";
+import type { WeeklyPlanItem } from "@/types";
 
 const dayLabels = [
   "Monday",
@@ -41,13 +40,13 @@ export default function SchedulerPage() {
     <>
       <Topbar
         title="Scheduler"
-        description={`Week of ${formatDateRange(state.plan.weekStartIso, state.plan.weekEndIso)} · sustainable cadence across the week.`}
+        description="Approved items, spread across the week."
         actions={
           <>
             <GroupSwitch value={groupBy} onChange={setGroupBy} />
             <button
               type="button"
-              className="btn-primary"
+              className="btn"
               onClick={() => actions.redistribute()}
             >
               Redistribute
@@ -56,11 +55,9 @@ export default function SchedulerPage() {
         }
       />
 
-      <div className="px-6 lg:px-8 py-6 max-w-7xl space-y-6">
-        <CadenceCallout />
+      <div className="px-6 lg:px-10 py-8 max-w-6xl space-y-6">
         <LiveCadenceCallout />
         {state.lastMoves.length > 0 ? <MovesPanel /> : null}
-        <CadenceLoadStrip />
 
         {groupBy === "day" ? (
           <WeeklyGrid items={scheduledItems} />
@@ -273,19 +270,6 @@ function ItemTile({
   );
 }
 
-function CadenceCallout() {
-  return (
-    <div className="card border-emerald-200 bg-emerald-50/40">
-      <div className="p-4 text-sm text-ink-700 leading-relaxed">
-        <span className="font-semibold text-ink-900">Sustainable cadence.</span>{" "}
-        Items are spaced across the week to respect platform cadence and account
-        cooldown. Signal will not concentrate posts. Items that exceed safe
-        capacity are moved to the backlog rather than fired anyway.
-      </div>
-    </div>
-  );
-}
-
 function MovesPanel() {
   const { state } = useSignal();
   return (
@@ -303,45 +287,6 @@ function MovesPanel() {
           <li key={m.id}>· {m.reason}</li>
         ))}
       </ul>
-    </div>
-  );
-}
-
-function CadenceLoadStrip() {
-  const { state } = useSignal();
-  const load = platformLoad(state.items);
-  const platforms: PlatformId[] = ["reddit", "x", "linkedin"];
-  return (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-      {platforms.map((p) => {
-        const info = load[p];
-        const pct = Math.min(100, Math.round((info.count / info.max) * 100));
-        const tone = info.isOver
-          ? "bg-amber-500"
-          : info.isApproachingMax
-            ? "bg-amber-400"
-            : "bg-emerald-500";
-        return (
-          <div key={p} className="card-padded">
-            <div className="flex items-center justify-between mb-2">
-              <PlatformBadge platform={p} />
-              <span className="text-xs text-ink-500">
-                {info.count}/{info.suggested} suggested · cap {info.max}
-              </span>
-            </div>
-            <div className="h-1.5 bg-ink-100 rounded-full overflow-hidden">
-              <div className={`h-full ${tone}`} style={{ width: `${pct}%` }} />
-            </div>
-            <div className="text-[11px] text-ink-500 mt-1.5">
-              {info.isOver
-                ? "Over suggested cadence — Signal will redistribute."
-                : info.isApproachingMax
-                  ? "Approaching weekly cap."
-                  : "Within sustainable cadence."}
-            </div>
-          </div>
-        );
-      })}
     </div>
   );
 }

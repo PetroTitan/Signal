@@ -28,41 +28,39 @@ export default function ApprovalQueuePage() {
   return (
     <>
       <Topbar
-        title="Approval queue"
-        description="One calm weekly review. Decisions are deliberate, not aggressive."
+        title="Review this week"
+        description="Approve, soften, or move to the backlog. One pass."
         actions={
-          <>
+          lowRiskPending > 0 ? (
             <button
               type="button"
-              className="btn"
-              disabled={lowRiskPending === 0}
+              className="btn-primary"
               onClick={() => actions.approveAllLowRisk()}
             >
               Approve all low-risk ({lowRiskPending})
             </button>
-            <button
-              type="button"
-              className="btn-primary"
-              onClick={() => actions.redistribute()}
-            >
-              Redistribute schedule
-            </button>
-          </>
+          ) : null
         }
       />
 
-      <div className="px-6 lg:px-8 py-6 max-w-5xl space-y-4">
+      <div className="px-6 lg:px-10 py-8 max-w-3xl space-y-6">
         <CadenceCallout />
-        <FilterBar filter={filter} setFilter={setFilter} pending={pending} />
+        {pending.length > 0 ? (
+          <FilterBar filter={filter} setFilter={setFilter} pending={pending} />
+        ) : null}
 
         {visible.length === 0 ? (
-          <div className="card-padded text-sm text-ink-500">
+          <div className="text-sm text-ink-500 py-12 text-center">
             {pending.length === 0
-              ? "Queue is clear. Nothing pending."
+              ? "Queue is clear."
               : "Nothing in this risk bucket."}
           </div>
         ) : (
-          visible.map((item) => <ItemCard key={item.id} item={item} />)
+          <div className="space-y-4">
+            {visible.map((item) => (
+              <ItemCard key={item.id} item={item} />
+            ))}
+          </div>
         )}
       </div>
     </>
@@ -173,7 +171,7 @@ function ItemCard({ item }: { item: WeeklyPlanItem }) {
         ) : null}
       </div>
 
-      <footer className="px-5 py-3 border-t border-ink-100 flex flex-wrap gap-2 bg-ink-50/40">
+      <footer className="px-5 py-3 border-t border-ink-100 flex flex-wrap items-center gap-2 bg-ink-50/40">
         <button
           type="button"
           className="btn-primary"
@@ -186,55 +184,18 @@ function ItemCard({ item }: { item: WeeklyPlanItem }) {
           className="btn"
           onClick={() => actions.rewriteSofter(item.id)}
         >
-          Rewrite softer
-        </button>
-        {item.draft.trackingLinkId || item.draft.cta ? (
-          <button
-            type="button"
-            className="btn"
-            onClick={() => actions.removeLink(item.id)}
-          >
-            Remove link
-          </button>
-        ) : null}
-        <button
-          type="button"
-          className="btn"
-          onClick={() => actions.delay(item.id, 24)}
-        >
-          Delay 24h
-        </button>
-        <button
-          type="button"
-          className="btn"
-          onClick={() => actions.convertToComment(item.id)}
-        >
-          Convert to comment
+          Soften
         </button>
         <button
           type="button"
           className="btn"
           onClick={() => actions.saveToBacklog(item.id)}
         >
-          Save to backlog
+          Move to backlog
         </button>
         <button
           type="button"
-          className="btn"
-          onClick={() => actions.pause(item.id)}
-        >
-          Pause
-        </button>
-        <button
-          type="button"
-          className="btn"
-          onClick={() => actions.duplicateNextWeek(item.id)}
-        >
-          Duplicate next week
-        </button>
-        <button
-          type="button"
-          className="btn-ghost text-red-700"
+          className="btn-ghost text-ink-500 ml-auto"
           onClick={() => actions.reject(item.id)}
         >
           Reject

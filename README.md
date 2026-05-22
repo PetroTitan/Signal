@@ -48,6 +48,17 @@ Reddit, X, LinkedIn.
 
 See [docs/architecture/mvp-architecture.md](docs/architecture/mvp-architecture.md) for the source layout and conventions.
 
+## Mock data is intentionally minimal
+
+Signal's seed data is small on purpose. The product is designed to render gracefully with 1–2 items per surface — density is not a feature, and fake scale is avoided everywhere:
+
+- No invented engagement numbers, impression counts, or revenue claims.
+- No synthetic handles. Accounts that don't exist on a platform stay in `planned` status with `handle: null` and "No connected account yet."
+- When data isn't available, the UI says "Data not yet connected."
+- Real persistence arrives later through the phased Supabase plan in [docs/database/](docs/database/).
+
+See [docs/product/pre-final-cleanup.md](docs/product/pre-final-cleanup.md), [docs/product/demo-data-policy.md](docs/product/demo-data-policy.md), and [docs/product/ui-realism-guidelines.md](docs/product/ui-realism-guidelines.md).
+
 ## Database planning status
 
 Supabase is planned but **not integrated yet**. The schema is documented in detail before any migration is written.

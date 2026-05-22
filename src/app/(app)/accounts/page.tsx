@@ -58,7 +58,7 @@ export default function AccountsPage() {
     <>
       <Topbar
         title="Accounts"
-        description="Each account belongs to a product and a platform. Signal connects only via official OAuth."
+        description="Connected only through official OAuth."
         actions={
           <Link href="/accounts/new" className="btn-primary">
             New account
@@ -66,7 +66,7 @@ export default function AccountsPage() {
         }
       />
 
-      <div className="px-6 lg:px-8 py-6 max-w-7xl space-y-6">
+      <div className="px-6 lg:px-10 py-8 max-w-5xl space-y-6">
         <TrustPanel />
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
