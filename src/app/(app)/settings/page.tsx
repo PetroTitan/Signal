@@ -142,6 +142,14 @@ export default function SettingsPage() {
               {accounts.length} account{accounts.length === 1 ? "" : "s"} defined
             </div>
           </div>
+          <div className="mt-3 text-[11px]">
+            <Link
+              href="/settings/network"
+              className="text-signal-700 underline"
+            >
+              Configure region & network →
+            </Link>
+          </div>
         </section>
 
         <section className="card p-5 flex items-start gap-3 text-sm">
