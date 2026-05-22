@@ -65,10 +65,15 @@ Input:
 
 ```json
 { "product_id": "...", "account_id": "...", "platform": "...", "title": "...",
-  "body": "...", "content_type": "...", "scheduled_at": "...", "risk_score": 42 }
+  "body": "...", "content_type": "...", "scheduled_at": "...", "risk_score": 42,
+  "save_as_draft": false }
 ```
 
-Creates a `weekly_plan_items` row with `status='draft'`. Cannot be scheduled or executed until the operator approves it.
+**Default** (`save_as_draft` absent or `false`): the item lands as `status='pending_approval'` and **appears in `/approval-queue`** under "Weekly plan items awaiting approval." The operator approves, rejects, or moves to backlog from that surface.
+
+**`save_as_draft: true`**: the item lands as `status='draft'` (a private holding pen). It does *not* appear in `/approval-queue` and cannot be scheduled or executed until promoted to `pending_approval` and approved.
+
+Either way: cannot be scheduled or executed until the operator both approves *and* there is an active weekly contract scoping the account, product, platform, and action type. See [./tool-permissions.md](./tool-permissions.md) for the full approval ladder.
 
 ### `signal.imports.prepare_mapping`
 

@@ -161,6 +161,10 @@ export async function weeklyPlanPrepareItem(
     planId = (plan as { id: string }).id;
   }
 
+  // Default is `pending_approval` so MCP-created items land in the
+  // operator's /approval-queue. Callers that want a private holding
+  // pen can pass `save_as_draft: true`.
+  const targetStatus = args.save_as_draft ? "draft" : "pending_approval";
   const { data, error } = await ctx.db
     .from("weekly_plan_items")
     .insert(
@@ -175,7 +179,7 @@ export async function weeklyPlanPrepareItem(
         body: args.body,
         risk_score: args.risk_score,
         scheduled_at: args.scheduled_at,
-        status: "draft",
+        status: targetStatus,
         metadata: { source: "mcp_operation", operator_token_id: ctx.operatorTokenId },
       } as never,
     )
@@ -196,16 +200,27 @@ export async function weeklyPlanPrepareItem(
       entity_type: "weekly_plan_item",
       entity_id: (data as { id: string }).id,
       title: `MCP prepared plan item: ${args.title}`,
-      description: args.platform ? `Platform: ${args.platform}` : null,
+      description: [
+        args.platform ? `Platform: ${args.platform}` : null,
+        `Status: ${targetStatus}`,
+      ]
+        .filter(Boolean)
+        .join(" · "),
       source: "mcp_operation",
-      metadata: { operator_token_id: ctx.operatorTokenId },
+      metadata: {
+        operator_token_id: ctx.operatorTokenId,
+        status: targetStatus,
+      },
     } as never,
   );
   return ok({
     tool: "signal.weekly_plan.prepare_item",
-    summary: "Created weekly_plan_item as draft.",
+    summary:
+      targetStatus === "pending_approval"
+        ? "Created weekly_plan_item as pending_approval (visible in /approval-queue)."
+        : "Created weekly_plan_item as draft (not in approval queue).",
     data: { item: data },
-    requiresUserApproval: true,
+    requiresUserApproval: targetStatus === "pending_approval",
   });
 }
 

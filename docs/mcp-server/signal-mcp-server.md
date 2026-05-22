@@ -54,6 +54,16 @@ Failure responses use the same shape with `ok=false` and `status` in `{ unauthor
 
 8 read-only + 5 prepare/write-pending + 4 verification/dry-run tools, plus 11 explicitly blocked names. Each tool declares `required_scopes`, `risk_level`, `approval_mode`, `writes_database`, and `touches_production`. See [./tool-reference.md](./tool-reference.md).
 
+## Where MCP-created work shows up
+
+External operators create *pending* work; the Signal operator approves it. Every write-pending tool routes into `/approval-queue` so there is one central review surface.
+
+- `signal.weekly_plan.prepare_item` → `weekly_plan_items.status='pending_approval'` (or `'draft'` with `save_as_draft: true`). Pending items appear in **`/approval-queue`** under "Weekly plan items awaiting approval."
+- `signal.products.prepare` → `products.review_status='pending_review'`. Appears in `/approval-queue` under "Product profiles awaiting review."
+- `signal.accounts.prepare` → `growth_accounts.review_status='pending_review'`. Appears in `/approval-queue` under "Account profiles awaiting review."
+
+Approving a product or account only confirms the profile inside Signal. It does not connect OAuth, publish, schedule, or execute. Live execution still requires an active weekly contract + an execution queue + dry-run/live gate.
+
 ## See also
 
 - [./operator-token-setup.md](./operator-token-setup.md)

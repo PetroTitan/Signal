@@ -154,6 +154,7 @@ export async function updateAccount(input: {
   role?: string | null;
   status?: string;
   productId?: string | null;
+  reviewStatus?: "pending_review" | "confirmed" | "rejected" | "needs_edit";
 }): Promise<GrowthAccountRecord> {
   const supabase = createSupabaseServerClient();
   const patch: GrowthAccountUpdate = {};
@@ -162,6 +163,7 @@ export async function updateAccount(input: {
   if (input.role !== undefined) patch.role = input.role;
   if (input.status !== undefined) patch.status = input.status;
   if (input.productId !== undefined) patch.product_id = input.productId;
+  if (input.reviewStatus !== undefined) patch.review_status = input.reviewStatus;
 
   const { data, error } = await supabase
     .from("growth_accounts")
@@ -172,4 +174,46 @@ export async function updateAccount(input: {
     .single();
   if (error || !data) throw fromPostgres(error, "Failed to update account.");
   return toAccount(data as unknown as GrowthAccountRow);
+}
+
+/**
+ * Accounts waiting for operator review (the approval-queue feed).
+ * Excludes archived rows; sorted oldest-first.
+ */
+export async function listAccountsPendingReview(
+  workspaceId: string,
+): Promise<GrowthAccountRecord[]> {
+  const supabase = createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("growth_accounts")
+    .select("*")
+    .eq("workspace_id", workspaceId)
+    .eq("review_status", "pending_review")
+    .neq("status", "archived")
+    .order("created_at", { ascending: true });
+  if (error)
+    throw fromPostgres(error, "Failed to list accounts pending review.");
+  return ((data ?? []) as unknown as GrowthAccountRow[]).map(toAccount);
+}
+
+export async function approveAccountReview(input: {
+  workspaceId: string;
+  accountId: string;
+}): Promise<GrowthAccountRecord> {
+  return updateAccount({
+    workspaceId: input.workspaceId,
+    accountId: input.accountId,
+    reviewStatus: "confirmed",
+  });
+}
+
+export async function rejectAccountReview(input: {
+  workspaceId: string;
+  accountId: string;
+}): Promise<GrowthAccountRecord> {
+  return updateAccount({
+    workspaceId: input.workspaceId,
+    accountId: input.accountId,
+    reviewStatus: "rejected",
+  });
 }

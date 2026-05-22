@@ -111,6 +111,12 @@ export interface WeeklyPlanPrepareItemArgs {
   content_type?: string | null;
   scheduled_at?: string | null;
   risk_score?: number | null;
+  /**
+   * Default false → item lands as `pending_approval` and shows up in
+   * /approval-queue. Pass `true` to keep it as `draft` (private holding
+   * pen that doesn't appear in the approval queue).
+   */
+  save_as_draft?: boolean;
 }
 export function parseWeeklyPlanPrepareItem(
   input: unknown,
@@ -131,6 +137,13 @@ export function parseWeeklyPlanPrepareItem(
     if (typeof input.risk_score !== "number" || input.risk_score < 0 || input.risk_score > 100)
       errors.push("risk_score_out_of_range");
   }
+  if (
+    input.save_as_draft !== undefined &&
+    input.save_as_draft !== null &&
+    typeof input.save_as_draft !== "boolean"
+  ) {
+    errors.push("save_as_draft_must_be_boolean");
+  }
   if (errors.length > 0) return { ok: false, errors };
   return {
     ok: true,
@@ -144,6 +157,8 @@ export function parseWeeklyPlanPrepareItem(
       scheduled_at: input.scheduled_at ? String(input.scheduled_at) : null,
       risk_score:
         typeof input.risk_score === "number" ? input.risk_score : null,
+      save_as_draft:
+        typeof input.save_as_draft === "boolean" ? input.save_as_draft : false,
     },
   };
 }
