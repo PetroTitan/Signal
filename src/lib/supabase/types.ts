@@ -1253,6 +1253,94 @@ export interface OperatorBridgeNonceUpdate {
   used_at?: string | null;
 }
 
+// =====================================================================
+// Phase F0 — Signal MCP server
+// =====================================================================
+
+export type McpOperatorTokenStatus = "active" | "revoked" | "expired";
+
+export interface McpOperatorTokenRow {
+  id: string;
+  workspace_id: string;
+  created_by: string | null;
+  name: string;
+  token_hash: string;
+  token_preview: string;
+  status: McpOperatorTokenStatus;
+  scopes: string[];
+  last_used_at: string | null;
+  expires_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+}
+export interface McpOperatorTokenInsert {
+  id?: string;
+  workspace_id: string;
+  created_by?: string | null;
+  name: string;
+  token_hash: string;
+  token_preview: string;
+  status?: McpOperatorTokenStatus;
+  scopes?: string[];
+  last_used_at?: string | null;
+  expires_at?: string | null;
+  revoked_at?: string | null;
+}
+export interface McpOperatorTokenUpdate {
+  name?: string;
+  status?: McpOperatorTokenStatus;
+  scopes?: string[];
+  last_used_at?: string | null;
+  expires_at?: string | null;
+  revoked_at?: string | null;
+}
+
+export type McpToolCallStatus =
+  | "allowed"
+  | "completed"
+  | "failed"
+  | "blocked"
+  | "unauthorized";
+
+export type McpToolRiskLevel =
+  | "safe_read"
+  | "local_write"
+  | "remote_write"
+  | "production_impacting"
+  | "blocked";
+
+export type McpToolApprovalMode =
+  | "no_approval_needed"
+  | "approval_required"
+  | "explicit_text_confirmation_required"
+  | "blocked";
+
+export interface McpToolCallRow {
+  id: string;
+  workspace_id: string;
+  operator_token_id: string | null;
+  tool_name: string;
+  risk_level: McpToolRiskLevel;
+  approval_mode: McpToolApprovalMode;
+  status: McpToolCallStatus;
+  input_summary: string | null;
+  output_summary: string | null;
+  error_summary: string | null;
+  created_at: string;
+}
+export interface McpToolCallInsert {
+  id?: string;
+  workspace_id: string;
+  operator_token_id?: string | null;
+  tool_name: string;
+  risk_level: McpToolRiskLevel;
+  approval_mode: McpToolApprovalMode;
+  status: McpToolCallStatus;
+  input_summary?: string | null;
+  output_summary?: string | null;
+  error_summary?: string | null;
+}
+
 export interface Database {
   public: {
     Tables: {
@@ -1440,6 +1528,18 @@ export interface Database {
         Row: OperatorBridgeNonceRow;
         Insert: OperatorBridgeNonceInsert;
         Update: OperatorBridgeNonceUpdate;
+        Relationships: [];
+      };
+      mcp_operator_tokens: {
+        Row: McpOperatorTokenRow;
+        Insert: McpOperatorTokenInsert;
+        Update: McpOperatorTokenUpdate;
+        Relationships: [];
+      };
+      mcp_tool_calls: {
+        Row: McpToolCallRow;
+        Insert: McpToolCallInsert;
+        Update: Partial<McpToolCallInsert>;
         Relationships: [];
       };
     };

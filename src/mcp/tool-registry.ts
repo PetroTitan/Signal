@@ -1,0 +1,288 @@
+import "server-only";
+import type { McpToolApprovalMode, McpToolRiskLevel } from "@/lib/supabase/types";
+import type { ToolContext } from "./tool-context";
+import type { McpToolResponse } from "./responses";
+import { blocked } from "./responses";
+import {
+  parseAccountsPrepare,
+  parseEmptyArgs,
+  parseExecutionAuthorizeItem,
+  parseExecutionDryRun,
+  parseImportsPrepareMapping,
+  parseProductsPrepare,
+  parseReportsSubmit,
+  parseVerificationRunCheck,
+  parseWeeklyPlanPrepareItem,
+  type Parse,
+} from "./schemas";
+import {
+  accountsList,
+  activityLatest,
+  contractsActive,
+  executionQueueStatus,
+  productsList,
+  verificationLatest,
+  weeklyPlanCurrent,
+  workspaceGet,
+} from "./tools/read-tools";
+import {
+  accountsPrepare,
+  importsPrepareMapping,
+  productsPrepare,
+  reportsSubmit,
+  weeklyPlanPrepareItem,
+} from "./tools/prepare-tools";
+import {
+  executionAuthorizeItem,
+  executionDryRun,
+  verificationRun,
+  verificationRunCheck,
+} from "./tools/verification-tools";
+
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  requiredScopes: ReadonlyArray<string>;
+  riskLevel: McpToolRiskLevel;
+  approvalMode: McpToolApprovalMode;
+  writesDatabase: boolean;
+  touchesProduction: boolean;
+  parseArgs: (input: unknown) => Parse<unknown>;
+  handler: (ctx: ToolContext, args: unknown) => Promise<McpToolResponse>;
+}
+
+function wrap<TArgs>(
+  fn: (ctx: ToolContext, args: TArgs) => Promise<McpToolResponse>,
+): (ctx: ToolContext, args: unknown) => Promise<McpToolResponse> {
+  return (ctx, args) => fn(ctx, args as TArgs);
+}
+
+export const TOOLS: ToolDefinition[] = [
+  // Read tools ---------------------------------------------------------
+  {
+    name: "signal.workspace.get",
+    description: "Read workspace, settings, demo-mode flag, operator scopes.",
+    requiredScopes: ["workspace:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(workspaceGet),
+  },
+  {
+    name: "signal.products.list",
+    description: "List products (active + pending). No secrets.",
+    requiredScopes: ["products:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(productsList),
+  },
+  {
+    name: "signal.accounts.list",
+    description: "List growth accounts. Never returns tokens.",
+    requiredScopes: ["accounts:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(accountsList),
+  },
+  {
+    name: "signal.weekly_plan.current",
+    description: "Read the current weekly plan and items.",
+    requiredScopes: ["weekly_plans:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(weeklyPlanCurrent),
+  },
+  {
+    name: "signal.contracts.active",
+    description: "Read the active weekly operating contract and scope.",
+    requiredScopes: ["contracts:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(contractsActive),
+  },
+  {
+    name: "signal.execution.queue_status",
+    description: "Read execution queues, items, and recent log events.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(executionQueueStatus),
+  },
+  {
+    name: "signal.verification.latest",
+    description: "Read recent verification/operation runs.",
+    requiredScopes: ["verification:run"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(verificationLatest),
+  },
+  {
+    name: "signal.activity.latest",
+    description: "Read recent activity_events.",
+    requiredScopes: ["workspace:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(activityLatest),
+  },
+  // Prepare tools ------------------------------------------------------
+  {
+    name: "signal.products.prepare",
+    description: "Create a product with review_status='pending_review'.",
+    requiredScopes: ["products:write_pending"],
+    riskLevel: "remote_write",
+    approvalMode: "approval_required",
+    writesDatabase: true,
+    touchesProduction: false,
+    parseArgs: parseProductsPrepare,
+    handler: wrap(productsPrepare),
+  },
+  {
+    name: "signal.accounts.prepare",
+    description: "Create a growth_account with review_status='pending_review'.",
+    requiredScopes: ["accounts:write_pending"],
+    riskLevel: "remote_write",
+    approvalMode: "approval_required",
+    writesDatabase: true,
+    touchesProduction: false,
+    parseArgs: parseAccountsPrepare,
+    handler: wrap(accountsPrepare),
+  },
+  {
+    name: "signal.weekly_plan.prepare_item",
+    description:
+      "Create a weekly_plan_item with status='draft'. Cannot be scheduled/executed without operator approval.",
+    requiredScopes: ["weekly_plans:write_pending"],
+    riskLevel: "remote_write",
+    approvalMode: "approval_required",
+    writesDatabase: true,
+    touchesProduction: false,
+    parseArgs: parseWeeklyPlanPrepareItem,
+    handler: wrap(weeklyPlanPrepareItem),
+  },
+  {
+    name: "signal.imports.prepare_mapping",
+    description:
+      "Record a product/account import mapping as pending_approval. Does not create confirmed records.",
+    requiredScopes: ["imports:prepare"],
+    riskLevel: "remote_write",
+    approvalMode: "approval_required",
+    writesDatabase: true,
+    touchesProduction: false,
+    parseArgs: parseImportsPrepareMapping,
+    handler: wrap(importsPrepareMapping),
+  },
+  {
+    name: "signal.reports.submit",
+    description:
+      "Submit an operator-side report (smoke test results, audit notes, recommendations).",
+    requiredScopes: ["reports:write"],
+    riskLevel: "local_write",
+    approvalMode: "no_approval_needed",
+    writesDatabase: true,
+    touchesProduction: false,
+    parseArgs: parseReportsSubmit,
+    handler: wrap(reportsSubmit),
+  },
+  // Verification / dry-run tools --------------------------------------
+  {
+    name: "signal.verification.run",
+    description:
+      "Surface the latest full verification pipeline run (read-only).",
+    requiredScopes: ["verification:run"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(verificationRun),
+  },
+  {
+    name: "signal.verification.run_check",
+    description: "Surface the latest result for a single named check.",
+    requiredScopes: ["verification:run"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseVerificationRunCheck,
+    handler: wrap(verificationRunCheck),
+  },
+  {
+    name: "signal.execution.dry_run",
+    description:
+      "Read the latest dry-run logs for an execution queue or item. New dry-runs are triggered from /execution.",
+    requiredScopes: ["execution:dry_run"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseExecutionDryRun,
+    handler: wrap(executionDryRun),
+  },
+  {
+    name: "signal.execution.authorize_item",
+    description:
+      "Read the most recent authorization for an execution item. New authorizations are minted from /execution.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseExecutionAuthorizeItem,
+    handler: wrap(executionAuthorizeItem),
+  },
+];
+
+export const TOOLS_BY_NAME: Record<string, ToolDefinition> = Object.fromEntries(
+  TOOLS.map((t) => [t.name, t]),
+);
+
+/**
+ * Tools the MCP policy explicitly forbids. If a client calls one of
+ * these, the dispatcher returns a structured `blocked` response
+ * without consulting the registry.
+ */
+export const BLOCKED_TOOL_NAMES = new Set<string>([
+  "signal.publish.live",
+  "signal.comment.live",
+  "signal.social.create_account",
+  "signal.social.login",
+  "signal.cookies.import",
+  "signal.sessions.import",
+  "signal.tokens.read",
+  "signal.database.raw_sql",
+  "signal.billing.modify",
+  "signal.pr.merge",
+  "signal.production.deploy",
+]);
+
+export function buildBlockedResponse(toolName: string): McpToolResponse {
+  return blocked({
+    tool: toolName,
+    summary:
+      "This tool is explicitly blocked by the Signal MCP policy. See docs/mcp-server/security-model.md.",
+  });
+}

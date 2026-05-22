@@ -29,6 +29,9 @@ import { ApproveButton, RejectForm } from "./_approval-controls";
 import { VerificationPipelineButton } from "./_pipeline-button";
 import { SupabaseProbeCard } from "./_supabase-probe-card";
 import { getLatestProbe } from "@/repositories/mcp-connectors/supabase-mcp-probe-repository";
+import { TOOLS, BLOCKED_TOOL_NAMES } from "@/mcp/tool-registry";
+import { isServiceRoleAvailable } from "@/lib/supabase/service-role";
+import { listRecentToolCalls } from "@/mcp/audit";
 
 export const dynamic = "force-dynamic";
 
@@ -55,6 +58,18 @@ export default async function McpSettingsPage() {
 
   const operations = MCP_OPERATION_TYPES.map(summarizeOperation);
   const connectorSnapshots = buildDefaultConnectorSnapshots(new Date().toISOString());
+  const serviceRoleAvailable = isServiceRoleAvailable();
+  const recentToolCalls = membership
+    ? await listRecentToolCalls(membership.workspace.id, 12)
+    : [];
+  const blockedToolCallCount = recentToolCalls.filter(
+    (c) => c.status === "blocked" || c.status === "unauthorized",
+  ).length;
+  const enabledToolGroups = {
+    read: TOOLS.filter((t) => !t.writesDatabase).length,
+    prepare: TOOLS.filter((t) => t.writesDatabase).length,
+    blocked: BLOCKED_TOOL_NAMES.size,
+  };
 
   return (
     <>
@@ -113,6 +128,77 @@ export default async function McpSettingsPage() {
               </li>
             ))}
           </ul>
+        </section>
+
+        {/* PHASE F0 — SIGNAL MCP SERVER */}
+        <section className="card p-5 space-y-3">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-sm font-semibold text-ink-900">
+                Signal MCP Server
+              </h2>
+              <p className="text-xs text-ink-600 mt-1 leading-relaxed">
+                External operators (Claude Code, Codex, Opus) connect to{" "}
+                <code className="font-mono text-[11px]">/api/mcp</code> with a
+                workspace-scoped bearer token. Signal serves the audited tool
+                surface; the operator&apos;s assistant remains the agent.
+              </p>
+              <p className="text-[11px] text-ink-500 mt-2">
+                Server status:{" "}
+                <span
+                  className={
+                    serviceRoleAvailable ? "text-green-700" : "text-amber-700"
+                  }
+                >
+                  {serviceRoleAvailable ? "available" : "not configured"}
+                </span>
+                {" · "}
+                {enabledToolGroups.read} read · {enabledToolGroups.prepare}{" "}
+                prepare · {enabledToolGroups.blocked} explicitly blocked
+              </p>
+            </div>
+            <Link
+              href="/settings/mcp/tokens"
+              className="btn-primary text-xs whitespace-nowrap"
+            >
+              Operator tokens
+            </Link>
+          </div>
+          {!serviceRoleAvailable ? (
+            <p className="text-[11px] text-amber-700">
+              Set <code className="font-mono">SUPABASE_SERVICE_ROLE_KEY</code>{" "}
+              server-side to enable the MCP HTTP bridge. Until then the route
+              returns 503 for every call.
+            </p>
+          ) : null}
+          {recentToolCalls.length > 0 ? (
+            <div className="text-[11px] text-ink-500 border-t border-ink-100 pt-2">
+              Recent MCP tool calls ({recentToolCalls.length}, {blockedToolCallCount} blocked / unauthorized):
+              <ul className="mt-1 space-y-0.5">
+                {recentToolCalls.slice(0, 6).map((c) => (
+                  <li key={c.id} className="flex justify-between gap-3">
+                    <span className="font-mono truncate">{c.tool_name}</span>
+                    <span
+                      className={
+                        c.status === "completed"
+                          ? "text-green-700"
+                          : c.status === "blocked" || c.status === "unauthorized"
+                          ? "text-red-700"
+                          : "text-ink-500"
+                      }
+                    >
+                      {c.status}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="text-[11px] text-ink-500 border-t border-ink-100 pt-2">
+              No tool calls recorded yet. After issuing a token, an external
+              operator can POST to <code className="font-mono">/api/mcp</code>.
+            </p>
+          )}
         </section>
 
         {/* PHASE E2.7 — SUPABASE MCP PROBE */}
