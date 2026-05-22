@@ -2,17 +2,18 @@ import type { McpOperationType } from "@/core/mcp-operations";
 
 /**
  * Catalog of MCP checks the operator can invoke from /settings/mcp.
- * Each entry maps to either an `McpOperationType` (when wired) or
- * a documentation-only stub.
  *
- * Honest UI rule: if `wired` is false, the button is disabled and
- * labeled "Prepared, not connected". No check is allowed to fake a
- * success.
+ * Phase E2.5 wires real implementations for env / auth / rls /
+ * db_integrity / route_protection / demo_boundary / production_smoke /
+ * the end-to-end dry-run pipeline. Anything still unwired keeps
+ * `wired: false` and renders as a disabled "Prepared, not connected"
+ * button.
  */
 export interface McpCheckDef {
   key: string;
   label: string;
   description: string;
+  /** Which operation type the runner records on mcp_operation_runs. */
   operationType: McpOperationType | null;
   wired: boolean;
 }
@@ -30,9 +31,9 @@ export const MCP_CHECKS: McpCheckDef[] = [
     key: "env_check",
     label: "Environment check",
     description:
-      "Verifies Supabase env vars resolve and the URL is reachable from this runtime.",
+      "Verifies Supabase env vars resolve and the URL is valid. Reports OAuth + token-encryption configuration.",
     operationType: null,
-    wired: false,
+    wired: true,
   },
   {
     key: "auth_check",
@@ -40,45 +41,53 @@ export const MCP_CHECKS: McpCheckDef[] = [
     description:
       "Confirms the session cookie is valid and the user has a workspace membership.",
     operationType: null,
-    wired: false,
+    wired: true,
   },
   {
     key: "db_integrity_check",
     label: "Database integrity check",
     description:
-      "Walks foreign keys and constraints on workspace-scoped tables; reports orphans and inconsistencies.",
+      "Counts workspace-scoped rows and probes execution_items for orphaned queue or contract references.",
     operationType: "db_integrity_check",
-    wired: false,
+    wired: true,
   },
   {
     key: "rls_check",
     label: "RLS check",
     description:
-      "Probes every workspace-scoped table to confirm RLS is enabled and the policies match expectations.",
+      "Probes every workspace-scoped table; refuses to pass if any row's workspace_id leaks across the membership boundary.",
     operationType: "rls_check",
-    wired: false,
+    wired: true,
   },
   {
     key: "route_protection_check",
     label: "Route protection check",
     description:
-      "Verifies middleware rejects unauthenticated requests on every /(app) route.",
+      "Static check that middleware fails closed on missing env and redirects unauthenticated requests to /login.",
     operationType: null,
-    wired: false,
+    wired: true,
   },
   {
     key: "demo_boundary_check",
     label: "Demo boundary check",
     description:
-      "Confirms demo workspaces never authorize execution and demo data never leaks into real reads.",
+      "Confirms the engine safety envelope refuses demo workspaces and that the contract evaluator returns demo_mode_blocked.",
     operationType: null,
-    wired: false,
+    wired: true,
+  },
+  {
+    key: "execution_dry_run_smoke",
+    label: "End-to-end execution dry-run",
+    description:
+      "Walks product → account → plan item → contract → queue → item → authorize → dry-run, then cleans up. Tagged with a verification_run_id.",
+    operationType: null,
+    wired: true,
   },
   {
     key: "pr_readiness_check",
     label: "PR readiness check",
     description:
-      "Runs lint, typecheck, and build locally; surfaces uncommitted files and missing tests.",
+      "Aggregates the other checks into a ready_to_merge / needs_review / blocked verdict. Runs as part of the full pipeline.",
     operationType: "pr_readiness_check",
     wired: false,
   },
