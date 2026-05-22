@@ -43,10 +43,37 @@ Reddit, X, LinkedIn.
 - Next.js with the App Router.
 - TypeScript, strict.
 - Tailwind CSS.
-- No database, no Supabase, no Stripe, no real AI APIs, and no platform OAuth integrations yet.
-- All data lives in `src/lib/mock` and is imported directly into pages.
+- Supabase for auth + workspace / product / account / settings / activity persistence (Phase C).
+- No Stripe, no real AI APIs, no platform OAuth integrations yet.
+- Engine-driven surfaces (weekly plan, scheduler, risk center) continue to render from the in-memory React store; their persistence migration is a later phase.
 
 See [docs/architecture/mvp-architecture.md](docs/architecture/mvp-architecture.md) for the source layout and conventions.
+
+## Supabase + auth foundation
+
+Phase C adds the stateful SaaS foundation:
+
+- Email + password auth via `/login`, `/signup`, and a server-action sign-out. `src/middleware.ts` refreshes sessions and gates protected routes.
+- Repository layer in `src/repositories/` for workspaces, products, accounts, settings, and activity. UI components never touch Supabase directly.
+- Migrations under `supabase/migrations/` create the six Phase C tables with RLS policies and two `is_workspace_member` / `is_workspace_owner` helpers. No service-role-key dependency anywhere.
+- A default `Signal Workspace` is created on signup (or on first authenticated visit if signup runs the email-confirmation flow).
+- `/products` and `/accounts` are now DB-backed server components with inline create forms. `/activity` lists real workspace events.
+- Settings page persists `region`, `timezone`, and `language` to the database.
+- Demo mode (`NEXT_PUBLIC_SIGNAL_DEMO_MODE`) continues to work for engine-driven surfaces — clearly labeled with a `Demo preview` chip on every page.
+
+See [docs/database/supabase-auth-foundation.md](docs/database/supabase-auth-foundation.md), [docs/database/phase-c-migrations.md](docs/database/phase-c-migrations.md), [docs/database/repository-layer.md](docs/database/repository-layer.md), [docs/database/real-empty-state.md](docs/database/real-empty-state.md), [docs/auth/email-password-auth.md](docs/auth/email-password-auth.md), and [docs/security/rls-phase-c.md](docs/security/rls-phase-c.md).
+
+### Environment
+
+Copy `.env.example` to `.env.local` and fill in:
+
+```
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+NEXT_PUBLIC_SIGNAL_DEMO_MODE=false
+```
+
+`NEXT_PUBLIC_SIGNAL_DEMO_MODE=true` force-enables demo mode for sandbox deploys; the settings toggle becomes a no-op in that case.
 
 ## Mock data is intentionally minimal
 
