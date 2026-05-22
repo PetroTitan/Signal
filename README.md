@@ -1,8 +1,10 @@
 # Signal
 
-Sustainable growth operations for founders and SaaS teams.
+Founder growth infrastructure. Calm, operational, OAuth-first.
 
-Signal is an AI-assisted growth operations platform. It does one thing well: turn a founder's intention to "show up consistently" into a calm weekly workflow — a single plan, a single approval, and an organic distribution across the week.
+Signal is an AI-assisted growth operations platform for founders and SaaS teams. It treats organic presence as an operational problem — one that benefits from calm cadence, clean approval, and platform-native participation, not from posting volume.
+
+Public surfaces: [/about](src/app/(marketing)/about/page.tsx), [/philosophy](src/app/(marketing)/philosophy/page.tsx), [/how-it-works](src/app/(marketing)/how-it-works/page.tsx), [/security](src/app/(marketing)/security/page.tsx).
 
 ## Product philosophy
 
@@ -45,6 +47,29 @@ Reddit, X, LinkedIn.
 - All data lives in `src/lib/mock` and is imported directly into pages.
 
 See [docs/architecture/mvp-architecture.md](docs/architecture/mvp-architecture.md) for the source layout and conventions.
+
+## Database planning status
+
+Supabase is planned but **not integrated yet**. The schema is documented in detail before any migration is written.
+
+- The local mock architecture under `src/lib/mock` remains the data source.
+- No Supabase package is installed; no client code, no migrations, no env variables.
+- Future implementation is phased (A → core, B → onboarding, C → intelligence, D → discoverability, E → analytics, F → OAuth, F+ → SaaS).
+- Signal does not store passwords, cookies, session tokens, 2FA codes, or recovery codes. There are no columns for any of these. The OAuth-first model is structural.
+
+Schema plan and supporting docs:
+
+- [docs/database/domain-model-audit.md](docs/database/domain-model-audit.md)
+- [docs/database/entity-classification.md](docs/database/entity-classification.md)
+- [docs/database/supabase-schema-plan.md](docs/database/supabase-schema-plan.md)
+- [docs/database/stored-vs-computed.md](docs/database/stored-vs-computed.md)
+- [docs/database/enums-and-statuses.md](docs/database/enums-and-statuses.md)
+- [docs/database/rls-security-plan.md](docs/database/rls-security-plan.md)
+- [docs/database/oauth-token-storage-plan.md](docs/database/oauth-token-storage-plan.md)
+- [docs/database/migration-phases.md](docs/database/migration-phases.md)
+- [docs/database/mock-to-db-transition.md](docs/database/mock-to-db-transition.md)
+- [docs/database/indexing-performance-plan.md](docs/database/indexing-performance-plan.md)
+- [docs/database/data-retention-audit-plan.md](docs/database/data-retention-audit-plan.md)
 
 ## Operations command center, activity, search, workflow
 

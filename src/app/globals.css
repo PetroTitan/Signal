@@ -16,6 +16,34 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[role="button"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.95), 0 0 0 4px rgba(52, 121, 255, 0.45);
+  border-radius: 0.375rem;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  padding: 0.5rem 0.75rem;
+  background: #ffffff;
+  color: #1f242c;
+  border-radius: 0.375rem;
+  border: 1px solid #d5dae2;
+  font-size: 0.875rem;
+  z-index: 9999;
+}
+.skip-link:focus {
+  left: 0.5rem;
+  top: 0.5rem;
+}
+
 @layer components {
   .card {
     @apply bg-white border border-ink-100 rounded-lg shadow-card;

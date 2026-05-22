@@ -4,7 +4,8 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { Topbar } from "@/components/topbar";
 import { PlatformBadge, AccountStatusBadge } from "@/components/badges";
-import { ChevronRightIcon, LockIcon } from "@/components/icons";
+import { ChevronRightIcon } from "@/components/icons";
+import { TrustPanel } from "@/components/trust-panel";
 import { useAccounts, useSignal } from "@/core/store";
 import { computeReadiness, planningEligibility } from "@/core/onboarding";
 import type { AccountStatus } from "@/types";
@@ -66,7 +67,7 @@ export default function AccountsPage() {
       />
 
       <div className="px-6 lg:px-8 py-6 max-w-7xl space-y-6">
-        <OauthNotice />
+        <TrustPanel />
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <Stat label="Total" value={counts.all} />
@@ -204,26 +205,3 @@ function Stat({
   );
 }
 
-function OauthNotice() {
-  return (
-    <div className="card border-signal-200 bg-signal-50/40">
-      <div className="p-4 flex items-start gap-3">
-        <span className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-signal-100 text-signal-700 shrink-0">
-          <LockIcon />
-        </span>
-        <div className="text-sm">
-          <div className="font-semibold text-ink-900">
-            Connect accounts only via official OAuth.
-          </div>
-          <p className="text-ink-700 mt-0.5 leading-relaxed">
-            Signal never asks for passwords, cookies, session tokens, 2FA codes,
-            or recovery codes. We do not use anti-detect browsers, proxies, or
-            fingerprinting. Once a platform OAuth integration ships, every
-            account will connect through the platform&apos;s own authorization
-            flow.
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-}
