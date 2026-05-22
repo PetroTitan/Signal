@@ -1,193 +1,121 @@
-"use client";
-
-import { useMemo, useState } from "react";
-import Link from "next/link";
 import { Topbar } from "@/components/topbar";
-import { PlatformBadge, AccountStatusBadge } from "@/components/badges";
-import { ChevronRightIcon } from "@/components/icons";
-import { TrustPanel } from "@/components/trust-panel";
-import { useAccounts, useSignal } from "@/core/store";
-import { computeReadiness, planningEligibility } from "@/core/onboarding";
-import type { AccountStatus } from "@/types";
+import { isSupabaseConfigured } from "@/lib/supabase";
+import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
+import { listAccounts } from "@/repositories/account-repository";
+import { listProducts } from "@/repositories/product-repository";
+import { AccountCreateForm } from "./_create-form";
 
-type Filter = "all" | "eligible" | "in_setup" | "paused";
+export const dynamic = "force-dynamic";
 
-export default function AccountsPage() {
-  const accounts = useAccounts();
-  const { state } = useSignal();
-  const [filter, setFilter] = useState<Filter>("all");
+const PLATFORM_LABELS: Record<string, string> = {
+  reddit: "Reddit",
+  x: "X",
+  linkedin: "LinkedIn",
+  google: "Google",
+};
 
-  const counts = useMemo(() => {
-    const eligibleStatuses: AccountStatus[] = [
-      "warming",
-      "active",
-      "connected",
-      "ready_to_connect",
-    ];
-    const setupStatuses: AccountStatus[] = [
-      "planned",
-      "setup_needed",
-      "awaiting_manual_creation",
-    ];
-    return {
-      all: accounts.length,
-      eligible: accounts.filter((a) => eligibleStatuses.includes(a.status)).length,
-      in_setup: accounts.filter((a) => setupStatuses.includes(a.status)).length,
-      paused: accounts.filter((a) => a.status === "paused").length,
-    };
-  }, [accounts]);
-
-  const visible = useMemo(() => {
-    const sorted = [...accounts].sort(
-      (a, b) => computeReadiness(b) - computeReadiness(a),
+export default async function AccountsPage() {
+  if (!isSupabaseConfigured()) {
+    return (
+      <>
+        <Topbar
+          title="Accounts"
+          description="Persistence not configured."
+        />
+        <div className="px-6 lg:px-10 py-12 max-w-3xl">
+          <div className="card p-5 text-sm text-ink-600">
+            Supabase is not configured. Set the Supabase env variables to
+            enable account persistence.
+          </div>
+        </div>
+      </>
     );
-    if (filter === "all") return sorted;
-    return sorted.filter((a) => {
-      const e = planningEligibility(a);
-      if (filter === "eligible") return e.eligible;
-      if (filter === "paused") return a.status === "paused";
-      return (
-        a.status === "planned" ||
-        a.status === "setup_needed" ||
-        a.status === "awaiting_manual_creation"
-      );
-    });
-  }, [accounts, filter]);
+  }
+
+  const membership = await getPrimaryWorkspace();
+  if (!membership) {
+    return (
+      <>
+        <Topbar title="Accounts" description="No workspace found." />
+        <div className="px-6 lg:px-10 py-12 max-w-3xl text-sm text-ink-600">
+          Create a workspace from the dashboard to start adding accounts.
+        </div>
+      </>
+    );
+  }
+
+  const [accounts, products] = await Promise.all([
+    listAccounts(membership.workspace.id),
+    listProducts(membership.workspace.id),
+  ]);
 
   return (
     <>
       <Topbar
         title="Accounts"
-        description="Connected only through official OAuth."
-        actions={
-          <Link href="/accounts/new" className="btn-primary">
-            New account
-          </Link>
-        }
+        description="Connected only through official OAuth, when integrations ship."
       />
 
-      <div className="px-6 lg:px-10 py-8 max-w-5xl space-y-6">
-        <TrustPanel />
-
+      <div className="px-6 lg:px-10 py-8 max-w-3xl space-y-6">
         {accounts.length === 0 ? (
-          <div className="text-center py-16 max-w-md mx-auto">
+          <section className="card p-6 text-center">
             <h2 className="text-base font-semibold text-ink-900">
               No connected accounts yet
             </h2>
-            <p className="text-sm text-ink-500 mt-2 leading-relaxed">
-              Create the account manually on the platform, then connect it
-              through OAuth when integrations are enabled.
+            <p className="text-sm text-ink-500 mt-2 leading-relaxed max-w-md mx-auto">
+              Add an account below. Signal stores it as{" "}
+              <span className="font-mono">not_connected</span> until OAuth
+              integrations are enabled.
             </p>
-            <Link href="/accounts/new" className="btn-primary mt-5 inline-flex">
-              Add account
-            </Link>
-          </div>
+          </section>
         ) : (
-        <>
-        <FilterBar filter={filter} setFilter={setFilter} counts={counts} />
-
-        <section className="card">
-          <div className="px-5 py-3.5 border-b border-ink-100 flex items-center justify-between">
-            <div className="text-sm font-semibold text-ink-900">
-              {visible.length} {visible.length === 1 ? "account" : "accounts"}
-            </div>
-            <div className="text-xs text-ink-500">Sorted by readiness</div>
-          </div>
-          {visible.length === 0 ? (
-            <div className="px-5 py-6 text-sm text-ink-500">
-              Nothing in this filter.
-            </div>
-          ) : (
+          <section className="card">
+            <header className="px-5 py-3.5 border-b border-ink-100 flex items-center justify-between">
+              <div className="text-sm font-semibold text-ink-900">
+                {accounts.length} account{accounts.length === 1 ? "" : "s"}
+              </div>
+              <div className="text-xs text-ink-500">
+                Workspace: {membership.workspace.name}
+              </div>
+            </header>
             <ul className="row-divider">
-              {visible.map((a) => {
-                const product = state.productsById[a.productId];
-                const eligibility = planningEligibility(a);
-                const readiness = computeReadiness(a);
-                return (
-                  <li key={a.id}>
-                    <Link
-                      href={`/accounts/${a.id}`}
-                      className="flex items-center gap-4 px-5 py-3.5 hover:bg-ink-50/60 transition-colors"
-                    >
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm font-medium text-ink-900 truncate">
-                          {a.displayName}
-                          {a.handle ? (
-                            <span className="ml-2 text-xs text-ink-500 font-normal">
-                              {a.handle}
-                            </span>
-                          ) : null}
-                        </div>
-                        <div className="flex items-center gap-2 mt-1 flex-wrap">
-                          <PlatformBadge platform={a.platform} />
-                          <span className="text-xs text-ink-500 capitalize">
-                            {a.role} · {product?.name}
-                          </span>
-                          <AccountStatusBadge status={a.status} />
-                          {eligibility.eligible ? (
-                            <span className="badge-low">Eligible</span>
-                          ) : (
-                            <span className="badge-medium">Not eligible</span>
-                          )}
-                        </div>
-                      </div>
-                      <div className="text-right shrink-0 hidden sm:block">
-                        <div className="text-sm font-medium text-ink-900">
-                          {readiness}%
-                        </div>
-                        <div className="text-[11px] text-ink-500">readiness</div>
-                      </div>
-                      <ChevronRightIcon className="text-ink-400" />
-                    </Link>
-                  </li>
-                );
-              })}
+              {accounts.map((a) => (
+                <li
+                  key={a.id}
+                  className="px-5 py-3.5 flex items-start justify-between gap-4"
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-ink-900 truncate">
+                      {a.displayName ?? a.handle ?? "Untitled account"}
+                    </div>
+                    <div className="text-xs text-ink-500 mt-0.5">
+                      {PLATFORM_LABELS[a.platform] ?? a.platform}
+                      {a.role ? ` · ${a.role}` : ""}
+                      {a.handle ? ` · ${a.handle}` : ""}
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-end gap-1 shrink-0">
+                    <span className="badge-neutral capitalize">{a.status}</span>
+                    <span className="text-[11px] text-ink-500">
+                      {a.connectionStatus.replace(/_/g, " ")}
+                    </span>
+                  </div>
+                </li>
+              ))}
             </ul>
-          )}
-        </section>
-        </>
+          </section>
         )}
+
+        <AccountCreateForm
+          products={products.map((p) => ({ id: p.id, name: p.name }))}
+        />
+
+        <p className="text-[11px] text-ink-500 leading-relaxed">
+          Signal never asks for passwords, cookies, session tokens, 2FA codes,
+          or recovery codes. Accounts will connect through official platform
+          OAuth when integrations are enabled.
+        </p>
       </div>
     </>
   );
 }
-
-function FilterBar({
-  filter,
-  setFilter,
-  counts,
-}: {
-  filter: Filter;
-  setFilter: (f: Filter) => void;
-  counts: Record<Filter, number>;
-}) {
-  const buttons: { key: Filter; label: string }[] = [
-    { key: "all", label: "All" },
-    { key: "eligible", label: "Eligible" },
-    { key: "in_setup", label: "In setup" },
-    { key: "paused", label: "Paused" },
-  ];
-  return (
-    <div className="card p-1.5 inline-flex flex-wrap gap-1">
-      {buttons.map((b) => (
-        <button
-          key={b.key}
-          type="button"
-          onClick={() => setFilter(b.key)}
-          className={`text-xs px-2.5 py-1 rounded-md font-medium transition-colors ${
-            filter === b.key
-              ? "bg-ink-900 text-white"
-              : "text-ink-600 hover:bg-ink-100"
-          }`}
-        >
-          {b.label}{" "}
-          <span className={filter === b.key ? "text-ink-300" : "text-ink-400"}>
-            ({counts[b.key]})
-          </span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-
