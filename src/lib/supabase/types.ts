@@ -489,6 +489,240 @@ export interface DraftVariantUpdate {
   metadata?: Record<string, unknown>;
 }
 
+// =====================================================================
+// Phase E1 — Weekly Operating Contract
+// =====================================================================
+
+export type WeeklyContractStatus =
+  | "draft"
+  | "pending_approval"
+  | "approved"
+  | "active"
+  | "paused"
+  | "expired"
+  | "revoked";
+
+export type WeeklyContractRiskCeiling = "low" | "medium" | "high";
+
+export type WeeklyContractActionType =
+  | "publish_scheduled_post"
+  | "publish_scheduled_comment"
+  | "send_engagement_signal"
+  | "mark_item_skipped"
+  | "rotate_to_backlog"
+  | "open_pr_for_review"
+  | "request_screenshot_import"
+  | "request_profile_suggestion";
+
+export interface WeeklyApprovalContractRow {
+  id: string;
+  workspace_id: string;
+  created_by: string | null;
+  approved_by: string | null;
+  title: string;
+  week_start: string;
+  week_end: string;
+  status: WeeklyContractStatus;
+  max_risk_level: WeeklyContractRiskCeiling;
+  max_actions_total: number | null;
+  max_actions_per_day: number | null;
+  max_actions_per_platform_per_day: number | null;
+  pause_on_first_failure: boolean;
+  pause_on_risk_event: boolean;
+  notes: string | null;
+  approval_text_phrase: string | null;
+  approved_at: string | null;
+  activated_at: string | null;
+  paused_at: string | null;
+  expired_at: string | null;
+  revoked_at: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WeeklyApprovalContractInsert {
+  id?: string;
+  workspace_id: string;
+  created_by?: string | null;
+  approved_by?: string | null;
+  title: string;
+  week_start: string;
+  week_end: string;
+  status?: WeeklyContractStatus;
+  max_risk_level?: WeeklyContractRiskCeiling;
+  max_actions_total?: number | null;
+  max_actions_per_day?: number | null;
+  max_actions_per_platform_per_day?: number | null;
+  pause_on_first_failure?: boolean;
+  pause_on_risk_event?: boolean;
+  notes?: string | null;
+  approval_text_phrase?: string | null;
+  approved_at?: string | null;
+  activated_at?: string | null;
+  paused_at?: string | null;
+  expired_at?: string | null;
+  revoked_at?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WeeklyApprovalContractUpdate {
+  title?: string;
+  week_start?: string;
+  week_end?: string;
+  status?: WeeklyContractStatus;
+  max_risk_level?: WeeklyContractRiskCeiling;
+  max_actions_total?: number | null;
+  max_actions_per_day?: number | null;
+  max_actions_per_platform_per_day?: number | null;
+  pause_on_first_failure?: boolean;
+  pause_on_risk_event?: boolean;
+  notes?: string | null;
+  approval_text_phrase?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  activated_at?: string | null;
+  paused_at?: string | null;
+  expired_at?: string | null;
+  revoked_at?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WeeklyContractAccountRow {
+  contract_id: string;
+  workspace_id: string;
+  account_id: string;
+  created_at: string;
+}
+export interface WeeklyContractAccountInsert {
+  contract_id: string;
+  workspace_id: string;
+  account_id: string;
+}
+
+export interface WeeklyContractProductRow {
+  contract_id: string;
+  workspace_id: string;
+  product_id: string;
+  created_at: string;
+}
+export interface WeeklyContractProductInsert {
+  contract_id: string;
+  workspace_id: string;
+  product_id: string;
+}
+
+export interface WeeklyContractPlatformRow {
+  contract_id: string;
+  workspace_id: string;
+  platform: string;
+  created_at: string;
+}
+export interface WeeklyContractPlatformInsert {
+  contract_id: string;
+  workspace_id: string;
+  platform: string;
+}
+
+export interface WeeklyContractAllowedActionRow {
+  contract_id: string;
+  workspace_id: string;
+  action_type: WeeklyContractActionType;
+  created_at: string;
+}
+export interface WeeklyContractAllowedActionInsert {
+  contract_id: string;
+  workspace_id: string;
+  action_type: WeeklyContractActionType;
+}
+
+export interface WeeklyContractExecutionWindowRow {
+  id: string;
+  contract_id: string;
+  workspace_id: string;
+  day_of_week: number;
+  start_time: string;
+  end_time: string;
+  created_at: string;
+}
+export interface WeeklyContractExecutionWindowInsert {
+  id?: string;
+  contract_id: string;
+  workspace_id: string;
+  day_of_week: number;
+  start_time: string;
+  end_time: string;
+}
+
+export type ExecutionAuthorizationOutcome =
+  | "allowed"
+  | "soft_block"
+  | "hard_block";
+
+export type ExecutionAuthorizationReasonCode =
+  | "allowed"
+  | "no_active_contract"
+  | "contract_paused"
+  | "contract_expired"
+  | "account_out_of_scope"
+  | "product_out_of_scope"
+  | "platform_out_of_scope"
+  | "action_not_permitted"
+  | "risk_above_ceiling"
+  | "cadence_total_exceeded"
+  | "cadence_per_day_exceeded"
+  | "cadence_per_platform_exceeded"
+  | "outside_execution_window"
+  | "paused_by_failure"
+  | "paused_by_risk_event"
+  | "demo_mode_blocked";
+
+export type ExecutionAuthorizationSuggestedAction =
+  | "proceed"
+  | "send_to_backlog"
+  | "reschedule"
+  | "pause_contract"
+  | "request_new_approval";
+
+export interface ExecutionAuthorizationRow {
+  id: string;
+  workspace_id: string;
+  contract_id: string | null;
+  action_type: string;
+  account_id: string | null;
+  product_id: string | null;
+  platform: string | null;
+  scheduled_item_id: string | null;
+  weekly_plan_item_id: string | null;
+  outcome: ExecutionAuthorizationOutcome;
+  reason_code: ExecutionAuthorizationReasonCode;
+  reason_detail: string | null;
+  suggested_action: ExecutionAuthorizationSuggestedAction | null;
+  should_backlog: boolean;
+  should_pause: boolean;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface ExecutionAuthorizationInsert {
+  id?: string;
+  workspace_id: string;
+  contract_id?: string | null;
+  action_type: string;
+  account_id?: string | null;
+  product_id?: string | null;
+  platform?: string | null;
+  scheduled_item_id?: string | null;
+  weekly_plan_item_id?: string | null;
+  outcome: ExecutionAuthorizationOutcome;
+  reason_code: ExecutionAuthorizationReasonCode;
+  reason_detail?: string | null;
+  suggested_action?: ExecutionAuthorizationSuggestedAction | null;
+  should_backlog?: boolean;
+  should_pause?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
 export interface Database {
   public: {
     Tables: {
@@ -574,6 +808,48 @@ export interface Database {
         Row: McpOperationRunRow;
         Insert: McpOperationRunInsert;
         Update: McpOperationRunUpdate;
+        Relationships: [];
+      };
+      weekly_approval_contracts: {
+        Row: WeeklyApprovalContractRow;
+        Insert: WeeklyApprovalContractInsert;
+        Update: WeeklyApprovalContractUpdate;
+        Relationships: [];
+      };
+      weekly_contract_accounts: {
+        Row: WeeklyContractAccountRow;
+        Insert: WeeklyContractAccountInsert;
+        Update: Partial<WeeklyContractAccountInsert>;
+        Relationships: [];
+      };
+      weekly_contract_products: {
+        Row: WeeklyContractProductRow;
+        Insert: WeeklyContractProductInsert;
+        Update: Partial<WeeklyContractProductInsert>;
+        Relationships: [];
+      };
+      weekly_contract_platforms: {
+        Row: WeeklyContractPlatformRow;
+        Insert: WeeklyContractPlatformInsert;
+        Update: Partial<WeeklyContractPlatformInsert>;
+        Relationships: [];
+      };
+      weekly_contract_allowed_actions: {
+        Row: WeeklyContractAllowedActionRow;
+        Insert: WeeklyContractAllowedActionInsert;
+        Update: Partial<WeeklyContractAllowedActionInsert>;
+        Relationships: [];
+      };
+      weekly_contract_execution_windows: {
+        Row: WeeklyContractExecutionWindowRow;
+        Insert: WeeklyContractExecutionWindowInsert;
+        Update: Partial<WeeklyContractExecutionWindowInsert>;
+        Relationships: [];
+      };
+      execution_authorizations: {
+        Row: ExecutionAuthorizationRow;
+        Insert: ExecutionAuthorizationInsert;
+        Update: Partial<ExecutionAuthorizationInsert>;
         Relationships: [];
       };
     };
