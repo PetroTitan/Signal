@@ -57,6 +57,8 @@ Signal's seed data is small on purpose. The product is designed to render gracef
 - When data isn't available, the UI says "Data not yet connected."
 - Real persistence arrives later through the phased Supabase plan in [docs/database/](docs/database/).
 
+Normal product mode shows only data the user created, connected, imported, or approved. Demo data is gated behind explicit demo mode and every page that displays it renders a `Demo preview — This data is not connected to real accounts` label. The boundary lives in [src/core/data-mode/](src/core/data-mode/); pages branch on `useDataMode()` and render the canonical `NotConnectedState` instead of computing fake `0/0` cards.
+
 See [docs/product/pre-final-cleanup.md](docs/product/pre-final-cleanup.md), [docs/product/demo-data-policy.md](docs/product/demo-data-policy.md), and [docs/product/ui-realism-guidelines.md](docs/product/ui-realism-guidelines.md).
 
 ## Database planning status
