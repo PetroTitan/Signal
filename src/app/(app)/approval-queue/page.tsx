@@ -50,10 +50,17 @@ export default function ApprovalQueuePage() {
         ) : null}
 
         {visible.length === 0 ? (
-          <div className="text-sm text-ink-500 py-12 text-center">
-            {pending.length === 0
-              ? "Queue is clear."
-              : "Nothing in this risk bucket."}
+          <div className="text-center py-16 max-w-md mx-auto">
+            <h2 className="text-base font-semibold text-ink-900">
+              {pending.length === 0
+                ? "No items awaiting approval"
+                : "Nothing in this risk bucket"}
+            </h2>
+            <p className="text-sm text-ink-500 mt-2 leading-relaxed">
+              {pending.length === 0
+                ? "Approved weekly plans will appear here after you generate drafts."
+                : "Try another filter."}
+            </p>
           </div>
         ) : (
           <div className="space-y-4">

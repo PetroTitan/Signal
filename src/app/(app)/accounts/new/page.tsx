@@ -75,6 +75,26 @@ export default function NewAccountWizard() {
     });
   }, [platform, product, role]);
 
+  if (products.length === 0) {
+    return (
+      <>
+        <Topbar title="New account" />
+        <div className="px-6 lg:px-10 py-16 max-w-md mx-auto text-center">
+          <h2 className="text-base font-semibold text-ink-900">
+            Add a product first
+          </h2>
+          <p className="text-sm text-ink-500 mt-2 leading-relaxed">
+            Accounts belong to products. Create a product profile before adding
+            an account.
+          </p>
+          <Link href="/products" className="btn-primary mt-5 inline-flex">
+            Open products
+          </Link>
+        </div>
+      </>
+    );
+  }
+
   const canNext =
     (stepIndex === 0 && platform !== null) ||
     (stepIndex === 1 && productId !== null) ||

@@ -56,18 +56,32 @@ export default function SchedulerPage() {
       />
 
       <div className="px-6 lg:px-10 py-8 max-w-6xl space-y-6">
-        <LiveCadenceCallout />
-        {state.lastMoves.length > 0 ? <MovesPanel /> : null}
-
-        {groupBy === "day" ? (
-          <WeeklyGrid items={scheduledItems} />
-        ) : groupBy === "account" ? (
-          <ByAccount items={scheduledItems} />
+        {scheduledItems.length === 0 && state.backlog.length === 0 ? (
+          <div className="text-center py-16 max-w-md mx-auto">
+            <h2 className="text-base font-semibold text-ink-900">
+              Nothing scheduled yet
+            </h2>
+            <p className="text-sm text-ink-500 mt-2 leading-relaxed">
+              Approved items will land here, spread across the week using
+              cadence rules.
+            </p>
+          </div>
         ) : (
-          <ByProduct items={scheduledItems} />
-        )}
+          <>
+            <LiveCadenceCallout />
+            {state.lastMoves.length > 0 ? <MovesPanel /> : null}
 
-        <BacklogRail />
+            {groupBy === "day" ? (
+              <WeeklyGrid items={scheduledItems} />
+            ) : groupBy === "account" ? (
+              <ByAccount items={scheduledItems} />
+            ) : (
+              <ByProduct items={scheduledItems} />
+            )}
+
+            <BacklogRail />
+          </>
+        )}
       </div>
     </>
   );

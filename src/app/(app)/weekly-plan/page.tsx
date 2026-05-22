@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import Link from "next/link";
 import { Topbar } from "@/components/topbar";
 import { PlatformBadge, RiskBadge } from "@/components/badges";
 import { useSignal } from "@/core/store";
@@ -39,8 +40,22 @@ export default function WeeklyPlanPage() {
       />
       <div className="px-6 lg:px-10 py-8 max-w-4xl">
         {items.length === 0 ? (
-          <div className="text-sm text-ink-500 py-12 text-center">
-            Nothing planned this week yet.
+          <div className="text-center py-16 max-w-md mx-auto">
+            <h2 className="text-base font-semibold text-ink-900">
+              No weekly plan yet
+            </h2>
+            <p className="text-sm text-ink-500 mt-2 leading-relaxed">
+              Create a product profile and add an account before generating a
+              weekly plan.
+            </p>
+            <div className="mt-5 flex flex-wrap justify-center gap-2">
+              <Link href="/products" className="btn">
+                Add product
+              </Link>
+              <Link href="/accounts/new" className="btn-primary">
+                Add account
+              </Link>
+            </div>
           </div>
         ) : (
           <ul className="space-y-3">
