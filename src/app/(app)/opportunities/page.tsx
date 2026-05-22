@@ -3,7 +3,9 @@
 import { useMemo, useState } from "react";
 import { Topbar } from "@/components/topbar";
 import { PlatformBadge } from "@/components/badges";
+import { DemoLabel, NotConnectedState } from "@/components/empty-state";
 import { useSignal } from "@/core/store";
+import { useDataMode } from "@/core/data-mode";
 import { buildOpportunitiesForInsight } from "@/core/content-intelligence";
 import { adaptToGoogle } from "@/core/platform-adapters";
 import {
@@ -23,6 +25,7 @@ type Tab = "all" | PlatformId | "google";
 
 export default function OpportunitiesPage() {
   const { state } = useSignal();
+  const dataMode = useDataMode();
   const [tab, setTab] = useState<Tab>("all");
 
   const sourceInsights = useDemoData(allSourceInsights);
@@ -66,6 +69,23 @@ export default function OpportunitiesPage() {
     return [];
   }, [aggregate.google, tab]);
 
+  if (!dataMode.isDemo && !dataMode.hasAnyOperationalData) {
+    return (
+      <>
+        <Topbar
+          title="Opportunities"
+          description="Surfaces here once a product and account are connected."
+        />
+        <div className="px-6 lg:px-10 py-8 max-w-3xl">
+          <NotConnectedState
+            variant="noOpportunities"
+            secondary={{ href: "/accounts/new", label: "Add account" }}
+          />
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <Topbar
@@ -74,6 +94,7 @@ export default function OpportunitiesPage() {
       />
 
       <div className="px-6 lg:px-10 py-8 space-y-6 max-w-4xl">
+        {dataMode.isDemo ? <DemoLabel /> : null}
         <FilterBar tab={tab} setTab={setTab} counts={counts} />
         {visibleContent.length === 0 && visibleGoogle.length === 0 ? (
           <div className="text-sm text-ink-500 py-12 text-center">

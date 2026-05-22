@@ -1,7 +1,9 @@
 "use client";
 
 import { Topbar } from "@/components/topbar";
+import { DemoLabel, NotConnectedState } from "@/components/empty-state";
 import { useSignal } from "@/core/store";
+import { useDataMode } from "@/core/data-mode";
 import { sourceInsights as allSourceInsights } from "@/lib/mock";
 import { useDemoData } from "@/lib/demo-data";
 import type { SourceInsight } from "@/types";
@@ -21,8 +23,23 @@ const categoryLabels: Record<SourceInsight["category"], string> = {
 
 export default function ContentIntelligencePage() {
   const { state } = useSignal();
+  const dataMode = useDataMode();
   const productsById = state.productsById;
   const insights = useDemoData(allSourceInsights);
+
+  if (!dataMode.isDemo && insights.length === 0 && !dataMode.hasProducts) {
+    return (
+      <>
+        <Topbar
+          title="Insights"
+          description="Founder observations, product lessons, support patterns."
+        />
+        <div className="px-6 lg:px-10 py-8 max-w-3xl">
+          <NotConnectedState variant="noInsights" />
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -32,6 +49,7 @@ export default function ContentIntelligencePage() {
       />
 
       <div className="px-6 lg:px-10 py-8 space-y-4 max-w-4xl">
+        {dataMode.isDemo ? <DemoLabel /> : null}
         {insights.length === 0 ? (
           <div className="text-sm text-ink-500 py-12 text-center">
             No insights yet. Add one as a founder observation, product lesson,
