@@ -124,6 +124,7 @@ export async function updateProduct(input: {
   summary?: string | null;
   category?: string | null;
   status?: string;
+  reviewStatus?: "pending_review" | "confirmed" | "rejected" | "needs_edit";
 }): Promise<Product> {
   const supabase = createSupabaseServerClient();
   const patch: ProductUpdate = {};
@@ -132,6 +133,7 @@ export async function updateProduct(input: {
   if (input.summary !== undefined) patch.summary = input.summary;
   if (input.category !== undefined) patch.category = input.category;
   if (input.status !== undefined) patch.status = input.status;
+  if (input.reviewStatus !== undefined) patch.review_status = input.reviewStatus;
   const { data, error } = await supabase
     .from("products")
     .update(patch as never)
@@ -141,4 +143,46 @@ export async function updateProduct(input: {
     .single();
   if (error || !data) throw fromPostgres(error, "Failed to update product.");
   return toProduct(data as unknown as ProductRow);
+}
+
+/**
+ * Products waiting for operator review (the approval-queue feed).
+ * Excludes archived rows; sorted oldest-first so the operator burns
+ * down the queue in order of submission.
+ */
+export async function listProductsPendingReview(
+  workspaceId: string,
+): Promise<Product[]> {
+  const supabase = createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("products")
+    .select("*")
+    .eq("workspace_id", workspaceId)
+    .eq("review_status", "pending_review")
+    .neq("status", "archived")
+    .order("created_at", { ascending: true });
+  if (error) throw fromPostgres(error, "Failed to list products pending review.");
+  return ((data ?? []) as unknown as ProductRow[]).map(toProduct);
+}
+
+export async function approveProductReview(input: {
+  workspaceId: string;
+  productId: string;
+}): Promise<Product> {
+  return updateProduct({
+    workspaceId: input.workspaceId,
+    productId: input.productId,
+    reviewStatus: "confirmed",
+  });
+}
+
+export async function rejectProductReview(input: {
+  workspaceId: string;
+  productId: string;
+}): Promise<Product> {
+  return updateProduct({
+    workspaceId: input.workspaceId,
+    productId: input.productId,
+    reviewStatus: "rejected",
+  });
 }
