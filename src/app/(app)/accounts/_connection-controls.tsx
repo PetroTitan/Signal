@@ -64,11 +64,28 @@ export function ConnectionControls(props: ConnectionControlsProps) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ account_id: accountId }),
       });
-      const json = await res.json();
-      if (!res.ok) {
-        setMessage(json.error ?? "Health check failed.");
+      const json = (await res.json()) as {
+        ok: boolean;
+        health?: string;
+        handle?: string;
+        refreshed?: boolean;
+        code?: string;
+        error?: string;
+      };
+      if (json.ok && json.health === "healthy") {
+        setMessage(
+          `Healthy${json.handle ? ` — connected as u/${json.handle}` : ""}${
+            json.refreshed ? " (token refreshed)" : ""
+          }.`,
+        );
+      } else if (json.health) {
+        setMessage(
+          `${json.health}${json.code ? ` (${json.code})` : ""}${
+            json.error ? ` — ${json.error}` : ""
+          }`,
+        );
       } else {
-        setMessage(`${json.health}: ${json.message}`);
+        setMessage(json.error ?? "Health check failed.");
       }
     } finally {
       setBusy(null);

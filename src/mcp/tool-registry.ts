@@ -21,6 +21,7 @@ import {
   activityLatest,
   contractsActive,
   executionQueueStatus,
+  oauthConnectionsList,
   productsList,
   verificationLatest,
   weeklyPlanCurrent,
@@ -137,6 +138,18 @@ export const TOOLS: ToolDefinition[] = [
     touchesProduction: false,
     parseArgs: parseEmptyArgs,
     handler: wrap(verificationLatest),
+  },
+  {
+    name: "signal.oauth.connections.list",
+    description:
+      "List platform OAuth connections in the workspace. Returns connection_status, health_status, scopes, expires_at, has_access_token/has_refresh_token booleans. NEVER returns the encrypted token envelopes or any token plaintext.",
+    requiredScopes: ["accounts:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(oauthConnectionsList),
   },
   {
     name: "signal.activity.latest",

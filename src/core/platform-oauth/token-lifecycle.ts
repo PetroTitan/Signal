@@ -17,6 +17,7 @@
  */
 
 import type { OAuthPlatform } from "./oauth-types";
+import * as encryption from "./token-encryption";
 
 export interface TokenCipher {
   encrypt(plaintext: string): string | null;
@@ -39,12 +40,14 @@ export const NOOP_CIPHER: TokenCipher = {
 };
 
 /**
- * Cipher resolver. A future PR can swap this for an AES-GCM cipher
- * backed by a KMS-managed key. Until then the noop is the only
- * option.
+ * Cipher resolver. Phase F2 wires this to the real AES-256-GCM
+ * cipher backed by `TOKEN_ENCRYPTION_KEY`. When the env is missing
+ * or malformed, the loader returns NOOP_CIPHER and the OAuth flow
+ * records the connection as `error` with
+ * metadata.token_storage='not_configured'.
  */
 export function resolveTokenCipher(): TokenCipher {
-  return NOOP_CIPHER;
+  return encryption.getTokenCipher();
 }
 
 export interface TokenResponse {
