@@ -315,7 +315,7 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
               </div>
             </div>
             {showPreview ? (
-              <div className="mt-1 rounded-md border border-ink-200 bg-ink-50/40 px-3 py-2 min-h-[160px]">
+              <div className="mt-1 rounded-md border border-ink-200 bg-ink-50/40 px-3 py-2 min-h-[140px]">
                 <Markdown source={draft.body} />
               </div>
             ) : (
@@ -324,14 +324,11 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
                 onChange={(e) =>
                   setDraft((d) => ({ ...d, body: e.target.value }))
                 }
-                placeholder={
-                  "The post itself. Markdown supported — `# heading`, `**bold**`, `*italic*`, `[link](url)`, lists, code fences."
-                }
-                rows={8}
-                className="input w-full text-sm leading-relaxed mt-1 font-mono"
+                placeholder="The post itself. Markdown supported."
+                className="input w-full text-sm leading-relaxed mt-1 font-mono min-h-[140px] md:min-h-[200px]"
               />
             )}
-            <p className="mt-1 text-[10px] text-ink-400">
+            <p className="mt-1 text-[10px] text-ink-400 hidden md:block">
               Markdown supported: <span className="font-mono"># heading</span>{" "}
               · <span className="font-mono">**bold**</span> ·{" "}
               <span className="font-mono">*italic*</span> ·{" "}

@@ -316,6 +316,25 @@ export default async function DashboardPage() {
       };
     });
 
+  // ---- Publishing cadence — calm "this week" rhythm line ----
+  const successfulPublishes = recentPublishes.filter(
+    (p) => p.outcome === "published",
+  );
+  const sevenDaysAgo = Date.now() - 7 * dayMs;
+  const publishesThisWeek = successfulPublishes.filter(
+    (p) => new Date(p.finishedAt).getTime() >= sevenDaysAgo,
+  ).length;
+  const lastPublish = successfulPublishes[0]?.finishedAt ?? null;
+  const lastPublishAgeDays = lastPublish
+    ? Math.floor((Date.now() - new Date(lastPublish).getTime()) / dayMs)
+    : null;
+  const cadenceLine = buildCadenceLine({
+    publishesThisWeek,
+    lastPublishAgeDays,
+    draftsCount: drafts.length,
+    nothingTomorrow: tomorrowPosts.length === 0,
+  });
+
   return (
     <>
       <Topbar
@@ -339,6 +358,12 @@ export default async function DashboardPage() {
       />
 
       <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-3xl space-y-5">
+        {cadenceLine ? (
+          <p className="text-xs text-ink-500 leading-relaxed">
+            {cadenceLine}
+          </p>
+        ) : null}
+
         {/* Needs attention — only when there's something to attend to */}
         <NeedsAttentionStrip entries={needsAttention} />
 
@@ -377,19 +402,42 @@ export default async function DashboardPage() {
                 See all drafts →
               </Link>
             </div>
-            <ul className="space-y-1.5">
+            <ul className="space-y-2">
               {drafts.map((d) => (
                 <li key={d.id}>
                   <Link
                     href="/weekly-plan"
-                    className="block rounded-md border border-ink-200 bg-white px-3 py-2 hover:bg-ink-50"
+                    className="block rounded-md border border-ink-200 bg-white px-3 py-2.5 hover:bg-ink-50"
                   >
-                    <div className="text-xs font-medium text-ink-900 truncate">
-                      {d.title?.trim() || "Untitled draft"}
+                    <div className="flex items-baseline justify-between gap-3">
+                      <div className="text-sm font-medium text-ink-900 truncate min-w-0 flex-1">
+                        {d.title?.trim() || "Untitled draft"}
+                      </div>
+                      <div className="text-[10px] text-ink-500 shrink-0">
+                        {formatLastEdited(d.updatedAt)}
+                      </div>
                     </div>
-                    <div className="text-[11px] text-ink-500 truncate">
-                      {d.body?.slice(0, 80) || "No body yet"}
-                    </div>
+                    {d.body ? (
+                      <p className="text-xs text-ink-600 mt-0.5 line-clamp-2 leading-relaxed">
+                        {d.body}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-ink-400 italic mt-0.5">
+                        No body yet — tap to keep writing.
+                      </p>
+                    )}
+                    {d.scheduledAt ? (
+                      <div className="text-[11px] text-ink-500 mt-1">
+                        Scheduled for{" "}
+                        {new Date(d.scheduledAt).toLocaleString(undefined, {
+                          weekday: "short",
+                          month: "short",
+                          day: "numeric",
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })}
+                      </div>
+                    ) : null}
                   </Link>
                 </li>
               ))}
@@ -447,4 +495,56 @@ function WeekBlock({
       )}
     </div>
   );
+}
+
+function formatLastEdited(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (Number.isNaN(ms)) return "";
+  const minutes = ms / 60000;
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${Math.round(minutes)}m ago`;
+  const hours = minutes / 60;
+  if (hours < 24) return `${Math.round(hours)}h ago`;
+  const days = hours / 24;
+  if (days < 14) return `${Math.round(days)}d ago`;
+  return new Date(iso).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function buildCadenceLine(input: {
+  publishesThisWeek: number;
+  lastPublishAgeDays: number | null;
+  draftsCount: number;
+  nothingTomorrow: boolean;
+}): string | null {
+  const parts: string[] = [];
+
+  if (input.publishesThisWeek > 0) {
+    parts.push(
+      `You've published ${input.publishesThisWeek} time${
+        input.publishesThisWeek === 1 ? "" : "s"
+      } this week.`,
+    );
+  } else if (input.lastPublishAgeDays === null) {
+    parts.push("Nothing published yet.");
+  } else if (input.lastPublishAgeDays === 0) {
+    parts.push("Last publish was earlier today.");
+  } else if (input.lastPublishAgeDays === 1) {
+    parts.push("Last publish was yesterday.");
+  } else {
+    parts.push(`Last publish was ${input.lastPublishAgeDays} days ago.`);
+  }
+
+  if (input.nothingTomorrow && input.draftsCount > 0) {
+    parts.push(
+      `${input.draftsCount} draft${
+        input.draftsCount === 1 ? " is" : "s are"
+      } waiting to be finished.`,
+    );
+  }
+
+  if (parts.length === 0) return null;
+  return parts.join(" ");
 }

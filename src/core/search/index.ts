@@ -47,7 +47,7 @@ const docPages: { id: string; title: string; href: string; tags: string }[] = [
   {
     id: "docs_arch",
     title: "Operational stabilization architecture",
-    href: "/workflow",
+    href: "/dashboard",
     tags: "architecture workflow operational core",
   },
   {
@@ -59,7 +59,7 @@ const docPages: { id: string; title: string; href: string; tags: string }[] = [
   {
     id: "docs_workflow",
     title: "Workflow map",
-    href: "/workflow",
+    href: "/dashboard",
     tags: "workflow flow architecture documentation",
   },
 ];
@@ -181,7 +181,7 @@ export function searchAll(input: SearchInput): SearchResult[] {
         title: ins.title,
         subtitle: `${ins.category.replace(/_/g, " ")}`,
         productId: ins.productId,
-        href: "/content-intelligence",
+        href: "/weekly-plan",
         score: match.score,
         matchedFields: match.matchedFields,
       });
@@ -226,7 +226,7 @@ export function searchAll(input: SearchInput): SearchResult[] {
         subtitle: `${r.category.replace(/_/g, " ")} · ${r.level}`,
         productId: r.productId,
         platform: r.platform,
-        href: "/risk-center",
+        href: "/weekly-plan",
         score: match.score,
         matchedFields: match.matchedFields,
       });

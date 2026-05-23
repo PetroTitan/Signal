@@ -220,14 +220,6 @@ export default async function ExecutionItemPage({ params }: PageProps) {
                 minute: "2-digit",
               })}
             </p>
-            <details className="text-[11px] text-ink-500">
-              <summary className="cursor-pointer hover:text-ink-700">
-                Show technical details
-              </summary>
-              <div className="mt-1.5 font-mono">
-                provider_post_id: {history.providerPostId ?? "—"}
-              </div>
-            </details>
           </section>
         ) : null}
 
@@ -352,14 +344,6 @@ export default async function ExecutionItemPage({ params }: PageProps) {
                       </dd>
                     </div>
                   </dl>
-                  <details className="mt-3 text-[11px] text-ink-500">
-                    <summary className="cursor-pointer hover:text-ink-700">
-                      Show technical details
-                    </summary>
-                    <pre className="mt-1.5 bg-ink-50 p-3 rounded-md overflow-x-auto font-mono">
-                      {JSON.stringify(verdict.preview.apiPayload, null, 2)}
-                    </pre>
-                  </details>
                 </section>
 
                 {isReadyForManual ? (

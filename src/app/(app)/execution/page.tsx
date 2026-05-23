@@ -4,10 +4,6 @@ import { isSupabaseConfigured } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { getActiveContract } from "@/repositories/weekly-contract-repository";
 import { listExecutionQueues } from "@/repositories/execution-queue-repository";
-import {
-  listUpcomingScheduledItems,
-  listRecentResultItems,
-} from "@/repositories/execution-item-repository";
 import { EXECUTION_QUEUE_STATUS_LABELS } from "@/core/execution-engine";
 import { CreateQueueForm } from "./_create-queue-form";
 
@@ -40,128 +36,19 @@ export default async function ExecutionIndexPage() {
     );
   }
 
-  const [contract, queues, upcoming, recent] = await Promise.all([
+  const [contract, queues] = await Promise.all([
     getActiveContract(membership.workspace.id),
     listExecutionQueues(membership.workspace.id),
-    listUpcomingScheduledItems(membership.workspace.id, 10),
-    listRecentResultItems(membership.workspace.id, 10),
   ]);
 
   return (
     <>
       <Topbar
         title="Publishing"
-        description="What's about to go out, and what's already gone out. Posts only — comments and drafts live on the weekly plan."
+        description="Active publishing scope and history. Today, tomorrow, and recent publishes live on the dashboard."
       />
 
       <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-4xl space-y-5">
-        <section className="rounded-2xl border border-ink-200 bg-white">
-          <header className="px-5 py-3.5 border-b border-ink-100 flex items-center justify-between">
-            <div>
-              <div className="text-sm font-semibold text-ink-900">
-                Coming up
-              </div>
-              <p className="text-xs text-ink-500 mt-0.5">
-                Approved posts waiting for their scheduled time.
-              </p>
-            </div>
-            <div className="text-xs text-ink-500">{upcoming.length} shown</div>
-          </header>
-          {upcoming.length === 0 ? (
-            <div className="px-5 py-6 text-sm text-ink-600">
-              Nothing queued. Approve a weekly plan to start publishing.
-            </div>
-          ) : (
-            <ul className="row-divider">
-              {upcoming.map((it) => (
-                <li
-                  key={it.id}
-                  className="px-5 py-3.5 flex items-start justify-between gap-4"
-                >
-                  <div className="min-w-0">
-                    <Link
-                      href={`/execution/items/${it.id}`}
-                      className="text-sm font-medium text-ink-900 truncate hover:text-signal-700"
-                    >
-                      {it.title ?? "Untitled"}
-                    </Link>
-                    <div className="text-[11px] text-ink-500 mt-0.5">
-                      {it.platform ?? "—"} ·{" "}
-                      {it.scheduledAt
-                        ? new Date(it.scheduledAt).toLocaleString(undefined, {
-                            weekday: "short",
-                            month: "short",
-                            day: "numeric",
-                            hour: "numeric",
-                            minute: "2-digit",
-                          })
-                        : "scheduled time pending"}
-                    </div>
-                  </div>
-                  <span className="badge-info text-[10px]">scheduled</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        <section className="rounded-2xl border border-ink-200 bg-white">
-          <header className="px-5 py-3.5 border-b border-ink-100 flex items-center justify-between">
-            <div>
-              <div className="text-sm font-semibold text-ink-900">
-                Recent publishes
-              </div>
-              <p className="text-xs text-ink-500 mt-0.5">
-                The most recent posts Signal handled, with their outcome.
-              </p>
-            </div>
-            <div className="text-xs text-ink-500">{recent.length} shown</div>
-          </header>
-          {recent.length === 0 ? (
-            <div className="px-5 py-6 text-sm text-ink-600">
-              No publishes yet.
-            </div>
-          ) : (
-            <ul className="row-divider">
-              {recent.map((it) => (
-                <li
-                  key={it.id}
-                  className="px-5 py-3.5 flex items-start justify-between gap-4"
-                >
-                  <div className="min-w-0">
-                    <Link
-                      href={`/execution/items/${it.id}`}
-                      className="text-sm font-medium text-ink-900 truncate hover:text-signal-700"
-                    >
-                      {it.title ?? "Untitled"}
-                    </Link>
-                    <div className="text-[11px] text-ink-500 mt-0.5">
-                      {it.platform ?? "—"} · updated{" "}
-                      {new Date(it.updatedAt).toLocaleString(undefined, {
-                        month: "short",
-                        day: "numeric",
-                        hour: "numeric",
-                        minute: "2-digit",
-                      })}
-                    </div>
-                  </div>
-                  <span
-                    className={`text-[10px] ${
-                      it.status === "completed"
-                        ? "badge-low"
-                        : it.status === "failed"
-                        ? "badge-high"
-                        : "badge-neutral"
-                    }`}
-                  >
-                    {friendlyStatus(it.status)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
         <section className="rounded-2xl border border-ink-200 bg-white p-5">
           <h2 className="text-sm font-semibold text-ink-900">
             Active publishing scope
@@ -244,27 +131,4 @@ export default async function ExecutionIndexPage() {
       </div>
     </>
   );
-}
-
-function friendlyStatus(status: string): string {
-  switch (status) {
-    case "completed":
-      return "published";
-    case "failed":
-      return "failed";
-    case "ready":
-      return "ready";
-    case "ready_for_manual_publish":
-      return "manual publish";
-    case "blocked":
-      return "blocked";
-    case "skipped":
-      return "skipped";
-    case "running":
-      return "publishing…";
-    case "scheduled":
-      return "scheduled";
-    default:
-      return status;
-  }
 }

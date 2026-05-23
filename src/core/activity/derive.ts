@@ -42,7 +42,7 @@ export function deriveActivity(input: DeriveInput): ActivityEvent[] {
       severity: "info",
       title: `Insight: ${insight.title}`,
       explanation: `${insight.category.replace(/_/g, " ")} added to the insight library.`,
-      link: "/content-intelligence",
+      link: "/weekly-plan",
     });
   }
 
@@ -103,7 +103,7 @@ export function deriveActivity(input: DeriveInput): ActivityEvent[] {
         severity: item.risk.level === "blocked" ? "block" : "warn",
         title: `Risk: ${item.draft.hook}`,
         explanation: item.risk.recommendation,
-        link: "/risk-center",
+        link: "/weekly-plan",
       });
     }
   }
@@ -131,7 +131,7 @@ export function deriveActivity(input: DeriveInput): ActivityEvent[] {
             : "ok",
       title: titleForApproval(ev, item),
       explanation: ev.note ?? `${ev.action.replace(/_/g, " ")} by ${ev.actorEmail}.`,
-      link: "/approval-queue",
+      link: "/weekly-plan",
     });
   }
 
@@ -164,7 +164,7 @@ export function deriveActivity(input: DeriveInput): ActivityEvent[] {
       severity: "info",
       title: `Schedule shift: ${item?.draft.hook ?? move.id}`,
       explanation: move.reason,
-      link: "/scheduler",
+      link: "/execution",
     });
   }
 
@@ -185,7 +185,7 @@ export function deriveActivity(input: DeriveInput): ActivityEvent[] {
             : "info",
       title: risk.summary,
       explanation: risk.recommendation,
-      link: "/risk-center",
+      link: "/weekly-plan",
     });
   }
 
@@ -206,7 +206,7 @@ export function deriveActivity(input: DeriveInput): ActivityEvent[] {
         severity: opp.impact === "high" ? "warn" : "info",
         title: opp.title,
         explanation: opp.rationale,
-        link: "/opportunities",
+        link: "/weekly-plan",
       });
     }
     const googleOpps = adaptToGoogle({
@@ -247,7 +247,7 @@ export function deriveActivity(input: DeriveInput): ActivityEvent[] {
       severity: ao.impact === "high" ? "warn" : "info",
       title: ao.title,
       explanation: ao.suggestedAction,
-      link: "/discoverability",
+      link: "/weekly-plan",
     });
   }
 
@@ -276,7 +276,7 @@ export function deriveDiscussionActivity(input: {
         severity: "info",
         title: `Skipped: ${d.threadTitle}`,
         explanation: d.skipReason ?? "Discussion engine recommended skip.",
-        link: "/discussions",
+        link: "/weekly-plan",
       });
     } else if (d.matchedInsightIds.length > 0) {
       out.push({
@@ -289,7 +289,7 @@ export function deriveDiscussionActivity(input: {
         severity: "info",
         title: `Discussion match: ${d.threadTitle}`,
         explanation: `Score ${d.participationScore}, fit ${d.communityFit.level.replace(/_/g, " ")}.`,
-        link: "/comments",
+        link: "/weekly-plan",
       });
     }
   }
