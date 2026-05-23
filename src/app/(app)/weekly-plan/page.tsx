@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Topbar } from "@/components/topbar";
-import { isSupabaseConfigured } from "@/lib/supabase";
+import { isSupabaseConfigured, createSupabaseServerClient } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import {
   getCurrentWeeklyPlan,
@@ -9,37 +9,17 @@ import {
 import { listProducts } from "@/repositories/product-repository";
 import { listAccounts } from "@/repositories/account-repository";
 import {
-  creativeReadinessBadge,
   creativeReadinessReason,
   listCreativesForItems,
 } from "@/repositories/weekly-plan-creative-repository";
 import { listExecutionItemsByPlanItemIds } from "@/repositories/execution-item-repository";
 import { CreateItemForm } from "./_create-item-form";
 import { ApprovePlanForm } from "./_approve-plan-form";
-import { PlanItemRow } from "./_item-row";
-import {
-  ExecutionStateBadge,
-  humanReadableExecutionState,
-} from "@/components/publishing/execution-state";
+import { PlanItemCard } from "./_plan-item-card";
+import { ExecutionStateBadge } from "@/components/publishing/execution-state";
+import { readAllowedTestSubreddits } from "@/core/publishing/safe-test-env";
 
 export const dynamic = "force-dynamic";
-
-const STATUS_BADGE: Record<string, string> = {
-  draft: "badge-neutral",
-  pending_approval: "badge-medium",
-  approved: "badge-info",
-  rejected: "badge-neutral",
-  scheduled: "badge-info",
-  published: "badge-low",
-  failed: "badge-high",
-  skipped: "badge-neutral",
-  backlog: "badge-neutral",
-  paused: "badge-neutral",
-};
-
-function badgeClass(status: string): string {
-  return STATUS_BADGE[status] ?? "badge-neutral";
-}
 
 export default async function WeeklyPlanPage() {
   if (!isSupabaseConfigured()) {
@@ -72,6 +52,15 @@ export default async function WeeklyPlanPage() {
   }
 
   const workspaceId = membership.workspace.id;
+  const supabase = createSupabaseServerClient();
+  const { data: wsSettings } = await supabase
+    .from("workspace_settings")
+    .select("timezone")
+    .eq("workspace_id", workspaceId)
+    .maybeSingle();
+  const timezoneLabel =
+    (wsSettings as { timezone?: string | null } | null)?.timezone ?? null;
+
   const [plan, products, accounts] = await Promise.all([
     getCurrentWeeklyPlan(workspaceId),
     listProducts(workspaceId),
@@ -93,40 +82,29 @@ export default async function WeeklyPlanPage() {
     }
   }
 
-  // Phase F2.5: map plan_item_id → most-recent execution_item so the
-  // row can show "ready_for_publish" with a link to /execution/items/<id>.
   const execItems = items.length
     ? await listExecutionItemsByPlanItemIds(
         workspaceId,
         items.map((i) => i.id),
       )
     : [];
-  const execByPlanItem = new Map<
-    string,
-    { id: string; status: string }
-  >();
+  const execByPlanItem = new Map<string, { id: string; status: string }>();
   for (const ei of execItems) {
-    const prev = execByPlanItem.get(ei.sourceEntityId ?? "");
-    // Prefer the most-recent / most-advanced status.
+    const key = ei.sourceEntityId ?? "";
+    const prev = execByPlanItem.get(key);
     if (!prev) {
-      execByPlanItem.set(ei.sourceEntityId ?? "", {
-        id: ei.id,
-        status: ei.status,
-      });
+      execByPlanItem.set(key, { id: ei.id, status: ei.status });
     } else {
-      // Rank: completed > ready > running > scheduled > others
       const rank: Record<string, number> = {
-        completed: 5,
+        completed: 6,
+        ready_for_manual_publish: 5,
         ready: 4,
         running: 3,
         scheduled: 2,
         authorized: 1,
       };
       if ((rank[ei.status] ?? 0) > (rank[prev.status] ?? 0)) {
-        execByPlanItem.set(ei.sourceEntityId ?? "", {
-          id: ei.id,
-          status: ei.status,
-        });
+        execByPlanItem.set(key, { id: ei.id, status: ei.status });
       }
     }
   }
@@ -144,12 +122,20 @@ export default async function WeeklyPlanPage() {
     displayName: a.displayName,
     platform: a.platform,
   }));
+  const allowedSubreddits = readAllowedTestSubreddits();
+
+  // ---- Day grouping ----
+  const groups = groupByDay(items);
 
   return (
     <>
       <Topbar
         title="Weekly plan"
-        description="Everything planned for this week. Edit, schedule, attach a creative, then approve once."
+        description={
+          timezoneLabel
+            ? `Everything planned for this week. All times shown in ${timezoneLabel}.`
+            : "Everything planned for this week. All times shown in your browser timezone."
+        }
         actions={
           plan ? (
             <Link href="/approval-queue" className="btn-primary">
@@ -158,7 +144,7 @@ export default async function WeeklyPlanPage() {
           ) : null
         }
       />
-      <div className="px-6 lg:px-10 py-8 max-w-3xl space-y-6">
+      <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-3xl space-y-5">
         {!plan ? (
           <section className="card p-6 text-center">
             <h2 className="text-base font-semibold text-ink-900">
@@ -175,132 +161,201 @@ export default async function WeeklyPlanPage() {
               {plan.title}
             </h2>
             <p className="text-sm text-ink-500 mt-2 leading-relaxed">
-              Week of {plan.weekStart}. No items yet.
+              Week of {plan.weekStart}. No items yet — add one below.
             </p>
           </section>
         ) : (
           <>
-            {pendingCount > 0 && plan ? (
+            {pendingCount > 0 ? (
               <ApprovePlanForm
                 planId={plan.id}
                 pendingCount={pendingCount}
               />
             ) : null}
-            <section className="card">
-              <header className="px-5 py-3.5 border-b border-ink-100 flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-semibold text-ink-900">
-                    {plan.title}
-                  </div>
-                  <div className="text-xs text-ink-500 mt-0.5">
-                    Week of {plan.weekStart} · status: {plan.status}
-                  </div>
-                </div>
-                <div className="text-xs text-ink-500">
-                  {items.length} item{items.length === 1 ? "" : "s"}
-                </div>
-              </header>
-              <div className="px-5 py-2.5 border-b border-ink-100 flex flex-wrap gap-1.5">
-                {Object.entries(counts).map(([status, n]) => (
-                  <span
-                    key={status}
-                    className="inline-flex items-center gap-1.5"
-                  >
-                    <ExecutionStateBadge
-                      status={status as Parameters<typeof ExecutionStateBadge>[0]["status"]}
-                    />
-                    <span className="text-[10px] text-ink-500">{n}</span>
-                  </span>
-                ))}
-              </div>
-              <ul className="row-divider">
-                {items.map((it) => {
-                  const isPost = it.contentType === "post";
-                  const creative = creativeByItem.get(it.id) ?? null;
-                  const creativeReason = isPost
-                    ? creativeReadinessReason(creative)
-                    : null;
-                  const warnings: string[] = [];
-                  if (isPost && !it.scheduledAt) {
-                    warnings.push(
-                      "Missing schedule — set a date/time before approving.",
-                    );
-                  }
-                  if (isPost && creativeReason) {
-                    warnings.push(
-                      `Creative not ready: ${creativeReason.replace(/_/g, " ")}.`,
-                    );
-                  }
 
-                  const badge = creativeReadinessBadge(creative);
-                  const creativeBadge = {
-                    label: `creative · ${badge.replace("_", " ")}`,
-                    cls:
-                      badge === "approved"
-                        ? "badge-low"
-                        : badge === "rejected" || badge === "missing"
-                          ? "badge-high"
-                          : badge === "needs_review"
-                            ? "badge-info"
-                            : "badge-medium",
-                  };
+            {/* Lightweight progress strip — no card, no border noise */}
+            <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+              <span className="text-ink-500">
+                {items.length} item{items.length === 1 ? "" : "s"} this week:
+              </span>
+              {Object.entries(counts).map(([status, n]) => (
+                <span
+                  key={status}
+                  className="inline-flex items-center gap-1.5"
+                >
+                  <ExecutionStateBadge
+                    status={status as Parameters<typeof ExecutionStateBadge>[0]["status"]}
+                  />
+                  <span className="text-ink-500">{n}</span>
+                </span>
+              ))}
+            </div>
 
-                  const exec = execByPlanItem.get(it.id) ?? null;
-                  return (
-                    <PlanItemRow
-                      key={it.id}
-                      id={it.id}
-                      title={it.title}
-                      body={it.body}
-                      platform={it.platform}
-                      contentType={it.contentType}
-                      productId={it.productId}
-                      accountId={it.accountId}
-                      scheduledAt={it.scheduledAt}
-                      status={it.status}
-                      riskScore={it.riskScore}
-                      riskLevel={it.riskLevel}
-                      notes={
+            {/* Day-grouped cards */}
+            <div className="space-y-6">
+              {groups.map((group) => (
+                <section key={group.key} className="space-y-2">
+                  <DayHeader group={group} />
+                  <div className="space-y-2">
+                    {group.items.map((it) => {
+                      const isPost = it.contentType === "post";
+                      const creative = creativeByItem.get(it.id) ?? null;
+                      const creativeReason = isPost
+                        ? creativeReadinessReason(creative)
+                        : null;
+                      const warnings: string[] = [];
+                      if (isPost && !it.scheduledAt) {
+                        warnings.push(
+                          "Missing schedule — set a date/time before approving.",
+                        );
+                      }
+                      if (isPost && creativeReason) {
+                        warnings.push(
+                          `Creative not ready: ${creativeReason.replace(/_/g, " ")}.`,
+                        );
+                      }
+                      const exec = execByPlanItem.get(it.id) ?? null;
+                      const subreddit =
+                        typeof it.metadata?.target === "string"
+                          ? (it.metadata.target as string)
+                          : null;
+                      const notes =
                         typeof it.metadata?.operator_notes === "string"
                           ? (it.metadata.operator_notes as string)
-                          : null
-                      }
-                      statusLabel={humanReadableExecutionState(it.status).label}
-                      statusBadgeClass={badgeClass(it.status)}
-                      isPost={isPost}
-                      warnings={warnings}
-                      products={productOptions}
-                      accounts={accountOptions}
-                      executionItemId={exec?.id ?? null}
-                      executionItemStatus={exec?.status ?? null}
-                      creative={
-                        creative
-                          ? {
-                              id: creative.id,
-                              creativeType: creative.creativeType,
-                              sourceType: creative.sourceType,
-                              sourceUrl: creative.sourceUrl,
-                              assetUrl: creative.assetUrl,
-                              prompt: creative.prompt,
-                              altText: creative.altText,
-                              license: creative.license,
-                              attribution: creative.attribution,
-                              riskNotes: creative.riskNotes,
-                              status: creative.status,
-                            }
-                          : null
-                      }
-                      creativeBadge={creativeBadge}
-                    />
-                  );
-                })}
-              </ul>
-            </section>
+                          : null;
+                      return (
+                        <PlanItemCard
+                          key={it.id}
+                          id={it.id}
+                          title={it.title}
+                          body={it.body}
+                          platform={it.platform}
+                          contentType={it.contentType}
+                          productId={it.productId}
+                          accountId={it.accountId}
+                          scheduledAt={it.scheduledAt}
+                          status={it.status}
+                          riskScore={it.riskScore}
+                          notes={notes}
+                          isPost={isPost}
+                          warnings={warnings}
+                          timezoneLabel={timezoneLabel}
+                          subreddit={subreddit}
+                          products={productOptions}
+                          accounts={accountOptions}
+                          allowedSubreddits={allowedSubreddits}
+                          executionItemId={exec?.id ?? null}
+                          executionItemStatus={exec?.status ?? null}
+                          creative={
+                            creative
+                              ? {
+                                  id: creative.id,
+                                  creativeType: creative.creativeType,
+                                  sourceType: creative.sourceType,
+                                  status: creative.status,
+                                  assetUrl: creative.assetUrl,
+                                  sourceUrl: creative.sourceUrl,
+                                  altText: creative.altText,
+                                  license: creative.license,
+                                  attribution: creative.attribution,
+                                  prompt: creative.prompt,
+                                  mimeType: creative.mimeType,
+                                  sizeBytes: creative.sizeBytes,
+                                  uploadedAt: creative.uploadedAt,
+                                }
+                              : null
+                          }
+                        />
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
+            </div>
           </>
         )}
 
         <CreateItemForm products={productOptions} accounts={accountOptions} />
       </div>
     </>
+  );
+}
+
+// =====================================================================
+// Day-grouping helpers
+// =====================================================================
+
+interface DayGroup {
+  /** Sort key — YYYY-MM-DD for scheduled days, "9999" for unscheduled. */
+  key: string;
+  /** ISO date or `null` for the unscheduled bucket. */
+  isoDate: string | null;
+  /** Founder-readable label, e.g. "Mon, May 26". */
+  label: string;
+  items: Awaited<ReturnType<typeof listPlanItems>>;
+}
+
+function groupByDay(
+  items: Awaited<ReturnType<typeof listPlanItems>>,
+): DayGroup[] {
+  const byKey = new Map<string, DayGroup>();
+  for (const it of items) {
+    if (it.scheduledAt) {
+      const d = new Date(it.scheduledAt);
+      if (Number.isNaN(d.getTime())) {
+        // Treat unparseable as unscheduled.
+        ensureGroup(byKey, "9999-99-99", null, "Unscheduled").items.push(it);
+        continue;
+      }
+      const isoDate = toIsoDate(d);
+      const label = d.toLocaleDateString(undefined, {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+      });
+      ensureGroup(byKey, isoDate, d.toISOString(), label).items.push(it);
+    } else {
+      ensureGroup(byKey, "9999-99-99", null, "Unscheduled").items.push(it);
+    }
+  }
+  return Array.from(byKey.values()).sort((a, b) => a.key.localeCompare(b.key));
+}
+
+function ensureGroup(
+  m: Map<string, DayGroup>,
+  key: string,
+  isoDate: string | null,
+  label: string,
+): DayGroup {
+  let g = m.get(key);
+  if (!g) {
+    g = { key, isoDate, label, items: [] };
+    m.set(key, g);
+  }
+  return g;
+}
+
+function toIsoDate(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function DayHeader({ group }: { group: DayGroup }) {
+  const isUnscheduled = group.isoDate === null;
+  return (
+    <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide">
+      <div
+        className={`px-2 py-0.5 rounded-md ${
+          isUnscheduled
+            ? "bg-amber-50 text-amber-700 border border-amber-100"
+            : "bg-ink-100 text-ink-700"
+        } font-semibold`}
+      >
+        {group.label}
+      </div>
+      <span className="text-ink-400">
+        {group.items.length} item{group.items.length === 1 ? "" : "s"}
+      </span>
+    </div>
   );
 }
