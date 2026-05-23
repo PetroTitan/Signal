@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { Topbar } from "@/components/topbar";
 import { isSupabaseConfigured, createSupabaseServerClient } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
@@ -337,14 +336,7 @@ export default async function WeeklyPlanPage() {
               className="hidden md:inline-flex"
               defaults={composeDefaults}
             />
-            {plan ? (
-              <Link
-                href="/approval-queue"
-                className="btn-ghost text-xs hidden md:inline-flex"
-              >
-                Approval queue
-              </Link>
-            ) : null}
+            {null}
           </div>
         }
       />
