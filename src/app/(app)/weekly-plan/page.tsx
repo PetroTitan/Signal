@@ -18,6 +18,10 @@ import { PlanItemCard } from "./_plan-item-card";
 import { ExecutionStateBadge } from "@/components/publishing/execution-state";
 import { readAllowedTestSubreddits } from "@/core/publishing/safe-test-env";
 import { NewPostButton } from "@/components/founder-compose/new-post-button";
+import {
+  ContinueWritingStrip,
+  type ContinueWritingDraft,
+} from "./_continue-writing";
 
 export const dynamic = "force-dynamic";
 
@@ -148,6 +152,63 @@ export default async function WeeklyPlanPage() {
   // ---- Day grouping ----
   const groups = groupByDay(items);
 
+  // ---- Drafts that need attention ----
+  const continueWritingDrafts: ContinueWritingDraft[] = items
+    .filter((it) => it.status === "draft" || it.status === "skipped")
+    .map((it) => {
+      const creative = creativeByItem.get(it.id) ?? null;
+      const missingParts: string[] = [];
+      if (!it.title || it.title.trim().length === 0)
+        missingParts.push("title");
+      if (!it.body || it.body.trim().length === 0)
+        missingParts.push("body");
+      if (it.contentType === "post" && !it.scheduledAt)
+        missingParts.push("schedule");
+      if (
+        it.contentType === "post" &&
+        (!creative ||
+          (!creative.assetUrl && !creative.sourceUrl) ||
+          creative.status !== "approved")
+      ) {
+        missingParts.push("creative");
+      }
+      return { it, creative, missingParts };
+    })
+    .filter((entry) => entry.missingParts.length > 0)
+    .slice(0, 5)
+    .map(({ it, creative, missingParts }) => ({
+      itemId: it.id,
+      title: it.title,
+      missing: missingParts.join(", "),
+      existing: {
+        itemId: it.id,
+        title: it.title,
+        body: it.body,
+        platform: it.platform,
+        contentType: it.contentType,
+        subreddit:
+          typeof it.metadata?.target === "string"
+            ? (it.metadata.target as string)
+            : null,
+        accountId: it.accountId,
+        productId: it.productId,
+        scheduledAtIso: it.scheduledAt,
+        riskScore: it.riskScore,
+        notes:
+          typeof it.metadata?.operator_notes === "string"
+            ? (it.metadata.operator_notes as string)
+            : null,
+        creative: creative
+          ? {
+              id: creative.id,
+              assetUrl: creative.assetUrl,
+              altText: creative.altText,
+              sourceType: creative.sourceType,
+            }
+          : null,
+      },
+    }));
+
   return (
     <>
       <Topbar
@@ -201,6 +262,13 @@ export default async function WeeklyPlanPage() {
               <ApprovePlanForm
                 planId={plan.id}
                 pendingCount={pendingCount}
+              />
+            ) : null}
+
+            {continueWritingDrafts.length > 0 ? (
+              <ContinueWritingStrip
+                drafts={continueWritingDrafts}
+                defaults={composeDefaults}
               />
             ) : null}
 

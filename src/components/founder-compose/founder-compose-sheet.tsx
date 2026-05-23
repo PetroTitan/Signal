@@ -13,6 +13,7 @@ import {
   toDatetimeLocalString,
 } from "@/core/publishing/schedule-presets";
 import { autosaveLabel, useAutosave } from "./use-autosave";
+import { Markdown } from "./markdown";
 
 /**
  * Founder compose sheet — the "I had an idea" surface.
@@ -47,10 +48,37 @@ export interface FounderComposeSheetDefaults {
   allowedSubreddits: string[];
 }
 
+/**
+ * Preloaded data for editing an existing item. When `existingItem`
+ * is omitted, the sheet runs in create mode with smart defaults.
+ */
+export interface FounderComposeSheetExistingItem {
+  itemId: string;
+  title: string | null;
+  body: string | null;
+  platform: string | null;
+  contentType: string | null;
+  subreddit: string | null;
+  accountId: string | null;
+  productId: string | null;
+  scheduledAtIso: string | null;
+  riskScore: number | null;
+  notes: string | null;
+  creative: {
+    id: string;
+    assetUrl: string | null;
+    altText: string | null;
+    sourceType: string;
+  } | null;
+}
+
 export interface FounderComposeSheetProps {
   open: boolean;
   onClose: () => void;
   defaults: FounderComposeSheetDefaults;
+  /** When set, the sheet opens preloaded with this item's data and
+   *  autosave writes back to the same row. */
+  existingItem?: FounderComposeSheetExistingItem;
 }
 
 interface DraftState {
@@ -70,7 +98,31 @@ interface DraftState {
   creativeAltText: string;
 }
 
-function initialDraft(defaults: FounderComposeSheetDefaults): DraftState {
+function initialDraft(
+  defaults: FounderComposeSheetDefaults,
+  existing?: FounderComposeSheetExistingItem,
+): DraftState {
+  if (existing) {
+    const scheduledLocal = existing.scheduledAtIso
+      ? toDatetimeLocalString(new Date(existing.scheduledAtIso))
+      : "";
+    return {
+      itemId: existing.itemId,
+      title: existing.title ?? "",
+      body: existing.body ?? "",
+      scheduledAt: scheduledLocal,
+      platform: existing.platform ?? "reddit",
+      contentType: existing.contentType ?? "post",
+      subreddit: existing.subreddit ?? defaults.defaultSubreddit,
+      accountId: existing.accountId ?? "",
+      productId: existing.productId ?? "",
+      riskScore: existing.riskScore === null ? "" : String(existing.riskScore),
+      notes: existing.notes ?? "",
+      creativeId: existing.creative?.id ?? null,
+      creativeAssetUrl: existing.creative?.assetUrl ?? null,
+      creativeAltText: existing.creative?.altText ?? "",
+    };
+  }
   const tomorrow9 = SCHEDULE_PRESETS.find(
     (p) => p.id === "tomorrow_morning",
   )!.resolve(new Date());
@@ -95,18 +147,20 @@ function initialDraft(defaults: FounderComposeSheetDefaults): DraftState {
 export function FounderComposeSheet(props: FounderComposeSheetProps) {
   const router = useRouter();
   const [draft, setDraft] = useState<DraftState>(() =>
-    initialDraft(props.defaults),
+    initialDraft(props.defaults, props.existingItem),
   );
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
   const [, startTransition] = useTransition();
 
   useEffect(() => {
     // Reset draft when the sheet re-opens.
     if (props.open) {
-      setDraft(initialDraft(props.defaults));
+      setDraft(initialDraft(props.defaults, props.existingItem));
       setShowAdvanced(false);
+      setShowPreview(false);
     }
-  }, [props.open, props.defaults]);
+  }, [props.open, props.defaults, props.existingItem]);
 
   // ---- Autosave ----------------------------------------------------
   const upsertRef = useRef<(d: DraftState) => Promise<{ ok: boolean; error?: string }>>(
@@ -223,9 +277,12 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
         <div className="flex-1 overflow-y-auto px-4 py-4 md:px-6 md:py-5 space-y-4">
           {/* Title */}
           <label className="block">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
-              Title
-            </span>
+            <div className="flex items-baseline justify-between">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
+                Title
+              </span>
+              <CharCounter value={draft.title} limit={300} softAt={270} />
+            </div>
             <input
               type="text"
               value={draft.title}
@@ -234,25 +291,52 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
               }
               placeholder="What's the hook?"
               className="input w-full text-lg mt-1"
-              autoFocus
+              autoFocus={!props.existingItem}
             />
           </label>
 
-          {/* Body */}
-          <label className="block">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
-              Body
-            </span>
-            <textarea
-              value={draft.body}
-              onChange={(e) =>
-                setDraft((d) => ({ ...d, body: e.target.value }))
-              }
-              placeholder="The post itself. Markdown supported on Reddit selftext."
-              rows={8}
-              className="input w-full text-sm leading-relaxed mt-1 font-normal"
-            />
-          </label>
+          {/* Body — write / preview toggle, with markdown preview */}
+          <div className="block">
+            <div className="flex items-baseline justify-between">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
+                Body
+              </span>
+              <div className="flex items-center gap-2">
+                <CharCounter value={draft.body} limit={10000} softAt={9000} />
+                <button
+                  type="button"
+                  onClick={() => setShowPreview((v) => !v)}
+                  className="text-[11px] text-ink-500 underline hover:text-ink-800"
+                >
+                  {showPreview ? "Write" : "Preview"}
+                </button>
+              </div>
+            </div>
+            {showPreview ? (
+              <div className="mt-1 rounded-md border border-ink-200 bg-ink-50/40 px-3 py-2 min-h-[160px]">
+                <Markdown source={draft.body} />
+              </div>
+            ) : (
+              <textarea
+                value={draft.body}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, body: e.target.value }))
+                }
+                placeholder={
+                  "The post itself. Markdown supported — `# heading`, `**bold**`, `*italic*`, `[link](url)`, lists, code fences."
+                }
+                rows={8}
+                className="input w-full text-sm leading-relaxed mt-1 font-mono"
+              />
+            )}
+            <p className="mt-1 text-[10px] text-ink-400">
+              Markdown supported: <span className="font-mono"># heading</span>{" "}
+              · <span className="font-mono">**bold**</span> ·{" "}
+              <span className="font-mono">*italic*</span> ·{" "}
+              <span className="font-mono">[text](url)</span> · lists ·{" "}
+              <span className="font-mono">```code```</span>
+            </p>
+          </div>
 
           {/* Schedule */}
           <div className="space-y-1.5">
@@ -690,5 +774,43 @@ function CreativeRow({
         </label>
       ) : null}
     </div>
+  );
+}
+
+// =====================================================================
+// Character counter
+// =====================================================================
+//
+// Soft warning only — never blocks typing. Reddit imposes the hard
+// limit at submit time; we just give the operator a heads-up so they
+// don't run into "title too long" mid-publish.
+
+function CharCounter({
+  value,
+  limit,
+  softAt,
+}: {
+  value: string;
+  limit: number;
+  softAt: number;
+}) {
+  const n = value.length;
+  const over = n > limit;
+  const warn = n >= softAt && n <= limit;
+  return (
+    <span
+      className={`text-[10px] tabular-nums ${
+        over ? "text-red-700" : warn ? "text-amber-700" : "text-ink-400"
+      }`}
+      title={
+        over
+          ? `Over the ${limit}-char limit; the platform will refuse the submit.`
+          : warn
+            ? `Approaching the ${limit}-char limit.`
+            : `${n}/${limit} characters used`
+      }
+    >
+      {n} / {limit}
+    </span>
   );
 }
