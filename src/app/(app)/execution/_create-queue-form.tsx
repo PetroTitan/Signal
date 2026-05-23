@@ -20,20 +20,19 @@ export function CreateQueueForm() {
   const safe = state ?? initial;
 
   return (
-    <section className="card p-5">
-      <h2 className="text-sm font-semibold text-ink-900">Create execution queue</h2>
+    <section className="rounded-2xl border border-ink-200 bg-white p-5">
+      <h2 className="text-sm font-semibold text-ink-900">Start a new week</h2>
       <p className="text-xs text-ink-600 mt-1 leading-relaxed">
-        A queue groups execution items under your active contract. Queueing,
-        authorization, and dry-run all happen inside it.
+        Groups this week&apos;s posts under your active publishing scope.
       </p>
       <form ref={formRef} action={formAction} className="mt-4 flex flex-col md:flex-row gap-3">
         <input
           type="text"
           name="title"
-          defaultValue="This week's queue"
+          defaultValue="This week"
           required
           className="input flex-1"
-          placeholder="Queue title"
+          placeholder="Title"
         />
         <Submit />
       </form>
@@ -48,7 +47,7 @@ function Submit() {
   const { pending } = useFormStatus();
   return (
     <button type="submit" className="btn-primary text-sm" disabled={pending}>
-      {pending ? "Creating…" : "Create queue"}
+      {pending ? "Creating…" : "Start week"}
     </button>
   );
 }
