@@ -355,6 +355,71 @@ export type RecordManualPublishResult = ActionResult<{
   providerPostId: string;
 }>;
 
+export type PrepareForManualPublishResult = ActionResult<{
+  executionItemId: string;
+}>;
+
+/**
+ * Phase F2.6 — operator-explicit transition into the manual path.
+ *
+ * Walks an item from `ready` to `ready_for_manual_publish`. Has no
+ * effect on items already in `ready_for_manual_publish` (idempotent).
+ * Refuses items in any other state so the operator can't bypass the
+ * scheduler.
+ */
+export async function prepareForManualPublishAction(
+  _prev: PrepareForManualPublishResult,
+  formData: FormData,
+): Promise<PrepareForManualPublishResult> {
+  const executionItemId = String(formData.get("execution_item_id") ?? "").trim();
+  if (!executionItemId) return actionFail("Missing execution_item_id.");
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    const item = await getExecutionItemById(workspaceId, executionItemId);
+    if (item.status === "ready_for_manual_publish") {
+      return actionOk({ executionItemId: item.id });
+    }
+    if (item.status !== "ready") {
+      return actionFail(
+        `Cannot prepare for manual publish from '${item.status}'. Item must be 'ready'.`,
+      );
+    }
+
+    await updateItemStatus({
+      workspaceId,
+      itemId: item.id,
+      to: "ready_for_manual_publish",
+    });
+    await recordLog({
+      workspaceId,
+      queueId: item.queueId,
+      executionItemId: item.id,
+      eventType: "item.ready_for_manual_publish",
+      severity: "info",
+      message:
+        "[manual-publish] Operator prepared item for manual publishing. Signal prepared the payload; operator will publish manually on Reddit.",
+      metadata: { source: "operator_action" },
+    });
+    revalidatePath(`/execution/items/${item.id}`);
+    revalidatePath(`/execution/${item.queueId}`);
+    revalidatePath("/weekly-plan");
+    return actionOk({ executionItemId: item.id });
+  } catch (err) {
+    const msg =
+      err instanceof RepositoryError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : "Could not prepare for manual publish.";
+    console.error("[prepareForManualPublishAction] failed", err);
+    return actionFail(msg);
+  }
+}
+
 export async function recordManualPublishAction(
   _prev: RecordManualPublishResult,
   formData: FormData,
@@ -386,18 +451,36 @@ export async function recordManualPublishAction(
     const workspaceId = membership.workspace.id;
 
     const item = await getExecutionItemById(workspaceId, executionItemId);
-    if (item.status !== "ready") {
+    if (
+      item.status !== "ready" &&
+      item.status !== "ready_for_manual_publish"
+    ) {
       return actionFail(
-        `Item is in '${item.status}', not 'ready'. Wait for the scheduler to mark it ready_for_publish.`,
+        `Cannot record from '${item.status}'. Item must be 'ready' or 'ready_for_manual_publish'.`,
       );
     }
 
     const supabase = createSupabaseServerClient();
     const nowIso = new Date().toISOString();
 
-    // Run the manual-publish policy: same as live minus OAuth/token.
+    // Duplicate-permalink guard. The DB has a partial unique index
+    // on (workspace_id, provider_permalink) too — checking here gives
+    // a friendly error instead of a constraint violation.
+    const { data: existingPermalink } = await supabase
+      .from("publish_history")
+      .select("id, finished_at, execution_item_id")
+      .eq("workspace_id", workspaceId)
+      .eq("provider_permalink", parsed.normalizedUrl)
+      .maybeSingle();
+    if (existingPermalink) {
+      return actionFail(
+        `Permalink already recorded (history id ${(existingPermalink as { id: string }).id} on ${(existingPermalink as { finished_at: string }).finished_at}).`,
+      );
+    }
+
+    // Run the manual-publish policy.
     const { evaluateManualPublishPolicy } = await import(
-      "@/core/publishing/safe-test-policy"
+      "@/core/publishing/manual-publish-policy"
     );
     const verdict = await evaluateManualPublishPolicy({
       supabase,
@@ -440,6 +523,7 @@ export async function recordManualPublishAction(
         providerPostId: null,
         providerPermalink: null,
         outcome: "blocked",
+        mode: "manual",
         reasonCode: verdict.reasonCode,
         httpStatus: null,
         startedAt: nowIso,
@@ -484,6 +568,7 @@ export async function recordManualPublishAction(
       providerPostId: parsed.providerPostId,
       providerPermalink: parsed.normalizedUrl,
       outcome: "published",
+      mode: "manual",
       reasonCode: null,
       httpStatus: null, // no API round-trip on the manual path
       startedAt: nowIso,
@@ -539,15 +624,17 @@ export async function recordManualPublishAction(
     try {
       await recordActivity({
         workspaceId,
-        eventType: "reddit.post_published",
+        eventType: "manual_publish.recorded",
         entityType: "execution_item",
         entityId: item.id,
-        title: `Reddit post (manual) recorded — r/${subredditRaw}`,
+        title: `Manual publish recorded — r/${subredditRaw}`,
         description: parsed.normalizedUrl,
         metadata: {
           permalink: parsed.normalizedUrl,
           provider_post_id: parsed.providerPostId,
           publish_method: "manual",
+          mode: "manual",
+          operator_notes: operatorNotes,
         },
       });
     } catch (err) {

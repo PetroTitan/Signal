@@ -51,7 +51,20 @@ const ITEM_TRANSITIONS: Record<
     "cancelled",
   ],
   scheduled: ["ready", "running", "paused", "backlogged", "cancelled"],
-  ready: ["running", "paused", "backlogged", "cancelled"],
+  ready: [
+    "ready_for_manual_publish",
+    "running",
+    "paused",
+    "backlogged",
+    "cancelled",
+  ],
+  ready_for_manual_publish: [
+    "ready",
+    "running",
+    "paused",
+    "backlogged",
+    "cancelled",
+  ],
   running: ["completed", "failed", "paused"],
   paused: ["ready", "scheduled", "backlogged", "cancelled"],
   // Final states

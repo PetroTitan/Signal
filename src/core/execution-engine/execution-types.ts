@@ -107,6 +107,7 @@ export const EXECUTION_ITEM_STATUS_LABELS: Record<
   authorized: "Authorized",
   scheduled: "Scheduled",
   ready: "Ready",
+  ready_for_manual_publish: "Ready for manual publish",
   running: "Running",
   completed: "Completed",
   blocked: "Blocked",

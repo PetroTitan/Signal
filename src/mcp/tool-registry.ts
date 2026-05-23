@@ -8,7 +8,9 @@ import {
   parseEmptyArgs,
   parseExecutionAuthorizeItem,
   parseExecutionDryRun,
+  parseExecutionManualPublishPreview,
   parseExecutionPublishPreview,
+  parseExecutionRecordManualPublish,
   parseImportsPrepareMapping,
   parseProductsPrepare,
   parseReportsSubmit,
@@ -39,7 +41,9 @@ import {
 import {
   executionAuthorizeItem,
   executionDryRun,
+  executionManualPublishPreview,
   executionPublishPreview,
+  executionRecordManualPublish,
   verificationRun,
   verificationRunCheck,
 } from "./tools/verification-tools";
@@ -270,6 +274,30 @@ export const TOOLS: ToolDefinition[] = [
     touchesProduction: false,
     parseArgs: parseExecutionDryRun,
     handler: wrap(executionDryRun),
+  },
+  {
+    name: "signal.execution.manual_publish_preview",
+    description:
+      "Read-only preview for the F2.6 manual-publish workflow. Returns title, body, subreddit, creative URL, alt text, open-Reddit-submit URL, and a copy-paste-friendly payload string plus the manual-publish policy verdict. Manual mode does not require Reddit API approval. MCP cannot record the publish on its own from this tool — use signal.execution.record_manual_publish or paste the permalink in /execution/items/<id>.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseExecutionManualPublishPreview,
+    handler: wrap(executionManualPublishPreview),
+  },
+  {
+    name: "signal.execution.record_manual_publish",
+    description:
+      "Record a manually-published Reddit post. The operator publishes on Reddit themselves; this tool just stores the audit row. Runs the manual-publish policy (every gate except OAuth/token), validates the permalink (reddit.com/r/<sub>/comments/<id>/ or redd.it/<id>), refuses duplicates, inserts publish_history (mode='manual'), walks the execution_item to completed, mirrors the plan_item to published. Does NOT call Reddit. Does NOT bypass any other safety gate.",
+    requiredScopes: ["execution:dry_run"],
+    riskLevel: "remote_write",
+    approvalMode: "no_approval_needed",
+    writesDatabase: true,
+    touchesProduction: true,
+    parseArgs: parseExecutionRecordManualPublish,
+    handler: wrap(executionRecordManualPublish),
   },
   {
     name: "signal.execution.publish_preview",

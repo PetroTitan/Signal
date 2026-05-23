@@ -19,6 +19,8 @@ export const EXECUTION_LOG_EVENTS = [
   "item.authorization_denied",
   "item.scheduled",
   "item.ready",
+  "item.ready_for_manual_publish",
+  "item.ready_for_publish",
   "item.dry_run_started",
   "item.dry_run_finished",
   "item.completed",
