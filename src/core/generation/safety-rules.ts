@@ -19,8 +19,10 @@
 /** Phrases that should NEVER appear in a generated draft. */
 export const BANNED_PHRASES: ReadonlyArray<string> = [
   "10x",
+  "100x",
   "game changer",
   "game-changer",
+  "game changing",
   "revolutionary",
   "we are excited",
   "we're excited",
@@ -36,21 +38,37 @@ export const BANNED_PHRASES: ReadonlyArray<string> = [
   "nobody talks about this",
   "the ultimate",
   "the best ai tool",
+  "the best ai",
   "the best founder tool",
   "the only tool you need",
   "you won't believe",
   "you wont believe",
   "mind-blowing",
   "mind blowing",
+  "industry-leading",
+  "industry leading",
+  "first of its kind",
+  "groundbreaking",
+  "world's first",
+  "world-class",
+  "viral hack",
+  "growth hack",
+  "trust me",
+  "as you can see",
+  "in this article we will explore",
+  "in this post we will explore",
 ];
 
 /** Patterns that imply fabricated proof. */
 export const FABRICATION_PATTERNS: ReadonlyArray<RegExp> = [
-  /\b\d+(?:,\d{3})*\s+(?:customers|users|signups|sign-ups|founders)\b/i,
-  /\b\$\d+(?:,\d{3})*\s*(?:MRR|ARR|revenue|in revenue)\b/i,
-  /\b\d+%\s+(?:faster|better|improvement|increase|growth)\b/i,
-  /(?:partnered|partnership)\s+with\s+(?:google|stripe|openai|anthropic)/i,
+  /\b\d+(?:,\d{3})*\s+(?:customers|users|signups|sign-ups|founders|subscribers)\b/i,
+  /\b\$\d+(?:,\d{3})*\s*(?:MRR|ARR|revenue|in revenue|monthly recurring)\b/i,
+  /\b\d+%\s+(?:faster|better|improvement|increase|growth|conversion)\b/i,
+  /(?:partnered|partnership)\s+with\s+(?:google|stripe|openai|anthropic|amazon|microsoft|apple)/i,
   /\b(?:saas|founder)\s+(?:case study|testimonial)/i,
+  /\b(?:trusted by|loved by|used by)\s+\d+(?:,\d{3})*\s+(?:companies|teams|founders|developers)\b/i,
+  /\b(?:rated|ranked)\s+#?1\s+/i,
+  /\bfeatured\s+(?:in|on)\s+(?:techcrunch|hacker news|product hunt)/i,
 ];
 
 /** Tone instructions handed to the AI provider. */

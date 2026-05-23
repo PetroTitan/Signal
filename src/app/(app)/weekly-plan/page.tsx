@@ -19,6 +19,7 @@ import { ApprovePlanForm } from "./_approve-plan-form";
 import { PlanItemCard } from "./_plan-item-card";
 import { ExecutionStateBadge } from "@/components/publishing/execution-state";
 import { readAllowedTestSubreddits } from "@/core/publishing/safe-test-env";
+import { readGenerationProviderStatus } from "@/core/generation/provider-status";
 import { NewPostButton } from "@/components/founder-compose/new-post-button";
 import {
   ContinueWritingStrip,
@@ -149,6 +150,7 @@ export default async function WeeklyPlanPage() {
   const confirmedProducts = products.filter(
     (p) => p.reviewStatus === "confirmed",
   );
+  const aiProviderStatus = readGenerationProviderStatus();
   const composeDefaults = {
     timezoneLabel,
     defaultAccountId:
@@ -161,6 +163,7 @@ export default async function WeeklyPlanPage() {
     accounts: accountOptions,
     products: productOptions,
     allowedSubreddits,
+    aiProviderAvailable: aiProviderStatus.available,
   };
 
   // ---- Day grouping ----
