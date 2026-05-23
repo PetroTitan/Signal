@@ -14,7 +14,17 @@ export interface GrowthAccountRecord {
   platform: string;
   handle: string | null;
   displayName: string | null;
+  /**
+   * Legacy column. Founder UI no longer sets it; kept for backward
+   * compatibility while older rows still carry "founder" / "team" / etc.
+   * @deprecated read `voiceProfile` instead.
+   */
   role: string | null;
+  /**
+   * F4.4 — free-form description of how this publishing identity
+   * writes. Single source of truth for AI/MCP generation context.
+   */
+  voiceProfile: string | null;
   status: string;
   connectionStatus: string;
   source: string;
@@ -32,6 +42,7 @@ function toAccount(row: GrowthAccountRow): GrowthAccountRecord {
     handle: row.handle,
     displayName: row.display_name,
     role: row.role,
+    voiceProfile: row.voice_profile,
     status: row.status,
     connectionStatus: row.connection_status,
     source: row.source,
@@ -114,7 +125,9 @@ export interface AccountInput {
   platform: string;
   displayName: string;
   handle?: string | null;
+  /** @deprecated kept for backward compat; founder UI sets voiceProfile instead. */
   role?: string | null;
+  voiceProfile?: string | null;
   productId?: string | null;
 }
 
@@ -134,6 +147,7 @@ export async function createAccount(
     handle: input.handle ?? null,
     display_name: input.displayName,
     role: input.role ?? null,
+    voice_profile: input.voiceProfile ?? null,
     status: "planned",
     connection_status: "not_connected",
   };
@@ -151,7 +165,9 @@ export async function updateAccount(input: {
   accountId: string;
   displayName?: string;
   handle?: string | null;
+  /** @deprecated kept for backward compat; set voiceProfile instead. */
   role?: string | null;
+  voiceProfile?: string | null;
   status?: string;
   productId?: string | null;
   reviewStatus?: "pending_review" | "confirmed" | "rejected" | "needs_edit";
@@ -161,6 +177,7 @@ export async function updateAccount(input: {
   if (input.displayName !== undefined) patch.display_name = input.displayName;
   if (input.handle !== undefined) patch.handle = input.handle;
   if (input.role !== undefined) patch.role = input.role;
+  if (input.voiceProfile !== undefined) patch.voice_profile = input.voiceProfile;
   if (input.status !== undefined) patch.status = input.status;
   if (input.productId !== undefined) patch.product_id = input.productId;
   if (input.reviewStatus !== undefined) patch.review_status = input.reviewStatus;

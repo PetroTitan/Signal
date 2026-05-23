@@ -86,6 +86,7 @@ export interface GrowthAccountRow {
   handle: string | null;
   display_name: string | null;
   role: string | null;
+  voice_profile: string | null;
   status: string;
   connection_status: string;
   source: string;
@@ -102,6 +103,7 @@ export interface GrowthAccountInsert {
   handle?: string | null;
   display_name?: string | null;
   role?: string | null;
+  voice_profile?: string | null;
   status?: string;
   connection_status?: string;
   source?: string;
@@ -113,6 +115,7 @@ export interface GrowthAccountUpdate {
   handle?: string | null;
   display_name?: string | null;
   role?: string | null;
+  voice_profile?: string | null;
   status?: string;
   connection_status?: string;
   source?: string;
