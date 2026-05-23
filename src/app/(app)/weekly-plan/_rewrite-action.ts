@@ -37,6 +37,10 @@ import {
   friendlyGenerationFailure,
   type GenerationFailureReason,
 } from "@/core/generation/founder-error";
+import {
+  checkWorkspaceAiUsage,
+  usageLimitMessage,
+} from "@/core/generation/usage-limit";
 import { RepositoryError } from "@/repositories/errors";
 import {
   actionFail,
@@ -50,6 +54,12 @@ export type RewriteDraftActionResult = ActionResult<{
   providerLabel: string;
   durationMs: number;
   truncated: boolean;
+  /** New title after the rewrite (only set for improve_headline). */
+  newTitle: string | null;
+  /** New body after the rewrite (set for everything except improve_headline). */
+  newBody: string | null;
+  /** Whether an undo snapshot was persisted for this rewrite. */
+  undoAvailable: boolean;
 }>;
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -99,6 +109,15 @@ export async function rewriteDraftAction(
       );
     }
 
+    // F4.6.1 — workspace-level rolling 24h limit. Checked BEFORE
+    // calling the provider so we don't burn API quota on a request
+    // we'd refuse anyway. Counts both successful and failed AI
+    // actions in the window; undo isn't counted.
+    const usage = await checkWorkspaceAiUsage(workspaceId);
+    if (usage.exceeded) {
+      return actionFail(usageLimitMessage(usage));
+    }
+
     const result = await rewriteDraft({
       workspaceId,
       identityId: existing.accountId,
@@ -119,6 +138,11 @@ export async function rewriteDraftAction(
     // Apply the rewrite. Metadata-only: bump rewrite count + record
     // which action ran, which provider answered, and how long it
     // took. NO prompt body, NO raw response, NO tokens.
+    //
+    // F4.6.1 — snapshot the previous title + body so the founder
+    // can Undo the latest rewrite. Only one level of undo is
+    // supported; the previous_* slot is overwritten on every new
+    // rewrite. Cleared by undoRewriteAction.
     const prevMeta = existing.metadata as Record<string, unknown>;
     const prevRewriteCount =
       typeof prevMeta?.rewrite_count === "number"
@@ -132,6 +156,10 @@ export async function rewriteDraftAction(
       last_rewrite_duration_ms: result.durationMs,
       last_rewrite_at: new Date().toISOString(),
       last_rewrite_truncated: result.truncated,
+      previous_title_before_rewrite: existing.title,
+      previous_body_before_rewrite: existing.body,
+      previous_rewrite_action: action,
+      previous_rewrite_timestamp: new Date().toISOString(),
     };
 
     if (result.newTitle) {
@@ -181,6 +209,9 @@ export async function rewriteDraftAction(
         PROVIDER_LABELS[result.providerName] ?? result.providerName,
       durationMs: result.durationMs,
       truncated: result.truncated,
+      newTitle: result.newTitle,
+      newBody: result.newBody,
+      undoAvailable: true,
     });
   } catch (error) {
     const message =

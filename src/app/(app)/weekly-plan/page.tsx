@@ -33,6 +33,7 @@ import {
   NeedsAttentionStrip,
   type NeedsAttentionEntry,
 } from "@/components/publishing/needs-attention-strip";
+import { deriveAiAssistedKind } from "@/components/publishing/ai-assisted-chip";
 
 export const dynamic = "force-dynamic";
 
@@ -454,6 +455,9 @@ export default async function WeeklyPlanPage() {
                           allowedSubreddits={allowedSubreddits}
                           executionItemId={exec?.id ?? null}
                           executionItemStatus={exec?.status ?? null}
+                          aiAssistedKind={deriveAiAssistedKind(
+                            it.metadata as Record<string, unknown> | null,
+                          )}
                           creative={
                             creative
                               ? {

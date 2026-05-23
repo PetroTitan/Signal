@@ -19,6 +19,7 @@ import { ExecutionStateBadge } from "@/components/publishing/execution-state";
 import { SchedulePresetsInput } from "@/components/publishing/schedule-presets-input";
 import { SubredditPill } from "@/components/publishing/subreddit-pill";
 import { PlatformChip } from "@/components/publishing/platform-chip";
+import { AiAssistedChip } from "@/components/publishing/ai-assisted-chip";
 import { RemoveButton } from "./_remove-button";
 import {
   FounderComposeSheet,
@@ -60,6 +61,8 @@ export interface PlanItemCardProps {
   creative: CreativeCardData | null;
   executionItemId: string | null;
   executionItemStatus: string | null;
+  /** F4.6.1 — null when the draft is purely manual. */
+  aiAssistedKind: "ai_draft" | "ai_assisted" | null;
 }
 
 export function PlanItemCard(props: PlanItemCardProps) {
@@ -117,6 +120,9 @@ export function PlanItemCard(props: PlanItemCardProps) {
             <div className="flex flex-wrap items-center gap-1.5 pt-1">
               <ExecutionStateBadge status={props.status} />
               {props.platform ? <PlatformChip platform={props.platform} /> : null}
+              {props.aiAssistedKind ? (
+                <AiAssistedChip kind={props.aiAssistedKind} />
+              ) : null}
               {props.isPost && props.platform === "reddit" ? (
                 <SubredditPill
                   subreddit={props.subreddit}

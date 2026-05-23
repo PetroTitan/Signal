@@ -35,19 +35,26 @@ export interface UseAutosaveOptions<T> {
   save: (value: T) => Promise<{ ok: boolean; error?: string }>;
 }
 
-export interface UseAutosaveReturn {
+export interface UseAutosaveReturn<T> {
   status: AutosaveStatus;
   /** Most recent save error, if any. Cleared when status returns to
    *  idle/dirty. */
   errorMessage: string | null;
   /** Force a flush now (e.g. before closing the sheet). */
   flushNow: () => Promise<void>;
+  /**
+   * Mark a value as already-saved externally (e.g. by an AI rewrite
+   * server action that persisted the change). Updates the hook's
+   * internal high-water mark so the next debounce cycle doesn't
+   * fire a redundant save. Cancels any in-flight debounce.
+   */
+  markSaved: (value: T) => void;
 }
 
 export function useAutosave<T>(
   value: T,
   options: UseAutosaveOptions<T>,
-): UseAutosaveReturn {
+): UseAutosaveReturn<T> {
   const { serialize, save } = options;
   const enabled = options.enabled ?? (() => true);
   const delayMs = options.delayMs ?? 1500;
@@ -111,7 +118,17 @@ export function useAutosave<T>(
     await runSave(valueRef.current);
   };
 
-  return { status, errorMessage, flushNow };
+  const markSaved = (val: T) => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    lastSavedRef.current = serialize(val);
+    setStatus("idle");
+    setErrorMessage(null);
+  };
+
+  return { status, errorMessage, flushNow, markSaved };
 }
 
 export function autosaveLabel(status: AutosaveStatus): string {
