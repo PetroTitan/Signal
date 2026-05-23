@@ -257,9 +257,11 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
       <div className="relative w-full md:max-w-2xl bg-white md:rounded-2xl md:my-8 md:max-h-[90vh] flex flex-col overflow-hidden md:shadow-2xl">
         {/* Sheet header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-ink-100 shrink-0">
-          <div>
-            <div className="text-sm font-semibold text-ink-900">New post</div>
-            <div className="text-[11px] text-ink-500">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-ink-900">
+              {props.existingItem ? "Edit post" : "New post"}
+            </div>
+            <div className="text-[11px] text-ink-500 truncate">
               {autosaveLabel(autosave.status)}
               {autosave.errorMessage ? ` — ${autosave.errorMessage}` : ""}
             </div>
@@ -511,7 +513,12 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
         </div>
 
         {/* Footer actions */}
-        <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-ink-100 shrink-0 bg-white">
+        <div
+          className="flex items-center justify-between gap-2 px-4 py-3 border-t border-ink-100 shrink-0 bg-white"
+          style={{
+            paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))",
+          }}
+        >
           <div className="text-[11px] text-ink-500">
             {autosaveLabel(autosave.status)}
           </div>

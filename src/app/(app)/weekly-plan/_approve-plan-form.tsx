@@ -23,12 +23,10 @@ export function ApprovePlanForm({ planId, pendingCount }: ApprovePlanFormProps) 
         Approve this week
       </h2>
       <p className="text-xs text-ink-600 mt-1 leading-relaxed">
-        Approves all {pendingCount} pending item{pendingCount === 1 ? "" : "s"}{" "}
-        and schedules them under the active weekly contract. The scheduler
-        picks them up at their <span className="font-mono">scheduled_at</span>{" "}
-        time. Publishing stays in <span className="font-mono">dry_run</span>{" "}
-        unless workspace settings explicitly allow live mode and OAuth tokens
-        are connected.
+        Approves all {pendingCount} pending post
+        {pendingCount === 1 ? "" : "s"} for this week. Each post goes out at
+        the time you scheduled it — Signal won&apos;t publish anything before
+        then, and never outside the active publishing scope.
       </p>
       <form action={formAction} className="mt-4 space-y-3">
         <input type="hidden" name="plan_id" value={planId} />
@@ -40,10 +38,10 @@ export function ApprovePlanForm({ planId, pendingCount }: ApprovePlanFormProps) 
             className="text-xs leading-relaxed rounded-md px-3 py-2 bg-emerald-50 text-emerald-800 space-y-1"
           >
             <div>
-              Approved {safe.itemsApproved} item
-              {safe.itemsApproved === 1 ? "" : "s"} — scheduled{" "}
-              {safe.executionItemsCreated} execution item
-              {safe.executionItemsCreated === 1 ? "" : "s"}.
+              Approved {safe.itemsApproved} post
+              {safe.itemsApproved === 1 ? "" : "s"}. {safe.executionItemsCreated}{" "}
+              {safe.executionItemsCreated === 1 ? "is" : "are"} queued for
+              publishing.
             </div>
             {safe.warnings.length > 0 ? (
               <ul className="list-disc list-inside text-amber-800 mt-1">

@@ -101,12 +101,6 @@ export default async function DashboardPage() {
             </div>
           </section>
 
-          <section className="text-xs text-ink-500 leading-relaxed">
-            <p>
-              AI generation, platform OAuth, and WebmasterID analytics are
-              not connected yet.
-            </p>
-          </section>
         </div>
       </>
     );
@@ -116,7 +110,7 @@ export default async function DashboardPage() {
     <>
       <Topbar
         title="This week"
-        description="Real workspace state. Calm review, single approval gate."
+        description="Your publishing week at a glance. Review what's pending, approve when you're ready."
         actions={
           pending.length > 0 ? (
             <Link href="/approval-queue" className="btn-primary">
@@ -157,8 +151,8 @@ export default async function DashboardPage() {
           </header>
           {activity.length === 0 ? (
             <p className="text-xs text-ink-500">
-              No activity yet. Events show here as you add products, accounts,
-              and approve plan items.
+              Nothing here yet. Activity shows up as you add products,
+              connect accounts, and approve posts.
             </p>
           ) : (
             <ul className="space-y-2 text-xs">
@@ -167,26 +161,21 @@ export default async function DashboardPage() {
                   key={e.id}
                   className="flex items-start gap-3 border-b border-ink-100 pb-2 last:border-b-0 last:pb-0"
                 >
-                  <span className="font-mono text-[10px] text-ink-500 shrink-0 w-32 truncate">
-                    {e.eventType}
-                  </span>
                   <span className="flex-1 min-w-0 text-ink-800">
                     {e.title}
                   </span>
-                  <span className="text-[11px] text-ink-500 font-mono shrink-0">
-                    {new Date(e.createdAt).toLocaleString()}
+                  <span className="text-[11px] text-ink-500 shrink-0">
+                    {new Date(e.createdAt).toLocaleString(undefined, {
+                      month: "short",
+                      day: "numeric",
+                      hour: "numeric",
+                      minute: "2-digit",
+                    })}
                   </span>
                 </li>
               ))}
             </ul>
           )}
-        </section>
-
-        <section className="card p-5 text-xs text-ink-600 leading-relaxed">
-          <div className="font-semibold text-ink-900 mb-1">Not connected</div>
-          AI generation, platform OAuth, and WebmasterID analytics are not
-          wired yet. Drafts and approvals stay local to Signal until those
-          integrations ship.
         </section>
       </div>
     </>
