@@ -9,9 +9,11 @@ import {
 import { listProducts } from "@/repositories/product-repository";
 import { listAccounts } from "@/repositories/account-repository";
 import {
+  creativeReadinessBadge,
   creativeReadinessReason,
   listCreativesForItems,
 } from "@/repositories/weekly-plan-creative-repository";
+import { listExecutionItemsByPlanItemIds } from "@/repositories/execution-item-repository";
 import { CreateItemForm } from "./_create-item-form";
 import { ApprovePlanForm } from "./_approve-plan-form";
 import { PlanItemRow } from "./_item-row";
@@ -97,6 +99,44 @@ export default async function WeeklyPlanPage() {
   for (const c of creatives) {
     if (!creativeByItem.has(c.weeklyPlanItemId)) {
       creativeByItem.set(c.weeklyPlanItemId, c);
+    }
+  }
+
+  // Phase F2.5: map plan_item_id → most-recent execution_item so the
+  // row can show "ready_for_publish" with a link to /execution/items/<id>.
+  const execItems = items.length
+    ? await listExecutionItemsByPlanItemIds(
+        workspaceId,
+        items.map((i) => i.id),
+      )
+    : [];
+  const execByPlanItem = new Map<
+    string,
+    { id: string; status: string }
+  >();
+  for (const ei of execItems) {
+    const prev = execByPlanItem.get(ei.sourceEntityId ?? "");
+    // Prefer the most-recent / most-advanced status.
+    if (!prev) {
+      execByPlanItem.set(ei.sourceEntityId ?? "", {
+        id: ei.id,
+        status: ei.status,
+      });
+    } else {
+      // Rank: completed > ready > running > scheduled > others
+      const rank: Record<string, number> = {
+        completed: 5,
+        ready: 4,
+        running: 3,
+        scheduled: 2,
+        authorized: 1,
+      };
+      if ((rank[ei.status] ?? 0) > (rank[prev.status] ?? 0)) {
+        execByPlanItem.set(ei.sourceEntityId ?? "", {
+          id: ei.id,
+          status: ei.status,
+        });
+      }
     }
   }
 
@@ -195,23 +235,20 @@ export default async function WeeklyPlanPage() {
                     );
                   }
 
-                  const creativeBadge = creative
-                    ? {
-                        label: `creative · ${creative.status}`,
-                        cls:
-                          creative.status === "approved"
-                            ? "badge-low"
-                            : creative.status === "rejected"
-                              ? "badge-high"
-                              : creative.status === "pending_review"
-                                ? "badge-info"
-                                : "badge-medium",
-                      }
-                    : {
-                        label: "creative missing",
-                        cls: "badge-high",
-                      };
+                  const badge = creativeReadinessBadge(creative);
+                  const creativeBadge = {
+                    label: `creative · ${badge.replace("_", " ")}`,
+                    cls:
+                      badge === "approved"
+                        ? "badge-low"
+                        : badge === "rejected" || badge === "missing"
+                          ? "badge-high"
+                          : badge === "needs_review"
+                            ? "badge-info"
+                            : "badge-medium",
+                  };
 
+                  const exec = execByPlanItem.get(it.id) ?? null;
                   return (
                     <PlanItemRow
                       key={it.id}
@@ -237,6 +274,8 @@ export default async function WeeklyPlanPage() {
                       warnings={warnings}
                       products={productOptions}
                       accounts={accountOptions}
+                      executionItemId={exec?.id ?? null}
+                      executionItemStatus={exec?.status ?? null}
                       creative={
                         creative
                           ? {

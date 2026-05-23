@@ -24,6 +24,7 @@ interface ApprovalRowProps {
     type: string;
     sourceType: string;
     status: string;
+    assetUrl: string | null;
   } | null;
   warnings: string[];
   isPost: boolean;
@@ -70,6 +71,26 @@ export function ApprovalRow({
                 ? "Creative: missing"
                 : "Creative: n/a"}
           </div>
+          {creative?.assetUrl ? (
+            <div className="mt-2">
+              {creative.type === "video" ||
+              /\.(mp4|webm)(\?|$)/i.test(creative.assetUrl) ? (
+                <video
+                  src={creative.assetUrl}
+                  muted
+                  controls
+                  className="max-h-32 rounded-md border border-ink-200"
+                />
+              ) : (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={creative.assetUrl}
+                  alt="creative thumbnail"
+                  className="max-h-32 rounded-md border border-ink-200 object-contain"
+                />
+              )}
+            </div>
+          ) : null}
           {body ? (
             <p className="text-xs text-ink-700 mt-1 line-clamp-3">{body}</p>
           ) : null}

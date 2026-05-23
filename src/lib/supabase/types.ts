@@ -318,6 +318,54 @@ export interface WeeklyPlanItemUpdate {
   metadata?: Record<string, unknown>;
 }
 
+// Phase F2.5 — publish history (rate limit + dup check + audit).
+
+export type PublishHistoryOutcome = "published" | "failed" | "blocked";
+
+export interface PublishHistoryRow {
+  id: string;
+  workspace_id: string;
+  execution_item_id: string;
+  account_id: string | null;
+  product_id: string | null;
+  platform: string;
+  subreddit: string | null;
+  fingerprint: string;
+  title_hash: string | null;
+  body_hash: string | null;
+  link_url: string | null;
+  provider_post_id: string | null;
+  provider_permalink: string | null;
+  outcome: PublishHistoryOutcome;
+  reason_code: string | null;
+  http_status: number | null;
+  started_at: string;
+  finished_at: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface PublishHistoryInsert {
+  id?: string;
+  workspace_id: string;
+  execution_item_id: string;
+  account_id?: string | null;
+  product_id?: string | null;
+  platform: string;
+  subreddit?: string | null;
+  fingerprint: string;
+  title_hash?: string | null;
+  body_hash?: string | null;
+  link_url?: string | null;
+  provider_post_id?: string | null;
+  provider_permalink?: string | null;
+  outcome: PublishHistoryOutcome;
+  reason_code?: string | null;
+  http_status?: number | null;
+  started_at: string;
+  finished_at?: string;
+  metadata?: Record<string, unknown>;
+}
+
 // Phase F1 — creative assets attached to weekly_plan_items.
 
 export type CreativeType = "image" | "video" | "animation";
@@ -348,6 +396,11 @@ export interface WeeklyPlanItemCreativeRow {
   attribution: string | null;
   risk_notes: string | null;
   status: CreativeStatus;
+  storage_path: string | null;
+  mime_type: string | null;
+  size_bytes: number | null;
+  uploaded_by: string | null;
+  uploaded_at: string | null;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -367,6 +420,11 @@ export interface WeeklyPlanItemCreativeInsert {
   attribution?: string | null;
   risk_notes?: string | null;
   status?: CreativeStatus;
+  storage_path?: string | null;
+  mime_type?: string | null;
+  size_bytes?: number | null;
+  uploaded_by?: string | null;
+  uploaded_at?: string | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -381,6 +439,11 @@ export interface WeeklyPlanItemCreativeUpdate {
   attribution?: string | null;
   risk_notes?: string | null;
   status?: CreativeStatus;
+  storage_path?: string | null;
+  mime_type?: string | null;
+  size_bytes?: number | null;
+  uploaded_by?: string | null;
+  uploaded_at?: string | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -1462,6 +1525,12 @@ export interface Database {
         Row: WeeklyPlanItemCreativeRow;
         Insert: WeeklyPlanItemCreativeInsert;
         Update: WeeklyPlanItemCreativeUpdate;
+        Relationships: [];
+      };
+      publish_history: {
+        Row: PublishHistoryRow;
+        Insert: PublishHistoryInsert;
+        Update: Partial<PublishHistoryInsert>;
         Relationships: [];
       };
       approval_events: {

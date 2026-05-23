@@ -439,6 +439,26 @@ export function parseExecutionDryRun(input: unknown): Parse<ExecutionDryRunArgs>
   };
 }
 
+export interface ExecutionPublishPreviewArgs {
+  execution_item_id: string;
+  /** Optional override; defaults to ALLOWED_TEST_SUBREDDITS[0]. */
+  subreddit?: string | null;
+}
+export function parseExecutionPublishPreview(
+  input: unknown,
+): Parse<ExecutionPublishPreviewArgs> {
+  if (!isObject(input)) return { ok: false, errors: ["expected_object"] };
+  if (!str(input.execution_item_id) || !isUuidLike(input.execution_item_id))
+    return { ok: false, errors: ["execution_item_id_invalid"] };
+  return {
+    ok: true,
+    value: {
+      execution_item_id: input.execution_item_id,
+      subreddit: input.subreddit ? String(input.subreddit).trim() : null,
+    },
+  };
+}
+
 export interface ExecutionAuthorizeItemArgs {
   execution_item_id: string;
 }
