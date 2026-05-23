@@ -140,6 +140,24 @@ export default async function ExecutionItemPage({ params }: PageProps) {
     ? verdict.checks.filter((c) => c.status === "warn")
     : [];
 
+  // Cadence cooldown — soft warning only, never blocks.
+  const { checkCadence, cadenceMessage } = await import(
+    "@/core/publishing/cadence-cooldown"
+  );
+  const cadence =
+    item.platform === "devto" ||
+    item.platform === "hashnode" ||
+    item.platform === "bluesky"
+      ? await checkCadence({
+          workspaceId,
+          platform: item.platform,
+        })
+      : null;
+  const cadenceWarning =
+    cadence && cadence.recommendWaiting && item.platform
+      ? cadenceMessage(cadence, item.platform)
+      : null;
+
   return (
     <>
       <Topbar
@@ -245,6 +263,19 @@ export default async function ExecutionItemPage({ params }: PageProps) {
           </section>
         ) : verdict ? (
           <>
+            {cadenceWarning ? (
+              <section className="rounded-2xl border border-amber-200 bg-amber-50/40 p-4 flex items-start gap-3">
+                <span
+                  className="shrink-0 mt-0.5 w-5 h-5 rounded-full bg-amber-500 text-white grid place-items-center text-xs"
+                  aria-hidden
+                >
+                  ·
+                </span>
+                <p className="text-xs text-amber-900 leading-relaxed">
+                  {cadenceWarning}
+                </p>
+              </section>
+            ) : null}
             {/* Publishing readiness — silent when all clear, loud only on real issues */}
             {verdict.ok ? (
               <section className="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-4 flex items-start gap-3">
