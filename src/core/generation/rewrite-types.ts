@@ -17,6 +17,8 @@ export type RewriteAction =
   | "less_promotional"
   | "to_bluesky_thread"
   | "to_devto_article"
+  | "to_x_thread"
+  | "to_linkedin_post"
   | "improve_headline";
 
 export const REWRITE_ACTION_LABELS: Record<RewriteAction, string> = {
@@ -27,6 +29,8 @@ export const REWRITE_ACTION_LABELS: Record<RewriteAction, string> = {
   less_promotional: "Less promotional",
   to_bluesky_thread: "Adapt for Bluesky",
   to_devto_article: "Adapt for dev.to",
+  to_x_thread: "Adapt for X",
+  to_linkedin_post: "Adapt for LinkedIn",
   improve_headline: "Improve headline",
 };
 
@@ -38,6 +42,8 @@ export const REWRITE_ACTIONS: ReadonlyArray<RewriteAction> = [
   "less_promotional",
   "to_bluesky_thread",
   "to_devto_article",
+  "to_x_thread",
+  "to_linkedin_post",
   "improve_headline",
 ];
 

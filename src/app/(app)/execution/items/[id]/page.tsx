@@ -19,6 +19,17 @@ import { PublishForm } from "./_publish-form";
 import { ManualPublishForm } from "./_manual-publish-form";
 import { PrepareForManualPublishForm } from "./_prepare-for-manual-form";
 import { PublishTierOneForm } from "./_publish-tier-one-form";
+import { PublishDistributionForm } from "./_publish-distribution-form";
+import {
+  buildFullThreadText,
+  buildXShareIntentUrl,
+  transformForX,
+} from "@/core/publishing/transformers/x";
+import {
+  buildLinkedInShareIntentUrl,
+  transformForLinkedIn,
+} from "@/core/publishing/transformers/linkedin";
+import { canonicalPostFromRequest } from "@/core/publishing/canonical-post";
 import { isRedditOauthBlocked } from "@/lib/oauth/env";
 import { ExecutionStateBadge } from "@/components/publishing/execution-state";
 import { RedditPostPreview } from "@/components/platform-previews/reddit-post";
@@ -116,11 +127,20 @@ export default async function ExecutionItemPage({ params }: PageProps) {
     item.platform === "devto" ||
     item.platform === "hashnode" ||
     item.platform === "bluesky";
+  // F5.0 — X and LinkedIn are distribution-only (manual-first).
+  const isDistribution =
+    item.platform === "x" || item.platform === "linkedin";
   let verdict: SafeTestPolicyVerdict | null = null;
-  // Tier-1 platforms (dev.to / Hashnode / Bluesky) skip the
-  // Reddit-shaped safe-test policy entirely — they use API
-  // credentials read from env and a different publish CTA.
-  if (!isTierOne && (isReady || isReadyForManual) && safeTestModeEnabled()) {
+  // Tier-1 platforms (dev.to / Hashnode / Bluesky) AND distribution
+  // platforms (X / LinkedIn) skip the Reddit-shaped safe-test policy
+  // entirely — they use either API credentials read from env or the
+  // founder's own browser session on the native composer.
+  if (
+    !isTierOne &&
+    !isDistribution &&
+    (isReady || isReadyForManual) &&
+    safeTestModeEnabled()
+  ) {
     const supabase = createSupabaseServerClient();
     const { evaluateManualPublishPolicy } = await import(
       "@/core/publishing/manual-publish-policy"
@@ -163,7 +183,9 @@ export default async function ExecutionItemPage({ params }: PageProps) {
   const cadence =
     item.platform === "devto" ||
     item.platform === "hashnode" ||
-    item.platform === "bluesky"
+    item.platform === "bluesky" ||
+    item.platform === "x" ||
+    item.platform === "linkedin"
       ? await checkCadence({
           workspaceId,
           platform: item.platform,
@@ -264,7 +286,26 @@ export default async function ExecutionItemPage({ params }: PageProps) {
           </section>
         ) : null}
 
-        {isTierOne && isReady ? (
+        {isDistribution && isReady ? (
+          <DistributionPublishBranch
+            itemId={item.id}
+            platform={item.platform as "x" | "linkedin"}
+            title={item.title}
+            body={item.body}
+            linkUrl={item.linkUrl}
+            cadenceWarning={cadenceWarning}
+          />
+        ) : isDistribution && !isReady ? (
+          <section className="rounded-2xl border border-ink-200 bg-white p-5">
+            <h2 className="text-sm font-semibold text-ink-900">
+              Not ready to publish yet
+            </h2>
+            <p className="text-xs text-ink-600 mt-1 leading-relaxed">
+              This post is still waiting for its scheduled time. Once that
+              moment arrives, the publish controls unlock here.
+            </p>
+          </section>
+        ) : isTierOne && isReady ? (
           <>
             {cadenceWarning ? (
               <section className="rounded-2xl border border-amber-200 bg-amber-50/40 p-4 flex items-start gap-3">
@@ -489,5 +530,85 @@ export default async function ExecutionItemPage({ params }: PageProps) {
         ) : null}
       </div>
     </>
+  );
+}
+
+/**
+ * F5.0 — build the X / LinkedIn manual-distribution preview server-side
+ * from the execution-item content and render the publish form.
+ */
+function DistributionPublishBranch(props: {
+  itemId: string;
+  platform: "x" | "linkedin";
+  title: string | null;
+  body: string | null;
+  linkUrl: string | null;
+  cadenceWarning: string | null;
+}) {
+  const canonical = canonicalPostFromRequest({
+    planItemId: props.itemId,
+    title: props.title,
+    body: props.body,
+    linkUrl: props.linkUrl,
+    canonicalUrl: props.linkUrl,
+  });
+
+  if (props.platform === "x") {
+    const thread = transformForX(canonical);
+    if (thread.length === 0) {
+      return (
+        <section className="rounded-2xl border border-amber-200 bg-amber-50/40 p-5">
+          <h2 className="text-sm font-semibold text-amber-800">
+            Nothing to publish yet
+          </h2>
+          <p className="text-xs text-amber-800 mt-1 leading-relaxed">
+            Write the post body first, then come back to publish.
+          </p>
+        </section>
+      );
+    }
+    const shareIntentUrl = buildXShareIntentUrl(thread[0]?.text ?? "");
+    const fullText = buildFullThreadText(thread);
+    return (
+      <PublishDistributionForm
+        executionItemId={props.itemId}
+        platform="x"
+        preview={{
+          kind: "x_thread",
+          parts: thread,
+          fullText,
+          shareIntentUrl,
+        }}
+        cooldownWarning={props.cadenceWarning}
+      />
+    );
+  }
+
+  // linkedin
+  const result = transformForLinkedIn(canonical);
+  if (result.text.length === 0) {
+    return (
+      <section className="rounded-2xl border border-amber-200 bg-amber-50/40 p-5">
+        <h2 className="text-sm font-semibold text-amber-800">
+          Nothing to publish yet
+        </h2>
+        <p className="text-xs text-amber-800 mt-1 leading-relaxed">
+          Write the post body first, then come back to publish.
+        </p>
+      </section>
+    );
+  }
+  return (
+    <PublishDistributionForm
+      executionItemId={props.itemId}
+      platform="linkedin"
+      preview={{
+        kind: "linkedin_post",
+        text: result.text,
+        warnings: result.warnings,
+        shareIntentUrl: buildLinkedInShareIntentUrl(props.linkUrl),
+      }}
+      cooldownWarning={props.cadenceWarning}
+    />
   );
 }

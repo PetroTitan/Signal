@@ -27,6 +27,13 @@ const COOLDOWN_MINUTES: Partial<Record<PublishPlatform, number>> = {
   devto: 108,
   hashnode: 100,
   bluesky: 120,
+  // F5.0 — distribution layers. Manual posting reality means these
+  // cooldowns are guidance for the founder's cadence, not API
+  // throttles. X tolerates more frequent posting than LinkedIn,
+  // which surfaces aggressive posting as low-quality activity in its
+  // feed ranking.
+  x: 180,
+  linkedin: 480,
 };
 
 export type CadenceHealth = "healthy" | "slightly_aggressive" | "aggressive";

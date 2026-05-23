@@ -27,6 +27,17 @@ function isOAuthPlatform(p: string): p is OAuthPlatform {
   return p === "reddit" || p === "x" || p === "linkedin";
 }
 
+/**
+ * F5.0 — only Reddit currently has a functional OAuth flow worth
+ * surfacing in the founder UI. X and LinkedIn are accepted as
+ * OAuth platforms by the legacy schema but Signal uses them in
+ * manual-distribution mode only — Connect / Disconnect controls
+ * don't apply.
+ */
+function hasInProductConnectionFlow(p: string): boolean {
+  return p === "reddit";
+}
+
 export default async function AccountsPage() {
   if (!isSupabaseConfigured()) {
     return (
@@ -146,19 +157,26 @@ export default async function AccountsPage() {
                   providerAvailable={providerStatus.available}
                 />
               );
-              const oauthControls = isOAuthPlatform(a.platform) ? (
-                <ConnectionControls
-                  platform={a.platform}
-                  accountId={a.id}
-                  providerConfigured={providerConfigured[a.platform]}
-                  encryptionConfigured={encryptionOn}
-                  redditOauthBlocked={redditOauthBlocked}
-                  connectionStatus={c?.connectionStatus ?? "not_connected"}
-                  healthStatus={c?.healthStatus ?? "unknown"}
-                  hasAccessToken={c?.hasAccessToken ?? false}
-                  lastCheckedAt={c?.lastCheckedAt ?? null}
-                />
-              ) : null;
+              const oauthControls =
+                isOAuthPlatform(a.platform) &&
+                hasInProductConnectionFlow(a.platform) ? (
+                  <ConnectionControls
+                    platform={a.platform}
+                    accountId={a.id}
+                    providerConfigured={providerConfigured[a.platform]}
+                    encryptionConfigured={encryptionOn}
+                    redditOauthBlocked={redditOauthBlocked}
+                    connectionStatus={c?.connectionStatus ?? "not_connected"}
+                    healthStatus={c?.healthStatus ?? "unknown"}
+                    hasAccessToken={c?.hasAccessToken ?? false}
+                    lastCheckedAt={c?.lastCheckedAt ?? null}
+                  />
+                ) : a.platform === "x" || a.platform === "linkedin" ? (
+                  <p className="text-[11px] text-ink-500 italic">
+                    Manual distribution — Signal opens the native composer
+                    and you publish on the platform itself.
+                  </p>
+                ) : null;
               const controls = (
                 <div className="flex flex-col gap-3">
                   {oauthControls}

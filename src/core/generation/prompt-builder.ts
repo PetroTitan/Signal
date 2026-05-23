@@ -130,6 +130,24 @@ function platformShape(platform: string): string {
         "- Read like someone genuinely participating in the subreddit, not marketing.",
         "- 200–600 words typical. Markdown supported but Reddit's flavor (no nested lists more than 1 level).",
       ].join("\n");
+    case "x":
+      return [
+        "- Thread-shaped. Write the content as a sequence of short, specific posts; the splitter will divide it on sentence boundaries.",
+        "- ~250 characters per post is a safe target.",
+        "- No markdown formatting (X strips it). No hashtags. At most ONE external URL across the entire thread.",
+        "- First post is the hook — make it land standalone if the reader doesn't read the rest.",
+        "- Conversational, technical, specific. No engagement bait, no 'must read', no 'agree?' closers.",
+        "- 3–7 thread parts is the calm range. 10+ parts feels desperate.",
+      ].join("\n");
+    case "linkedin":
+      return [
+        "- Calm founder reflection. 300–1200 words.",
+        "- Short paragraphs (1–3 sentences). Lots of vertical breathing room.",
+        "- Lead with the lesson or observation, not a personal-brand origin story.",
+        "- No 'I'm thrilled / honored / humbled' openers. No 'agree?' closers. No fake inspiration.",
+        "- Single optional link at the end if the post is summarizing a public URL.",
+        "- Operational specifics over abstraction. Real tradeoffs over advice.",
+      ].join("\n");
     default:
       return "- Calm, founder-shaped post in markdown.";
   }
