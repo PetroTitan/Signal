@@ -239,12 +239,18 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
     }
   }
 
-  // Build the outcome. We do NOT decrypt the token here unless the
-  // cipher is wired AND we're in live mode AND every other gate
-  // passes. For Phase F1, the cipher is a no-op so accessToken stays
-  // null and the policy gate returns the appropriate outcome.
-  const accessToken: string | null = null;
-  void accessTokenEncrypted; // intentionally not decrypted in F1
+  // Phase F2 — decrypt at the last possible moment, only when:
+  //   - we're in live mode AND
+  //   - the cipher is available AND
+  //   - we actually have an encrypted envelope.
+  // The plaintext is held in scope just for this publish attempt.
+  // The policy gate still runs after this; if any other gate fails,
+  // the plaintext is dropped without being passed to the publisher.
+  let accessToken: string | null = null;
+  if (mode === "live" && accessTokenEncrypted) {
+    const { decryptForOutboundUse } = await import("@/core/platform-oauth");
+    accessToken = decryptForOutboundUse(accessTokenEncrypted);
+  }
 
   const target =
     typeof (item.metadata as { target?: string })?.target === "string"

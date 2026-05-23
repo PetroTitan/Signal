@@ -177,6 +177,35 @@ export async function updateAccount(input: {
 }
 
 /**
+ * Phase F2 — mirror the platform_connections.connection_status onto
+ * growth_accounts. Called by the OAuth callback / disconnect routes
+ * so the /accounts list reflects the live connection state.
+ */
+export async function setAccountConnectionStatus(input: {
+  workspaceId: string;
+  accountId: string;
+  connectionStatus:
+    | "not_connected"
+    | "connected"
+    | "expired"
+    | "revoked"
+    | "reauthorization_required"
+    | "error";
+}): Promise<GrowthAccountRecord> {
+  const supabase = createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("growth_accounts")
+    .update({ connection_status: input.connectionStatus } as never)
+    .eq("workspace_id", input.workspaceId)
+    .eq("id", input.accountId)
+    .select("*")
+    .single();
+  if (error || !data)
+    throw fromPostgres(error, "Failed to update account connection status.");
+  return toAccount(data as unknown as GrowthAccountRow);
+}
+
+/**
  * Accounts waiting for operator review (the approval-queue feed).
  * Excludes archived rows; sorted oldest-first.
  */

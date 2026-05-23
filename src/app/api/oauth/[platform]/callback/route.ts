@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import {
   OAuthError,
+  encryptTokenResponse,
+  exchangeCodeForToken,
+  fetchMe,
+  getTokenCipher,
   isStateExpired,
-  resolveTokenCipher,
-  composeTokenPersistence,
 } from "@/core/platform-oauth";
 import { readOAuthProviderRuntime } from "@/lib/oauth/env";
 import {
@@ -15,22 +17,22 @@ import {
   consumeOAuthState,
   upsertPlatformConnection,
 } from "@/repositories/platform-connection-repository";
+import { setAccountConnectionStatus } from "@/repositories/account-repository";
 import { recordActivity } from "@/repositories/activity-repository";
 
 /**
  * GET /api/oauth/:platform/callback
  *
- * Verifies the state, exchanges the code for a token (only if the
- * provider env is configured AND the token cipher is available),
- * and records the connection. If encryption is not configured, the
- * connection is recorded as `error` with metadata explaining why —
- * we never store plaintext tokens.
+ * Phase F2 — completes the OAuth handshake:
+ *   1. Validate state (one-shot, deleted on read by consumeOAuthState).
+ *   2. Exchange `code` for tokens via Reddit's token endpoint.
+ *   3. Encrypt tokens with TOKEN_ENCRYPTION_KEY (AES-256-GCM).
+ *   4. Fetch /api/v1/me to record handle + provider_account_id.
+ *   5. Upsert platform_connections, mirror growth_accounts.
  *
- * Phase E3 does not actually call the provider's token endpoint
- * over the network. The code path that would exchange `code` for
- * tokens lives behind the cipher availability check and is fenced
- * off in this build. The route is wired so a future PR can drop in
- * the fetch call and have the rest work end-to-end.
+ * Every failure path records a `platform_connection.failed` activity
+ * event and routes back to `/accounts` with a query string the UI
+ * can render. No tokens are ever logged or persisted in plaintext.
  */
 export async function GET(
   request: Request,
@@ -41,7 +43,11 @@ export async function GET(
     const platform = validatePlatformParam(params.platform);
     const runtime = readOAuthProviderRuntime(platform);
     if (!runtime) {
-      throw new OAuthError("provider_not_configured", "OAuth app not configured yet.", 400);
+      throw new OAuthError(
+        "provider_not_configured",
+        "OAuth app not configured yet.",
+        400,
+      );
     }
 
     const code = url.searchParams.get("code");
@@ -49,7 +55,11 @@ export async function GET(
     const providerError = url.searchParams.get("error");
 
     if (providerError) {
-      throw new OAuthError("provider_denied", `Provider returned: ${providerError}`, 400);
+      throw new OAuthError(
+        "provider_denied",
+        `Provider returned: ${providerError}`,
+        400,
+      );
     }
     if (!stateParam) {
       throw new OAuthError("state_missing", "Missing OAuth state.", 400);
@@ -69,14 +79,10 @@ export async function GET(
       throw new OAuthError("state_expired", "OAuth state expired.", 400);
     }
 
-    // ── Token exchange placeholder. ────────────────────────────────
-    // Phase E3 does not invoke the provider's token endpoint. The
-    // cipher is the gate: when it is unavailable, we record an
-    // `error` connection so the operator can see exactly why the
-    // flow stopped. When the cipher and the network exchange both
-    // ship in a later phase, replace this branch with the fetch
-    // call and feed the response into composeTokenPersistence.
-    const cipher = resolveTokenCipher();
+    // ── Gate 1: cipher must be available *before* we ask the provider
+    //    for a token. No point holding a real plaintext token if we
+    //    can't encrypt it.
+    const cipher = getTokenCipher();
     if (!cipher.isAvailable()) {
       const conn = await upsertPlatformConnection({
         workspaceId: stateRow.workspace_id,
@@ -97,73 +103,210 @@ export async function GET(
           token_storage: "not_configured",
         },
       });
-      try {
-        await recordActivity({
-          workspaceId: stateRow.workspace_id,
-          eventType: "platform_connection.failed",
-          entityType: "platform_connection",
-          entityId: conn.id,
-          title: `${platform} OAuth callback received; tokens not stored`,
-          description:
-            "Token encryption is not configured. No real tokens were stored.",
-        });
-      } catch (err) {
-        console.error("[oauth/callback] activity log failed", err);
-      }
-      const target = safeRedirect(stateRow.redirect_after, url.origin);
-      const redirectUrl = new URL(target);
+      await safeRecordActivity({
+        workspaceId: stateRow.workspace_id,
+        connectionId: conn.id,
+        type: "platform_connection.failed",
+        title: `${platform} OAuth callback received; tokens not stored`,
+        description: "Token encryption is not configured.",
+      });
+      const redirectUrl = new URL(
+        safeRedirect(stateRow.redirect_after, url.origin),
+      );
       redirectUrl.searchParams.set("oauth", "not_configured");
       return NextResponse.redirect(redirectUrl.toString());
     }
 
-    // When the cipher ships, the token exchange would go here.
-    // composeTokenPersistence enforces the no-plaintext rule on
-    // persistence so even this future branch cannot silently store
-    // an unencrypted value.
-    const persisted = composeTokenPersistence({
+    // ── Gate 2: exchange code → tokens.
+    if (platform !== "reddit") {
+      // F2 only ships Reddit live exchange. X / LinkedIn keep the
+      // "not implemented" error path.
+      throw new OAuthError(
+        "provider_not_configured",
+        `${platform} OAuth callback is not implemented in F2.`,
+        501,
+      );
+    }
+    const tokenResult = await exchangeCodeForToken({ runtime, code });
+    if (!tokenResult.ok) {
+      const conn = await upsertPlatformConnection({
+        workspaceId: stateRow.workspace_id,
+        accountId: stateRow.account_id ?? null,
+        platform,
+        providerAccountId: null,
+        handle: null,
+        displayName: null,
+        scopes: [],
+        accessTokenEncrypted: null,
+        refreshTokenEncrypted: null,
+        expiresAt: null,
+        connectionStatus: "error",
+        metadata: {
+          last_message: `Token exchange failed: ${tokenResult.code} (http ${tokenResult.httpStatus}).`,
+          token_exchange_code: tokenResult.code,
+          token_exchange_status: tokenResult.httpStatus,
+        },
+      });
+      await safeRecordActivity({
+        workspaceId: stateRow.workspace_id,
+        connectionId: conn.id,
+        type: "platform_connection.failed",
+        title: `${platform} token exchange failed`,
+        description: `${tokenResult.code} (http ${tokenResult.httpStatus})`,
+      });
+      const redirectUrl = new URL(
+        safeRedirect(stateRow.redirect_after, url.origin),
+      );
+      redirectUrl.searchParams.set("oauth", "exchange_failed");
+      return NextResponse.redirect(redirectUrl.toString());
+    }
+
+    const tokens = tokenResult.data;
+    const scopes = tokens.scope
+      ? tokens.scope.split(/[\s,]+/).filter(Boolean)
+      : [];
+
+    // ── Gate 3: encrypt before any other persistence step.
+    const enc = encryptTokenResponse({
       platform,
       response: {
-        accessToken: "DRY_RUN_REAL_VALUE_NEVER_LOGGED",
-        refreshToken: null,
-        expiresInSeconds: null,
-        scopes: [],
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token ?? null,
+        expiresInSeconds: tokens.expires_in,
+        scopes,
       },
-      cipher,
     });
-    if (!persisted.ok) {
-      throw new OAuthError("token_storage_unavailable", persisted.reason ?? "Token storage refused.", 500);
+    if (!enc.ok) {
+      const conn = await upsertPlatformConnection({
+        workspaceId: stateRow.workspace_id,
+        accountId: stateRow.account_id ?? null,
+        platform,
+        providerAccountId: null,
+        handle: null,
+        displayName: null,
+        scopes: [],
+        accessTokenEncrypted: null,
+        refreshTokenEncrypted: null,
+        expiresAt: null,
+        connectionStatus: "error",
+        metadata: {
+          last_message: `Token encryption refused: ${enc.reason}`,
+          token_storage: "refused",
+        },
+      });
+      await safeRecordActivity({
+        workspaceId: stateRow.workspace_id,
+        connectionId: conn.id,
+        type: "platform_connection.failed",
+        title: `${platform} token encryption refused`,
+        description: enc.reason,
+      });
+      const redirectUrl = new URL(
+        safeRedirect(stateRow.redirect_after, url.origin),
+      );
+      redirectUrl.searchParams.set("oauth", "encryption_refused");
+      return NextResponse.redirect(redirectUrl.toString());
     }
-    // Unreachable in Phase E3 because cipher.isAvailable() is false,
-    // but kept here so the future wiring already compiles.
+
+    // ── Gate 4: confirm the token works and harvest handle.
+    const meResult = await fetchMe({ accessToken: tokens.access_token });
+    if (!meResult.ok) {
+      const conn = await upsertPlatformConnection({
+        workspaceId: stateRow.workspace_id,
+        accountId: stateRow.account_id ?? null,
+        platform,
+        providerAccountId: null,
+        handle: null,
+        displayName: null,
+        scopes,
+        accessTokenEncrypted: enc.accessTokenEncrypted,
+        refreshTokenEncrypted: enc.refreshTokenEncrypted,
+        expiresAt: enc.expiresAt,
+        connectionStatus: "error",
+        metadata: {
+          last_message: `Profile fetch failed: ${meResult.code} (http ${meResult.httpStatus}).`,
+          profile_fetch_code: meResult.code,
+        },
+      });
+      await safeRecordActivity({
+        workspaceId: stateRow.workspace_id,
+        connectionId: conn.id,
+        type: "platform_connection.failed",
+        title: `${platform} profile fetch failed`,
+        description: `${meResult.code} (http ${meResult.httpStatus})`,
+      });
+      const redirectUrl = new URL(
+        safeRedirect(stateRow.redirect_after, url.origin),
+      );
+      redirectUrl.searchParams.set("oauth", "profile_failed");
+      return NextResponse.redirect(redirectUrl.toString());
+    }
+
+    // ── Success path: persist connection + mirror growth_accounts.
     const conn = await upsertPlatformConnection({
       workspaceId: stateRow.workspace_id,
       accountId: stateRow.account_id ?? null,
       platform,
-      providerAccountId: null,
-      handle: null,
-      displayName: null,
-      scopes: [],
-      accessTokenEncrypted: persisted.accessTokenEncrypted,
-      refreshTokenEncrypted: persisted.refreshTokenEncrypted,
-      expiresAt: persisted.expiresAt,
+      providerAccountId: meResult.data.id,
+      handle: meResult.data.name,
+      displayName: meResult.data.name,
+      scopes,
+      accessTokenEncrypted: enc.accessTokenEncrypted,
+      refreshTokenEncrypted: enc.refreshTokenEncrypted,
+      expiresAt: enc.expiresAt,
       connectionStatus: "connected",
-      metadata: { token_storage: cipher.describe() },
+      metadata: {
+        token_storage: cipher.describe(),
+        last_message: `Connected as u/${meResult.data.name}.`,
+      },
     });
-    try {
-      await recordActivity({
-        workspaceId: stateRow.workspace_id,
-        eventType: "platform_connection.connected",
-        entityType: "platform_connection",
-        entityId: conn.id,
-        title: `${platform} connected`,
-        description: null,
-      });
-    } catch (err) {
-      console.error("[oauth/callback] activity log failed", err);
+
+    if (stateRow.account_id) {
+      try {
+        await setAccountConnectionStatus({
+          workspaceId: stateRow.workspace_id,
+          accountId: stateRow.account_id,
+          connectionStatus: "connected",
+        });
+      } catch (err) {
+        console.error("[oauth/callback] growth_accounts update failed", err);
+      }
     }
+
+    await safeRecordActivity({
+      workspaceId: stateRow.workspace_id,
+      connectionId: conn.id,
+      type: "platform_connection.connected",
+      title: `${platform} connected as u/${meResult.data.name}`,
+      description: scopes.length > 0 ? `Scopes: ${scopes.join(", ")}` : null,
+    });
+
     const target = safeRedirect(stateRow.redirect_after, url.origin);
-    return NextResponse.redirect(target);
+    const redirectUrl = new URL(target);
+    redirectUrl.searchParams.set("oauth", "connected");
+    return NextResponse.redirect(redirectUrl.toString());
   } catch (err) {
     return oauthJsonError(err);
+  }
+}
+
+async function safeRecordActivity(input: {
+  workspaceId: string;
+  connectionId: string;
+  type: string;
+  title: string;
+  description: string | null;
+}): Promise<void> {
+  try {
+    await recordActivity({
+      workspaceId: input.workspaceId,
+      eventType: input.type,
+      entityType: "platform_connection",
+      entityId: input.connectionId,
+      title: input.title,
+      description: input.description,
+    });
+  } catch (err) {
+    console.error("[oauth/callback] activity log failed", err);
   }
 }

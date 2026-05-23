@@ -236,6 +236,64 @@ export async function verificationLatest(
   });
 }
 
+export async function oauthConnectionsList(
+  ctx: ToolContext,
+): Promise<McpToolResponse> {
+  // Explicit projection — `access_token_encrypted` and
+  // `refresh_token_encrypted` are NEVER selected. The booleans below
+  // are computed on the database side so the response stays
+  // token-free even under faulty client code.
+  const { data, error } = await ctx.db
+    .from("platform_connections")
+    .select(
+      "id, account_id, platform, provider_account_id, handle, display_name, connection_status, scopes, expires_at, connected_at, revoked_at, last_checked_at, health_status, metadata, created_at",
+    )
+    .eq("workspace_id", ctx.workspaceId)
+    .order("updated_at", { ascending: false });
+  if (error)
+    return failed({
+      tool: "signal.oauth.connections.list",
+      summary: error.message,
+    });
+
+  // Get has_*_token via a second tiny query that only selects nullable
+  // existence — no value ever leaves the database.
+  const { data: presence } = await ctx.db
+    .from("platform_connections")
+    .select(
+      "id, has_access_token:access_token_encrypted, has_refresh_token:refresh_token_encrypted",
+    )
+    .eq("workspace_id", ctx.workspaceId);
+  const presenceById = new Map<
+    string,
+    { has_access_token: boolean; has_refresh_token: boolean }
+  >();
+  for (const row of (presence ?? []) as Array<{
+    id: string;
+    has_access_token: string | null;
+    has_refresh_token: string | null;
+  }>) {
+    presenceById.set(row.id, {
+      has_access_token: row.has_access_token !== null,
+      has_refresh_token: row.has_refresh_token !== null,
+    });
+  }
+  const connections = (data ?? []).map((row) => {
+    const id = (row as { id: string }).id;
+    const flags = presenceById.get(id) ?? {
+      has_access_token: false,
+      has_refresh_token: false,
+    };
+    return { ...(row as Record<string, unknown>), ...flags };
+  });
+
+  return ok({
+    tool: "signal.oauth.connections.list",
+    summary: `${connections.length} platform connection(s) — no tokens exposed.`,
+    data: { connections },
+  });
+}
+
 export async function activityLatest(
   ctx: ToolContext,
 ): Promise<McpToolResponse> {

@@ -32,17 +32,10 @@ export const OAUTH_PROVIDERS: Record<OAuthPlatform, OAuthProviderConfig> = {
     pkce: false,
     revokeUrl: "https://www.reddit.com/api/v1/revoke_token",
     profileUrl: "https://oauth.reddit.com/api/v1/me",
-    scopes: [
-      { ...READ_PROFILE, scope: "identity" },
-      {
-        scope: "read",
-        label: "Read content",
-        required: false,
-        rationale:
-          "Read subreddit metadata and the account's own activity for cadence checks.",
-        isPublishingScope: false,
-      },
-    ],
+    // Phase F2: identity only. `submit` (publishing) and `read`
+    // (cadence checks) are deferred until F3 / a separate operator
+    // approval gate.
+    scopes: [{ ...READ_PROFILE, scope: "identity" }],
   },
   x: {
     platform: "x",

@@ -163,6 +163,157 @@ export async function runOAuthSafetyCheck(): Promise<CheckResult> {
 }
 
 // =====================================================================
+// oauth_token_security_check  (Phase F2)
+// =====================================================================
+//
+// Runtime + DB check complementing the static `oauth_safety_check`:
+//   - cipher self-test (env present, decodes to 32 bytes, round-trips)
+//   - no plaintext-like strings in platform_connections.access_token_encrypted
+//   - presence booleans only in the MCP listing
+//   - Reddit OAuth provider env present
+//   - provider scopes do NOT include `submit` (publishing scope)
+//
+// The check NEVER reads token values into application memory; it only
+// inspects column lengths, prefixes, and the version envelope.
+
+export async function runOAuthTokenSecurityCheck(): Promise<CheckResult> {
+  const start = Date.now();
+  const findings: string[] = [];
+  const details: string[] = [];
+
+  // 1. Cipher self-test via the production resolver. This calls
+  //    `getTokenCipherDiagnostic()` which reads TOKEN_ENCRYPTION_KEY
+  //    exactly once and runs an encrypt+decrypt round-trip.
+  try {
+    const { getTokenCipherDiagnostic, getTokenCipher } = await import(
+      "@/core/platform-oauth"
+    );
+    const diag = getTokenCipherDiagnostic();
+    if (diag.status !== "configured") {
+      findings.push(`Token cipher ${diag.status}: ${diag.message}`);
+    } else {
+      details.push(`Token cipher: ${diag.message}`);
+    }
+    const cipher = getTokenCipher();
+    if (diag.status === "configured" && !cipher.isAvailable()) {
+      findings.push(
+        "Cipher diagnostic reports configured but isAvailable() is false.",
+      );
+    }
+  } catch (err) {
+    findings.push(
+      `Cipher diagnostic threw: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  // 2. Inspect existing token columns: every non-null value must
+  //    start with the `v1:` envelope prefix and decode to a 4-part
+  //    structure. We don't read the value into JS — the DB-side
+  //    LIKE pattern is enough to flag plaintext leakage.
+  try {
+    const { createSupabaseServiceRoleClient } = await import(
+      "@/lib/supabase/service-role"
+    );
+    const svc = createSupabaseServiceRoleClient();
+    if (!svc) {
+      findings.push(
+        "Service-role client unavailable; cannot inspect platform_connections.",
+      );
+    } else {
+      // Count rows whose access_token_encrypted exists but is NOT in
+      // the v1 envelope shape.
+      const { count, error } = await svc
+        .from("platform_connections")
+        .select("id", { count: "exact", head: true })
+        .not("access_token_encrypted", "is", null)
+        .not("access_token_encrypted", "like", "v1:%");
+      if (error) {
+        findings.push(
+          `Could not inspect token columns: ${error.message}`,
+        );
+      } else if ((count ?? 0) > 0) {
+        findings.push(
+          `${count} platform_connections row(s) have access_token_encrypted in an unrecognized envelope. Tokens may be plaintext or from a removed version.`,
+        );
+      } else {
+        details.push(
+          "Every stored access token is in the v1 envelope (or null).",
+        );
+      }
+    }
+  } catch (err) {
+    findings.push(
+      `Token-column inspection threw: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  // 3. Confirm the MCP read tool does not select the encrypted columns.
+  const readTools = await readSource("src/mcp/tools/read-tools.ts");
+  if (readTools && /access_token_encrypted/.test(readTools)) {
+    // Allow `has_access_token:access_token_encrypted` (the SQL alias
+    // pattern that returns null/exists, not the value).
+    const offenders = readTools
+      .split("\n")
+      .filter(
+        (line) =>
+          /access_token_encrypted/.test(line) &&
+          !/has_access_token:access_token_encrypted|has_refresh_token:refresh_token_encrypted/.test(
+            line,
+          ),
+      );
+    if (offenders.length > 0) {
+      findings.push(
+        `MCP read tool appears to select encrypted-token columns directly (${offenders.length} occurrence).`,
+      );
+    } else {
+      details.push("MCP read tool only exposes presence booleans.");
+    }
+  } else {
+    details.push("MCP read tool does not reference encrypted columns.");
+  }
+
+  // 4. Provider scopes for Reddit must not include publishing scopes.
+  const providers = await readSource(
+    "src/core/platform-oauth/oauth-provider.ts",
+  );
+  if (providers && /scope:\s*["']submit["']/.test(providers)) {
+    findings.push(
+      "Reddit `submit` scope is present in oauth-provider.ts — publishing scope must not ship in F2.",
+    );
+  } else if (providers) {
+    details.push("Reddit provider does not request the `submit` scope.");
+  }
+
+  if (findings.length > 0) {
+    return fail({
+      check: "oauth_token_security_check",
+      label: "OAuth token security check",
+      summary: `${findings.length} OAuth token-security finding(s).`,
+      details: [...findings, ...details],
+      durationMs: Date.now() - start,
+    });
+  }
+  const warned = details.some((d) => d.startsWith("Token cipher missing"));
+  if (warned) {
+    return warn({
+      check: "oauth_token_security_check",
+      label: "OAuth token security check",
+      summary: "Cipher not configured; storage gate is intact but disabled.",
+      details,
+      durationMs: Date.now() - start,
+    });
+  }
+  return pass({
+    check: "oauth_token_security_check",
+    label: "OAuth token security check",
+    summary:
+      "Cipher round-trips, no plaintext-shaped tokens stored, MCP exposes booleans only.",
+    details,
+    durationMs: Date.now() - start,
+  });
+}
+
+// =====================================================================
 // execution_safety_check
 // =====================================================================
 

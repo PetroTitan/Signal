@@ -212,6 +212,74 @@ export async function upsertPlatformConnection(
   return toConnection(data as unknown as PlatformConnectionRow);
 }
 
+/**
+ * Phase F2 — server-only token read. Returns the raw encrypted
+ * envelopes for a connection. The caller MUST decrypt server-side
+ * via `decryptForOutboundUse` and discard the plaintext after the
+ * outbound call. Never return these values to client-facing code.
+ */
+export async function readEncryptedTokens(
+  workspaceId: string,
+  connectionId: string,
+): Promise<{
+  accessTokenEncrypted: string | null;
+  refreshTokenEncrypted: string | null;
+  expiresAt: string | null;
+} | null> {
+  const supabase = createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("platform_connections")
+    .select("access_token_encrypted, refresh_token_encrypted, expires_at")
+    .eq("workspace_id", workspaceId)
+    .eq("id", connectionId)
+    .maybeSingle();
+  if (error) throw fromPostgres(error, "Failed to read encrypted tokens.");
+  if (!data) return null;
+  const row = data as unknown as {
+    access_token_encrypted: string | null;
+    refresh_token_encrypted: string | null;
+    expires_at: string | null;
+  };
+  return {
+    accessTokenEncrypted: row.access_token_encrypted,
+    refreshTokenEncrypted: row.refresh_token_encrypted,
+    expiresAt: row.expires_at,
+  };
+}
+
+/**
+ * Phase F2 — refresh-token rotation. Replaces the encrypted access
+ * token + expiry on an existing connection. Used by the
+ * refresh-on-401 path so the scheduler can re-attempt the publish
+ * without flipping the row to `reauthorization_required`.
+ */
+export async function rotateAccessToken(input: {
+  workspaceId: string;
+  connectionId: string;
+  accessTokenEncrypted: string;
+  refreshTokenEncrypted: string | null;
+  expiresAt: string | null;
+  scopes: string[];
+}): Promise<PlatformConnection> {
+  const supabase = createSupabaseServerClient();
+  const patch: PlatformConnectionUpdate = {
+    access_token_encrypted: input.accessTokenEncrypted,
+    refresh_token_encrypted: input.refreshTokenEncrypted,
+    expires_at: input.expiresAt,
+    scopes: input.scopes,
+    last_checked_at: new Date().toISOString(),
+    connection_status: "connected",
+    health_status: "healthy",
+  };
+  const { error } = await supabase
+    .from("platform_connections")
+    .update(patch as never)
+    .eq("workspace_id", input.workspaceId)
+    .eq("id", input.connectionId);
+  if (error) throw fromPostgres(error, "Failed to rotate access token.");
+  return getPlatformConnectionById(input.workspaceId, input.connectionId);
+}
+
 export async function markConnectionStatus(input: {
   workspaceId: string;
   connectionId: string;

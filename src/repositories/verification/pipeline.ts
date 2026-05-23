@@ -22,6 +22,7 @@ import {
 import {
   runExecutionSafetyCheck,
   runOAuthSafetyCheck,
+  runOAuthTokenSecurityCheck,
   runWeeklyContractCheck,
 } from "./safety-checks";
 import { runSupabaseMcpProbeCheck } from "./supabase-probe-check";
@@ -40,6 +41,7 @@ export async function runSingleCheck(
     | "route_protection_check"
     | "demo_boundary_check"
     | "oauth_safety_check"
+    | "oauth_token_security_check"
     | "execution_safety_check"
     | "weekly_contract_check"
     | "supabase_mcp_probe_check"
@@ -61,6 +63,8 @@ export async function runSingleCheck(
       return runDemoBoundaryCheck();
     case "oauth_safety_check":
       return runOAuthSafetyCheck();
+    case "oauth_token_security_check":
+      return runOAuthTokenSecurityCheck();
     case "execution_safety_check":
       return runExecutionSafetyCheck();
     case "weekly_contract_check":
@@ -133,6 +137,7 @@ export async function runFullVerificationPipeline(): Promise<VerificationReport>
     results.push(await runWeeklyContractCheck());
     results.push(await runExecutionSafetyCheck());
     results.push(await runOAuthSafetyCheck());
+    results.push(await runOAuthTokenSecurityCheck());
     results.push(await runSupabaseMcpProbeCheck());
     results.push(await runProductionSmokeTest());
 
