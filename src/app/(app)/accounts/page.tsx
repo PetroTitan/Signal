@@ -16,8 +16,10 @@ import { ArchiveAccountButton } from "./_archive-button";
 import { ConnectionControls } from "./_connection-controls";
 import { VoiceProfileEditor } from "./_voice-profile-editor";
 import { PublishingCapabilitiesPanel } from "./_capabilities-panel";
+import { GenerateDraftButton } from "./_generate-draft-button";
 import { AccountIdentityCard } from "@/components/publishing/account-identity-card";
 import { resolveIdentityPlatformGuidance } from "@/core/publishing/platform-guidance";
+import { readGenerationProviderStatus } from "@/core/generation/provider-status";
 
 export const dynamic = "force-dynamic";
 
@@ -85,6 +87,8 @@ export default async function AccountsPage() {
     }
   }
 
+  const providerStatus = readGenerationProviderStatus();
+
   // Last successful publish per account.
   const lastPublishByAccount = new Map<string, string>();
   for (const p of recentPublishes) {
@@ -126,7 +130,23 @@ export default async function AccountsPage() {
                   ? "Reddit is in manual publish mode while their API approval is pending. Drafts still flow through the weekly plan."
                   : null;
               const archive = <ArchiveAccountButton accountId={a.id} />;
-              const controls = isOAuthPlatform(a.platform) ? (
+              const guidanceForCard = resolveIdentityPlatformGuidance(
+                a.platform,
+              );
+              const generateButton = (
+                <GenerateDraftButton
+                  identity={{
+                    id: a.id,
+                    platform: a.platform,
+                    platformLabel:
+                      guidanceForCard?.label ?? a.platform,
+                    displayName: a.displayName,
+                    productId: a.productId,
+                  }}
+                  providerAvailable={providerStatus.available}
+                />
+              );
+              const oauthControls = isOAuthPlatform(a.platform) ? (
                 <ConnectionControls
                   platform={a.platform}
                   accountId={a.id}
@@ -138,11 +158,14 @@ export default async function AccountsPage() {
                   hasAccessToken={c?.hasAccessToken ?? false}
                   lastCheckedAt={c?.lastCheckedAt ?? null}
                 />
-              ) : (
-                <p className="text-[11px] text-ink-400 italic">
-                  This platform uses an API key or app-password instead of
-                  an in-app connection.
-                </p>
+              ) : null;
+              const controls = (
+                <div className="flex flex-col gap-3">
+                  {oauthControls}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {generateButton}
+                  </div>
+                </div>
               );
               const guidance = resolveIdentityPlatformGuidance(a.platform);
               const voiceProfileSlot = (
