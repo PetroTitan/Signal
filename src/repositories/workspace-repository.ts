@@ -20,6 +20,7 @@ export interface WorkspaceMembership {
   workspaceId: string;
   userId: string;
   role: WorkspaceRole;
+  isPrimary: boolean;
   workspace: Workspace;
 }
 
@@ -43,8 +44,11 @@ export async function listMyWorkspaces(): Promise<WorkspaceMembership[]> {
 
   const { data, error } = await supabase
     .from("workspace_members")
-    .select("workspace_id, user_id, role, created_at, workspaces(*)")
+    .select("workspace_id, user_id, role, is_primary, created_at, workspaces(*)")
+    // is_primary=true first, then earliest-created. The DB-side ORDER
+    // matches the resolver's preference so consumers get a stable list.
     .eq("user_id", user.id)
+    .order("is_primary", { ascending: false })
     .order("created_at", { ascending: true });
 
   if (error) throw fromPostgres(error, "Failed to list workspaces.");
@@ -58,13 +62,66 @@ export async function listMyWorkspaces(): Promise<WorkspaceMembership[]> {
       workspaceId: row.workspace_id,
       userId: row.user_id,
       role: row.role,
+      isPrimary: row.is_primary,
       workspace: toWorkspace(row.workspaces as WorkspaceRow),
     }));
 }
 
+/**
+ * Resolves the workspace to use for the current user.
+ *
+ * Order of preference:
+ *   1. The member row marked `is_primary=true` (at most one per user,
+ *      enforced by a partial unique index).
+ *   2. The earliest-created membership (legacy fallback). Lets users
+ *      with a single workspace work without explicitly setting a
+ *      primary marker.
+ */
 export async function getPrimaryWorkspace(): Promise<WorkspaceMembership | null> {
   const list = await listMyWorkspaces();
-  return list[0] ?? null;
+  if (list.length === 0) return null;
+  // listMyWorkspaces already orders is_primary DESC, created_at ASC.
+  // Defensive: still scan explicitly in case the order is changed
+  // upstream by a future refactor.
+  return list.find((m) => m.isPrimary) ?? list[0];
+}
+
+/**
+ * Mark a workspace as the primary for the authenticated user.
+ * Clears any other primary marker the user has (partial unique
+ * index would otherwise reject the update). Returns the updated
+ * membership row.
+ */
+export async function setPrimaryWorkspace(input: {
+  workspaceId: string;
+}): Promise<WorkspaceMembership> {
+  const supabase = createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) throw notAuthenticated();
+
+  // Clear existing primary marker (if any) before setting the new one.
+  // Two updates instead of one because Postgres applies the unique
+  // index after the row update, not after the whole statement.
+  const { error: clearErr } = await supabase
+    .from("workspace_members")
+    .update({ is_primary: false } as never)
+    .eq("user_id", user.id)
+    .eq("is_primary", true);
+  if (clearErr) throw fromPostgres(clearErr, "Failed to clear primary marker.");
+
+  const { error: setErr } = await supabase
+    .from("workspace_members")
+    .update({ is_primary: true } as never)
+    .eq("user_id", user.id)
+    .eq("workspace_id", input.workspaceId);
+  if (setErr) throw fromPostgres(setErr, "Failed to set primary workspace.");
+
+  const all = await listMyWorkspaces();
+  const updated = all.find((m) => m.workspaceId === input.workspaceId);
+  if (!updated) throw notFound("Workspace membership");
+  return updated;
 }
 
 /**

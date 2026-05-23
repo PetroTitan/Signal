@@ -26,6 +26,7 @@ export interface WorkspaceMemberRow {
   workspace_id: string;
   user_id: string;
   role: WorkspaceRole;
+  is_primary: boolean;
   created_at: string;
 }
 
@@ -33,6 +34,12 @@ export interface WorkspaceMemberInsert {
   workspace_id: string;
   user_id: string;
   role: WorkspaceRole;
+  is_primary?: boolean;
+}
+
+export interface WorkspaceMemberUpdate {
+  role?: WorkspaceRole;
+  is_primary?: boolean;
 }
 
 export interface ProductRow {
