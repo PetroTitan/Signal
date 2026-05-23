@@ -5,6 +5,7 @@ import {
   archiveAccount,
   createAccount,
   getAccountById,
+  updateAccount,
 } from "@/repositories/account-repository";
 import { recordActivity } from "@/repositories/activity-repository";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
@@ -18,6 +19,9 @@ import {
 
 export type CreateAccountResult = ActionResult<{ accountId: string }>;
 export type ArchiveAccountResult = ActionResult<{ accountId: string }>;
+export type UpdateVoiceProfileResult = ActionResult<{ accountId: string }>;
+
+const VOICE_PROFILE_MAX = 1500;
 
 export async function createAccountAction(
   _prevState: CreateAccountResult,
@@ -26,11 +30,23 @@ export async function createAccountAction(
   const platform = String(formData.get("platform") ?? "").trim();
   const displayName = String(formData.get("display_name") ?? "").trim();
   const handle = String(formData.get("handle") ?? "").trim();
-  const role = String(formData.get("role") ?? "").trim();
+  const voiceProfile = String(formData.get("voice_profile") ?? "").trim();
   const productId = String(formData.get("product_id") ?? "").trim();
 
-  if (!platform) return actionFail("Platform is required.");
-  if (!displayName) return actionFail("Display name is required.");
+  if (!platform) return actionFail("Pick a platform.");
+  if (!displayName)
+    return actionFail("Give this publishing identity a name.");
+  // F4.4 — only allow platforms with real publishing paths.
+  const allowed = new Set([
+    "reddit",
+    "devto",
+    "hashnode",
+    "bluesky",
+    "indie_hackers",
+  ]);
+  if (!allowed.has(platform)) {
+    return actionFail("That platform isn't supported yet.");
+  }
 
   try {
     const membership = await getPrimaryWorkspace();
@@ -56,7 +72,7 @@ export async function createAccountAction(
       platform,
       displayName,
       handle: handle || null,
-      role: role || null,
+      voiceProfile: voiceProfile || null,
       productId: resolvedProductId,
     });
 
@@ -66,9 +82,9 @@ export async function createAccountAction(
         eventType: "account.created",
         entityType: "account",
         entityId: account.id,
-        title: `Account "${account.displayName ?? account.platform}" added`,
-        description: `Platform: ${account.platform}. Status: not_connected.`,
-        metadata: { platform: account.platform, role: account.role },
+        title: `Publishing identity "${account.displayName ?? account.platform}" added`,
+        description: `Platform: ${account.platform}.`,
+        metadata: { platform: account.platform },
       });
     } catch (err) {
       console.error("[createAccountAction] activity log failed", err);
@@ -139,6 +155,46 @@ export async function archiveAccountAction(
         ? error.message
         : "Could not archive account.";
     console.error("[archiveAccountAction] failed", error);
+    return actionFail(message);
+  }
+}
+
+// =====================================================================
+// F4.4 — update the voice profile (writing style) on an identity.
+// =====================================================================
+export async function updateVoiceProfileAction(
+  _prev: UpdateVoiceProfileResult,
+  formData: FormData,
+): Promise<UpdateVoiceProfileResult> {
+  const accountId = String(formData.get("account_id") ?? "").trim();
+  const raw = String(formData.get("voice_profile") ?? "");
+  const voiceProfile = raw.trim();
+
+  if (!accountId) return actionFail("Missing identity.");
+  if (voiceProfile.length > VOICE_PROFILE_MAX) {
+    return actionFail(
+      `Keep the voice profile under ${VOICE_PROFILE_MAX} characters.`,
+    );
+  }
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+
+    const updated = await updateAccount({
+      workspaceId: membership.workspace.id,
+      accountId,
+      voiceProfile: voiceProfile.length > 0 ? voiceProfile : null,
+    });
+
+    revalidatePath("/accounts");
+    return actionOk({ accountId: updated.id });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : "Could not save the voice profile.";
+    console.error("[updateVoiceProfileAction] failed", error);
     return actionFail(message);
   }
 }

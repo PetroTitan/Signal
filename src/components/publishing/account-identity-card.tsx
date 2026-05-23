@@ -88,17 +88,27 @@ export interface AccountIdentityCardProps {
   helperNote?: string | null;
   /** Archive control rendered in the bottom corner. */
   archiveControl?: React.ReactNode;
+  /** F4.4 — voice profile editor / display slot. */
+  voiceProfile?: React.ReactNode;
 }
 
 export function AccountIdentityCard(props: AccountIdentityCardProps) {
   const platformLabel =
     props.platform === "reddit"
       ? "Reddit"
-      : props.platform === "x"
-        ? "X"
-        : props.platform === "linkedin"
-          ? "LinkedIn"
-          : props.platform;
+      : props.platform === "devto"
+        ? "dev.to"
+        : props.platform === "hashnode"
+          ? "Hashnode"
+          : props.platform === "bluesky"
+            ? "Bluesky"
+            : props.platform === "indie_hackers"
+              ? "Indie Hackers"
+              : props.platform === "x"
+                ? "X"
+                : props.platform === "linkedin"
+                  ? "LinkedIn"
+                  : props.platform;
   const tile = platformAvatar(props.platform);
 
   return (
@@ -161,6 +171,12 @@ export function AccountIdentityCard(props: AccountIdentityCardProps) {
           </div>
         </div>
 
+        {props.voiceProfile ? (
+          <div className="mt-3 pt-3 border-t border-ink-100">
+            {props.voiceProfile}
+          </div>
+        ) : null}
+
         {props.controls ? (
           <div className="mt-3 pt-3 border-t border-ink-100">
             {props.controls}
@@ -181,6 +197,14 @@ function platformAvatar(platform: string): { bg: string; text: string; label: st
   switch (platform) {
     case "reddit":
       return { bg: "bg-orange-100", text: "text-orange-700", label: "r/" };
+    case "devto":
+      return { bg: "bg-ink-100", text: "text-ink-800", label: "dev" };
+    case "hashnode":
+      return { bg: "bg-blue-100", text: "text-blue-800", label: "Hn" };
+    case "bluesky":
+      return { bg: "bg-sky-100", text: "text-sky-700", label: "Bs" };
+    case "indie_hackers":
+      return { bg: "bg-violet-100", text: "text-violet-700", label: "IH" };
     case "x":
       return { bg: "bg-ink-900", text: "text-white", label: "X" };
     case "linkedin":

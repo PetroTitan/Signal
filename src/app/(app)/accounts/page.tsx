@@ -14,7 +14,9 @@ import { type OAuthPlatform } from "@/core/platform-oauth";
 import { AccountCreateForm } from "./_create-form";
 import { ArchiveAccountButton } from "./_archive-button";
 import { ConnectionControls } from "./_connection-controls";
+import { VoiceProfileEditor } from "./_voice-profile-editor";
 import { AccountIdentityCard } from "@/components/publishing/account-identity-card";
+import { resolveIdentityPlatformGuidance } from "@/core/publishing/platform-guidance";
 
 export const dynamic = "force-dynamic";
 
@@ -27,13 +29,13 @@ export default async function AccountsPage() {
     return (
       <>
         <Topbar
-          title="Publishing accounts"
+          title="Publishing identities"
           description="Persistence not configured."
         />
         <div className="px-6 lg:px-10 py-12 max-w-3xl">
-          <div className="card p-5 text-sm text-ink-600">
+          <div className="rounded-2xl border border-ink-200 bg-white p-5 text-sm text-ink-600">
             Supabase is not configured. Set the Supabase env variables to
-            enable account persistence.
+            enable identity persistence.
           </div>
         </div>
       </>
@@ -44,9 +46,13 @@ export default async function AccountsPage() {
   if (!membership) {
     return (
       <>
-        <Topbar title="Publishing accounts" description="No workspace found." />
+        <Topbar
+          title="Publishing identities"
+          description="No workspace found."
+        />
         <div className="px-6 lg:px-10 py-12 max-w-3xl text-sm text-ink-600">
-          Create a workspace from the dashboard to start adding accounts.
+          Create a workspace from the dashboard to start adding publishing
+          identities.
         </div>
       </>
     );
@@ -91,8 +97,8 @@ export default async function AccountsPage() {
   return (
     <>
       <Topbar
-        title="Publishing accounts"
-        description="Connected creator identities Signal can publish from. Each account uses the platform's official OAuth flow — no passwords, no cookies."
+        title="Publishing identities"
+        description="The voices Signal writes and publishes in. Each identity has its own platform, writing profile, and connection."
       />
 
       <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-3xl space-y-5">
@@ -140,11 +146,11 @@ export default async function AccountsPage() {
         {accounts.length === 0 ? (
           <section className="rounded-2xl border border-dashed border-ink-300 bg-ink-50/40 p-8 text-center">
             <h2 className="text-base font-semibold text-ink-900">
-              No connected accounts yet
+              No publishing identities yet
             </h2>
             <p className="text-sm text-ink-500 mt-2 leading-relaxed max-w-md mx-auto">
-              Add the Reddit handle you&apos;ll publish as. Signal stores it
-              quietly until you complete the OAuth handshake from this page.
+              Add the first voice Signal will write in — pick a platform,
+              give it a name, and describe how it sounds.
             </p>
           </section>
         ) : (
@@ -172,8 +178,17 @@ export default async function AccountsPage() {
                 />
               ) : (
                 <p className="text-[11px] text-ink-400 italic">
-                  This platform isn&apos;t publishable from Signal yet.
+                  This platform uses an API key or app-password instead of
+                  an in-app connection.
                 </p>
+              );
+              const guidance = resolveIdentityPlatformGuidance(a.platform);
+              const voiceProfileSlot = (
+                <VoiceProfileEditor
+                  accountId={a.id}
+                  initialValue={a.voiceProfile ?? a.role ?? null}
+                  platformHint={guidance?.voiceHint ?? null}
+                />
               );
               return (
                 <AccountIdentityCard
@@ -186,6 +201,7 @@ export default async function AccountsPage() {
                   lastCheckedAt={c?.lastCheckedAt ?? null}
                   notes={null}
                   helperNote={helperNote}
+                  voiceProfile={voiceProfileSlot}
                   controls={controls}
                   archiveControl={archive}
                 />
@@ -199,9 +215,9 @@ export default async function AccountsPage() {
         />
 
         <p className="text-[11px] text-ink-500 leading-relaxed">
-          Signal never asks for passwords, cookies, session tokens, 2FA codes,
-          or recovery codes. Connections happen through each platform&apos;s
-          official OAuth flow.
+          Signal never asks for passwords, cookies, session tokens, 2FA
+          codes, or recovery codes. Connections happen through each
+          platform&apos;s official method — OAuth, API key, or app-password.
         </p>
       </div>
     </>
