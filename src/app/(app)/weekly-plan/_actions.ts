@@ -6,6 +6,8 @@ import {
   createPlanItem,
   createWeeklyPlan,
   getCurrentWeeklyPlan,
+  getPlanItemById,
+  updatePlanItem,
 } from "@/repositories/weekly-plan-repository";
 import { recordActivity } from "@/repositories/activity-repository";
 import { RepositoryError } from "@/repositories/errors";
@@ -14,9 +16,21 @@ import {
   actionOk,
   type ActionResult,
 } from "@/lib/forms/action-result";
+import type {
+  CreativeSourceType,
+  CreativeType,
+  WeeklyPlanItemUpdate,
+} from "@/lib/supabase/types";
+import {
+  createCreative,
+  getCreativeById,
+  updateCreative,
+} from "@/repositories/weekly-plan-creative-repository";
 
 export type CreateWeeklyPlanResult = ActionResult<{ planId: string }>;
 export type CreatePlanItemResult = ActionResult<{ itemId: string }>;
+export type UpdatePlanItemResult = ActionResult<{ itemId: string }>;
+export type AttachCreativeResult = ActionResult<{ creativeId: string }>;
 
 function isoMonday(date: Date): string {
   const d = new Date(
@@ -204,29 +218,65 @@ export async function approveWeeklyPlanAction(
       );
     }
 
+    const { listCreativesForItems, creativeReadinessReason } = await import(
+      "@/repositories/weekly-plan-creative-repository"
+    );
+    const allCreatives = await listCreativesForItems(
+      workspaceId,
+      pendingItems.map((i) => i.id),
+    );
+    const creativesByItem = new Map<string, typeof allCreatives>();
+    for (const c of allCreatives) {
+      const arr = creativesByItem.get(c.weeklyPlanItemId) ?? [];
+      arr.push(c);
+      creativesByItem.set(c.weeklyPlanItemId, arr);
+    }
+
     const warnings: string[] = [];
     const validItems = pendingItems.filter((it) => {
+      const label = it.title ?? "Untitled";
       if (it.riskLevel === "blocked") {
+        warnings.push(`Skipped "${label}" — risk level blocked.`);
+        return false;
+      }
+      // Phase F1: only `post`-type items enter the publishing queue.
+      // Comments stay as drafts; everything else is skipped explicitly.
+      if (it.contentType !== "post") {
         warnings.push(
-          `Skipped "${it.title ?? "Untitled"}" — risk level blocked.`,
+          `Skipped "${label}" — content_type='${it.contentType ?? "(none)"}' is not 'post'. Comments are draft-only in this version.`,
+        );
+        return false;
+      }
+      if (!it.scheduledAt) {
+        warnings.push(
+          `Skipped "${label}" — no scheduled_at. Set a date/time before approving.`,
+        );
+        return false;
+      }
+      const itemCreatives = creativesByItem.get(it.id) ?? [];
+      const primaryCreative = itemCreatives[0] ?? null;
+      const reason = creativeReadinessReason(primaryCreative);
+      if (reason) {
+        warnings.push(
+          `Skipped "${label}" — creative not ready (${reason}).`,
         );
         return false;
       }
       if (it.accountId && !contract.scope.accountIds.includes(it.accountId)) {
         warnings.push(
-          `Skipped "${it.title ?? "Untitled"}" — account out of contract scope.`,
+          `Skipped "${label}" — account out of contract scope.`,
         );
         return false;
       }
       if (it.productId && !contract.scope.productIds.includes(it.productId)) {
         warnings.push(
-          `Skipped "${it.title ?? "Untitled"}" — product out of contract scope.`,
+          `Skipped "${label}" — product out of contract scope.`,
         );
         return false;
       }
       if (it.platform && !contract.scope.platforms.includes(it.platform)) {
         warnings.push(
-          `Skipped "${it.title ?? "Untitled"}" — platform out of contract scope.`,
+          `Skipped "${label}" — platform out of contract scope.`,
         );
         return false;
       }
@@ -354,6 +404,320 @@ export async function approveWeeklyPlanAction(
         ? error.message
         : "Could not approve weekly plan.";
     console.error("[approveWeeklyPlanAction] failed", error);
+    return actionFail(message);
+  }
+}
+
+// =====================================================================
+// Phase F1 — updatePlanItemAction (inline edit)
+// =====================================================================
+//
+// Permits editing title/body/platform/content_type/product_id/account_id/
+// scheduled_at/risk_score/notes/status. Status changes are restricted
+// to draft / pending_approval / skipped — UI cannot promote an item to
+// approved / scheduled / published from here. Use the approval action
+// or the approveWeeklyPlanAction for those.
+
+const EDITABLE_STATUS_VALUES = new Set([
+  "draft",
+  "pending_approval",
+  "skipped",
+] as const);
+
+type EditableStatus = "draft" | "pending_approval" | "skipped";
+
+function parseEditableStatus(raw: string | null): EditableStatus | null {
+  if (!raw) return null;
+  return EDITABLE_STATUS_VALUES.has(raw as EditableStatus)
+    ? (raw as EditableStatus)
+    : null;
+}
+
+function parseRiskScore(raw: string | null): number | null | undefined {
+  if (raw === null) return undefined;
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n < 0 || n > 100) return undefined;
+  return n;
+}
+
+function parseScheduledAt(raw: string | null): string | null | undefined {
+  if (raw === null) return undefined;
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  // datetime-local input gives "YYYY-MM-DDTHH:MM" — treat as workspace tz
+  // by stamping it as an ISO string with the current local offset. The
+  // scheduler compares this to now() in UTC, which is fine.
+  const d = new Date(trimmed);
+  if (Number.isNaN(d.getTime())) return undefined;
+  return d.toISOString();
+}
+
+export async function updatePlanItemAction(
+  _prev: UpdatePlanItemResult,
+  formData: FormData,
+): Promise<UpdatePlanItemResult> {
+  const itemId = String(formData.get("item_id") ?? "").trim();
+  if (!itemId) return actionFail("Item id is required.");
+
+  const patch: WeeklyPlanItemUpdate = {};
+  const meta: Record<string, unknown> = {};
+
+  // Title is required if provided; null-out only if explicitly empty.
+  const titleRaw = formData.get("title");
+  if (titleRaw !== null) {
+    const t = String(titleRaw).trim();
+    if (t.length === 0) return actionFail("Title cannot be empty.");
+    patch.title = t;
+  }
+
+  const bodyRaw = formData.get("body");
+  if (bodyRaw !== null) {
+    const b = String(bodyRaw);
+    patch.body = b.length === 0 ? null : b;
+  }
+
+  const platformRaw = formData.get("platform");
+  if (platformRaw !== null) {
+    const p = String(platformRaw).trim();
+    patch.platform = p.length === 0 ? null : p;
+  }
+
+  const contentTypeRaw = formData.get("content_type");
+  if (contentTypeRaw !== null) {
+    const c = String(contentTypeRaw).trim();
+    patch.content_type = c.length === 0 ? null : c;
+  }
+
+  const productIdRaw = formData.get("product_id");
+  if (productIdRaw !== null) {
+    const v = String(productIdRaw).trim();
+    patch.product_id = v.length === 0 ? null : v;
+  }
+
+  const accountIdRaw = formData.get("account_id");
+  if (accountIdRaw !== null) {
+    const v = String(accountIdRaw).trim();
+    patch.account_id = v.length === 0 ? null : v;
+  }
+
+  const scheduledAtParsed = parseScheduledAt(
+    formData.get("scheduled_at") as string | null,
+  );
+  if (scheduledAtParsed === undefined && formData.has("scheduled_at")) {
+    return actionFail("Could not parse scheduled date/time.");
+  }
+  if (scheduledAtParsed !== undefined) {
+    patch.scheduled_at = scheduledAtParsed;
+  }
+
+  const riskScoreParsed = parseRiskScore(
+    formData.get("risk_score") as string | null,
+  );
+  if (riskScoreParsed === undefined && formData.has("risk_score")) {
+    return actionFail("Risk score must be a number 0–100.");
+  }
+  if (riskScoreParsed !== undefined) {
+    patch.risk_score = riskScoreParsed;
+  }
+
+  const statusRaw = formData.get("status") as string | null;
+  if (statusRaw !== null && statusRaw !== "") {
+    const status = parseEditableStatus(statusRaw);
+    if (!status) {
+      return actionFail(
+        "Status from the edit UI can only be draft, pending_approval, or skipped.",
+      );
+    }
+    patch.status = status;
+  }
+
+  const notesRaw = formData.get("notes");
+  if (notesRaw !== null) {
+    const n = String(notesRaw).trim();
+    if (n.length > 0) meta.operator_notes = n;
+  }
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+
+    if (Object.keys(meta).length > 0) {
+      const existing = await getPlanItemById(membership.workspace.id, itemId);
+      patch.metadata = { ...existing.metadata, ...meta };
+    }
+
+    const updated = await updatePlanItem({
+      workspaceId: membership.workspace.id,
+      itemId,
+      patch,
+    });
+
+    await logActivityBestEffort({
+      workspaceId: membership.workspace.id,
+      eventType: "weekly_plan_item.edited",
+      entityType: "weekly_plan_item",
+      entityId: updated.id,
+      title: `Item "${updated.title ?? "Untitled"}" edited`,
+      description: Object.keys(patch)
+        .filter((k) => k !== "metadata")
+        .join(", "),
+    });
+
+    revalidatePath("/weekly-plan");
+    revalidatePath("/approval-queue");
+    revalidatePath("/activity");
+    return actionOk({ itemId: updated.id });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : error instanceof Error
+        ? error.message
+        : "Could not update plan item.";
+    console.error("[updatePlanItemAction] failed", error);
+    return actionFail(message);
+  }
+}
+
+// =====================================================================
+// Phase F1 — attachCreativeAction
+// =====================================================================
+//
+// Attaches (or updates) a creative on a plan item. Supports the six
+// source types from the policy. If a `creative_id` is supplied, the
+// existing row is updated; otherwise a new row is inserted.
+
+const CREATIVE_TYPE_VALUES = new Set([
+  "image",
+  "video",
+  "animation",
+] as const);
+
+const CREATIVE_SOURCE_TYPE_VALUES = new Set([
+  "generated",
+  "uploaded",
+  "wikimedia",
+  "official_source",
+  "manual_url",
+  "planned",
+] as const);
+
+export async function attachCreativeAction(
+  _prev: AttachCreativeResult,
+  formData: FormData,
+): Promise<AttachCreativeResult> {
+  const itemId = String(formData.get("item_id") ?? "").trim();
+  if (!itemId) return actionFail("Item id is required.");
+
+  const creativeIdRaw = String(formData.get("creative_id") ?? "").trim();
+  const creativeId = creativeIdRaw.length > 0 ? creativeIdRaw : null;
+
+  const creativeType = String(formData.get("creative_type") ?? "").trim();
+  if (!CREATIVE_TYPE_VALUES.has(creativeType as CreativeType)) {
+    return actionFail("Creative type must be image, video, or animation.");
+  }
+
+  const sourceType = String(formData.get("source_type") ?? "").trim();
+  if (!CREATIVE_SOURCE_TYPE_VALUES.has(sourceType as CreativeSourceType)) {
+    return actionFail(
+      "Source type must be one of: generated, uploaded, wikimedia, official_source, manual_url, planned.",
+    );
+  }
+
+  const sourceUrl = String(formData.get("source_url") ?? "").trim() || null;
+  const assetUrl = String(formData.get("asset_url") ?? "").trim() || null;
+  const prompt = String(formData.get("prompt") ?? "").trim() || null;
+  const altText = String(formData.get("alt_text") ?? "").trim() || null;
+  const license = String(formData.get("license") ?? "").trim() || null;
+  const attribution =
+    String(formData.get("attribution") ?? "").trim() || null;
+  const riskNotes = String(formData.get("risk_notes") ?? "").trim() || null;
+
+  // Light source-specific validation. Hard rules live in
+  // creativeReadinessReason; we only block the obviously-wrong here.
+  if (sourceType === "wikimedia" || sourceType === "manual_url") {
+    if (!sourceUrl) {
+      return actionFail(
+        "External sources (wikimedia / manual_url) require a source URL.",
+      );
+    }
+  }
+  if (sourceType === "generated" && !prompt) {
+    return actionFail("Generated creatives require a prompt.");
+  }
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+
+    const workspaceId = membership.workspace.id;
+
+    if (creativeId) {
+      const existing = await getCreativeById(workspaceId, creativeId);
+      if (existing.weeklyPlanItemId !== itemId) {
+        return actionFail("Creative does not belong to this item.");
+      }
+      const updated = await updateCreative({
+        workspaceId,
+        creativeId: existing.id,
+        patch: {
+          creative_type: creativeType as CreativeType,
+          source_type: sourceType as CreativeSourceType,
+          source_url: sourceUrl,
+          asset_url: assetUrl,
+          prompt,
+          alt_text: altText,
+          license,
+          attribution,
+          risk_notes: riskNotes,
+        },
+      });
+      await logActivityBestEffort({
+        workspaceId,
+        eventType: "weekly_plan_item.creative_updated",
+        entityType: "weekly_plan_item_creative",
+        entityId: updated.id,
+        title: `Creative updated (${updated.creativeType} · ${updated.sourceType})`,
+      });
+      revalidatePath("/weekly-plan");
+      revalidatePath("/approval-queue");
+      return actionOk({ creativeId: updated.id });
+    }
+
+    const created = await createCreative({
+      workspaceId,
+      weeklyPlanItemId: itemId,
+      creativeType: creativeType as CreativeType,
+      sourceType: sourceType as CreativeSourceType,
+      sourceUrl,
+      assetUrl,
+      prompt,
+      altText,
+      license,
+      attribution,
+      riskNotes,
+      status: sourceType === "planned" ? "planned" : "pending_review",
+    });
+    await logActivityBestEffort({
+      workspaceId,
+      eventType: "weekly_plan_item.creative_attached",
+      entityType: "weekly_plan_item_creative",
+      entityId: created.id,
+      title: `Creative attached (${created.creativeType} · ${created.sourceType})`,
+    });
+    revalidatePath("/weekly-plan");
+    revalidatePath("/approval-queue");
+    return actionOk({ creativeId: created.id });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : error instanceof Error
+        ? error.message
+        : "Could not attach creative.";
+    console.error("[attachCreativeAction] failed", error);
     return actionFail(message);
   }
 }

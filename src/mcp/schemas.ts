@@ -110,6 +110,7 @@ export interface WeeklyPlanPrepareItemArgs {
   body?: string | null;
   content_type?: string | null;
   scheduled_at?: string | null;
+  timezone?: string | null;
   risk_score?: number | null;
   /**
    * Default false → item lands as `pending_approval` and shows up in
@@ -117,7 +118,28 @@ export interface WeeklyPlanPrepareItemArgs {
    * pen that doesn't appear in the approval queue).
    */
   save_as_draft?: boolean;
+  // Phase F1 — creative plan attached to the item on creation.
+  creative_required?: boolean;
+  creative_type?: string | null;
+  creative_source_type?: string | null;
+  creative_prompt?: string | null;
+  creative_source_url?: string | null;
+  creative_asset_url?: string | null;
+  creative_alt_text?: string | null;
+  creative_license?: string | null;
+  creative_attribution?: string | null;
+  creative_risk_notes?: string | null;
 }
+
+const CREATIVE_TYPES = new Set(["image", "video", "animation"]);
+const CREATIVE_SOURCE_TYPES = new Set([
+  "generated",
+  "uploaded",
+  "wikimedia",
+  "official_source",
+  "manual_url",
+  "planned",
+]);
 export function parseWeeklyPlanPrepareItem(
   input: unknown,
 ): Parse<WeeklyPlanPrepareItemArgs> {
@@ -144,6 +166,29 @@ export function parseWeeklyPlanPrepareItem(
   ) {
     errors.push("save_as_draft_must_be_boolean");
   }
+  if (
+    input.creative_required !== undefined &&
+    input.creative_required !== null &&
+    typeof input.creative_required !== "boolean"
+  ) {
+    errors.push("creative_required_must_be_boolean");
+  }
+  if (
+    input.creative_type !== undefined &&
+    input.creative_type !== null &&
+    (!str(input.creative_type) ||
+      !CREATIVE_TYPES.has(input.creative_type as string))
+  ) {
+    errors.push("creative_type_invalid");
+  }
+  if (
+    input.creative_source_type !== undefined &&
+    input.creative_source_type !== null &&
+    (!str(input.creative_source_type) ||
+      !CREATIVE_SOURCE_TYPES.has(input.creative_source_type as string))
+  ) {
+    errors.push("creative_source_type_invalid");
+  }
   if (errors.length > 0) return { ok: false, errors };
   return {
     ok: true,
@@ -155,10 +200,102 @@ export function parseWeeklyPlanPrepareItem(
       body: input.body ? String(input.body) : null,
       content_type: input.content_type ? String(input.content_type) : null,
       scheduled_at: input.scheduled_at ? String(input.scheduled_at) : null,
+      timezone: input.timezone ? String(input.timezone) : null,
       risk_score:
         typeof input.risk_score === "number" ? input.risk_score : null,
       save_as_draft:
         typeof input.save_as_draft === "boolean" ? input.save_as_draft : false,
+      creative_required:
+        typeof input.creative_required === "boolean"
+          ? input.creative_required
+          : undefined,
+      creative_type: input.creative_type
+        ? String(input.creative_type).trim()
+        : null,
+      creative_source_type: input.creative_source_type
+        ? String(input.creative_source_type).trim()
+        : null,
+      creative_prompt: input.creative_prompt
+        ? String(input.creative_prompt)
+        : null,
+      creative_source_url: input.creative_source_url
+        ? String(input.creative_source_url).trim()
+        : null,
+      creative_asset_url: input.creative_asset_url
+        ? String(input.creative_asset_url).trim()
+        : null,
+      creative_alt_text: input.creative_alt_text
+        ? String(input.creative_alt_text)
+        : null,
+      creative_license: input.creative_license
+        ? String(input.creative_license)
+        : null,
+      creative_attribution: input.creative_attribution
+        ? String(input.creative_attribution)
+        : null,
+      creative_risk_notes: input.creative_risk_notes
+        ? String(input.creative_risk_notes)
+        : null,
+    },
+  };
+}
+
+export interface WeeklyPlanAttachCreativeArgs {
+  weekly_plan_item_id: string;
+  creative_type: "image" | "video" | "animation";
+  source_type:
+    | "generated"
+    | "uploaded"
+    | "wikimedia"
+    | "official_source"
+    | "manual_url"
+    | "planned";
+  source_url?: string | null;
+  asset_url?: string | null;
+  prompt?: string | null;
+  alt_text?: string | null;
+  license?: string | null;
+  attribution?: string | null;
+  risk_notes?: string | null;
+}
+
+export function parseWeeklyPlanAttachCreative(
+  input: unknown,
+): Parse<WeeklyPlanAttachCreativeArgs> {
+  if (!isObject(input)) return { ok: false, errors: ["expected_object"] };
+  const errors: string[] = [];
+  if (!str(input.weekly_plan_item_id) || !isUuidLike(input.weekly_plan_item_id))
+    errors.push("weekly_plan_item_id_invalid");
+  if (!str(input.creative_type) || !CREATIVE_TYPES.has(input.creative_type))
+    errors.push("creative_type_invalid");
+  if (
+    !str(input.source_type) ||
+    !CREATIVE_SOURCE_TYPES.has(input.source_type)
+  )
+    errors.push("source_type_invalid");
+
+  if (input.source_type === "wikimedia" || input.source_type === "manual_url") {
+    if (!str(input.source_url) || (input.source_url as string).trim().length === 0)
+      errors.push("source_url_required_for_external_source");
+  }
+  if (input.source_type === "generated") {
+    if (!str(input.prompt) || (input.prompt as string).trim().length === 0)
+      errors.push("prompt_required_for_generated");
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  return {
+    ok: true,
+    value: {
+      weekly_plan_item_id: input.weekly_plan_item_id as string,
+      creative_type: input.creative_type as WeeklyPlanAttachCreativeArgs["creative_type"],
+      source_type: input.source_type as WeeklyPlanAttachCreativeArgs["source_type"],
+      source_url: input.source_url ? String(input.source_url).trim() : null,
+      asset_url: input.asset_url ? String(input.asset_url).trim() : null,
+      prompt: input.prompt ? String(input.prompt) : null,
+      alt_text: input.alt_text ? String(input.alt_text) : null,
+      license: input.license ? String(input.license) : null,
+      attribution: input.attribution ? String(input.attribution) : null,
+      risk_notes: input.risk_notes ? String(input.risk_notes) : null,
     },
   };
 }

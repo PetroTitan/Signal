@@ -3,13 +3,21 @@
 Signal's publishing model has exactly one shape:
 
 1. **Plan** — Items land on `/weekly-plan` as `pending_approval`.
-2. **Approve** — Operator clicks **Approve weekly plan**. Eligible items
-   become `execution_items` with `status='scheduled'`.
-3. **Tick** — `/api/scheduler/tick` runs on a cron (every 5 minutes by
+   Each post must have a scheduled date/time and a creative
+   attached.
+2. **Edit** — Operator clicks **Edit** to refine title / body /
+   schedule / risk / status (draft / pending_approval / skipped).
+   **Attach creative** records the image/video/animation plan.
+3. **Approve** — Operator clicks **Approve weekly plan**. Only
+   `content_type='post'` items with a valid schedule and a
+   publish-ready creative become `execution_items` with
+   `status='scheduled'`. Comments are draft-only and never enter
+   the queue.
+4. **Tick** — `/api/scheduler/tick` runs on a cron (every 5 minutes by
    default). It loads each scheduled item, runs the policy gate, and
    either publishes (dry-run by default) or marks it `skipped` /
    `blocked` / `failed` with a reason code.
-4. **Result** — `weekly_plan_items.status` is mirrored to
+5. **Result** — `weekly_plan_items.status` is mirrored to
    `published` (success), `paused` (failed/blocked), or stays
    `scheduled` (skipped — retried on next tick).
 
@@ -76,6 +84,12 @@ approve.")` instead of double-scheduling.
   `/accounts` once the cipher layer is wired.
 - ❌ Touch X, LinkedIn, or Google in F1. Those publishers return
   `not_implemented`.
+- ❌ Publish comments. `content_type='comment'` items stay as
+  drafts; the approval action skips them with a warning. Future
+  comment support is restricted to replies under our own published
+  posts — never cold outbound commenting.
+- ❌ Publish posts without a creative. See
+  [creative-requirements.md](./creative-requirements.md).
 
 ## Related
 
@@ -85,3 +99,5 @@ approve.")` instead of double-scheduling.
   Every gate before a real POST.
 - [`docs/publishing/oauth-requirements.md`](./oauth-requirements.md) —
   What `connected` means in practice.
+- [`docs/publishing/creative-requirements.md`](./creative-requirements.md) —
+  Allowed creative sources, alt-text, license, attribution.

@@ -6,6 +6,7 @@ import type {
   ImportsPrepareMappingArgs,
   ProductsPrepareArgs,
   ReportsSubmitArgs,
+  WeeklyPlanAttachCreativeArgs,
   WeeklyPlanPrepareItemArgs,
 } from "../schemas";
 
@@ -165,6 +166,11 @@ export async function weeklyPlanPrepareItem(
   // operator's /approval-queue. Callers that want a private holding
   // pen can pass `save_as_draft: true`.
   const targetStatus = args.save_as_draft ? "draft" : "pending_approval";
+  const itemMetadata: Record<string, unknown> = {
+    source: "mcp_operation",
+    operator_token_id: ctx.operatorTokenId,
+  };
+  if (args.timezone) itemMetadata.timezone = args.timezone;
   const { data, error } = await ctx.db
     .from("weekly_plan_items")
     .insert(
@@ -180,7 +186,7 @@ export async function weeklyPlanPrepareItem(
         risk_score: args.risk_score,
         scheduled_at: args.scheduled_at,
         status: targetStatus,
-        metadata: { source: "mcp_operation", operator_token_id: ctx.operatorTokenId },
+        metadata: itemMetadata,
       } as never,
     )
     .select(
@@ -193,16 +199,57 @@ export async function weeklyPlanPrepareItem(
       summary: error?.message ?? "item_insert_failed",
     });
 
+  // Phase F1: posts require a creative. If the operator provided
+  // creative fields, attach a real one; otherwise drop a `planned`
+  // placeholder so the approval queue can show "creative missing" UX.
+  const itemId = (data as { id: string }).id;
+  const isPost = (args.content_type ?? "").toLowerCase() === "post";
+  const creativeRequired = args.creative_required ?? isPost;
+  let creativeRow: unknown = null;
+  if (creativeRequired) {
+    const sourceType = args.creative_source_type ?? "planned";
+    const creativeType = args.creative_type ?? "image";
+    const status = sourceType === "planned" ? "planned" : "pending_review";
+    const { data: cdata } = await ctx.db
+      .from("weekly_plan_item_creatives")
+      .insert(
+        {
+          workspace_id: ctx.workspaceId,
+          weekly_plan_item_id: itemId,
+          creative_type: creativeType,
+          source_type: sourceType,
+          source_url: args.creative_source_url,
+          asset_url: args.creative_asset_url,
+          prompt: args.creative_prompt,
+          alt_text: args.creative_alt_text,
+          license: args.creative_license,
+          attribution: args.creative_attribution,
+          risk_notes: args.creative_risk_notes,
+          status,
+          metadata: {
+            source: "mcp_operation",
+            operator_token_id: ctx.operatorTokenId,
+          },
+        } as never,
+      )
+      .select(
+        "id, creative_type, source_type, status, alt_text, license, attribution",
+      )
+      .single();
+    creativeRow = cdata ?? null;
+  }
+
   await ctx.db.from("activity_events").insert(
     {
       workspace_id: ctx.workspaceId,
       event_type: "mcp.weekly_plan_item_prepared",
       entity_type: "weekly_plan_item",
-      entity_id: (data as { id: string }).id,
+      entity_id: itemId,
       title: `MCP prepared plan item: ${args.title}`,
       description: [
         args.platform ? `Platform: ${args.platform}` : null,
         `Status: ${targetStatus}`,
+        creativeRow ? "Creative attached" : null,
       ]
         .filter(Boolean)
         .join(" · "),
@@ -210,6 +257,7 @@ export async function weeklyPlanPrepareItem(
       metadata: {
         operator_token_id: ctx.operatorTokenId,
         status: targetStatus,
+        creative_present: Boolean(creativeRow),
       },
     } as never,
   );
@@ -219,8 +267,79 @@ export async function weeklyPlanPrepareItem(
       targetStatus === "pending_approval"
         ? "Created weekly_plan_item as pending_approval (visible in /approval-queue)."
         : "Created weekly_plan_item as draft (not in approval queue).",
-    data: { item: data },
+    data: { item: data, creative: creativeRow },
     requiresUserApproval: targetStatus === "pending_approval",
+  });
+}
+
+export async function weeklyPlanAttachCreative(
+  ctx: ToolContext,
+  args: WeeklyPlanAttachCreativeArgs,
+): Promise<McpToolResponse> {
+  // Verify the item belongs to this workspace.
+  const { data: itemCheck } = await ctx.db
+    .from("weekly_plan_items")
+    .select("id, content_type")
+    .eq("workspace_id", ctx.workspaceId)
+    .eq("id", args.weekly_plan_item_id)
+    .maybeSingle();
+  if (!itemCheck) {
+    return failed({
+      tool: "signal.weekly_plan.attach_creative",
+      summary: "weekly_plan_item not found in this workspace",
+    });
+  }
+  const status = args.source_type === "planned" ? "planned" : "pending_review";
+  const { data, error } = await ctx.db
+    .from("weekly_plan_item_creatives")
+    .insert(
+      {
+        workspace_id: ctx.workspaceId,
+        weekly_plan_item_id: args.weekly_plan_item_id,
+        creative_type: args.creative_type,
+        source_type: args.source_type,
+        source_url: args.source_url,
+        asset_url: args.asset_url,
+        prompt: args.prompt,
+        alt_text: args.alt_text,
+        license: args.license,
+        attribution: args.attribution,
+        risk_notes: args.risk_notes,
+        status,
+        metadata: {
+          source: "mcp_operation",
+          operator_token_id: ctx.operatorTokenId,
+        },
+      } as never,
+    )
+    .select(
+      "id, weekly_plan_item_id, creative_type, source_type, status, alt_text, license, attribution",
+    )
+    .single();
+  if (error || !data)
+    return failed({
+      tool: "signal.weekly_plan.attach_creative",
+      summary: error?.message ?? "creative_insert_failed",
+    });
+  await ctx.db.from("activity_events").insert(
+    {
+      workspace_id: ctx.workspaceId,
+      event_type: "mcp.weekly_plan_item_creative_attached",
+      entity_type: "weekly_plan_item_creative",
+      entity_id: (data as { id: string }).id,
+      title: `MCP attached creative (${args.creative_type} · ${args.source_type})`,
+      source: "mcp_operation",
+      metadata: {
+        operator_token_id: ctx.operatorTokenId,
+        weekly_plan_item_id: args.weekly_plan_item_id,
+      },
+    } as never,
+  );
+  return ok({
+    tool: "signal.weekly_plan.attach_creative",
+    summary: `Attached creative as ${status}.`,
+    data: { creative: data },
+    requiresUserApproval: false,
   });
 }
 

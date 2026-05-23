@@ -51,7 +51,7 @@ export default async function ExecutionIndexPage() {
     <>
       <Topbar
         title="Execution"
-        description="Carry out approved weekly operations under the active contract. Dry-run only — no external platform publishing happens in this phase."
+        description="Posts approved for scheduled publishing land here. Only content_type='post' items reach this surface — comments stay as drafts on /weekly-plan."
       />
 
       <div className="px-6 lg:px-10 py-8 max-w-4xl space-y-6">

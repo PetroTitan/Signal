@@ -318,6 +318,72 @@ export interface WeeklyPlanItemUpdate {
   metadata?: Record<string, unknown>;
 }
 
+// Phase F1 — creative assets attached to weekly_plan_items.
+
+export type CreativeType = "image" | "video" | "animation";
+export type CreativeSourceType =
+  | "generated"
+  | "uploaded"
+  | "wikimedia"
+  | "official_source"
+  | "manual_url"
+  | "planned";
+export type CreativeStatus =
+  | "planned"
+  | "pending_review"
+  | "approved"
+  | "rejected";
+
+export interface WeeklyPlanItemCreativeRow {
+  id: string;
+  workspace_id: string;
+  weekly_plan_item_id: string;
+  creative_type: CreativeType;
+  source_type: CreativeSourceType;
+  source_url: string | null;
+  asset_url: string | null;
+  prompt: string | null;
+  alt_text: string | null;
+  license: string | null;
+  attribution: string | null;
+  risk_notes: string | null;
+  status: CreativeStatus;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WeeklyPlanItemCreativeInsert {
+  id?: string;
+  workspace_id: string;
+  weekly_plan_item_id: string;
+  creative_type: CreativeType;
+  source_type: CreativeSourceType;
+  source_url?: string | null;
+  asset_url?: string | null;
+  prompt?: string | null;
+  alt_text?: string | null;
+  license?: string | null;
+  attribution?: string | null;
+  risk_notes?: string | null;
+  status?: CreativeStatus;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WeeklyPlanItemCreativeUpdate {
+  creative_type?: CreativeType;
+  source_type?: CreativeSourceType;
+  source_url?: string | null;
+  asset_url?: string | null;
+  prompt?: string | null;
+  alt_text?: string | null;
+  license?: string | null;
+  attribution?: string | null;
+  risk_notes?: string | null;
+  status?: CreativeStatus;
+  metadata?: Record<string, unknown>;
+}
+
 export type ApprovalAction =
   | "approve"
   | "reject"
@@ -1390,6 +1456,12 @@ export interface Database {
         Row: WeeklyPlanItemRow;
         Insert: WeeklyPlanItemInsert;
         Update: WeeklyPlanItemUpdate;
+        Relationships: [];
+      };
+      weekly_plan_item_creatives: {
+        Row: WeeklyPlanItemCreativeRow;
+        Insert: WeeklyPlanItemCreativeInsert;
+        Update: WeeklyPlanItemCreativeUpdate;
         Relationships: [];
       };
       approval_events: {
