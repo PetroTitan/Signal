@@ -7,10 +7,16 @@ import {
   rejectItemAction,
   type ApprovalActionState,
 } from "./_actions";
+import {
+  CreativeCard,
+  type CreativeCardData,
+} from "@/components/publishing/creative-card";
+import { PlatformBadge } from "@/components/badges";
+import type { PlatformId } from "@/types";
 
 const initial: ApprovalActionState = { ok: false, error: null };
 
-interface ApprovalRowProps {
+export interface ApprovalRowProps {
   itemId: string;
   title: string | null;
   platform: string | null;
@@ -20,104 +26,118 @@ interface ApprovalRowProps {
   scheduledAt: string | null;
   accountLabel: string | null;
   productName: string | null;
-  creative: {
-    type: string;
-    sourceType: string;
-    status: string;
-    assetUrl: string | null;
-  } | null;
+  creative: CreativeCardData | null;
   warnings: string[];
   isPost: boolean;
   canApprove: boolean;
 }
 
-export function ApprovalRow({
-  itemId,
-  title,
-  platform,
-  contentType,
-  body,
-  riskLevel,
-  scheduledAt,
-  accountLabel,
-  productName,
-  creative,
-  warnings,
-  isPost,
-  canApprove,
-}: ApprovalRowProps) {
+export function ApprovalRow(props: ApprovalRowProps) {
+  const {
+    itemId,
+    title,
+    platform,
+    body,
+    scheduledAt,
+    accountLabel,
+    productName,
+    creative,
+    warnings,
+    isPost,
+    canApprove,
+  } = props;
+  const isPlatform = (p: string | null): p is PlatformId =>
+    p === "reddit" || p === "x" || p === "linkedin";
+
   return (
-    <li className="px-5 py-4 space-y-2">
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="text-sm font-medium text-ink-900">
-            {title ?? "Untitled"}
-          </div>
-          <div className="text-xs text-ink-500 mt-0.5">
-            {platform ?? "—"}
-            {contentType ? ` · ${contentType}` : ""}
-            {riskLevel ? ` · risk ${riskLevel}` : ""}
-            {accountLabel ? ` · ${accountLabel}` : ""}
-            {productName ? ` · ${productName}` : ""}
-          </div>
-          <div className="text-xs text-ink-500 mt-0.5">
-            {scheduledAt
-              ? `Scheduled ${new Date(scheduledAt).toLocaleString()}`
-              : "No schedule"}
-            {" · "}
-            {creative
-              ? `Creative: ${creative.type} (${creative.sourceType}, ${creative.status})`
-              : isPost
-                ? "Creative: missing"
-                : "Creative: n/a"}
-          </div>
-          {creative?.assetUrl ? (
-            <div className="mt-2">
-              {creative.type === "video" ||
-              /\.(mp4|webm)(\?|$)/i.test(creative.assetUrl) ? (
-                <video
-                  src={creative.assetUrl}
-                  muted
-                  controls
-                  className="max-h-32 rounded-md border border-ink-200"
-                />
-              ) : (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={creative.assetUrl}
-                  alt="creative thumbnail"
-                  className="max-h-32 rounded-md border border-ink-200 object-contain"
-                />
-              )}
+    <li className="px-5 py-5">
+      <div className="grid grid-cols-1 md:grid-cols-[1fr_180px] gap-4">
+        <div className="min-w-0 space-y-2.5">
+          {/* Title + metadata */}
+          <div>
+            <div className="text-sm font-semibold text-ink-900 leading-snug">
+              {title ?? "Untitled"}
             </div>
-          ) : null}
+            <div className="text-[11px] text-ink-500 mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+              {isPlatform(platform) ? (
+                <PlatformBadge platform={platform} />
+              ) : platform ? (
+                <span className="text-ink-700">{platform}</span>
+              ) : (
+                <span className="text-ink-400">no platform</span>
+              )}
+              <span className="text-ink-300">•</span>
+              <span>
+                {scheduledAt
+                  ? new Date(scheduledAt).toLocaleString(undefined, {
+                      weekday: "short",
+                      month: "short",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
+                  : "no schedule"}
+              </span>
+              {accountLabel ? (
+                <>
+                  <span className="text-ink-300">•</span>
+                  <span className="text-ink-600">{accountLabel}</span>
+                </>
+              ) : null}
+              {productName ? (
+                <>
+                  <span className="text-ink-300">•</span>
+                  <span className="text-ink-600">{productName}</span>
+                </>
+              ) : null}
+            </div>
+          </div>
+
           {body ? (
-            <p className="text-xs text-ink-700 mt-1 line-clamp-3">{body}</p>
-          ) : null}
-          {warnings.length > 0 ? (
-            <ul className="text-[11px] text-amber-700 leading-relaxed mt-2 space-y-0.5">
-              {warnings.map((w, i) => (
-                <li key={i}>· {w}</li>
-              ))}
-            </ul>
-          ) : null}
-          {!isPost ? (
-            <p className="text-[11px] text-ink-500 mt-2 italic">
-              Comments are draft-only in this version — approving keeps it
-              as a draft and does not enter the publishing queue.
+            <p className="text-xs text-ink-700 leading-relaxed line-clamp-3">
+              {body}
             </p>
           ) : null}
+
+          {warnings.length > 0 ? (
+            <div className="rounded-md bg-amber-50 border border-amber-100 px-3 py-2">
+              <div className="text-[11px] font-semibold text-amber-800 mb-0.5">
+                Resolve before approval
+              </div>
+              <ul className="text-[11px] text-amber-800 leading-relaxed space-y-0.5">
+                {warnings.map((w, i) => (
+                  <li key={i}>· {w}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {!isPost ? (
+            <p className="text-[11px] text-ink-500 italic">
+              Comments are draft-only — approving keeps this as a draft, it
+              does not enter the publishing queue.
+            </p>
+          ) : null}
+
+          <div className="flex flex-wrap gap-2 items-center pt-1">
+            <ApproveForm itemId={itemId} disabled={!canApprove} />
+            <RejectForm itemId={itemId} />
+            <BacklogForm itemId={itemId} />
+            {isPost && canApprove ? (
+              <span className="text-[11px] text-ink-500">
+                Approving sends this to the publishing queue — it does not
+                publish now.
+              </span>
+            ) : null}
+          </div>
         </div>
-      </div>
-      <div className="flex flex-wrap gap-2 items-center">
-        <ApproveForm itemId={itemId} disabled={!canApprove} />
-        <RejectForm itemId={itemId} />
-        <BacklogForm itemId={itemId} />
-        {isPost && !canApprove ? (
-          <span className="text-[11px] text-amber-700">
-            Fix warnings before approving for the scheduled publishing queue.
-          </span>
-        ) : null}
+
+        {/* Creative card on the right (or below on mobile) */}
+        <div className="order-first md:order-none">
+          {isPost ? (
+            <CreativeCard creative={creative} density="compact" />
+          ) : null}
+        </div>
       </div>
     </li>
   );
@@ -179,7 +199,7 @@ function SubmitButton({
     <button
       type="submit"
       disabled={pending || disabled}
-      className={`${className} disabled:opacity-60`}
+      className={`${className} text-xs disabled:opacity-60`}
     >
       {pending ? "…" : label}
     </button>

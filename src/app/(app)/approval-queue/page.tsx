@@ -195,10 +195,19 @@ export default async function ApprovalQueuePage() {
                     creative={
                       creative
                         ? {
-                            type: creative.creativeType,
+                            id: creative.id,
+                            creativeType: creative.creativeType,
                             sourceType: creative.sourceType,
                             status: creative.status,
                             assetUrl: creative.assetUrl,
+                            sourceUrl: creative.sourceUrl,
+                            altText: creative.altText,
+                            license: creative.license,
+                            attribution: creative.attribution,
+                            prompt: creative.prompt,
+                            mimeType: creative.mimeType,
+                            sizeBytes: creative.sizeBytes,
+                            uploadedAt: creative.uploadedAt,
                           }
                         : null
                     }

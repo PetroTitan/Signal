@@ -19,6 +19,10 @@ import { PublishForm } from "./_publish-form";
 import { ManualPublishForm } from "./_manual-publish-form";
 import { PrepareForManualPublishForm } from "./_prepare-for-manual-form";
 import { isRedditOauthBlocked } from "@/lib/oauth/env";
+import { ExecutionStateBadge } from "@/components/publishing/execution-state";
+import { RedditPostPreview } from "@/components/platform-previews/reddit-post";
+import { listCreativesForItems } from "@/repositories/weekly-plan-creative-repository";
+import { getAccountById } from "@/repositories/account-repository";
 
 export const dynamic = "force-dynamic";
 
@@ -61,6 +65,21 @@ export default async function ExecutionItemPage({ params }: PageProps) {
   }
 
   const history = await getPublishHistoryForItem(workspaceId, item.id);
+
+  // Pull the linked plan_item's creative + account handle so the
+  // Reddit preview can render the real asset/handle.
+  const planItemId =
+    typeof (item.metadata as { plan_item_id?: string })?.plan_item_id ===
+    "string"
+      ? ((item.metadata as { plan_item_id: string }).plan_item_id)
+      : null;
+  const previewCreatives = planItemId
+    ? await listCreativesForItems(workspaceId, [planItemId])
+    : [];
+  const previewCreative = previewCreatives[0] ?? null;
+  const accountForPreview = item.accountId
+    ? await getAccountById(workspaceId, item.accountId).catch(() => null)
+    : null;
 
   // Resolve subreddit: form > metadata.target > whitelisted[0].
   const metaSub =
@@ -117,37 +136,50 @@ export default async function ExecutionItemPage({ params }: PageProps) {
   return (
     <>
       <Topbar
-        title={`Execution item — ${item.status}`}
-        description={`Queue: ${item.queueId}`}
+        title={item.title ?? "Untitled post"}
+        description={
+          item.scheduledAt
+            ? `Scheduled for ${new Date(item.scheduledAt).toLocaleString()}`
+            : "Not scheduled"
+        }
         actions={
-          <Link
-            href={`/execution/${item.queueId}`}
-            className="btn-ghost text-xs"
-          >
-            ← Back to queue
-          </Link>
+          <div className="flex items-center gap-2">
+            <ExecutionStateBadge status={item.status} size="md" />
+            <Link
+              href={`/execution/${item.queueId}`}
+              className="btn-ghost text-xs"
+            >
+              ← Back to queue
+            </Link>
+          </div>
         }
       />
       <div className="px-6 lg:px-10 py-8 max-w-3xl space-y-5">
-        <section className="card p-5 space-y-2">
-          <h2 className="text-sm font-semibold text-ink-900">
-            {item.title ?? "Untitled"}
-          </h2>
-          <div className="text-[11px] text-ink-500">
-            platform: {item.platform ?? "—"} · action: {item.actionType} ·
-            scheduled_at: {item.scheduledAt ?? "—"}
-          </div>
-          {item.body ? (
-            <p className="text-xs text-ink-700 whitespace-pre-wrap">
-              {item.body}
-            </p>
-          ) : null}
-          {item.linkUrl ? (
-            <div className="text-xs text-ink-700 font-mono break-all">
-              link: {item.linkUrl}
+        {item.platform === "reddit" && subreddit ? (
+          <section>
+            <div className="text-[11px] uppercase tracking-wide text-ink-500 mb-2">
+              Preview
             </div>
-          ) : null}
-        </section>
+            <RedditPostPreview
+              subreddit={subreddit}
+              authorHandle={accountForPreview?.handle ?? null}
+              title={item.title ?? ""}
+              body={item.body}
+              linkUrl={item.linkUrl}
+              scheduledAt={item.scheduledAt}
+              creative={
+                previewCreative
+                  ? {
+                      assetUrl: previewCreative.assetUrl,
+                      altText: previewCreative.altText,
+                      creativeType: previewCreative.creativeType,
+                      mimeType: previewCreative.mimeType,
+                    }
+                  : null
+              }
+            />
+          </section>
+        ) : null}
 
         {item.status === "completed" && history ? (
           <section className="card p-5 space-y-2 border-emerald-200 bg-emerald-50/40">

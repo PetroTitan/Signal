@@ -6,6 +6,7 @@ import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { getExecutionQueueById } from "@/repositories/execution-queue-repository";
 import { listItemsForQueue } from "@/repositories/execution-item-repository";
 import { listLogsForQueue } from "@/repositories/execution-log-repository";
+import { ExecutionLogLine } from "@/components/publishing/execution-log-line";
 import { listAttemptsForItem } from "@/repositories/execution-attempt-repository";
 import { getWeeklyContractById } from "@/repositories/weekly-contract-repository";
 import { RepositoryError } from "@/repositories/errors";
@@ -207,26 +208,19 @@ export default async function ExecutionQueueDetailPage({ params }: PageProps) {
           {logs.length === 0 ? (
             <div className="px-5 py-6 text-sm text-ink-600">No logs yet.</div>
           ) : (
-            <ul className="row-divider">
+            <ul>
               {logs.map((l) => (
-                <li key={l.id} className="px-5 py-2 text-[11px]">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-mono">{l.eventType}</span>
-                    <span
-                      className={
-                        l.severity === "error"
-                          ? "text-red-700"
-                          : l.severity === "warning"
-                          ? "text-amber-700"
-                          : "text-ink-500"
-                      }
-                    >
-                      {l.severity}
-                    </span>
-                  </div>
-                  <div className="text-ink-700 mt-0.5">{l.message}</div>
-                  <div className="text-ink-400 mt-0.5">{l.createdAt}</div>
-                </li>
+                <ExecutionLogLine
+                  key={l.id}
+                  row={{
+                    id: l.id,
+                    eventType: l.eventType,
+                    severity: l.severity,
+                    message: l.message,
+                    metadata: l.metadata as Record<string, unknown> | null,
+                    createdAt: l.createdAt,
+                  }}
+                />
               ))}
             </ul>
           )}

@@ -17,21 +17,12 @@ import { listExecutionItemsByPlanItemIds } from "@/repositories/execution-item-r
 import { CreateItemForm } from "./_create-item-form";
 import { ApprovePlanForm } from "./_approve-plan-form";
 import { PlanItemRow } from "./_item-row";
+import {
+  ExecutionStateBadge,
+  humanReadableExecutionState,
+} from "@/components/publishing/execution-state";
 
 export const dynamic = "force-dynamic";
-
-const STATUS_LABELS: Record<string, string> = {
-  draft: "draft",
-  pending_approval: "pending",
-  approved: "approved",
-  rejected: "rejected",
-  scheduled: "scheduled",
-  published: "published",
-  failed: "failed",
-  skipped: "skipped",
-  backlog: "backlog",
-  paused: "paused",
-};
 
 const STATUS_BADGE: Record<string, string> = {
   draft: "badge-neutral",
@@ -209,10 +200,16 @@ export default async function WeeklyPlanPage() {
                   {items.length} item{items.length === 1 ? "" : "s"}
                 </div>
               </header>
-              <div className="px-5 py-2.5 border-b border-ink-100 flex flex-wrap gap-2 text-[10px]">
+              <div className="px-5 py-2.5 border-b border-ink-100 flex flex-wrap gap-1.5">
                 {Object.entries(counts).map(([status, n]) => (
-                  <span key={status} className={`${badgeClass(status)}`}>
-                    {STATUS_LABELS[status] ?? status} · {n}
+                  <span
+                    key={status}
+                    className="inline-flex items-center gap-1.5"
+                  >
+                    <ExecutionStateBadge
+                      status={status as Parameters<typeof ExecutionStateBadge>[0]["status"]}
+                    />
+                    <span className="text-[10px] text-ink-500">{n}</span>
                   </span>
                 ))}
               </div>
@@ -268,7 +265,7 @@ export default async function WeeklyPlanPage() {
                           ? (it.metadata.operator_notes as string)
                           : null
                       }
-                      statusLabel={STATUS_LABELS[it.status] ?? it.status}
+                      statusLabel={humanReadableExecutionState(it.status).label}
                       statusBadgeClass={badgeClass(it.status)}
                       isPost={isPost}
                       warnings={warnings}
