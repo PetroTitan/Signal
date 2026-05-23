@@ -137,10 +137,37 @@ export default async function ApprovalQueuePage() {
                 }
                 if (isPost) {
                   const reason = creativeReadinessReason(creative);
-                  if (reason) {
-                    warnings.push(
-                      `Creative not ready: ${reason.replace(/_/g, " ")}.`,
-                    );
+                  switch (reason) {
+                    case null:
+                      break;
+                    case "creative_missing":
+                      warnings.push("Media file required.");
+                      break;
+                    case "creative_only_planned":
+                      warnings.push(
+                        "Creative is only planned — attach a real asset.",
+                      );
+                      break;
+                    case "creative_missing_asset":
+                      warnings.push(
+                        "Media file required (asset_url / source_url missing).",
+                      );
+                      break;
+                    case "creative_missing_alt_text":
+                      warnings.push("Alt text missing.");
+                      break;
+                    case "creative_missing_license_or_attribution":
+                      warnings.push("License/attribution missing.");
+                      break;
+                    case "creative_missing_prompt":
+                      warnings.push("Generated creative is missing its prompt.");
+                      break;
+                    case "creative_not_approved":
+                      warnings.push("Creative not approved.");
+                      break;
+                    case "creative_rejected":
+                      warnings.push("Creative was rejected.");
+                      break;
                   }
                 }
                 const account = it.accountId
@@ -171,6 +198,7 @@ export default async function ApprovalQueuePage() {
                             type: creative.creativeType,
                             sourceType: creative.sourceType,
                             status: creative.status,
+                            assetUrl: creative.assetUrl,
                           }
                         : null
                     }

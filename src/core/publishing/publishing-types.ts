@@ -38,6 +38,7 @@ export const PUBLISH_REASON_CODES = [
   "missing_subreddit",
   "missing_body",
   "missing_title",
+  "safe_test_mode_ready_for_publish",
   "unknown_error",
 ] as const;
 export type PublishReasonCode = (typeof PUBLISH_REASON_CODES)[number];

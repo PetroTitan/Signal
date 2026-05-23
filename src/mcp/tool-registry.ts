@@ -8,6 +8,7 @@ import {
   parseEmptyArgs,
   parseExecutionAuthorizeItem,
   parseExecutionDryRun,
+  parseExecutionPublishPreview,
   parseImportsPrepareMapping,
   parseProductsPrepare,
   parseReportsSubmit,
@@ -38,6 +39,7 @@ import {
 import {
   executionAuthorizeItem,
   executionDryRun,
+  executionPublishPreview,
   verificationRun,
   verificationRunCheck,
 } from "./tools/verification-tools";
@@ -268,6 +270,18 @@ export const TOOLS: ToolDefinition[] = [
     touchesProduction: false,
     parseArgs: parseExecutionDryRun,
     handler: wrap(executionDryRun),
+  },
+  {
+    name: "signal.execution.publish_preview",
+    description:
+      "Read-only preview of the controlled-publish gate for an execution_item. Runs evaluateSafeTestPolicy and returns every check + the Reddit payload preview. MCP CANNOT publish — only the operator can confirm at /execution/items/<id>.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseExecutionPublishPreview,
+    handler: wrap(executionPublishPreview),
   },
   {
     name: "signal.execution.authorize_item",

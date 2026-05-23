@@ -150,6 +150,112 @@ export async function executionDryRun(
   });
 }
 
+/**
+ * Phase F2.5 — read-only publish preview.
+ * Mirrors the /execution/items/[id] page server-side: loads the
+ * execution_item, runs `evaluateSafeTestPolicy` with the actual
+ * confirmation phrase so every gate runs, and returns the verdict
+ * (minus any token material).
+ *
+ * MCP can use this to *describe* what would happen if the operator
+ * clicked Publish, but it cannot actually publish — that requires
+ * the cookie-bound operator session and the in-form confirmation
+ * input.
+ */
+export async function executionPublishPreview(
+  ctx: ToolContext,
+  args: { execution_item_id: string; subreddit?: string | null },
+): Promise<McpToolResponse> {
+  const { data: item, error } = await ctx.db
+    .from("execution_items")
+    .select(
+      "id, workspace_id, queue_id, account_id, product_id, platform, action_type, title, body, link_url, scheduled_at, status, risk_level, metadata",
+    )
+    .eq("workspace_id", ctx.workspaceId)
+    .eq("id", args.execution_item_id)
+    .maybeSingle();
+  if (error || !item) {
+    return failed({
+      tool: "signal.execution.publish_preview",
+      summary: error?.message ?? "execution_item_not_found",
+    });
+  }
+
+  const row = item as {
+    id: string;
+    workspace_id: string;
+    queue_id: string;
+    account_id: string | null;
+    product_id: string | null;
+    platform: string | null;
+    action_type: string;
+    title: string | null;
+    body: string | null;
+    link_url: string | null;
+    scheduled_at: string | null;
+    status: string;
+    risk_level: string | null;
+    metadata: Record<string, unknown>;
+  };
+
+  const { evaluateSafeTestPolicy } = await import(
+    "@/core/publishing/safe-test-policy"
+  );
+  const {
+    PUBLISH_CONFIRMATION_PHRASE,
+    readAllowedTestSubreddits,
+  } = await import("@/core/publishing/safe-test-env");
+  const subreddit =
+    args.subreddit ??
+    (typeof row.metadata?.target === "string"
+      ? (row.metadata.target as string)
+      : (readAllowedTestSubreddits()[0] ?? null));
+
+  const verdict = await evaluateSafeTestPolicy({
+    supabase: ctx.db as never,
+    workspaceId: ctx.workspaceId,
+    executionItem: {
+      id: row.id,
+      accountId: row.account_id,
+      productId: row.product_id,
+      platform: row.platform,
+      title: row.title,
+      body: row.body,
+      linkUrl: row.link_url,
+      scheduledAt: row.scheduled_at,
+      actionType: row.action_type,
+      metadata: row.metadata,
+    },
+    confirmationPhrase: PUBLISH_CONFIRMATION_PHRASE,
+    subreddit,
+    nowIso: new Date().toISOString(),
+  });
+
+  return ok({
+    tool: "signal.execution.publish_preview",
+    summary: verdict.ok
+      ? "All gates pass — operator must still type the confirmation phrase in /execution/items/<id>."
+      : `Blocked: ${verdict.reasonCode}`,
+    data: {
+      execution_item_id: row.id,
+      execution_item_status: row.status,
+      policy_verdict: {
+        ok: verdict.ok,
+        reason_code: verdict.reasonCode,
+        reason_detail: verdict.reasonDetail,
+        checks: verdict.checks,
+      },
+      payload_preview: verdict.preview,
+      whitelisted_subreddits: readAllowedTestSubreddits(),
+    },
+    warnings: verdict.ok
+      ? [
+          "This is a preview only. MCP cannot trigger live publish — the operator must confirm at /execution/items/<id>.",
+        ]
+      : [verdict.reasonDetail ?? verdict.reasonCode ?? "blocked"],
+  });
+}
+
 export async function executionAuthorizeItem(
   ctx: ToolContext,
   args: ExecutionAuthorizeItemArgs,

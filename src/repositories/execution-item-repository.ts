@@ -143,6 +143,28 @@ export async function listUpcomingScheduledItems(
   return ((data ?? []) as unknown as ExecutionItemRow[]).map(toItem);
 }
 
+/**
+ * Phase F2.5 — find execution_items tied to a given set of
+ * weekly_plan_items (via metadata.plan_item_id). Used by
+ * /weekly-plan to surface the READY_FOR_PUBLISH badge.
+ */
+export async function listExecutionItemsByPlanItemIds(
+  workspaceId: string,
+  planItemIds: string[],
+): Promise<ExecutionItem[]> {
+  if (planItemIds.length === 0) return [];
+  const supabase = createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("execution_items")
+    .select("*")
+    .eq("workspace_id", workspaceId)
+    .in("source_entity_id", planItemIds)
+    .order("scheduled_at", { ascending: true });
+  if (error)
+    throw fromPostgres(error, "Failed to list execution items by plan-item.");
+  return ((data ?? []) as unknown as ExecutionItemRow[]).map(toItem);
+}
+
 export async function listRecentResultItems(
   workspaceId: string,
   limit = 20,

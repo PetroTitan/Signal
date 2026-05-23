@@ -1,16 +1,20 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { useFormState, useFormStatus } from "react-dom";
 import {
   attachCreativeAction,
   updatePlanItemAction,
+  uploadCreativeAssetAction,
   type AttachCreativeResult,
   type UpdatePlanItemResult,
+  type UploadCreativeAssetResult,
 } from "./_actions";
 
 const updateInitial: UpdatePlanItemResult = { ok: false, error: "" };
 const creativeInitial: AttachCreativeResult = { ok: false, error: "" };
+const uploadInitial: UploadCreativeAssetResult = { ok: false, error: "" };
 
 export interface PlanItemRowProps {
   id: string;
@@ -49,6 +53,11 @@ export interface PlanItemRowProps {
     status: string;
   } | null;
   creativeBadge: { label: string; cls: string };
+  /** Phase F2.5: if the plan item has an execution_item in 'ready'
+   *  (or 'completed'), expose the id so the row can link to the
+   *  publish-preview UI. */
+  executionItemId: string | null;
+  executionItemStatus: string | null;
 }
 
 function toDatetimeLocal(iso: string | null): string {
@@ -105,7 +114,7 @@ export function PlanItemRow(props: PlanItemRowProps) {
         </ul>
       ) : null}
 
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-2 items-center">
         <button
           type="button"
           onClick={() => setEditing((v) => !v)}
@@ -125,6 +134,25 @@ export function PlanItemRow(props: PlanItemRowProps) {
                 ? "Edit creative"
                 : "Attach creative"}
           </button>
+        ) : null}
+        {props.executionItemStatus === "ready" && props.executionItemId ? (
+          <Link
+            href={`/execution/items/${props.executionItemId}`}
+            className="btn-primary text-xs"
+          >
+            Ready — open publish preview →
+          </Link>
+        ) : props.executionItemStatus === "completed" &&
+          props.executionItemId ? (
+          <Link
+            href={`/execution/items/${props.executionItemId}`}
+            className="btn-ghost text-xs"
+          >
+            View published →
+          </Link>
+        ) : null}
+        {props.executionItemStatus === "ready" ? (
+          <span className="badge-warning text-[10px]">READY_FOR_PUBLISH</span>
         ) : null}
       </div>
 
@@ -348,13 +376,30 @@ function CreativeForm(props: {
       {c ? <input type="hidden" name="creative_id" value={c.id} /> : null}
 
       <div className="md:col-span-2 text-[11px] text-ink-600 leading-relaxed">
-        Every publishable post needs one creative. Allowed sources:
-        operator-uploaded, AI-generated (with prompt), Wikimedia / public-domain /
+        Every publishable post needs one creative with a real asset
+        attached (uploaded file or approved external URL). Allowed sources:
+        operator-uploaded, AI-generated (asset URL), Wikimedia / public-domain /
         CC (with attribution &amp; license), official product screenshot, or
         an explicit URL with license notes. <span className="font-semibold">
         Do not use random Google images, Pinterest, or unclear-copyright
-        stock.</span>
+        stock. Prompt-only creatives are not publishable.</span>
       </div>
+
+      <div className="md:col-span-2 border-t border-ink-100 pt-3">
+        <UploadSubForm itemId={props.itemId} creative={c} />
+      </div>
+
+      {c?.assetUrl ? (
+        <div className="md:col-span-2">
+          <div className="text-[11px] font-semibold text-ink-700 mb-1">
+            Current asset
+          </div>
+          <CreativePreview
+            assetUrl={c.assetUrl}
+            mimeHint={c.creativeType}
+          />
+        </div>
+      ) : null}
 
       <label className="block text-xs">
         <div className="font-semibold text-ink-700 mb-1">Creative type</div>
@@ -455,6 +500,20 @@ function CreativeForm(props: {
         />
       </label>
 
+      <label className="md:col-span-2 flex items-start gap-2 text-xs">
+        <input
+          type="checkbox"
+          name="approve_now"
+          defaultChecked={c?.status === "approved"}
+          className="mt-1"
+        />
+        <span className="text-ink-700">
+          Approve creative now — I confirm this asset is licensed, has alt
+          text, and is ready for the publishing queue. Required before the
+          item can be approved for scheduled publishing.
+        </span>
+      </label>
+
       <div className="md:col-span-2 flex items-center gap-3">
         <SaveButton label={c ? "Save creative" : "Attach creative"} />
         {safe.ok ? (
@@ -477,5 +536,92 @@ function SaveButton({ label }: { label: string }) {
     >
       {pending ? "Saving…" : label}
     </button>
+  );
+}
+
+function UploadSubForm({
+  itemId,
+  creative,
+}: {
+  itemId: string;
+  creative: PlanItemRowProps["creative"];
+}) {
+  const [state, formAction] = useFormState(
+    uploadCreativeAssetAction,
+    uploadInitial,
+  );
+  const safe = state ?? uploadInitial;
+  return (
+    <form action={formAction} className="space-y-2">
+      <input type="hidden" name="item_id" value={itemId} />
+      {creative ? (
+        <input type="hidden" name="creative_id" value={creative.id} />
+      ) : null}
+      <div className="text-[11px] font-semibold text-ink-700">
+        Upload media file (image up to 10 MB · video up to 100 MB)
+      </div>
+      <div className="text-[10px] text-ink-500">
+        Allowed: jpg · png · webp · gif · mp4 · webm. Blocked: svg, html,
+        js, exe, zip, pdf.
+      </div>
+      <div className="flex items-center gap-2">
+        <input
+          type="file"
+          name="file"
+          accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm"
+          className="text-xs"
+          required
+        />
+        <UploadButton />
+      </div>
+      {safe.ok ? (
+        <div className="text-[11px] text-emerald-700">
+          ✓ Uploaded. Save creative below to keep alt text + license.
+        </div>
+      ) : safe.error ? (
+        <div className="text-[11px] text-amber-700">{safe.error}</div>
+      ) : null}
+    </form>
+  );
+}
+
+function UploadButton() {
+  const { pending } = useFormStatus();
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      className="btn-ghost text-xs disabled:opacity-60"
+    >
+      {pending ? "Uploading…" : "Upload"}
+    </button>
+  );
+}
+
+function CreativePreview({
+  assetUrl,
+  mimeHint,
+}: {
+  assetUrl: string;
+  mimeHint: string;
+}) {
+  const isVideo = mimeHint === "video" || /\.(mp4|webm)(\?|$)/i.test(assetUrl);
+  if (isVideo) {
+    return (
+      <video
+        src={assetUrl}
+        controls
+        muted
+        className="max-h-48 rounded-md border border-ink-200"
+      />
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={assetUrl}
+      alt="creative preview"
+      className="max-h-48 rounded-md border border-ink-200 object-contain"
+    />
   );
 }

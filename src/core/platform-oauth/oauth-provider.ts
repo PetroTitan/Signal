@@ -32,10 +32,21 @@ export const OAUTH_PROVIDERS: Record<OAuthPlatform, OAuthProviderConfig> = {
     pkce: false,
     revokeUrl: "https://www.reddit.com/api/v1/revoke_token",
     profileUrl: "https://oauth.reddit.com/api/v1/me",
-    // Phase F2: identity only. `submit` (publishing) and `read`
-    // (cadence checks) are deferred until F3 / a separate operator
-    // approval gate.
-    scopes: [{ ...READ_PROFILE, scope: "identity" }],
+    // Phase F2.5: identity + submit. `submit` enables the
+    // controlled live-publish path; without it the publisher would
+    // get 403 from Reddit even with a healthy token. `read`
+    // (cadence checks) is still deferred.
+    scopes: [
+      { ...READ_PROFILE, scope: "identity" },
+      {
+        scope: "submit",
+        label: "Submit posts",
+        required: true,
+        rationale:
+          "Publish text + link posts under the controlled-publish workflow (SAFE_TEST_MODE).",
+        isPublishingScope: true,
+      },
+    ],
   },
   x: {
     platform: "x",
@@ -107,10 +118,12 @@ export function requiredScopes(platform: OAuthPlatform): string[] {
 }
 
 export function allRequestedScopes(platform: OAuthPlatform): string[] {
-  // Phase E3: request all *read* scopes the provider supports. No
-  // publishing scopes are listed in the provider config, so this is
-  // safe by construction.
+  // Phase F2.5: read scopes always; publishing scopes only when
+  // SAFE_TEST_MODE=true. This means a workspace that hasn't opted
+  // into the controlled-publish flow never asks Reddit for `submit`.
+  const safeTestOn =
+    (process.env.SAFE_TEST_MODE ?? "").trim().toLowerCase() === "true";
   return OAUTH_PROVIDERS[platform].scopes
-    .filter((s) => !s.isPublishingScope)
+    .filter((s) => !s.isPublishingScope || safeTestOn)
     .map((s) => s.scope);
 }

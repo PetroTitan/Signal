@@ -272,13 +272,22 @@ export async function runOAuthTokenSecurityCheck(): Promise<CheckResult> {
     details.push("MCP read tool does not reference encrypted columns.");
   }
 
-  // 4. Provider scopes for Reddit must not include publishing scopes.
+  // 4. Provider scope sanity. `submit` is allowed iff SAFE_TEST_MODE
+  //    is on; otherwise it must not appear in the runtime request.
   const providers = await readSource(
     "src/core/platform-oauth/oauth-provider.ts",
   );
-  if (providers && /scope:\s*["']submit["']/.test(providers)) {
+  const safeTestOn =
+    (process.env.SAFE_TEST_MODE ?? "").trim().toLowerCase() === "true";
+  const submitInConfig =
+    providers !== null && /scope:\s*["']submit["']/.test(providers);
+  if (submitInConfig && !safeTestOn) {
     findings.push(
-      "Reddit `submit` scope is present in oauth-provider.ts — publishing scope must not ship in F2.",
+      "Reddit `submit` scope is in oauth-provider.ts but SAFE_TEST_MODE is not 'true' — publishing scope must be gated.",
+    );
+  } else if (submitInConfig && safeTestOn) {
+    details.push(
+      "Reddit `submit` scope is requested (SAFE_TEST_MODE=true).",
     );
   } else if (providers) {
     details.push("Reddit provider does not request the `submit` scope.");

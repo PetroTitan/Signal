@@ -122,6 +122,34 @@ export async function tickOnce(
       continue;
     }
 
+    // Phase F2.5 — under SAFE_TEST_MODE the scheduler is a courier,
+    // not a publisher. It only walks eligible reddit posts from
+    // 'scheduled' to 'ready'. The operator must visit /execution/[id]
+    // and explicitly confirm to actually publish.
+    const { safeTestModeEnabled } = await import("./safe-test-env");
+    if (safeTestModeEnabled() && platform === "reddit") {
+      await markItemReadyForPublish({
+        supabase,
+        item: raw,
+        nowIso,
+      });
+      results.push({
+        execution_item_id: raw.id,
+        workspace_id: raw.workspace_id,
+        platform,
+        outcome: {
+          status: "skipped",
+          reasonCode: "safe_test_mode_ready_for_publish",
+          reasonDetail:
+            "Item marked ready_for_publish — operator must confirm at /execution.",
+          externalId: null,
+          externalUrl: null,
+          metadata: {},
+        },
+      });
+      continue;
+    }
+
     const outcome = await publishOne({
       supabase,
       nowIso,
@@ -373,5 +401,49 @@ async function applyOutcome(input: ApplyOutcomeInput): Promise<void> {
       external_url: outcome.externalUrl,
       ...outcome.metadata,
     },
+  } as never);
+}
+
+interface MarkReadyInput {
+  supabase: NonNullable<ReturnType<typeof createSupabaseServiceRoleClient>>;
+  item: {
+    id: string;
+    workspace_id: string;
+    queue_id: string;
+    metadata: Record<string, unknown>;
+  };
+  nowIso: string;
+}
+
+/**
+ * Phase F2.5 — courier transition. Moves an eligible execution_item
+ * from 'scheduled' to 'ready'. Does NOT call Reddit. Does NOT
+ * mutate the source plan_item status — the plan_item stays
+ * 'scheduled' until the operator confirms publish (or it's marked
+ * 'published' / 'paused' downstream).
+ */
+async function markItemReadyForPublish(input: MarkReadyInput): Promise<void> {
+  const { supabase, item, nowIso } = input;
+  await supabase
+    .from("execution_items")
+    .update({
+      status: "ready",
+      metadata: {
+        ...item.metadata,
+        ready_for_publish_at: nowIso,
+      },
+    } as never)
+    .eq("workspace_id", item.workspace_id)
+    .eq("id", item.id);
+
+  await supabase.from("execution_logs").insert({
+    workspace_id: item.workspace_id,
+    queue_id: item.queue_id,
+    execution_item_id: item.id,
+    event_type: "item.ready_for_publish",
+    severity: "info",
+    message:
+      "[scheduler] Item moved to ready — operator must confirm at /execution.",
+    metadata: { source: "safe_test_mode" },
   } as never);
 }

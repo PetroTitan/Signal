@@ -21,6 +21,7 @@ import type {
   CreativeType,
   WeeklyPlanItemUpdate,
 } from "@/lib/supabase/types";
+import type { AllowedMime } from "@/core/publishing/creative-upload-policy";
 import {
   createCreative,
   getCreativeById,
@@ -31,6 +32,10 @@ export type CreateWeeklyPlanResult = ActionResult<{ planId: string }>;
 export type CreatePlanItemResult = ActionResult<{ itemId: string }>;
 export type UpdatePlanItemResult = ActionResult<{ itemId: string }>;
 export type AttachCreativeResult = ActionResult<{ creativeId: string }>;
+export type UploadCreativeAssetResult = ActionResult<{
+  creativeId: string;
+  assetUrl: string;
+}>;
 
 function isoMonday(date: Date): string {
   const d = new Date(
@@ -634,6 +639,10 @@ export async function attachCreativeAction(
   const attribution =
     String(formData.get("attribution") ?? "").trim() || null;
   const riskNotes = String(formData.get("risk_notes") ?? "").trim() || null;
+  // Operator may opt to approve directly via the form. UI ships an
+  // explicit "Approve creative" checkbox so non-uploaded external
+  // assets still get a deliberate ack.
+  const approveNow = formData.get("approve_now") === "on";
 
   // Light source-specific validation. Hard rules live in
   // creativeReadinessReason; we only block the obviously-wrong here.
@@ -672,6 +681,7 @@ export async function attachCreativeAction(
           license,
           attribution,
           risk_notes: riskNotes,
+          ...(approveNow ? { status: "approved" as const } : {}),
         },
       });
       await logActivityBestEffort({
@@ -698,7 +708,12 @@ export async function attachCreativeAction(
       license,
       attribution,
       riskNotes,
-      status: sourceType === "planned" ? "planned" : "pending_review",
+      status:
+        sourceType === "planned"
+          ? "planned"
+          : approveNow
+            ? "approved"
+            : "pending_review",
     });
     await logActivityBestEffort({
       workspaceId,
@@ -718,6 +733,151 @@ export async function attachCreativeAction(
         ? error.message
         : "Could not attach creative.";
     console.error("[attachCreativeAction] failed", error);
+    return actionFail(message);
+  }
+}
+
+// =====================================================================
+// Phase F2.5 — uploadCreativeAssetAction (file → Supabase Storage)
+// =====================================================================
+//
+// Validates MIME + size, generates a random filename, uploads to the
+// public bucket under `<workspace_id>/<plan_item_id>/<uuid>.<ext>`,
+// and either creates or updates the creative row with the public
+// URL + upload metadata. Auth-required (the route runs server-only
+// and the supabase client reads the cookie session).
+
+export async function uploadCreativeAssetAction(
+  _prev: UploadCreativeAssetResult,
+  formData: FormData,
+): Promise<UploadCreativeAssetResult> {
+  const itemId = String(formData.get("item_id") ?? "").trim();
+  if (!itemId) return actionFail("Item id is required.");
+  const creativeIdRaw = String(formData.get("creative_id") ?? "").trim();
+  const creativeIdInput = creativeIdRaw.length > 0 ? creativeIdRaw : null;
+  const file = formData.get("file");
+  if (!(file instanceof File)) return actionFail("No file uploaded.");
+
+  const { createSupabaseServerClient } = await import("@/lib/supabase");
+  const { validateUpload, extensionForMime, creativeTypeForMime } =
+    await import("@/core/publishing/creative-upload-policy");
+  const supabase = createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return actionFail("Not authenticated.");
+
+  const validation = validateUpload({
+    mime: file.type,
+    sizeBytes: file.size,
+  });
+  if (!validation.ok) return actionFail(validation.reason!);
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    // Confirm the item belongs to this workspace.
+    const existing = await getPlanItemById(workspaceId, itemId);
+    if (!existing) return actionFail("Item not found.");
+
+    const { randomUUID } = await import("node:crypto");
+    const mime = file.type as AllowedMime;
+    const ext = extensionForMime(mime);
+    const objectName = `${workspaceId}/${itemId}/${randomUUID()}.${ext}`;
+
+    const buf = Buffer.from(await file.arrayBuffer());
+    const upload = await supabase.storage
+      .from("weekly-plan-creatives")
+      .upload(objectName, buf, {
+        contentType: mime,
+        cacheControl: "3600",
+        upsert: false,
+      });
+    if (upload.error) {
+      return actionFail(`Upload failed: ${upload.error.message}`);
+    }
+
+    const { data: pub } = supabase.storage
+      .from("weekly-plan-creatives")
+      .getPublicUrl(objectName);
+    const assetUrl = pub.publicUrl;
+
+    let creative;
+    if (creativeIdInput) {
+      creative = await getCreativeById(workspaceId, creativeIdInput);
+      if (creative.weeklyPlanItemId !== itemId) {
+        return actionFail("Creative does not belong to this item.");
+      }
+      creative = await updateCreative({
+        workspaceId,
+        creativeId: creative.id,
+        patch: {
+          creative_type: creativeTypeForMime(mime),
+          source_type: "uploaded",
+          asset_url: assetUrl,
+          storage_path: objectName,
+          mime_type: mime,
+          size_bytes: file.size,
+          uploaded_by: user.id,
+          uploaded_at: new Date().toISOString(),
+          // Uploaded by the operator → jump to approved automatically.
+          // External URLs go through a separate review flow.
+          status: "approved",
+        },
+      });
+    } else {
+      creative = await createCreative({
+        workspaceId,
+        weeklyPlanItemId: itemId,
+        creativeType: creativeTypeForMime(mime),
+        sourceType: "uploaded",
+        assetUrl,
+        status: "approved",
+        metadata: {
+          storage_path: objectName,
+          mime_type: mime,
+          size_bytes: file.size,
+          uploaded_by: user.id,
+          uploaded_at: new Date().toISOString(),
+        },
+      });
+      // Persist the upload columns the create helper doesn't expose
+      // (the Insert type allows them but the repo's CreateCreativeInput
+      // doesn't yet — patch after create rather than widen the
+      // public input surface).
+      creative = await updateCreative({
+        workspaceId,
+        creativeId: creative.id,
+        patch: {
+          storage_path: objectName,
+          mime_type: mime,
+          size_bytes: file.size,
+          uploaded_by: user.id,
+          uploaded_at: new Date().toISOString(),
+        },
+      });
+    }
+
+    await logActivityBestEffort({
+      workspaceId,
+      eventType: "weekly_plan_item.creative_uploaded",
+      entityType: "weekly_plan_item_creative",
+      entityId: creative.id,
+      title: `Creative uploaded (${mime}, ${(file.size / 1024).toFixed(0)} KB)`,
+    });
+    revalidatePath("/weekly-plan");
+    revalidatePath("/approval-queue");
+    return actionOk({ creativeId: creative.id, assetUrl });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : "Could not upload creative.";
+    console.error("[uploadCreativeAssetAction] failed", error);
     return actionFail(message);
   }
 }
