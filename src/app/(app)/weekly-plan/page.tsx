@@ -13,6 +13,9 @@ import {
   listCreativesForItems,
 } from "@/repositories/weekly-plan-creative-repository";
 import { listExecutionItemsByPlanItemIds } from "@/repositories/execution-item-repository";
+import { listRecentPublishes } from "@/repositories/publish-history-repository";
+import { listPlatformConnections } from "@/repositories/platform-connection-repository";
+import { isRedditOauthBlocked } from "@/lib/oauth/env";
 import { ApprovePlanForm } from "./_approve-plan-form";
 import { PlanItemCard } from "./_plan-item-card";
 import { ExecutionStateBadge } from "@/components/publishing/execution-state";
@@ -22,6 +25,14 @@ import {
   ContinueWritingStrip,
   type ContinueWritingDraft,
 } from "./_continue-writing";
+import {
+  RecentlyPublishedStrip,
+  type RecentlyPublishedEntry,
+} from "@/components/publishing/recently-published-strip";
+import {
+  NeedsAttentionStrip,
+  type NeedsAttentionEntry,
+} from "@/components/publishing/needs-attention-strip";
 
 export const dynamic = "force-dynamic";
 
@@ -65,11 +76,15 @@ export default async function WeeklyPlanPage() {
   const timezoneLabel =
     (wsSettings as { timezone?: string | null } | null)?.timezone ?? null;
 
-  const [plan, products, accounts] = await Promise.all([
-    getCurrentWeeklyPlan(workspaceId),
-    listProducts(workspaceId),
-    listAccounts(workspaceId),
-  ]);
+  const [plan, products, accounts, recentPublishes, connections] =
+    await Promise.all([
+      getCurrentWeeklyPlan(workspaceId),
+      listProducts(workspaceId),
+      listAccounts(workspaceId),
+      listRecentPublishes(workspaceId, 30),
+      listPlatformConnections(workspaceId),
+    ]);
+  const redditBlocked = isRedditOauthBlocked();
 
   const items = plan ? await listPlanItems(workspaceId, plan.id) : [];
 
@@ -151,6 +166,103 @@ export default async function WeeklyPlanPage() {
 
   // ---- Day grouping ----
   const groups = groupByDay(items);
+
+  // ---- Recently published (last 5 successful) ----
+  const subredditByItem = new Map<string, string | null>();
+  for (const it of items) {
+    const sub =
+      typeof it.metadata?.target === "string"
+        ? (it.metadata.target as string)
+        : null;
+    subredditByItem.set(it.id, sub);
+  }
+  const planItemByExecItem = new Map<string, string>();
+  for (const ei of execItems) {
+    if (ei.sourceEntityId) planItemByExecItem.set(ei.id, ei.sourceEntityId);
+  }
+  const recentlyPublished: RecentlyPublishedEntry[] = recentPublishes
+    .filter((p) => p.outcome === "published")
+    .slice(0, 5)
+    .map((p) => {
+      const planItemId = planItemByExecItem.get(p.executionItemId) ?? null;
+      const creative = planItemId ? creativeByItem.get(planItemId) ?? null : null;
+      return {
+        id: p.id,
+        title: null,
+        platform: p.platform,
+        subreddit: p.subreddit,
+        permalink: p.providerPermalink,
+        publishedAt: p.finishedAt,
+        creativeAssetUrl: creative?.assetUrl ?? null,
+      };
+    });
+  // Title resolves from plan item when available.
+  const titleByPlanItem = new Map<string, string | null>();
+  for (const it of items) titleByPlanItem.set(it.id, it.title);
+  for (const e of recentlyPublished) {
+    // Re-find the plan item from the publish entry's execution item.
+    const ph = recentPublishes.find((p) => p.id === e.id);
+    if (!ph) continue;
+    const pid = planItemByExecItem.get(ph.executionItemId);
+    if (pid) e.title = titleByPlanItem.get(pid) ?? null;
+  }
+
+  // ---- Needs attention (calm founder inbox) ----
+  const needsAttention: NeedsAttentionEntry[] = [];
+  // 1. Recent failures (last 7 days).
+  const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  for (const p of recentPublishes) {
+    if (p.outcome !== "failed") continue;
+    if (new Date(p.finishedAt).getTime() < weekAgo) continue;
+    const where = p.subreddit ? `r/${p.subreddit}` : p.platform;
+    needsAttention.push({
+      id: `fail-${p.id}`,
+      message: `A post to ${where} didn't publish. Open it to see what happened.`,
+      href: `/execution/items/${p.executionItemId}`,
+      cta: "Open post",
+      severity: "danger",
+    });
+    if (needsAttention.length >= 5) break;
+  }
+  // 2. Disconnected / expired connections.
+  for (const c of connections) {
+    if (!c.accountId) continue;
+    if (
+      c.connectionStatus === "expired" ||
+      c.connectionStatus === "reauthorization_required" ||
+      c.healthStatus === "expired" ||
+      c.healthStatus === "revoked"
+    ) {
+      const platformLabel =
+        c.platform === "reddit"
+          ? "Reddit"
+          : c.platform === "linkedin"
+            ? "LinkedIn"
+            : c.platform === "x"
+              ? "X"
+              : c.platform;
+      needsAttention.push({
+        id: `conn-${c.id}`,
+        message: `${platformLabel} connection expired. Reconnect to keep publishing.`,
+        href: "/accounts",
+        cta: `Reconnect ${platformLabel}`,
+        severity: "warn",
+      });
+      if (needsAttention.length >= 5) break;
+    }
+  }
+  // 3. Reddit API approval (informational, low priority — only if no other
+  // higher-priority items already filling the strip).
+  if (redditBlocked && needsAttention.length < 5) {
+    needsAttention.push({
+      id: "reddit-blocker",
+      message:
+        "Reddit publishing is currently manual while their API approval is pending. Drafts still flow normally — you publish from the post preview.",
+      href: "/accounts",
+      cta: "About",
+      severity: "info",
+    });
+  }
 
   // ---- Drafts that need attention ----
   const continueWritingDrafts: ContinueWritingDraft[] = items
@@ -243,6 +355,8 @@ export default async function WeeklyPlanPage() {
         defaults={composeDefaults}
       />
       <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-3xl space-y-5">
+        <NeedsAttentionStrip entries={needsAttention} />
+        <RecentlyPublishedStrip entries={recentlyPublished} />
         {!plan || items.length === 0 ? (
           <section className="rounded-2xl border border-dashed border-ink-300 bg-ink-50/40 p-8 text-center">
             <h2 className="text-base font-semibold text-ink-900">
