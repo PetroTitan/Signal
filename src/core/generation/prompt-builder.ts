@@ -148,6 +148,39 @@ function platformShape(platform: string): string {
         "- Single optional link at the end if the post is summarizing a public URL.",
         "- Operational specifics over abstraction. Real tradeoffs over advice.",
       ].join("\n");
+    case "youtube":
+      return [
+        "- Output is a video DESCRIPTION (not a script). 100–400 words.",
+        "- 2–4 plain-text paragraphs. No markdown. Line breaks supported.",
+        "- Suggest 1–4 H2 headings inline using lines like '## Section title' — Signal extracts them as chapter labels.",
+        "- End with 'tags: a, b, c' (1–6 lowercase, alphanumeric).",
+        "- No 'don't forget to subscribe', 'watch until the end', or 'smash the like' patterns. No algorithm-bait.",
+        "- Title: lead with the post's `# Title` on the first line — 45–75 chars target, no ALL CAPS, no clickbait.",
+      ].join("\n");
+    case "threads":
+      return [
+        "- 200–400 characters. Plain text, sentences first.",
+        "- Conversational, lightweight, observational — closer to a calm note than a sales pitch.",
+        "- At most one external URL. No hashtag spam.",
+        "- No 'this blew up', 'comment below', 'follow for daily', 'algorithm loves'.",
+      ].join("\n");
+    case "instagram":
+      return [
+        "- Output is a CAPTION for an image/carousel post. 200–1200 chars.",
+        "- Visual-first context — the caption supports the image, doesn't replace it.",
+        "- Short paragraphs (1–3 sentences). Emoji optional, sparse, never as decoration.",
+        "- Suggest 1–4 specific hashtags at the end on a `tags: ...` line. Signal filters out grindset/manifest/fyp/viral bait.",
+        "- No 'link in bio', 'double tap', 'manifest', '7-figure', 'DM me for'.",
+        "- No giant hashtag blocks at the end.",
+      ].join("\n");
+    case "telegram":
+      return [
+        "- Channel post. 200–1500 chars typical.",
+        "- Plain text. Telegram renders \\n as line break.",
+        "- One URL at the end is fine — Telegram auto-link-previews.",
+        "- Calm, infrequent, founder-update tone. Not a marketing newsletter.",
+        "- No 'join now', 'limited spots', 'exclusive leak', 'DM me for', 'private method'.",
+      ].join("\n");
     default:
       return "- Calm, founder-shaped post in markdown.";
   }

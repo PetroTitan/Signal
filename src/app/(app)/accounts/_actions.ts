@@ -36,8 +36,8 @@ export async function createAccountAction(
   if (!platform) return actionFail("Pick a platform.");
   if (!displayName)
     return actionFail("Give this publishing identity a name.");
-  // F4.4 + F5.0 — only allow platforms with real publishing or
-  // distribution paths.
+  // F4.4 + F5.0 + F5.1 — only allow platforms with real publishing
+  // or distribution paths.
   const allowed = new Set([
     "reddit",
     "devto",
@@ -46,6 +46,10 @@ export async function createAccountAction(
     "indie_hackers",
     "x",
     "linkedin",
+    "youtube",
+    "threads",
+    "instagram",
+    "telegram",
   ]);
   if (!allowed.has(platform)) {
     return actionFail("That platform isn't supported yet.");

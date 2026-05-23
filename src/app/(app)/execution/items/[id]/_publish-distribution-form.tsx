@@ -9,41 +9,86 @@ import {
 
 const initial: RecordManualDistributionResult = { ok: false, error: "" };
 
+export type DistributionPlatform =
+  | "x"
+  | "linkedin"
+  | "youtube"
+  | "threads"
+  | "instagram";
+
 interface PublishDistributionFormProps {
   executionItemId: string;
-  platform: "x" | "linkedin";
+  platform: DistributionPlatform;
   /** Pre-formatted preview produced by the platform-specific transformer. */
   preview:
-    | { kind: "x_thread"; parts: { text: string }[]; fullText: string; shareIntentUrl: string }
+    | {
+        kind: "x_thread";
+        parts: { text: string }[];
+        fullText: string;
+        shareIntentUrl: string;
+      }
     | {
         kind: "linkedin_post";
         text: string;
         warnings: string[];
+        shareIntentUrl: string;
+      }
+    | {
+        kind: "youtube_assets";
+        title: string;
+        description: string;
+        tags: string[];
+        chapters: Array<{ timestamp: string; label: string }>;
+        thumbnailIdea: string | null;
+        pinnedCommentSuggestion: string | null;
+        shortsHook: string | null;
+        warnings: string[];
+        fullText: string;
+        shareIntentUrl: string;
+      }
+    | {
+        kind: "threads_post";
+        text: string;
+        warnings: string[];
+        shareIntentUrl: string;
+      }
+    | {
+        kind: "instagram_assets";
+        caption: string;
+        carouselOutline: Array<{ slide: number; label: string; text: string }>;
+        reelHook: string;
+        reelCaption: string;
+        hashtags: string[];
+        warnings: string[];
+        fullText: string;
         shareIntentUrl: string;
       };
   /** Soft cooldown notice from cadence-cooldown, if any. */
   cooldownWarning?: string | null;
 }
 
-const PLATFORM_LABEL: Record<PublishDistributionFormProps["platform"], string> = {
+const PLATFORM_LABEL: Record<DistributionPlatform, string> = {
   x: "X",
   linkedin: "LinkedIn",
+  youtube: "YouTube",
+  threads: "Threads",
+  instagram: "Instagram",
 };
 
-const CONFIRMATION_HINT: Record<
-  PublishDistributionFormProps["platform"],
-  string
-> = {
+const CONFIRMATION_HINT: Record<DistributionPlatform, string> = {
   x: "Paste the URL of your X post (or the first post in the thread).",
   linkedin: "Paste the URL of your LinkedIn post.",
+  youtube: "Paste the URL of the YouTube video.",
+  threads: "Paste the URL of your Threads post.",
+  instagram: "Paste the URL of your Instagram post.",
 };
 
-const PERMALINK_PLACEHOLDER: Record<
-  PublishDistributionFormProps["platform"],
-  string
-> = {
+const PERMALINK_PLACEHOLDER: Record<DistributionPlatform, string> = {
   x: "https://x.com/yourhandle/status/…",
   linkedin: "https://www.linkedin.com/posts/…",
+  youtube: "https://youtube.com/watch?v=… or https://youtu.be/…",
+  threads: "https://www.threads.net/@yourhandle/post/…",
+  instagram: "https://www.instagram.com/p/…",
 };
 
 export function PublishDistributionForm(props: PublishDistributionFormProps) {
@@ -72,8 +117,14 @@ export function PublishDistributionForm(props: PublishDistributionFormProps) {
 
       {props.preview.kind === "x_thread" ? (
         <XThreadPreview preview={props.preview} />
-      ) : (
+      ) : props.preview.kind === "linkedin_post" ? (
         <LinkedInPreview preview={props.preview} />
+      ) : props.preview.kind === "youtube_assets" ? (
+        <YouTubePreview preview={props.preview} />
+      ) : props.preview.kind === "threads_post" ? (
+        <ThreadsPreview preview={props.preview} />
+      ) : (
+        <InstagramPreview preview={props.preview} />
       )}
 
       <form action={action} className="space-y-3 border-t border-ink-100 pt-4">
@@ -254,6 +305,265 @@ function LinkedInPreview({
         <li>Click <span className="font-medium">Open LinkedIn composer</span> and paste.</li>
         <li>Click Post on LinkedIn.</li>
         <li>Copy the permalink from your feed and paste it below.</li>
+      </ol>
+    </div>
+  );
+}
+
+function YouTubePreview({
+  preview,
+}: {
+  preview: Extract<
+    PublishDistributionFormProps["preview"],
+    { kind: "youtube_assets" }
+  >;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-baseline justify-between">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
+          YouTube upload assets
+        </span>
+        <span className="text-[11px] text-ink-500">
+          {preview.title.length} title chars
+        </span>
+      </div>
+      <div className="space-y-2">
+        <div className="rounded-md border border-ink-200 bg-white px-3 py-2">
+          <div className="text-[10px] font-semibold text-ink-500 mb-1">
+            Title
+          </div>
+          <div className="text-sm text-ink-900 leading-relaxed">
+            {preview.title || "(no title)"}
+          </div>
+        </div>
+        <div className="rounded-md border border-ink-200 bg-white px-3 py-2">
+          <div className="text-[10px] font-semibold text-ink-500 mb-1">
+            Description
+          </div>
+          <div className="text-xs text-ink-800 leading-relaxed whitespace-pre-wrap">
+            {preview.description || "(no description)"}
+          </div>
+        </div>
+        {preview.chapters.length > 0 ? (
+          <div className="rounded-md border border-ink-200 bg-white px-3 py-2">
+            <div className="text-[10px] font-semibold text-ink-500 mb-1">
+              Chapters (edit timestamps after upload)
+            </div>
+            <ol className="text-xs font-mono text-ink-800 space-y-0.5">
+              {preview.chapters.map((c, idx) => (
+                <li key={idx}>
+                  {c.timestamp} {c.label}
+                </li>
+              ))}
+            </ol>
+          </div>
+        ) : null}
+        {preview.tags.length > 0 ? (
+          <div className="rounded-md border border-ink-200 bg-white px-3 py-2">
+            <div className="text-[10px] font-semibold text-ink-500 mb-1">
+              Tags
+            </div>
+            <div className="text-xs text-ink-800">
+              {preview.tags.join(", ")}
+            </div>
+          </div>
+        ) : null}
+        {preview.thumbnailIdea ? (
+          <div className="rounded-md border border-dashed border-ink-300 bg-ink-50/40 px-3 py-2 text-xs text-ink-700">
+            <div className="text-[10px] font-semibold text-ink-500 mb-1">
+              Thumbnail idea
+            </div>
+            {preview.thumbnailIdea}
+          </div>
+        ) : null}
+        {preview.shortsHook ? (
+          <div className="rounded-md border border-dashed border-ink-300 bg-ink-50/40 px-3 py-2 text-xs text-ink-700">
+            <div className="text-[10px] font-semibold text-ink-500 mb-1">
+              Shorts hook
+            </div>
+            {preview.shortsHook}
+          </div>
+        ) : null}
+        {preview.pinnedCommentSuggestion ? (
+          <div className="rounded-md border border-dashed border-ink-300 bg-ink-50/40 px-3 py-2 text-xs text-ink-700 whitespace-pre-wrap">
+            <div className="text-[10px] font-semibold text-ink-500 mb-1">
+              Pinned comment suggestion
+            </div>
+            {preview.pinnedCommentSuggestion}
+          </div>
+        ) : null}
+      </div>
+      {preview.warnings.length > 0 ? (
+        <ul className="text-[11px] text-amber-700 space-y-0.5 leading-relaxed">
+          {preview.warnings.map((w, i) => (
+            <li key={i}>· {w}</li>
+          ))}
+        </ul>
+      ) : null}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        <CopyButton label="Copy title" value={preview.title} />
+        <CopyButton label="Copy description" value={preview.description} />
+        <CopyButton label="Copy tags" value={preview.tags.join(", ")} />
+        <CopyButton label="Copy everything" value={preview.fullText} />
+        <a
+          href={preview.shareIntentUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="btn-ghost text-xs"
+        >
+          Open YouTube Studio →
+        </a>
+      </div>
+      <ol className="text-xs text-ink-700 space-y-1 list-decimal list-inside leading-relaxed">
+        <li>
+          Click <span className="font-medium">Open YouTube Studio</span> and
+          upload your video.
+        </li>
+        <li>
+          Paste title, description, and tags using the Copy buttons.
+        </li>
+        <li>
+          After upload, edit chapter timestamps to match your video.
+        </li>
+        <li>Paste the resulting video URL below.</li>
+      </ol>
+    </div>
+  );
+}
+
+function ThreadsPreview({
+  preview,
+}: {
+  preview: Extract<
+    PublishDistributionFormProps["preview"],
+    { kind: "threads_post" }
+  >;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-baseline justify-between">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
+          Threads preview
+        </span>
+        <span className="text-[11px] text-ink-500">
+          {preview.text.length} chars
+        </span>
+      </div>
+      <div className="rounded-md border border-ink-200 bg-white px-3 py-2 text-xs text-ink-800 leading-relaxed whitespace-pre-wrap">
+        {preview.text}
+      </div>
+      {preview.warnings.length > 0 ? (
+        <ul className="text-[11px] text-amber-700 space-y-0.5 leading-relaxed">
+          {preview.warnings.map((w, i) => (
+            <li key={i}>· {w}</li>
+          ))}
+        </ul>
+      ) : null}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        <CopyButton label="Copy post" value={preview.text} />
+        <a
+          href={preview.shareIntentUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="btn-ghost text-xs"
+        >
+          Open Threads composer →
+        </a>
+      </div>
+      <ol className="text-xs text-ink-700 space-y-1 list-decimal list-inside leading-relaxed">
+        <li>Click Copy post.</li>
+        <li>Open Threads, paste, and click Post.</li>
+        <li>Copy the permalink from your profile and paste it below.</li>
+      </ol>
+    </div>
+  );
+}
+
+function InstagramPreview({
+  preview,
+}: {
+  preview: Extract<
+    PublishDistributionFormProps["preview"],
+    { kind: "instagram_assets" }
+  >;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-baseline justify-between">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
+          Instagram assets
+        </span>
+        <span className="text-[11px] text-ink-500">
+          {preview.caption.length} caption chars
+        </span>
+      </div>
+      <div className="rounded-md border border-ink-200 bg-white px-3 py-2">
+        <div className="text-[10px] font-semibold text-ink-500 mb-1">
+          Caption
+        </div>
+        <div className="text-xs text-ink-800 leading-relaxed whitespace-pre-wrap">
+          {preview.caption || "(empty)"}
+        </div>
+      </div>
+      {preview.hashtags.length > 0 ? (
+        <div className="rounded-md border border-ink-200 bg-white px-3 py-2 text-xs text-ink-800">
+          <span className="text-[10px] font-semibold text-ink-500 mr-2">
+            Hashtags:
+          </span>
+          {preview.hashtags.map((h) => `#${h}`).join(" ")}
+        </div>
+      ) : null}
+      {preview.carouselOutline.some((s) => s.text.length > 0) ? (
+        <div className="rounded-md border border-dashed border-ink-300 bg-ink-50/40 px-3 py-2">
+          <div className="text-[10px] font-semibold text-ink-500 mb-1">
+            Carousel outline (text only — turn each slide into an image)
+          </div>
+          <ol className="text-xs text-ink-700 space-y-1">
+            {preview.carouselOutline.map((s) => (
+              <li key={s.slide}>
+                <span className="font-semibold">
+                  Slide {s.slide} · {s.label}:
+                </span>{" "}
+                {s.text || "(empty)"}
+              </li>
+            ))}
+          </ol>
+        </div>
+      ) : null}
+      <div className="rounded-md border border-dashed border-ink-300 bg-ink-50/40 px-3 py-2 text-xs text-ink-700">
+        <div className="text-[10px] font-semibold text-ink-500 mb-1">
+          Reel
+        </div>
+        <div className="font-medium text-ink-800">Hook: {preview.reelHook}</div>
+        <div className="mt-1 whitespace-pre-wrap">
+          {preview.reelCaption || "(no reel caption)"}
+        </div>
+      </div>
+      {preview.warnings.length > 0 ? (
+        <ul className="text-[11px] text-amber-700 space-y-0.5 leading-relaxed">
+          {preview.warnings.map((w, i) => (
+            <li key={i}>· {w}</li>
+          ))}
+        </ul>
+      ) : null}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        <CopyButton label="Copy caption" value={preview.caption} />
+        <CopyButton label="Copy everything" value={preview.fullText} />
+        <a
+          href={preview.shareIntentUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="btn-ghost text-xs"
+        >
+          Open Instagram →
+        </a>
+      </div>
+      <ol className="text-xs text-ink-700 space-y-1 list-decimal list-inside leading-relaxed">
+        <li>Prepare your image, carousel, or reel.</li>
+        <li>Click Copy caption.</li>
+        <li>Open Instagram (mobile recommended), upload, paste caption.</li>
+        <li>Copy the post permalink and paste it below.</li>
       </ol>
     </div>
   );

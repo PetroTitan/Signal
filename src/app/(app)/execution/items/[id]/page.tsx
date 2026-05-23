@@ -29,6 +29,20 @@ import {
   buildLinkedInShareIntentUrl,
   transformForLinkedIn,
 } from "@/core/publishing/transformers/linkedin";
+import {
+  buildFullYouTubeText,
+  buildYouTubeStudioUrl,
+  transformForYouTube,
+} from "@/core/publishing/transformers/youtube";
+import {
+  buildThreadsComposerUrl,
+  transformForThreads,
+} from "@/core/publishing/transformers/threads";
+import {
+  buildFullInstagramText,
+  buildInstagramComposerUrl,
+  transformForInstagram,
+} from "@/core/publishing/transformers/instagram";
 import { canonicalPostFromRequest } from "@/core/publishing/canonical-post";
 import { isRedditOauthBlocked } from "@/lib/oauth/env";
 import { ExecutionStateBadge } from "@/components/publishing/execution-state";
@@ -127,9 +141,13 @@ export default async function ExecutionItemPage({ params }: PageProps) {
     item.platform === "devto" ||
     item.platform === "hashnode" ||
     item.platform === "bluesky";
-  // F5.0 — X and LinkedIn are distribution-only (manual-first).
+  // F5.0 + F5.1 — distribution-only (manual-first) platforms.
   const isDistribution =
-    item.platform === "x" || item.platform === "linkedin";
+    item.platform === "x" ||
+    item.platform === "linkedin" ||
+    item.platform === "youtube" ||
+    item.platform === "threads" ||
+    item.platform === "instagram";
   let verdict: SafeTestPolicyVerdict | null = null;
   // Tier-1 platforms (dev.to / Hashnode / Bluesky) AND distribution
   // platforms (X / LinkedIn) skip the Reddit-shaped safe-test policy
@@ -185,7 +203,11 @@ export default async function ExecutionItemPage({ params }: PageProps) {
     item.platform === "hashnode" ||
     item.platform === "bluesky" ||
     item.platform === "x" ||
-    item.platform === "linkedin"
+    item.platform === "linkedin" ||
+    item.platform === "youtube" ||
+    item.platform === "threads" ||
+    item.platform === "instagram" ||
+    item.platform === "telegram"
       ? await checkCadence({
           workspaceId,
           platform: item.platform,
@@ -289,10 +311,33 @@ export default async function ExecutionItemPage({ params }: PageProps) {
         {isDistribution && isReady ? (
           <DistributionPublishBranch
             itemId={item.id}
-            platform={item.platform as "x" | "linkedin"}
+            platform={
+              item.platform as
+                | "x"
+                | "linkedin"
+                | "youtube"
+                | "threads"
+                | "instagram"
+            }
             title={item.title}
             body={item.body}
             linkUrl={item.linkUrl}
+            tags={
+              Array.isArray((item.metadata as { tags?: unknown })?.tags)
+                ? ((item.metadata as { tags: unknown[] }).tags as string[])
+                : []
+            }
+            summary={
+              typeof (item.metadata as { summary?: unknown })?.summary === "string"
+                ? ((item.metadata as { summary: string }).summary as string)
+                : null
+            }
+            canonicalUrl={
+              typeof (item.metadata as { canonical_url?: unknown })?.canonical_url ===
+              "string"
+                ? ((item.metadata as { canonical_url: string }).canonical_url as string)
+                : item.linkUrl
+            }
             cadenceWarning={cadenceWarning}
           />
         ) : isDistribution && !isReady ? (
@@ -534,15 +579,18 @@ export default async function ExecutionItemPage({ params }: PageProps) {
 }
 
 /**
- * F5.0 — build the X / LinkedIn manual-distribution preview server-side
- * from the execution-item content and render the publish form.
+ * F5.0 + F5.1 — build the manual-distribution preview server-side from
+ * the execution-item content and render the publish form.
  */
 function DistributionPublishBranch(props: {
   itemId: string;
-  platform: "x" | "linkedin";
+  platform: "x" | "linkedin" | "youtube" | "threads" | "instagram";
   title: string | null;
   body: string | null;
   linkUrl: string | null;
+  tags: string[];
+  summary: string | null;
+  canonicalUrl: string | null;
   cadenceWarning: string | null;
 }) {
   const canonical = canonicalPostFromRequest({
@@ -550,25 +598,25 @@ function DistributionPublishBranch(props: {
     title: props.title,
     body: props.body,
     linkUrl: props.linkUrl,
-    canonicalUrl: props.linkUrl,
+    canonicalUrl: props.canonicalUrl ?? props.linkUrl,
+    summary: props.summary,
+    tags: props.tags,
   });
+
+  const empty = (
+    <section className="rounded-2xl border border-amber-200 bg-amber-50/40 p-5">
+      <h2 className="text-sm font-semibold text-amber-800">
+        Nothing to publish yet
+      </h2>
+      <p className="text-xs text-amber-800 mt-1 leading-relaxed">
+        Write the post body first, then come back to publish.
+      </p>
+    </section>
+  );
 
   if (props.platform === "x") {
     const thread = transformForX(canonical);
-    if (thread.length === 0) {
-      return (
-        <section className="rounded-2xl border border-amber-200 bg-amber-50/40 p-5">
-          <h2 className="text-sm font-semibold text-amber-800">
-            Nothing to publish yet
-          </h2>
-          <p className="text-xs text-amber-800 mt-1 leading-relaxed">
-            Write the post body first, then come back to publish.
-          </p>
-        </section>
-      );
-    }
-    const shareIntentUrl = buildXShareIntentUrl(thread[0]?.text ?? "");
-    const fullText = buildFullThreadText(thread);
+    if (thread.length === 0) return empty;
     return (
       <PublishDistributionForm
         executionItemId={props.itemId}
@@ -576,37 +624,96 @@ function DistributionPublishBranch(props: {
         preview={{
           kind: "x_thread",
           parts: thread,
-          fullText,
-          shareIntentUrl,
+          fullText: buildFullThreadText(thread),
+          shareIntentUrl: buildXShareIntentUrl(thread[0]?.text ?? ""),
         }}
         cooldownWarning={props.cadenceWarning}
       />
     );
   }
 
-  // linkedin
-  const result = transformForLinkedIn(canonical);
-  if (result.text.length === 0) {
+  if (props.platform === "linkedin") {
+    const result = transformForLinkedIn(canonical);
+    if (result.text.length === 0) return empty;
     return (
-      <section className="rounded-2xl border border-amber-200 bg-amber-50/40 p-5">
-        <h2 className="text-sm font-semibold text-amber-800">
-          Nothing to publish yet
-        </h2>
-        <p className="text-xs text-amber-800 mt-1 leading-relaxed">
-          Write the post body first, then come back to publish.
-        </p>
-      </section>
+      <PublishDistributionForm
+        executionItemId={props.itemId}
+        platform="linkedin"
+        preview={{
+          kind: "linkedin_post",
+          text: result.text,
+          warnings: result.warnings,
+          shareIntentUrl: buildLinkedInShareIntentUrl(
+            props.canonicalUrl ?? props.linkUrl,
+          ),
+        }}
+        cooldownWarning={props.cadenceWarning}
+      />
     );
   }
+
+  if (props.platform === "youtube") {
+    const assets = transformForYouTube(canonical);
+    if (assets.title.length === 0 && assets.description.length === 0) {
+      return empty;
+    }
+    return (
+      <PublishDistributionForm
+        executionItemId={props.itemId}
+        platform="youtube"
+        preview={{
+          kind: "youtube_assets",
+          title: assets.title,
+          description: assets.description,
+          tags: assets.tags,
+          chapters: assets.chapters,
+          thumbnailIdea: assets.thumbnailIdea,
+          pinnedCommentSuggestion: assets.pinnedCommentSuggestion,
+          shortsHook: assets.shortsHook,
+          warnings: assets.warnings,
+          fullText: buildFullYouTubeText(assets),
+          shareIntentUrl: buildYouTubeStudioUrl(),
+        }}
+        cooldownWarning={props.cadenceWarning}
+      />
+    );
+  }
+
+  if (props.platform === "threads") {
+    const result = transformForThreads(canonical);
+    if (result.text.length === 0) return empty;
+    return (
+      <PublishDistributionForm
+        executionItemId={props.itemId}
+        platform="threads"
+        preview={{
+          kind: "threads_post",
+          text: result.text,
+          warnings: result.warnings,
+          shareIntentUrl: buildThreadsComposerUrl(),
+        }}
+        cooldownWarning={props.cadenceWarning}
+      />
+    );
+  }
+
+  // instagram
+  const assets = transformForInstagram(canonical);
+  if (assets.caption.length === 0) return empty;
   return (
     <PublishDistributionForm
       executionItemId={props.itemId}
-      platform="linkedin"
+      platform="instagram"
       preview={{
-        kind: "linkedin_post",
-        text: result.text,
-        warnings: result.warnings,
-        shareIntentUrl: buildLinkedInShareIntentUrl(props.linkUrl),
+        kind: "instagram_assets",
+        caption: assets.caption,
+        carouselOutline: assets.carouselOutline,
+        reelHook: assets.reel.hook,
+        reelCaption: assets.reel.caption,
+        hashtags: assets.hashtags,
+        warnings: assets.warnings,
+        fullText: buildFullInstagramText(assets),
+        shareIntentUrl: buildInstagramComposerUrl(),
       }}
       cooldownWarning={props.cadenceWarning}
     />
