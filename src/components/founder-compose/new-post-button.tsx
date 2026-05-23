@@ -31,7 +31,10 @@ export function NewPostButton(props: NewPostButtonProps) {
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className={`fixed z-40 bottom-5 right-5 shadow-lg rounded-full px-5 py-3 bg-signal-600 text-white font-semibold text-sm hover:bg-signal-700 active:scale-95 transition ${props.className ?? ""}`}
+          style={{
+            bottom: "calc(1.25rem + env(safe-area-inset-bottom))",
+          }}
+          className={`fixed z-40 right-5 shadow-lg rounded-full px-5 py-3 bg-signal-600 text-white font-semibold text-sm hover:bg-signal-700 active:scale-95 transition ${props.className ?? ""}`}
           aria-label="New post"
         >
           + New post

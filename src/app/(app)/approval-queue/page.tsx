@@ -93,19 +93,18 @@ export default async function ApprovalQueuePage() {
     <>
       <Topbar
         title="Review this week"
-        description="Approve, reject, or move to the backlog. One central surface for content items, product profiles, and account profiles."
+        description="Posts, products, and accounts waiting for your sign-off — all in one place."
       />
 
-      <div className="px-6 lg:px-10 py-8 max-w-3xl space-y-6">
+      <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-3xl space-y-5">
         {totalPending === 0 ? (
-          <section className="card p-6 text-center">
+          <section className="rounded-2xl border border-dashed border-ink-300 bg-ink-50/40 p-8 text-center">
             <h2 className="text-base font-semibold text-ink-900">
               Nothing pending
             </h2>
             <p className="text-sm text-ink-500 mt-2 leading-relaxed max-w-md mx-auto">
-              No weekly plan items in <span className="font-mono">pending_approval</span>,
-              no products in <span className="font-mono">pending_review</span>,
-              no accounts in <span className="font-mono">pending_review</span>.
+              You&apos;re all caught up. Posts, products, and account
+              profiles will show up here when they&apos;re ready for review.
             </p>
           </section>
         ) : null}

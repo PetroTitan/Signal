@@ -121,7 +121,7 @@ export function PlanItemCard(props: PlanItemCardProps) {
                 />
               ) : (
                 <span className="inline-flex items-center rounded-full border border-dashed border-ink-300 px-2 py-0.5 text-[11px] text-ink-500">
-                  draft-only
+                  comment draft
                 </span>
               )}
               {props.scheduledAt ? (
@@ -155,15 +155,9 @@ export function PlanItemCard(props: PlanItemCardProps) {
               </div>
             ) : null}
 
-            {/* Quick actions */}
+            {/* Quick actions — title, body, and creative already open the
+                sheet on click, so no redundant "Edit" button here. */}
             <div className="flex flex-wrap items-center gap-1.5 pt-2">
-              <button
-                type="button"
-                onClick={() => setComposeOpen(true)}
-                className="btn-ghost text-xs"
-              >
-                {isDraft ? "Continue writing" : "Edit"}
-              </button>
               {props.executionItemId && props.executionItemStatus === "ready" ? (
                 <Link
                   href={`/execution/items/${props.executionItemId}`}
@@ -177,7 +171,7 @@ export function PlanItemCard(props: PlanItemCardProps) {
                   href={`/execution/items/${props.executionItemId}`}
                   className="btn-primary text-xs"
                 >
-                  Manual publish →
+                  Publish manually →
                 </Link>
               ) : props.executionItemId &&
                 props.executionItemStatus === "completed" ? (
@@ -191,12 +185,12 @@ export function PlanItemCard(props: PlanItemCardProps) {
               {isDraft && props.isPost ? (
                 <SendForApprovalButton itemId={props.id} />
               ) : null}
-              <DuplicateButton itemId={props.id} />
               <QuickReschedule
                 itemId={props.id}
                 scheduledAt={props.scheduledAt}
                 timezoneLabel={props.timezoneLabel}
               />
+              <DuplicateButton itemId={props.id} />
             </div>
           </div>
 
