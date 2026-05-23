@@ -37,6 +37,10 @@ import {
 import { recordActivity } from "@/repositories/activity-repository";
 import { generateDraft } from "@/core/generation/generate-draft";
 import type { GenerationInput } from "@/core/generation/generation-types";
+import {
+  checkWorkspaceAiUsage,
+  usageLimitMessage,
+} from "@/core/generation/usage-limit";
 import { RepositoryError } from "@/repositories/errors";
 import {
   actionFail,
@@ -114,6 +118,14 @@ export async function generateDraftAction(
     const membership = await getPrimaryWorkspace();
     if (!membership) return actionFail("No workspace found.");
     const workspaceId = membership.workspace.id;
+
+    // F4.6.1 — workspace-level rolling 24h limit. Same helper used
+    // by the rewrite path. Checked BEFORE calling the provider so
+    // we don't burn quota on a request we'd refuse.
+    const usage = await checkWorkspaceAiUsage(workspaceId);
+    if (usage.exceeded) {
+      return actionFail(usageLimitMessage(usage));
+    }
 
     // Verify the identity belongs to this workspace and is usable.
     let identity;

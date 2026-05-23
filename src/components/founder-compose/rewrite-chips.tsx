@@ -1,11 +1,14 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useState } from "react";
 import {
   rewriteDraftAction,
   type RewriteDraftActionResult,
 } from "@/app/(app)/weekly-plan/_rewrite-action";
+import {
+  undoRewriteAction,
+  type UndoRewriteActionResult,
+} from "@/app/(app)/weekly-plan/_undo-rewrite-action";
 import {
   REWRITE_ACTION_LABELS,
   REWRITE_ACTIONS,
@@ -18,31 +21,45 @@ interface RewriteChipsProps {
   providerAvailable: boolean;
   /** True when the current draft body is non-empty. */
   hasBody: boolean;
-  /** Optional founder-readable provider label for the receipt line. */
-  providerLabel?: string | null;
+  /**
+   * Called when a rewrite has been persisted and the compose sheet
+   * should update its local draft state. Either `title` or `body`
+   * (or both, for undo) will be set; unspecified fields are not
+   * touched.
+   */
+  onApply?: (patch: { title?: string; body?: string }) => void;
+}
+
+interface LastReceipt {
+  action: RewriteAction;
+  providerLabel: string;
+  truncated: boolean;
+  undoAvailable: boolean;
 }
 
 /**
- * Phase F4.6 — inline editorial chips on the compose sheet.
+ * Phase F4.6 + F4.6.1 — inline editorial chips with undo.
  *
- * Renders 8 small chips below the body editor. Each tap fires
- * rewriteDraftAction with the chosen action and refreshes the
- * compose state via the router. Per the brief, NOT a dropdown
- * forest; NOT a settings page; NOT an AI playground.
+ * - 8 chips below the compose body editor (Rewrite / Shorter /
+ *   More technical / More founder-like / Less promotional /
+ *   Adapt for Bluesky / Adapt for dev.to / Improve headline).
+ * - On success the compose sheet's local draft state is updated
+ *   via `onApply` so the founder sees the rewrite immediately
+ *   without closing the sheet.
+ * - A small "Undo" link sits beside the receipt for the most
+ *   recent rewrite. Calls undoRewriteAction which restores the
+ *   snapshot stored in the plan-item's metadata.
  *
- * Disabled when:
- *   - the draft is brand-new (no itemId yet — autosave hasn't fired)
- *   - the body is empty
- *   - no AI provider is configured
+ * Calm copy. No toasts. No modals. No diff panel.
  */
 export function RewriteChips(props: RewriteChipsProps) {
   const [pendingAction, setPendingAction] = useState<RewriteAction | null>(
     null,
   );
+  const [undoPending, setUndoPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [receipt, setReceipt] = useState<string | null>(null);
-  const [, startTransition] = useTransition();
-  const router = useRouter();
+  const [receipt, setReceipt] = useState<LastReceipt | null>(null);
+  const [undoneMessage, setUndoneMessage] = useState<string | null>(null);
 
   const disabledReason = !props.itemId
     ? "Save the draft first (wait a second for autosave) before rewriting."
@@ -56,7 +73,7 @@ export function RewriteChips(props: RewriteChipsProps) {
     if (!props.itemId) return;
     setPendingAction(action);
     setError(null);
-    setReceipt(null);
+    setUndoneMessage(null);
     const fd = new FormData();
     fd.set("item_id", props.itemId);
     fd.set("action", action);
@@ -64,14 +81,42 @@ export function RewriteChips(props: RewriteChipsProps) {
     const result = await rewriteDraftAction(initial, fd);
     setPendingAction(null);
     if (result.ok) {
-      setReceipt(
-        `${REWRITE_ACTION_LABELS[action]} · Generated with ${result.providerLabel}${
-          result.truncated ? " (response was truncated)" : ""
-        }`,
-      );
-      startTransition(() => router.refresh());
+      // Update the local compose state IMMEDIATELY so the founder
+      // sees the new content without reopening the sheet.
+      props.onApply?.({
+        ...(result.newTitle !== null ? { title: result.newTitle } : {}),
+        ...(result.newBody !== null ? { body: result.newBody } : {}),
+      });
+      setReceipt({
+        action,
+        providerLabel: result.providerLabel,
+        truncated: result.truncated,
+        undoAvailable: result.undoAvailable,
+      });
     } else {
       setError(result.error || "Couldn't finish the rewrite.");
+      setReceipt(null);
+    }
+  }
+
+  async function fireUndo() {
+    if (!props.itemId) return;
+    setUndoPending(true);
+    setError(null);
+    const fd = new FormData();
+    fd.set("item_id", props.itemId);
+    const initial: UndoRewriteActionResult = { ok: false, error: "" };
+    const result = await undoRewriteAction(initial, fd);
+    setUndoPending(false);
+    if (result.ok) {
+      props.onApply?.({
+        ...(result.newTitle !== null ? { title: result.newTitle } : {}),
+        ...(result.newBody !== null ? { body: result.newBody } : {}),
+      });
+      setReceipt(null);
+      setUndoneMessage("Rewrite reverted.");
+    } else {
+      setError(result.error || "Couldn't undo the rewrite.");
     }
   }
 
@@ -88,7 +133,8 @@ export function RewriteChips(props: RewriteChipsProps) {
       <div className="flex flex-wrap gap-1.5">
         {REWRITE_ACTIONS.map((action) => {
           const pending = pendingAction === action;
-          const disabled = pendingAction !== null || !!disabledReason;
+          const disabled =
+            pendingAction !== null || undoPending || !!disabledReason;
           return (
             <button
               key={action}
@@ -107,8 +153,32 @@ export function RewriteChips(props: RewriteChipsProps) {
         })}
       </div>
       {receipt ? (
-        <p className="text-[10px] text-emerald-700 leading-relaxed">
-          {receipt}
+        <p className="text-[10px] text-emerald-700 leading-relaxed flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+          <span>
+            {REWRITE_ACTION_LABELS[receipt.action]} · Generated with{" "}
+            {receipt.providerLabel}
+            {receipt.truncated ? " (response was truncated)" : ""}
+          </span>
+          {receipt.undoAvailable ? (
+            <>
+              <span aria-hidden className="text-ink-400">
+                ·
+              </span>
+              <button
+                type="button"
+                onClick={fireUndo}
+                disabled={undoPending}
+                className="text-ink-700 underline disabled:opacity-50 hover:text-ink-900"
+              >
+                {undoPending ? "Undoing…" : "Undo"}
+              </button>
+            </>
+          ) : null}
+        </p>
+      ) : null}
+      {undoneMessage ? (
+        <p className="text-[10px] text-ink-500 leading-relaxed">
+          {undoneMessage}
         </p>
       ) : null}
       {error ? (

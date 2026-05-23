@@ -351,11 +351,25 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
             </p>
           </div>
 
-          {/* Editorial rewrite chips (F4.6) */}
+          {/* Editorial rewrite chips (F4.6 + F4.6.1 undo) */}
           <RewriteChips
             itemId={draft.itemId}
             providerAvailable={props.defaults.aiProviderAvailable ?? false}
             hasBody={draft.body.trim().length > 0}
+            onApply={(patch) => {
+              setDraft((d) => {
+                const next = {
+                  ...d,
+                  ...(patch.title !== undefined ? { title: patch.title } : {}),
+                  ...(patch.body !== undefined ? { body: patch.body } : {}),
+                };
+                // The server action already persisted these fields.
+                // Mark them as saved so the autosave debounce doesn't
+                // fire a redundant write right after the rewrite.
+                autosave.markSaved(next);
+                return next;
+              });
+            }}
           />
 
           {/* Platform — primary choice, chips not dropdown */}
