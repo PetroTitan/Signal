@@ -53,6 +53,10 @@ const ACTION_INSTRUCTION: Record<RewriteAction, string> = {
     "Adapt this content for Bluesky as a single readable post or a short thread (max ~280 characters per part). Plain text, no markdown structure, sentences first.",
   to_devto_article:
     "Adapt this content as a dev.to article. 600–1500 words. Markdown with 2–4 useful headings, practical lessons, calm closer. End with a single line `tags: a, b, c` listing 1–4 relevant tags.",
+  to_x_thread:
+    "Adapt this content as an X thread. 3–7 short posts (~250 chars each). No markdown, no hashtags, max ONE external URL across the whole thread. First post is the standalone hook. No engagement bait endings.",
+  to_linkedin_post:
+    "Adapt this content as a LinkedIn post. 300–1200 words. Short paragraphs (1–3 sentences each) with vertical breathing room. Lead with the operational lesson, not personal-brand framing. No 'I'm thrilled', 'humbled to announce', or 'agree?' patterns. Optional single trailing link.",
   improve_headline:
     "Improve the post's headline ONLY. Return a single line of plain text — no markdown, no quotes, no leading hash. Same topic, sharper hook. Do not return the body.",
 };
@@ -60,6 +64,8 @@ const ACTION_INSTRUCTION: Record<RewriteAction, string> = {
 const TARGET_PLATFORM_HINT: Record<RewriteAction, string | null> = {
   to_bluesky_thread: "bluesky",
   to_devto_article: "devto",
+  to_x_thread: "x",
+  to_linkedin_post: "linkedin",
   rewrite: null,
   shorter: null,
   more_technical: null,

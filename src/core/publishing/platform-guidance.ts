@@ -1,22 +1,26 @@
 /**
- * Phase F4.4 — platform guidance for founder publishing identities.
+ * Phase F4.4 + F5.0 — platform guidance for founder publishing
+ * identities.
  *
  * Pure data. No AI prompting, no automation. These are short
  * editorial hints rendered next to a platform choice so the founder
- * knows what kind of voice fits each platform. Future MCP / Claude
- * generation can read the same hints via
- * `resolveIdentityPlatformGuidance()`.
+ * knows what kind of voice fits each platform.
  *
  * Platforms exposed in the founder UI:
- *   - reddit
- *   - devto
- *   - hashnode
- *   - bluesky
- *   - indie_hackers
+ *   - reddit         (manual-first via Reddit's official OAuth + manual fallback)
+ *   - devto          (automated when DEVTO_API_KEY is set)
+ *   - hashnode       (automated when HASHNODE_API_KEY is set)
+ *   - bluesky        (automated when BLUESKY_APP_PASSWORD is set)
+ *   - indie_hackers  (manual-only — no API)
+ *   - x              (F5.0 — manual-first distribution; share-intent fallback)
+ *   - linkedin       (F5.0 — manual-first distribution; share-intent fallback)
  *
- * X and LinkedIn are intentionally absent — they don't have
- * functional publishers yet, so we don't expose them as identity
- * targets either.
+ * X and LinkedIn ARE NOT autonomous publishing layers. They are
+ * distribution layers: Signal prepares the post, formats it for the
+ * platform, opens the official compose intent URL, and the founder
+ * confirms + clicks publish on the platform itself. The founder then
+ * pastes the resulting permalink back into Signal so the publish
+ * history stays unified.
  */
 
 export type FounderPlatform =
@@ -24,7 +28,9 @@ export type FounderPlatform =
   | "devto"
   | "hashnode"
   | "bluesky"
-  | "indie_hackers";
+  | "indie_hackers"
+  | "x"
+  | "linkedin";
 
 export interface FounderPlatformGuidance {
   label: string;
@@ -34,6 +40,9 @@ export interface FounderPlatformGuidance {
   voiceHint: string;
   /** Whether Signal can currently publish to this platform automatically. */
   publishingMode: "api" | "manual" | "not_implemented";
+  /** True for distribution-only platforms (X, LinkedIn). Founder must
+   *  confirm + publish on the platform itself. */
+  distributionOnly?: boolean;
 }
 
 const GUIDANCE: Record<FounderPlatform, FounderPlatformGuidance> = {
@@ -72,6 +81,22 @@ const GUIDANCE: Record<FounderPlatform, FounderPlatformGuidance> = {
       "Founder stories, growth lessons, and build-in-public updates. Concrete numbers and honest tradeoffs land best.",
     publishingMode: "manual",
   },
+  x: {
+    label: "X",
+    short: "X",
+    voiceHint:
+      "Threads work better than long posts. Short, specific, technical or operational. No hashtag spam, no engagement bait, max one external link per thread.",
+    publishingMode: "manual",
+    distributionOnly: true,
+  },
+  linkedin: {
+    label: "LinkedIn",
+    short: "in",
+    voiceHint:
+      "Calm founder reflection. Short paragraphs, real operational lessons. Avoid recruiter tone, inspiration bait, and \"I'm thrilled\" openers.",
+    publishingMode: "manual",
+    distributionOnly: true,
+  },
 };
 
 export const FOUNDER_PLATFORMS: ReadonlyArray<FounderPlatform> = [
@@ -80,13 +105,14 @@ export const FOUNDER_PLATFORMS: ReadonlyArray<FounderPlatform> = [
   "hashnode",
   "bluesky",
   "indie_hackers",
+  "x",
+  "linkedin",
 ];
 
 /**
  * Look up the founder-facing label, short text, and voice hint for
  * a platform slug. Returns null when the slug isn't a supported
- * founder platform (e.g. legacy "x" / "linkedin" rows still in the
- * database).
+ * founder platform.
  */
 export function resolveIdentityPlatformGuidance(
   platform: string,
@@ -101,24 +127,18 @@ export function isFounderPlatform(value: string): value is FounderPlatform {
     value === "devto" ||
     value === "hashnode" ||
     value === "bluesky" ||
-    value === "indie_hackers"
+    value === "indie_hackers" ||
+    value === "x" ||
+    value === "linkedin"
   );
 }
 
 /**
  * Convenience: friendly label for any platform slug, including
- * legacy values that won't appear in the new UI. Used when rendering
- * historical activity / publish history that may reference X or
- * LinkedIn rows from before F4.4.
+ * non-founder values. Safe for historical activity / publish history
+ * rendering.
  */
 export function friendlyPlatformLabel(platform: string): string {
   if (isFounderPlatform(platform)) return GUIDANCE[platform].label;
-  switch (platform) {
-    case "x":
-      return "X";
-    case "linkedin":
-      return "LinkedIn";
-    default:
-      return platform;
-  }
+  return platform;
 }

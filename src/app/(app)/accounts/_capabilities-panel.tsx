@@ -106,6 +106,18 @@ export function PublishingCapabilitiesPanel() {
         rowKind: "manual_first",
       };
     }
+    if (p === "x" || p === "linkedin") {
+      // F5.0 — distribution layers. Signal prepares the post and
+      // opens the native composer; the founder publishes on the
+      // platform itself.
+      return {
+        label,
+        short,
+        mode: "Manual distribution",
+        status: { kind: "manual", detail: "Manual distribution" },
+        rowKind: "manual_first",
+      };
+    }
     // indie_hackers
     return {
       label,
