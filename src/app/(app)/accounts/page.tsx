@@ -15,6 +15,7 @@ import { AccountCreateForm } from "./_create-form";
 import { ArchiveAccountButton } from "./_archive-button";
 import { ConnectionControls } from "./_connection-controls";
 import { VoiceProfileEditor } from "./_voice-profile-editor";
+import { PublishingCapabilitiesPanel } from "./_capabilities-panel";
 import { AccountIdentityCard } from "@/components/publishing/account-identity-card";
 import { resolveIdentityPlatformGuidance } from "@/core/publishing/platform-guidance";
 
@@ -102,46 +103,7 @@ export default async function AccountsPage() {
       />
 
       <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-3xl space-y-5">
-        {redditOauthBlocked ? (
-          <section className="rounded-2xl border border-amber-100 bg-amber-50/40 p-4">
-            <h2 className="text-sm font-semibold text-amber-900">
-              Reddit publishing is currently manual
-            </h2>
-            <p className="text-xs text-amber-900 mt-1 leading-relaxed">
-              Reddit hasn&apos;t approved Signal&apos;s OAuth app yet, so
-              direct publishing is paused. Drafts still flow through the
-              normal approval queue; the operator copies the prepared
-              payload, publishes manually on Reddit, and pastes the
-              permalink back into Signal. Every safety gate still applies.
-            </p>
-          </section>
-        ) : null}
-
-        <section className="rounded-2xl border border-ink-200 bg-white p-4">
-          <h2 className="text-sm font-semibold text-ink-900">
-            Connection setup
-          </h2>
-          <ul className="mt-2 text-xs text-ink-700 space-y-1">
-            <ProviderStatusRow
-              label="Reddit"
-              ok={providerConfigured.reddit}
-              note={redditOauthBlocked ? "Reddit API approval pending" : null}
-            />
-            <ProviderStatusRow label="X" ok={providerConfigured.x} />
-            <ProviderStatusRow
-              label="LinkedIn"
-              ok={providerConfigured.linkedin}
-            />
-            <li className="flex items-center justify-between pt-2 border-t border-ink-100">
-              <span className="text-ink-700">Encrypted token storage</span>
-              <span
-                className={encryptionOn ? "text-emerald-700" : "text-amber-700"}
-              >
-                {encryptionOn ? "Ready" : "Not configured"}
-              </span>
-            </li>
-          </ul>
-        </section>
+        <PublishingCapabilitiesPanel />
 
         {accounts.length === 0 ? (
           <section className="rounded-2xl border border-dashed border-ink-300 bg-ink-50/40 p-8 text-center">
@@ -215,34 +177,12 @@ export default async function AccountsPage() {
         />
 
         <p className="text-[11px] text-ink-500 leading-relaxed">
-          Signal never asks for passwords, cookies, session tokens, 2FA
-          codes, or recovery codes. Connections happen through each
-          platform&apos;s official method — OAuth, API key, or app-password.
+          Some platforms publish automatically once connected; others stay
+          manual-first. Signal never asks for passwords, cookies, session
+          tokens, 2FA codes, or recovery codes.
         </p>
       </div>
     </>
   );
 }
 
-function ProviderStatusRow({
-  label,
-  ok,
-  note,
-}: {
-  label: string;
-  ok: boolean;
-  note?: string | null;
-}) {
-  return (
-    <li className="flex items-center justify-between">
-      <span className="text-ink-700">{label}</span>
-      <span
-        className={
-          note ? "text-amber-700" : ok ? "text-emerald-700" : "text-ink-500"
-        }
-      >
-        {note ?? (ok ? "Ready" : "Not set up")}
-      </span>
-    </li>
-  );
-}

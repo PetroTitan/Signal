@@ -45,8 +45,8 @@ export function AccountCreateForm({ products }: AccountCreateFormProps) {
         Add a publishing identity
       </h2>
       <p className="text-xs text-ink-600 mt-1 leading-relaxed">
-        A publishing identity is the voice Signal writes in. Pick the
-        platform, give it a name, and describe how it sounds.
+        Add the identity Signal should write and publish as. Each identity
+        keeps its own voice, platform, and product context.
       </p>
 
       <form ref={formRef} action={formAction} className="mt-4 space-y-4">
@@ -54,7 +54,7 @@ export function AccountCreateForm({ products }: AccountCreateFormProps) {
 
         <div className="space-y-1.5">
           <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
-            Connected platform
+            Platform
           </div>
           <div className="flex flex-wrap gap-1.5">
             {FOUNDER_PLATFORMS.map((p) => {
@@ -102,7 +102,7 @@ export function AccountCreateForm({ products }: AccountCreateFormProps) {
           </label>
           <label className="block">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500 mb-1">
-              Handle (optional)
+              Username (optional)
             </div>
             <input
               type="text"
@@ -113,7 +113,7 @@ export function AccountCreateForm({ products }: AccountCreateFormProps) {
           </label>
           <label className="block md:col-span-2">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500 mb-1">
-              Product (optional)
+              Product context (optional)
             </div>
             <select name="product_id" className="input w-full">
               <option value="">—</option>
@@ -168,10 +168,8 @@ export function AccountCreateForm({ products }: AccountCreateFormProps) {
       </form>
 
       <p className="mt-4 text-[11px] text-ink-500 leading-relaxed">
-        Signal never asks for platform passwords, cookies, or session
-        tokens. Connections happen through each platform&apos;s official
-        method — OAuth, API key, or app-password — and are managed
-        separately under each identity.
+        Signal never asks for platform passwords. Some platforms publish
+        automatically; others stay manual-first.
       </p>
     </section>
   );
