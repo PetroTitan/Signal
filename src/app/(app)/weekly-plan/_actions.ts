@@ -36,6 +36,7 @@ export type UploadCreativeAssetResult = ActionResult<{
   creativeId: string;
   assetUrl: string;
 }>;
+export type DuplicatePlanItemResult = ActionResult<{ itemId: string }>;
 
 function isoMonday(date: Date): string {
   const d = new Date(
@@ -878,6 +879,69 @@ export async function uploadCreativeAssetAction(
           ? error.message
           : "Could not upload creative.";
     console.error("[uploadCreativeAssetAction] failed", error);
+    return actionFail(message);
+  }
+}
+
+// =====================================================================
+// Phase F2.8 — duplicatePlanItemAction
+// =====================================================================
+//
+// Quick-action: clone a plan_item as a draft. Operator uses this to
+// reuse a successful template (e.g. "post this on r/test then again
+// next week"). Creative is NOT cloned — Signal forces the operator
+// to attach a fresh creative so the same image isn't published twice
+// (duplicate-permalink + fingerprint guards would refuse anyway, but
+// cloning the creative would invite confusion).
+
+export async function duplicatePlanItemAction(
+  _prev: DuplicatePlanItemResult,
+  formData: FormData,
+): Promise<DuplicatePlanItemResult> {
+  const sourceId = String(formData.get("item_id") ?? "").trim();
+  if (!sourceId) return actionFail("Missing item id.");
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    const source = await getPlanItemById(workspaceId, sourceId);
+    if (!source) return actionFail("Source item not found.");
+
+    const cloned = await createPlanItem({
+      workspaceId,
+      weeklyPlanId: source.weeklyPlanId,
+      title: source.title ? `${source.title} (copy)` : null,
+      body: source.body,
+      platform: source.platform,
+      contentType: source.contentType,
+      productId: source.productId,
+      accountId: source.accountId,
+      // Schedule and creative are deliberately NOT copied. The
+      // operator reschedules and attaches a fresh creative.
+      status: "draft",
+    });
+
+    await logActivityBestEffort({
+      workspaceId,
+      eventType: "weekly_plan_item.duplicated",
+      entityType: "weekly_plan_item",
+      entityId: cloned.id,
+      title: `Duplicated "${source.title ?? "Untitled"}"`,
+      description: `Cloned as draft. Schedule + creative cleared.`,
+    });
+
+    revalidatePath("/weekly-plan");
+    return actionOk({ itemId: cloned.id });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : "Could not duplicate plan item.";
+    console.error("[duplicatePlanItemAction] failed", error);
     return actionFail(message);
   }
 }
