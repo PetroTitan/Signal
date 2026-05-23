@@ -204,7 +204,7 @@ export function searchAll(input: SearchInput): SearchResult[] {
         subtitle: `${asset.cluster} · ${asset.freshness}`,
         productId: asset.productId,
         platform: "google",
-        href: "/platforms/google",
+        href: "/dashboard",
         score: match.score,
         matchedFields: match.matchedFields,
       });

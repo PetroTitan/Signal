@@ -117,12 +117,12 @@ export function useAutosave<T>(
 export function autosaveLabel(status: AutosaveStatus): string {
   switch (status) {
     case "idle":
-      return "Draft saved";
+      return "Saved";
     case "dirty":
-      return "Unsaved changes";
+      return "Saving in a moment…";
     case "saving":
       return "Saving…";
     case "error":
-      return "Save failed";
+      return "Save failed — your work is still here";
   }
 }

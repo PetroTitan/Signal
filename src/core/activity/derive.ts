@@ -226,7 +226,7 @@ export function deriveActivity(input: DeriveInput): ActivityEvent[] {
         severity: g.impact === "high" ? "warn" : "info",
         title: g.title,
         explanation: g.suggestedAction,
-        link: "/platforms/google",
+        link: "/dashboard",
       });
     }
   }

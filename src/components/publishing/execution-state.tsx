@@ -45,32 +45,32 @@ const STATE_META: Record<FounderState, FounderStateMeta> = {
   },
   awaiting_approval: {
     label: "Awaiting approval",
-    hint: "Waiting for the operator to approve for the publishing queue.",
+    hint: "Waiting for your approval before it can publish.",
     tone: "warn",
   },
   approved: {
     label: "Approved",
-    hint: "Approved; will land in the publishing queue shortly.",
+    hint: "Approved and lined up to publish at the scheduled time.",
     tone: "info",
   },
   scheduled: {
     label: "Scheduled",
-    hint: "In the publishing queue; the scheduler is watching the clock.",
+    hint: "Will publish at its scheduled time.",
     tone: "info",
   },
   ready_for_publish: {
     label: "Ready to publish",
-    hint: "Eligible right now. Operator confirms to send.",
+    hint: "Ready to go out. Open the post to confirm and publish.",
     tone: "success",
   },
   ready_for_manual_publish: {
-    label: "Ready to publish (manual)",
-    hint: "Operator publishes on Reddit and pastes the permalink back.",
+    label: "Ready to publish manually",
+    hint: "Open the post to copy it, publish on Reddit, and paste the permalink back.",
     tone: "success",
   },
   publishing: {
     label: "Publishing",
-    hint: "Talking to the platform now.",
+    hint: "Sending the post now.",
     tone: "info",
   },
   published: {
@@ -80,27 +80,27 @@ const STATE_META: Record<FounderState, FounderStateMeta> = {
   },
   skipped: {
     label: "Skipped",
-    hint: "A safety gate refused this run; will re-evaluate on the next tick.",
+    hint: "A safety check held this back. Signal will try again automatically.",
     tone: "warn",
   },
   blocked: {
     label: "Blocked",
-    hint: "A safety gate refused this terminally. Resolve the issue and re-queue.",
+    hint: "A safety check stopped this. Fix the issue and approve again.",
     tone: "danger",
   },
   failed: {
     label: "Failed",
-    hint: "The platform refused the publish. See the failure reason below.",
+    hint: "The platform refused the post. Open it to see what happened.",
     tone: "danger",
   },
   paused: {
     label: "Paused",
-    hint: "On hold. Resume to put it back in the queue.",
+    hint: "On hold. Resume to bring it back into your publishing plan.",
     tone: "muted",
   },
   archived: {
     label: "Archived",
-    hint: "Set aside; no longer in active rotation.",
+    hint: "Set aside. No longer in your active publishing plan.",
     tone: "muted",
   },
 };

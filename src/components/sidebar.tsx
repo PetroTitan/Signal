@@ -12,11 +12,8 @@ import {
   PlanIcon,
   ApprovalIcon,
   SchedulerIcon,
-  AnalyticsIcon,
   SettingsIcon,
   BacklogIcon,
-  PlatformsIcon,
-  SearchIcon,
   InsightIcon,
 } from "./icons";
 import { BrandMark } from "./brand-mark";
@@ -59,15 +56,8 @@ const groups: NavGroup[] = [
       { href: "/weekly-contracts", label: "Publishing scope", icon: ApprovalIcon },
       { href: "/backlog", label: "Backlog", icon: BacklogIcon },
       { href: "/activity", label: "Activity", icon: PlanIcon },
-      { href: "/analytics", label: "Analytics", icon: AnalyticsIcon },
-      { href: "/platforms", label: "Platform overview", icon: PlatformsIcon, exact: true },
-      { href: "/platforms/reddit", label: "Reddit", icon: PlatformsIcon },
-      { href: "/platforms/x", label: "X", icon: PlatformsIcon },
-      { href: "/platforms/linkedin", label: "LinkedIn", icon: PlatformsIcon },
-      { href: "/platforms/google", label: "Google visibility", icon: SearchIcon },
       { href: "/settings/mcp", label: "MCP operations", icon: SettingsIcon },
       { href: "/operator-bridge", label: "Operator bridge", icon: InsightIcon },
-      { href: "/imports", label: "Import assistant", icon: InsightIcon },
     ],
   },
 ];

@@ -498,14 +498,10 @@ export default async function McpSettingsPage() {
               Import assistant
             </h2>
             <p className="text-xs text-ink-600 mt-1 leading-relaxed">
-              Map screenshots and pasted product copy into structured product
-              and account fields. The extractor never stores raw screenshots
-              by default and refuses fields on the never-extract list.
+              The import assistant isn&apos;t shipped yet. Use the operator
+              bridge to send a structured task to Claude Code / Codex.
             </p>
           </div>
-          <Link href="/imports" className="btn-primary text-xs whitespace-nowrap">
-            Open import assistant
-          </Link>
         </section>
 
         {/* PHASE E2.8 — OPERATOR BRIDGE CTA */}
