@@ -7,7 +7,13 @@
  * posts. No comments, DMs, voting, moderation, or scraping.
  */
 
-export type PublishPlatform = "reddit" | "x" | "linkedin";
+export type PublishPlatform =
+  | "reddit"
+  | "x"
+  | "linkedin"
+  | "devto"
+  | "hashnode"
+  | "bluesky";
 
 export type PublishMode = "dry_run" | "live";
 
@@ -38,6 +44,12 @@ export const PUBLISH_REASON_CODES = [
   "missing_subreddit",
   "missing_body",
   "missing_title",
+  "missing_api_key",
+  "missing_publication_id",
+  "missing_identifier",
+  "duplicate_post",
+  "body_too_long",
+  "cadence_cooldown",
   "safe_test_mode_ready_for_publish",
   "unknown_error",
 ] as const;
@@ -65,6 +77,21 @@ export interface PublishRequest {
   target: string | null;
   /** Workspace publishing mode (dry_run | live). */
   mode: PublishMode;
+  // ------------------------------------------------------------------
+  // Canonical-post extensions used by dev.to / Hashnode / Bluesky.
+  // Each is optional — Reddit ignores them. Platforms read only what
+  // they need; transformers must not depend on any single field.
+  // ------------------------------------------------------------------
+  /** Plain-text summary for SEO surfaces (dev.to/Hashnode). */
+  summary?: string | null;
+  /** Tags as an array of bare words (no '#'). */
+  tags?: string[];
+  /** Canonical URL on the operator's own site, if any. */
+  canonicalUrl?: string | null;
+  /** Optional cover image URL for blog-style platforms. */
+  coverImageUrl?: string | null;
+  /** dev.to / Hashnode "series" or "publication" hint. */
+  series?: string | null;
 }
 
 export interface PublishOutcome {
