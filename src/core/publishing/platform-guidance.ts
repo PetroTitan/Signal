@@ -30,7 +30,11 @@ export type FounderPlatform =
   | "bluesky"
   | "indie_hackers"
   | "x"
-  | "linkedin";
+  | "linkedin"
+  | "youtube"
+  | "threads"
+  | "instagram"
+  | "telegram";
 
 export interface FounderPlatformGuidance {
   label: string;
@@ -97,6 +101,37 @@ const GUIDANCE: Record<FounderPlatform, FounderPlatformGuidance> = {
     publishingMode: "manual",
     distributionOnly: true,
   },
+  youtube: {
+    label: "YouTube",
+    short: "YT",
+    voiceHint:
+      "Calm title, useful description with chapters, no MrBeast-style clickbait. Tags help discoverability; hashtag spam doesn't.",
+    publishingMode: "manual",
+    distributionOnly: true,
+  },
+  threads: {
+    label: "Threads",
+    short: "Th",
+    voiceHint:
+      "Short, conversational, lightweight founder updates. Lower technical density than LinkedIn or dev.to.",
+    publishingMode: "manual",
+    distributionOnly: true,
+  },
+  instagram: {
+    label: "Instagram",
+    short: "ig",
+    voiceHint:
+      "Visual-first platform. Caption supports the image — keep it human and calm. No \"link in bio\" / \"grindset\" / hustle bait.",
+    publishingMode: "manual",
+    distributionOnly: true,
+  },
+  telegram: {
+    label: "Telegram",
+    short: "Tg",
+    voiceHint:
+      "Channel updates for founders. Plain text, calm, infrequent. Signal posts via the Bot API only when the channel is configured.",
+    publishingMode: "api",
+  },
 };
 
 export const FOUNDER_PLATFORMS: ReadonlyArray<FounderPlatform> = [
@@ -107,6 +142,10 @@ export const FOUNDER_PLATFORMS: ReadonlyArray<FounderPlatform> = [
   "indie_hackers",
   "x",
   "linkedin",
+  "youtube",
+  "threads",
+  "instagram",
+  "telegram",
 ];
 
 /**
@@ -129,7 +168,11 @@ export function isFounderPlatform(value: string): value is FounderPlatform {
     value === "bluesky" ||
     value === "indie_hackers" ||
     value === "x" ||
-    value === "linkedin"
+    value === "linkedin" ||
+    value === "youtube" ||
+    value === "threads" ||
+    value === "instagram" ||
+    value === "telegram"
   );
 }
 

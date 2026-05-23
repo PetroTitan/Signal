@@ -32,10 +32,23 @@ export interface BlueskyCredentials {
   service: string;
 }
 
+/**
+ * F5.1 — Telegram Bot API token. The per-channel chat_id is stored
+ * on each `growth_accounts.handle` row (founder enters @channelname
+ * or numeric chat id when creating the identity), so a single workspace
+ * bot can post to multiple channels the founder has explicitly added
+ * it to as admin.
+ */
+export interface TelegramCredentials {
+  platform: "telegram";
+  botToken: string;
+}
+
 export type TierOneCredentials =
   | DevtoCredentials
   | HashnodeCredentials
-  | BlueskyCredentials;
+  | BlueskyCredentials
+  | TelegramCredentials;
 
 function safe(value: string | undefined): string | null {
   if (!value) return null;
@@ -68,6 +81,12 @@ export function readBlueskyCredentials(): BlueskyCredentials | null {
   };
 }
 
+export function readTelegramCredentials(): TelegramCredentials | null {
+  const botToken = safe(process.env.TELEGRAM_BOT_TOKEN);
+  if (!botToken) return null;
+  return { platform: "telegram", botToken };
+}
+
 /**
  * Surfaces whether each tier-1 platform is configured, without
  * leaking the actual values. Safe to render in admin UIs.
@@ -76,6 +95,7 @@ export interface TierOneConfigStatus {
   devto: { configured: boolean };
   hashnode: { configured: boolean; hasPublicationId: boolean };
   bluesky: { configured: boolean };
+  telegram: { configured: boolean };
 }
 
 export function readTierOneConfigStatus(): TierOneConfigStatus {
@@ -86,6 +106,7 @@ export function readTierOneConfigStatus(): TierOneConfigStatus {
       hasPublicationId: !!safe(process.env.HASHNODE_PUBLICATION_ID),
     },
     bluesky: { configured: readBlueskyCredentials() !== null },
+    telegram: { configured: readTelegramCredentials() !== null },
   };
 }
 
@@ -101,9 +122,15 @@ export function credentialEnvHint(platform: PublishPlatform): string {
       return "HASHNODE_API_KEY (and HASHNODE_PUBLICATION_ID)";
     case "bluesky":
       return "BLUESKY_IDENTIFIER and BLUESKY_APP_PASSWORD";
+    case "telegram":
+      return "TELEGRAM_BOT_TOKEN (bot must be admin of the target channel)";
     case "reddit":
     case "x":
     case "linkedin":
       return "OAuth connection on /accounts";
+    case "youtube":
+    case "threads":
+    case "instagram":
+      return "Manual publishing — no API credentials needed";
   }
 }

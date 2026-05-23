@@ -13,7 +13,11 @@ export type PublishPlatform =
   | "linkedin"
   | "devto"
   | "hashnode"
-  | "bluesky";
+  | "bluesky"
+  | "youtube"
+  | "threads"
+  | "instagram"
+  | "telegram";
 
 export type PublishMode = "dry_run" | "live";
 

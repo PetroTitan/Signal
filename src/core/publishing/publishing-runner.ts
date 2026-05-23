@@ -22,10 +22,12 @@ import { publishToLinkedIn } from "./publish-linkedin";
 import { publishToDevto } from "./publish-devto";
 import { publishToHashnode } from "./publish-hashnode";
 import { publishToBluesky } from "./publish-bluesky";
+import { publishToTelegram } from "./publish-telegram";
 import {
   readBlueskyCredentials,
   readDevtoCredentials,
   readHashnodeCredentials,
+  readTelegramCredentials,
 } from "./platform-credentials";
 import { publishFail } from "./publishing-result";
 import type { PublishOutcome, PublishRequest } from "./publishing-types";
@@ -96,6 +98,41 @@ export async function runPublish(input: RunnerInput): Promise<PublishOutcome> {
         service: creds.service,
       });
     }
+    case "telegram": {
+      const creds = readTelegramCredentials();
+      if (!creds) {
+        return publishFail(
+          "missing_api_key",
+          "TELEGRAM_BOT_TOKEN is not configured.",
+        );
+      }
+      // The chat id (channel @username or numeric) lives on the
+      // identity's `handle` field. The runner doesn't have direct
+      // access to growth_accounts here, so the caller (the action
+      // wiring) must pass it via request.target.
+      const chatId = input.request.target ?? input.target ?? "";
+      if (!chatId) {
+        return publishFail(
+          "missing_identifier",
+          "Telegram: this identity has no channel set. Add the channel @username or numeric chat id on the identity card.",
+        );
+      }
+      return publishToTelegram({
+        request: input.request,
+        botToken: creds.botToken,
+        chatId,
+      });
+    }
+    case "youtube":
+    case "threads":
+    case "instagram":
+      // Manual-distribution platforms — never reach the runner with
+      // mode='live'. They are recorded via recordManualDistributionAction
+      // after the founder publishes by hand on the native composer.
+      return publishFail(
+        "platform_not_supported",
+        "This platform publishes manually — use the publish detail page to copy + post + record.",
+      );
   }
 
   // OAuth platforms — gated by the policy verdict and the stored token.

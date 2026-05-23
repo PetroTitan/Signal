@@ -106,9 +106,15 @@ export function PublishingCapabilitiesPanel() {
         rowKind: "manual_first",
       };
     }
-    if (p === "x" || p === "linkedin") {
-      // F5.0 — distribution layers. Signal prepares the post and
-      // opens the native composer; the founder publishes on the
+    if (
+      p === "x" ||
+      p === "linkedin" ||
+      p === "youtube" ||
+      p === "threads" ||
+      p === "instagram"
+    ) {
+      // F5.0 + F5.1 — distribution layers. Signal prepares the post
+      // and opens the native composer; the founder publishes on the
       // platform itself.
       return {
         label,
@@ -117,6 +123,25 @@ export function PublishingCapabilitiesPanel() {
         status: { kind: "manual", detail: "Manual distribution" },
         rowKind: "manual_first",
       };
+    }
+    if (p === "telegram") {
+      // F5.1 — semi-automated via Telegram Bot API. The bot only
+      // posts to channels the founder explicitly configured.
+      return tier1.telegram.configured
+        ? {
+            label,
+            short,
+            mode: "Automated when bot is admin",
+            status: { kind: "ready", detail: "Connected" },
+            rowKind: "automated",
+          }
+        : {
+            label,
+            short,
+            mode: "Automated when bot is admin",
+            status: { kind: "missing", detail: "Not connected" },
+            rowKind: "not_connected",
+          };
     }
     // indie_hackers
     return {

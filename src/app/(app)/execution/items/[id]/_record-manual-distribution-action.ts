@@ -39,21 +39,64 @@ import {
   type ActionResult,
 } from "@/lib/forms/action-result";
 
+export type ManualDistributionPlatform =
+  | "x"
+  | "linkedin"
+  | "youtube"
+  | "threads"
+  | "instagram";
+
 export type RecordManualDistributionResult = ActionResult<{
   executionItemId: string;
   permalink: string;
-  platform: "x" | "linkedin";
+  platform: ManualDistributionPlatform;
 }>;
 
 const X_HOST_RE = /^https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\//i;
 const LINKEDIN_HOST_RE = /^https?:\/\/(?:www\.)?linkedin\.com\//i;
+const YOUTUBE_HOST_RE =
+  /^https?:\/\/(?:www\.)?(?:youtube\.com\/(?:watch|shorts|embed|live)|youtu\.be\/)/i;
+const THREADS_HOST_RE = /^https?:\/\/(?:www\.)?threads\.(?:net|com)\//i;
+const INSTAGRAM_HOST_RE = /^https?:\/\/(?:www\.)?instagram\.com\//i;
 
-function isXPermalink(url: string): boolean {
-  return X_HOST_RE.test(url);
+function validatePermalinkForPlatform(
+  platform: ManualDistributionPlatform,
+  url: string,
+): string | null {
+  switch (platform) {
+    case "x":
+      return X_HOST_RE.test(url)
+        ? null
+        : "That doesn't look like an X permalink. Expected an x.com or twitter.com URL.";
+    case "linkedin":
+      return LINKEDIN_HOST_RE.test(url)
+        ? null
+        : "That doesn't look like a LinkedIn permalink. Expected a linkedin.com URL.";
+    case "youtube":
+      return YOUTUBE_HOST_RE.test(url)
+        ? null
+        : "That doesn't look like a YouTube permalink. Expected a youtube.com or youtu.be URL.";
+    case "threads":
+      return THREADS_HOST_RE.test(url)
+        ? null
+        : "That doesn't look like a Threads permalink. Expected a threads.net URL.";
+    case "instagram":
+      return INSTAGRAM_HOST_RE.test(url)
+        ? null
+        : "That doesn't look like an Instagram permalink. Expected an instagram.com URL.";
+  }
 }
 
-function isLinkedInPermalink(url: string): boolean {
-  return LINKEDIN_HOST_RE.test(url);
+function isManualDistributionPlatform(
+  value: string,
+): value is ManualDistributionPlatform {
+  return (
+    value === "x" ||
+    value === "linkedin" ||
+    value === "youtube" ||
+    value === "threads" ||
+    value === "instagram"
+  );
 }
 
 function normalizeUrl(raw: string): string {
@@ -72,8 +115,10 @@ export async function recordManualDistributionAction(
     String(formData.get("operator_notes") ?? "").trim() || null;
 
   if (!executionItemId) return actionFail("Missing execution item.");
-  if (platformRaw !== "x" && platformRaw !== "linkedin") {
-    return actionFail("This action only handles X and LinkedIn.");
+  if (!isManualDistributionPlatform(platformRaw)) {
+    return actionFail(
+      "This action only handles X, LinkedIn, YouTube, Threads, and Instagram.",
+    );
   }
   const platform = platformRaw;
 
@@ -81,15 +126,9 @@ export async function recordManualDistributionAction(
   if (permalink.length === 0) {
     return actionFail("Paste the permalink of the post you published.");
   }
-  if (platform === "x" && !isXPermalink(permalink)) {
-    return actionFail(
-      "That doesn't look like an X permalink. Expected an x.com or twitter.com URL.",
-    );
-  }
-  if (platform === "linkedin" && !isLinkedInPermalink(permalink)) {
-    return actionFail(
-      "That doesn't look like a LinkedIn permalink. Expected a linkedin.com URL.",
-    );
+  const permalinkError = validatePermalinkForPlatform(platform, permalink);
+  if (permalinkError) {
+    return actionFail(permalinkError);
   }
 
   try {
@@ -156,7 +195,11 @@ export async function recordManualDistributionAction(
       reasonCode: null,
       httpStatus: null,
       startedAt: nowIso,
-      metadata: operatorNotes ? { operator_notes: operatorNotes } : {},
+      metadata: {
+        ...(operatorNotes ? { operator_notes: operatorNotes } : {}),
+        distribution_method: "manual",
+        manual_distribution_verified: true,
+      },
     });
 
     await updateItemStatus({
@@ -208,14 +251,26 @@ export async function recordManualDistributionAction(
     }
 
     try {
+      const friendly: Record<ManualDistributionPlatform, string> = {
+        x: "X",
+        linkedin: "LinkedIn",
+        youtube: "YouTube",
+        threads: "Threads",
+        instagram: "Instagram",
+      };
       await recordActivity({
         workspaceId,
         eventType: `${platform}.post_published`,
         entityType: "execution_item",
         entityId: item.id,
-        title: `${platform === "x" ? "X" : "LinkedIn"} post recorded`,
+        title: `${friendly[platform]} post recorded`,
         description: permalink,
-        metadata: { permalink, mode: "manual" },
+        metadata: {
+          permalink,
+          mode: "manual",
+          distribution_method: "manual",
+          manual_distribution_verified: true,
+        },
       });
     } catch (err) {
       console.error("[recordManualDistributionAction] activity failed", err);

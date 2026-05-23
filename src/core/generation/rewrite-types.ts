@@ -19,6 +19,9 @@ export type RewriteAction =
   | "to_devto_article"
   | "to_x_thread"
   | "to_linkedin_post"
+  | "to_youtube_description"
+  | "to_threads_post"
+  | "to_instagram_caption"
   | "improve_headline";
 
 export const REWRITE_ACTION_LABELS: Record<RewriteAction, string> = {
@@ -31,6 +34,9 @@ export const REWRITE_ACTION_LABELS: Record<RewriteAction, string> = {
   to_devto_article: "Adapt for dev.to",
   to_x_thread: "Adapt for X",
   to_linkedin_post: "Adapt for LinkedIn",
+  to_youtube_description: "Adapt for YouTube",
+  to_threads_post: "Adapt for Threads",
+  to_instagram_caption: "Adapt for Instagram",
   improve_headline: "Improve headline",
 };
 
@@ -44,6 +50,9 @@ export const REWRITE_ACTIONS: ReadonlyArray<RewriteAction> = [
   "to_devto_article",
   "to_x_thread",
   "to_linkedin_post",
+  "to_youtube_description",
+  "to_threads_post",
+  "to_instagram_caption",
   "improve_headline",
 ];
 

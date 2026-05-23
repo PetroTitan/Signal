@@ -171,10 +171,20 @@ export default async function AccountsPage() {
                     hasAccessToken={c?.hasAccessToken ?? false}
                     lastCheckedAt={c?.lastCheckedAt ?? null}
                   />
-                ) : a.platform === "x" || a.platform === "linkedin" ? (
+                ) : a.platform === "x" ||
+                  a.platform === "linkedin" ||
+                  a.platform === "youtube" ||
+                  a.platform === "threads" ||
+                  a.platform === "instagram" ? (
                   <p className="text-[11px] text-ink-500 italic">
                     Manual distribution — Signal opens the native composer
                     and you publish on the platform itself.
+                  </p>
+                ) : a.platform === "telegram" ? (
+                  <p className="text-[11px] text-ink-500 italic">
+                    Telegram channel. Add the channel @username as the
+                    handle, and add this workspace&apos;s bot to your
+                    channel as an admin.
                   </p>
                 ) : null;
               const controls = (

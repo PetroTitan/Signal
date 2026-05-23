@@ -34,6 +34,15 @@ const COOLDOWN_MINUTES: Partial<Record<PublishPlatform, number>> = {
   // feed ranking.
   x: 180,
   linkedin: 480,
+  // F5.1 — new platforms.
+  //   youtube  — video work takes hours; 12h between publishes is generous
+  //   threads  — short conversational; 3h matches X cadence target
+  //   instagram— visual prep needed; 4h respects feed-ranking penalties
+  //   telegram — semi-automated bot post; 30m prevents accidental spam
+  youtube: 720,
+  threads: 180,
+  instagram: 240,
+  telegram: 30,
 };
 
 export type CadenceHealth = "healthy" | "slightly_aggressive" | "aggressive";
