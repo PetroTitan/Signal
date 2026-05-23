@@ -37,6 +37,8 @@ export type UploadCreativeAssetResult = ActionResult<{
   assetUrl: string;
 }>;
 export type DuplicatePlanItemResult = ActionResult<{ itemId: string }>;
+export type ComposeUpsertDraftResult = ActionResult<{ itemId: string }>;
+export type SendForApprovalResult = ActionResult<{ itemId: string }>;
 
 function isoMonday(date: Date): string {
   const d = new Date(
@@ -942,6 +944,237 @@ export async function duplicatePlanItemAction(
           ? error.message
           : "Could not duplicate plan item.";
     console.error("[duplicatePlanItemAction] failed", error);
+    return actionFail(message);
+  }
+}
+
+// =====================================================================
+// Phase F2.9 — composeUpsertDraftAction
+// =====================================================================
+//
+// Single action the compose sheet calls for both first-keystroke
+// create and every subsequent autosave update. Keeps the operator
+// experience identical regardless of whether a row exists yet.
+//
+// If form.item_id is empty: create a draft with smart defaults
+// (status='draft', platform='reddit', content_type='post'). Returns
+// the new id so the client can store it for subsequent updates.
+//
+// If form.item_id is set: update the existing row via the same
+// patch surface as updatePlanItemAction. Status transitions are
+// restricted to draft / pending_approval / skipped (same rule).
+
+export async function composeUpsertDraftAction(
+  _prev: ComposeUpsertDraftResult,
+  formData: FormData,
+): Promise<ComposeUpsertDraftResult> {
+  const itemIdRaw = String(formData.get("item_id") ?? "").trim();
+  const itemId = itemIdRaw.length > 0 ? itemIdRaw : null;
+  const title = String(formData.get("title") ?? "");
+  const body = String(formData.get("body") ?? "");
+  const platform = String(formData.get("platform") ?? "").trim() || null;
+  const contentType =
+    String(formData.get("content_type") ?? "").trim() || null;
+  const accountId =
+    String(formData.get("account_id") ?? "").trim() || null;
+  const productId =
+    String(formData.get("product_id") ?? "").trim() || null;
+  const scheduledAtRaw = String(formData.get("scheduled_at") ?? "").trim();
+  const subreddit =
+    String(formData.get("subreddit") ?? "").trim() || null;
+  const riskScoreRaw = String(formData.get("risk_score") ?? "").trim();
+  const notes = String(formData.get("notes") ?? "").trim() || null;
+
+  // Don't auto-create a row from the first empty keystroke — but DO
+  // accept an upsert with empty title if the row already exists (the
+  // operator may be clearing the title intentionally).
+  if (!itemId && title.trim().length === 0 && body.trim().length === 0) {
+    return actionFail("Add a title or body before saving.");
+  }
+
+  let scheduledAtIso: string | null | undefined = undefined;
+  if (formData.has("scheduled_at")) {
+    if (scheduledAtRaw.length === 0) {
+      scheduledAtIso = null;
+    } else {
+      const d = new Date(scheduledAtRaw);
+      if (Number.isNaN(d.getTime())) {
+        return actionFail("Could not parse the scheduled time.");
+      }
+      scheduledAtIso = d.toISOString();
+    }
+  }
+
+  let riskScore: number | null | undefined = undefined;
+  if (formData.has("risk_score")) {
+    if (riskScoreRaw.length === 0) {
+      riskScore = null;
+    } else {
+      const n = Number(riskScoreRaw);
+      if (!Number.isFinite(n) || n < 0 || n > 100) {
+        return actionFail("Risk score must be a number 0–100.");
+      }
+      riskScore = n;
+    }
+  }
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    // --- UPDATE path ---
+    if (itemId) {
+      const patch: import("@/lib/supabase/types").WeeklyPlanItemUpdate = {};
+      patch.title = title.trim().length === 0 ? null : title.trim();
+      patch.body = body.length === 0 ? null : body;
+      if (platform !== null) patch.platform = platform;
+      if (contentType !== null) patch.content_type = contentType;
+      if (formData.has("account_id")) patch.account_id = accountId;
+      if (formData.has("product_id")) patch.product_id = productId;
+      if (scheduledAtIso !== undefined) patch.scheduled_at = scheduledAtIso;
+      if (riskScore !== undefined) patch.risk_score = riskScore;
+
+      // Stash subreddit + notes into metadata.
+      const existing = await getPlanItemById(workspaceId, itemId);
+      const meta = { ...(existing.metadata as Record<string, unknown>) };
+      if (formData.has("subreddit")) {
+        if (subreddit) meta.target = subreddit;
+        else delete meta.target;
+      }
+      if (formData.has("notes")) {
+        if (notes) meta.operator_notes = notes;
+        else delete meta.operator_notes;
+      }
+      patch.metadata = meta;
+
+      const updated = await updatePlanItem({
+        workspaceId,
+        itemId,
+        patch,
+      });
+      revalidatePath("/weekly-plan");
+      return actionOk({ itemId: updated.id });
+    }
+
+    // --- CREATE path: ensure a weekly plan exists, then insert a
+    //     draft with the compose-time smart defaults.
+    let plan = await getCurrentWeeklyPlan(workspaceId);
+    if (!plan) {
+      plan = await createWeeklyPlan({
+        workspaceId,
+        title: "This week",
+        weekStart: isoMonday(new Date()),
+      });
+      await logActivityBestEffort({
+        workspaceId,
+        eventType: "weekly_plan.created",
+        entityType: "weekly_plan",
+        entityId: plan.id,
+        title: "Weekly plan created",
+        description: `Week of ${plan.weekStart}.`,
+      });
+    }
+
+    const item = await createPlanItem({
+      workspaceId,
+      weeklyPlanId: plan.id,
+      title: title.trim().length === 0 ? null : title.trim(),
+      body: body.length === 0 ? null : body,
+      platform: platform ?? "reddit",
+      contentType: contentType ?? "post",
+      productId,
+      accountId,
+      scheduledAt: scheduledAtIso ?? null,
+      riskScore: riskScore ?? null,
+      status: "draft",
+      metadata: {
+        ...(subreddit ? { target: subreddit } : {}),
+        ...(notes ? { operator_notes: notes } : {}),
+        compose_origin: "founder_compose_sheet",
+      },
+    });
+    await logActivityBestEffort({
+      workspaceId,
+      eventType: "weekly_plan_item.created",
+      entityType: "weekly_plan_item",
+      entityId: item.id,
+      title: `Draft "${item.title ?? "Untitled"}" started`,
+      description: null,
+    });
+
+    revalidatePath("/weekly-plan");
+    return actionOk({ itemId: item.id });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : "Could not save draft.";
+    console.error("[composeUpsertDraftAction] failed", error);
+    return actionFail(message);
+  }
+}
+
+// =====================================================================
+// Phase F2.9 — sendForApprovalAction
+// =====================================================================
+//
+// One-click intent: move a draft to pending_approval. Refuses items
+// that aren't in 'draft' or 'skipped' so the operator can't reroute
+// already-scheduled/published items by mistake.
+
+export async function sendForApprovalAction(
+  _prev: SendForApprovalResult,
+  formData: FormData,
+): Promise<SendForApprovalResult> {
+  const itemId = String(formData.get("item_id") ?? "").trim();
+  if (!itemId) return actionFail("Missing item id.");
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    const existing = await getPlanItemById(workspaceId, itemId);
+    if (
+      existing.status !== "draft" &&
+      existing.status !== "skipped"
+    ) {
+      return actionFail(
+        `Already ${existing.status}. Can only send drafts (or skipped items) for approval.`,
+      );
+    }
+    if (!existing.title || existing.title.trim().length === 0) {
+      return actionFail("Add a title before sending for approval.");
+    }
+
+    await updatePlanItem({
+      workspaceId,
+      itemId,
+      patch: { status: "pending_approval" },
+    });
+    await logActivityBestEffort({
+      workspaceId,
+      eventType: "weekly_plan_item.sent_for_approval",
+      entityType: "weekly_plan_item",
+      entityId: itemId,
+      title: `"${existing.title}" sent for approval`,
+      description: null,
+    });
+
+    revalidatePath("/weekly-plan");
+    revalidatePath("/approval-queue");
+    return actionOk({ itemId });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : "Could not send for approval.";
+    console.error("[sendForApprovalAction] failed", error);
     return actionFail(message);
   }
 }
