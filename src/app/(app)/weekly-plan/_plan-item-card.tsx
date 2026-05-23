@@ -19,6 +19,7 @@ import { ExecutionStateBadge } from "@/components/publishing/execution-state";
 import { SchedulePresetsInput } from "@/components/publishing/schedule-presets-input";
 import { SubredditPill } from "@/components/publishing/subreddit-pill";
 import { PlatformChip } from "@/components/publishing/platform-chip";
+import { RemoveButton } from "./_remove-button";
 import {
   FounderComposeSheet,
   type FounderComposeSheetDefaults,
@@ -192,6 +193,7 @@ export function PlanItemCard(props: PlanItemCardProps) {
                 timezoneLabel={props.timezoneLabel}
               />
               <DuplicateButton itemId={props.id} />
+              <RemoveButton itemId={props.id} status={props.status} />
             </div>
           </div>
 

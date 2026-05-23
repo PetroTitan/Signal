@@ -300,3 +300,27 @@ export async function updatePlanItemStatus(input: {
     patch: { status: input.status },
   });
 }
+
+/**
+ * Hard-delete a plan item. Used by removePlanItemAction when the
+ * item has not yet been published. Creatives + plan-item join rows
+ * cascade via FK; execution_items must be cancelled BEFORE this is
+ * called (they reference plan items through metadata.plan_item_id /
+ * source_entity_id, not through a FK).
+ *
+ * publish_history rows are NEVER removed — they keep `execution_item_id`
+ * if there was one, and that row stays around since execution_items
+ * don't reference plan_items by FK.
+ */
+export async function deletePlanItem(input: {
+  workspaceId: string;
+  itemId: string;
+}): Promise<void> {
+  const supabase = createSupabaseServerClient();
+  const { error } = await supabase
+    .from("weekly_plan_items")
+    .delete()
+    .eq("workspace_id", input.workspaceId)
+    .eq("id", input.itemId);
+  if (error) throw fromPostgres(error, "Failed to delete plan item.");
+}
