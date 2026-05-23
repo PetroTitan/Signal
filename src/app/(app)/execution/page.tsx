@@ -50,8 +50,8 @@ export default async function ExecutionIndexPage() {
   return (
     <>
       <Topbar
-        title="Publishing activity"
-        description="What Signal is about to publish, and what's already gone out. Posts only — comments and drafts live on the weekly plan."
+        title="Publishing"
+        description="What's about to go out, and what's already gone out. Posts only — comments and drafts live on the weekly plan."
       />
 
       <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-4xl space-y-5">
@@ -198,17 +198,17 @@ export default async function ExecutionIndexPage() {
           <header className="px-5 py-3.5 border-b border-ink-100 flex items-center justify-between">
             <div>
               <div className="text-sm font-semibold text-ink-900">
-                Publishing batches
+                Publishing history
               </div>
               <p className="text-xs text-ink-500 mt-0.5">
-                Each batch groups the posts going out under one weekly scope.
+                Each week&apos;s posts grouped under their publishing scope.
               </p>
             </div>
             <div className="text-xs text-ink-500">{queues.length} total</div>
           </header>
           {queues.length === 0 ? (
             <div className="px-5 py-6 text-sm text-ink-600">
-              No batches yet.{" "}
+              Nothing here yet.{" "}
               {contract
                 ? "Create one below."
                 : "Activate a publishing scope first."}

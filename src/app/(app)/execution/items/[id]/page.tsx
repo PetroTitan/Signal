@@ -34,7 +34,7 @@ export default async function ExecutionItemPage({ params }: PageProps) {
   if (!isSupabaseConfigured()) {
     return (
       <>
-        <Topbar title="Execution item" description="Persistence not configured." />
+        <Topbar title="Post" description="Persistence not configured." />
         <div className="px-6 lg:px-10 py-12 max-w-3xl text-sm text-ink-600">
           Configure Supabase first.
         </div>
@@ -45,7 +45,7 @@ export default async function ExecutionItemPage({ params }: PageProps) {
   if (!membership) {
     return (
       <>
-        <Topbar title="Execution item" description="No workspace found." />
+        <Topbar title="Post" description="No workspace found." />
         <div className="px-6 lg:px-10 py-12 max-w-3xl text-sm text-ink-600">
           Create a workspace first.
         </div>
@@ -133,32 +133,42 @@ export default async function ExecutionItemPage({ params }: PageProps) {
     });
   }
 
+  const failedChecks = verdict
+    ? verdict.checks.filter((c) => c.status === "fail")
+    : [];
+  const warningChecks = verdict
+    ? verdict.checks.filter((c) => c.status === "warn")
+    : [];
+
   return (
     <>
       <Topbar
         title={item.title ?? "Untitled post"}
         description={
           item.scheduledAt
-            ? `Scheduled for ${new Date(item.scheduledAt).toLocaleString()}`
+            ? `Scheduled for ${new Date(item.scheduledAt).toLocaleString(undefined, {
+                weekday: "short",
+                month: "short",
+                day: "numeric",
+                hour: "numeric",
+                minute: "2-digit",
+              })}`
             : "Not scheduled"
         }
         actions={
           <div className="flex items-center gap-2">
             <ExecutionStateBadge status={item.status} size="md" />
-            <Link
-              href={`/execution/${item.queueId}`}
-              className="btn-ghost text-xs"
-            >
-              ← Back to queue
+            <Link href="/execution" className="btn-ghost text-xs">
+              ← All publishing
             </Link>
           </div>
         }
       />
-      <div className="px-6 lg:px-10 py-8 max-w-3xl space-y-5">
+      <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-3xl space-y-5">
         {item.platform === "reddit" && subreddit ? (
           <section>
             <div className="text-[11px] uppercase tracking-wide text-ink-500 mb-2">
-              Preview
+              Post preview
             </div>
             <RedditPostPreview
               subreddit={subreddit}
@@ -182,34 +192,47 @@ export default async function ExecutionItemPage({ params }: PageProps) {
         ) : null}
 
         {item.status === "completed" && history ? (
-          <section className="card p-5 space-y-2 border-emerald-200 bg-emerald-50/40">
+          <section className="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-5 space-y-2">
             <h2 className="text-sm font-semibold text-emerald-800">
               Published
             </h2>
-            <div className="text-xs text-ink-700">
-              Permalink:{" "}
-              {history.providerPermalink ? (
-                <a
-                  href={history.providerPermalink}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-signal-700 underline font-mono"
-                >
-                  {history.providerPermalink}
-                </a>
-              ) : (
-                "(none returned)"
-              )}
-            </div>
-            <div className="text-[11px] text-ink-500">
-              provider_post_id: {history.providerPostId ?? "—"} ·{" "}
-              finished_at: {history.finishedAt}
-            </div>
+            {history.providerPermalink ? (
+              <a
+                href={history.providerPermalink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-sm text-emerald-800 underline break-all"
+              >
+                {history.providerPermalink}
+                <span aria-hidden>↗</span>
+              </a>
+            ) : (
+              <p className="text-xs text-emerald-800">
+                Permalink not recorded.
+              </p>
+            )}
+            <p className="text-[11px] text-ink-500">
+              {new Date(history.finishedAt).toLocaleString(undefined, {
+                weekday: "short",
+                month: "short",
+                day: "numeric",
+                hour: "numeric",
+                minute: "2-digit",
+              })}
+            </p>
+            <details className="text-[11px] text-ink-500">
+              <summary className="cursor-pointer hover:text-ink-700">
+                Show technical details
+              </summary>
+              <div className="mt-1.5 font-mono">
+                provider_post_id: {history.providerPostId ?? "—"}
+              </div>
+            </details>
           </section>
         ) : null}
 
         {!safeTestModeEnabled() ? (
-          <section className="card p-5 border-amber-200 bg-amber-50/40">
+          <section className="rounded-2xl border border-amber-200 bg-amber-50/40 p-5">
             <h2 className="text-sm font-semibold text-amber-800">
               Manual publishing mode is off
             </h2>
@@ -219,7 +242,7 @@ export default async function ExecutionItemPage({ params }: PageProps) {
             </p>
           </section>
         ) : !isReady && !isReadyForManual ? (
-          <section className="card p-5 border-ink-200">
+          <section className="rounded-2xl border border-ink-200 bg-white p-5">
             <h2 className="text-sm font-semibold text-ink-900">
               Not ready to publish yet
             </h2>
@@ -230,84 +253,113 @@ export default async function ExecutionItemPage({ params }: PageProps) {
           </section>
         ) : verdict ? (
           <>
-            <section className="card p-5 space-y-3">
-              <h2 className="text-sm font-semibold text-ink-900">
-                Pre-publish checks
-              </h2>
-              <ul className="text-xs space-y-1.5">
-                {verdict.checks.map((c) => (
-                  <li
-                    key={c.name}
-                    className="flex items-start justify-between gap-3"
-                  >
-                    <div>
-                      <span
-                        className={
-                          c.status === "pass"
-                            ? "text-emerald-700"
-                            : c.status === "fail"
-                              ? "text-red-700"
-                              : "text-amber-700"
-                        }
-                      >
-                        {c.status === "pass" ? "✓" : c.status === "fail" ? "✗" : "·"}
-                      </span>{" "}
-                      <span className="text-ink-800">{c.name}</span>
-                    </div>
-                    <div className="text-ink-500 text-[11px]">{c.detail ?? "—"}</div>
-                  </li>
-                ))}
-              </ul>
-              {!verdict.ok ? (
-                <div className="text-xs text-red-700 leading-relaxed">
-                  Blocked: {verdict.reasonCode} — {verdict.reasonDetail}
+            {/* Publishing readiness — silent when all clear, loud only on real issues */}
+            {verdict.ok ? (
+              <section className="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-4 flex items-start gap-3">
+                <span
+                  className="shrink-0 mt-0.5 w-5 h-5 rounded-full bg-emerald-500 text-white grid place-items-center text-xs"
+                  aria-hidden
+                >
+                  ✓
+                </span>
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-emerald-800">
+                    Ready to publish
+                  </div>
+                  {warningChecks.length > 0 ? (
+                    <ul className="mt-1 text-[11px] text-amber-800 leading-relaxed space-y-0.5">
+                      {warningChecks.map((c) => (
+                        <li key={c.name}>· {c.detail ?? c.name}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-[11px] text-emerald-800/80">
+                      All publishing checks passed.
+                    </p>
+                  )}
                 </div>
-              ) : null}
-            </section>
+              </section>
+            ) : (
+              <section className="rounded-2xl border border-red-200 bg-red-50/40 p-5">
+                <h2 className="text-sm font-semibold text-red-800">
+                  Not ready to publish
+                </h2>
+                <p className="text-xs text-red-800 mt-1 leading-relaxed">
+                  {verdict.reasonDetail}
+                </p>
+                {failedChecks.length > 0 ? (
+                  <ul className="mt-2 text-xs text-red-800 leading-relaxed space-y-1">
+                    {failedChecks.map((c) => (
+                      <li key={c.name}>· {c.detail ?? c.name}</li>
+                    ))}
+                  </ul>
+                ) : null}
+              </section>
+            )}
 
             {verdict.ok && verdict.preview ? (
               <>
-                <section className="card p-5 space-y-2">
+                {/* Publishing details — calm summary, no raw labels */}
+                <section className="rounded-2xl border border-ink-200 bg-white p-5">
                   <h2 className="text-sm font-semibold text-ink-900">
-                    Payload preview
+                    Publishing details
                   </h2>
-                  <div className="text-xs text-ink-700">
+                  <dl className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
                     <div>
-                      <span className="text-ink-500">subreddit:</span>{" "}
-                      <span className="font-mono">
+                      <dt className="text-ink-500">Going to</dt>
+                      <dd className="text-ink-800">
                         r/{verdict.preview.subreddit}
-                      </span>
+                      </dd>
                     </div>
                     <div>
-                      <span className="text-ink-500">account:</span>{" "}
-                      u/{verdict.preview.account.handle ?? "—"}
+                      <dt className="text-ink-500">Posting as</dt>
+                      <dd className="text-ink-800">
+                        u/{verdict.preview.account.handle ?? "—"}
+                      </dd>
                     </div>
                     <div>
-                      <span className="text-ink-500">product:</span>{" "}
-                      {verdict.preview.product?.name ?? "—"}
+                      <dt className="text-ink-500">For product</dt>
+                      <dd className="text-ink-800">
+                        {verdict.preview.product?.name ?? "—"}
+                      </dd>
                     </div>
                     <div>
-                      <span className="text-ink-500">creative:</span>{" "}
-                      {verdict.preview.creative
-                        ? `${verdict.preview.creative.type} · ${verdict.preview.creative.sourceType}`
-                        : "—"}
+                      <dt className="text-ink-500">Scheduled</dt>
+                      <dd className="text-ink-800">
+                        {verdict.preview.scheduledAt
+                          ? new Date(
+                              verdict.preview.scheduledAt,
+                            ).toLocaleString(undefined, {
+                              month: "short",
+                              day: "numeric",
+                              hour: "numeric",
+                              minute: "2-digit",
+                            })
+                          : "—"}
+                      </dd>
                     </div>
-                    <div>
-                      <span className="text-ink-500">alt text:</span>{" "}
-                      <span className="text-ink-700">
-                        {verdict.preview.creative?.altText ?? "—"}
-                      </span>
+                    <div className="sm:col-span-2">
+                      <dt className="text-ink-500">Creative</dt>
+                      <dd className="text-ink-800">
+                        {verdict.preview.creative ? (
+                          <>
+                            {verdict.preview.creative.type} —{" "}
+                            {verdict.preview.creative.altText ?? "(no alt text)"}
+                          </>
+                        ) : (
+                          "—"
+                        )}
+                      </dd>
                     </div>
-                    <div>
-                      <span className="text-ink-500">scheduled_at:</span>{" "}
-                      <span className="font-mono">
-                        {verdict.preview.scheduledAt ?? "—"}
-                      </span>
-                    </div>
-                  </div>
-                  <pre className="text-[11px] bg-ink-50 p-3 rounded-md overflow-x-auto font-mono">
-                    {JSON.stringify(verdict.preview.apiPayload, null, 2)}
-                  </pre>
+                  </dl>
+                  <details className="mt-3 text-[11px] text-ink-500">
+                    <summary className="cursor-pointer hover:text-ink-700">
+                      Show technical details
+                    </summary>
+                    <pre className="mt-1.5 bg-ink-50 p-3 rounded-md overflow-x-auto font-mono">
+                      {JSON.stringify(verdict.preview.apiPayload, null, 2)}
+                    </pre>
+                  </details>
                 </section>
 
                 {isReadyForManual ? (
@@ -328,15 +380,15 @@ export default async function ExecutionItemPage({ params }: PageProps) {
                 ) : (
                   <>
                     {oauthBlocked ? (
-                      <section className="card p-5 border-amber-200 bg-amber-50/40">
+                      <section className="rounded-2xl border border-amber-200 bg-amber-50/40 p-5">
                         <h2 className="text-sm font-semibold text-amber-900">
-                          Reddit API publishing is unavailable right now
+                          Reddit publishing is manual right now
                         </h2>
                         <p className="text-xs text-amber-900 mt-1 leading-relaxed">
-                          Reddit&apos;s Responsible Builder Policy is blocking
-                          our OAuth app provisioning. Use the manual publish
-                          workflow below — Signal prepares the payload and
-                          you publish it manually on Reddit.
+                          Reddit&apos;s API approval is still pending for
+                          Signal. Use the manual publish flow below — Signal
+                          prepares the post for you, you publish it on
+                          Reddit, then paste the permalink back here.
                         </p>
                       </section>
                     ) : null}

@@ -27,16 +27,15 @@ export function PublishForm(props: PublishFormProps) {
   const safe = state ?? initial;
 
   return (
-    <form action={action} className="card p-5 space-y-3 border-red-200">
+    <form action={action} className="rounded-2xl border border-red-200 bg-white p-5 space-y-3">
       <div className="text-sm font-semibold text-red-700">
-        ⚠️ This will REALLY post to Reddit.
+        This will publish to Reddit immediately.
       </div>
       <p className="text-xs text-ink-700 leading-relaxed">
-        Clicking Publish will issue a real{" "}
-        <span className="font-mono">POST /api/submit</span> to{" "}
+        Clicking Publish submits the post to{" "}
         <span className="font-mono">r/{props.payloadPreview.subreddit}</span>{" "}
-        as the connected account. There is no undo. The post will be public
-        on Reddit immediately.
+        as the connected account. The post becomes public on Reddit right
+        away — there&apos;s no undo.
       </p>
 
       <input

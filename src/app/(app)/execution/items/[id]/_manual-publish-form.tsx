@@ -37,15 +37,14 @@ export function ManualPublishForm(props: ManualPublishFormProps) {
   const safe = state ?? initial;
 
   return (
-    <section className="card p-5 space-y-4 border-emerald-200">
+    <section className="rounded-2xl border border-emerald-200 bg-white p-5 space-y-4">
       <header>
         <h2 className="text-sm font-semibold text-ink-900">
-          Manual publish mode
+          Publish manually
         </h2>
         <p className="text-xs text-ink-700 mt-1 leading-relaxed">
-          Signal prepared this post. You publish it manually on Reddit. This
-          does not use Reddit API automation. After publishing, paste the
-          Reddit permalink here so Signal can record the audit row.
+          Signal prepared the post. Copy it to Reddit, publish it there,
+          then paste the permalink back here so Signal records the result.
         </p>
       </header>
 
@@ -62,7 +61,7 @@ export function ManualPublishForm(props: ManualPublishFormProps) {
             value={props.payloadPreview.body ?? ""}
           />
         )}
-        <CopyButton label="Copy full payload" value={fullPayload} />
+        <CopyButton label="Copy everything" value={fullPayload} />
         {props.payloadPreview.creativeAssetUrl ? (
           <CopyButton
             label="Copy creative URL"
@@ -81,7 +80,7 @@ export function ManualPublishForm(props: ManualPublishFormProps) {
 
       <details className="text-xs text-ink-700">
         <summary className="cursor-pointer font-semibold text-ink-700">
-          Show prepared payload
+          Show prepared post
         </summary>
         <pre className="mt-2 bg-ink-50 p-3 rounded-md overflow-x-auto whitespace-pre-wrap font-mono text-[11px]">
           {fullPayload}
@@ -100,7 +99,7 @@ export function ManualPublishForm(props: ManualPublishFormProps) {
         </li>
         <li>
           Type <span className="font-mono">&quot;{CONFIRMATION_PHRASE}&quot;</span>{" "}
-          to arm the Record button.
+          to enable the Record button.
         </li>
       </ol>
 
@@ -134,7 +133,7 @@ export function ManualPublishForm(props: ManualPublishFormProps) {
         </label>
         <label className="block text-xs">
           <div className="font-semibold text-ink-700 mb-1">
-            Operator notes (optional)
+            Notes (optional)
           </div>
           <textarea
             name="operator_notes"
