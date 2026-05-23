@@ -7,6 +7,7 @@ import { listPlatformConnections } from "@/repositories/platform-connection-repo
 import {
   hasTokenEncryptionKey,
   isOAuthProviderConfigured,
+  isRedditOauthBlocked,
 } from "@/lib/oauth/env";
 import { OAUTH_PLATFORMS, type OAuthPlatform } from "@/core/platform-oauth";
 import { AccountCreateForm } from "./_create-form";
@@ -68,6 +69,7 @@ export default async function AccountsPage() {
     linkedin: isOAuthProviderConfigured("linkedin"),
   };
   const encryptionOn = hasTokenEncryptionKey();
+  const redditOauthBlocked = isRedditOauthBlocked();
 
   const connectionByAccountPlatform = new Map<string, (typeof connections)[number]>();
   for (const c of connections) {
@@ -84,6 +86,24 @@ export default async function AccountsPage() {
       />
 
       <div className="px-6 lg:px-10 py-8 max-w-3xl space-y-6">
+        {redditOauthBlocked ? (
+          <section className="card p-5 border-amber-200 bg-amber-50/40">
+            <h2 className="text-sm font-semibold text-amber-900">
+              Reddit API approval pending
+            </h2>
+            <p className="text-xs text-amber-900 mt-1 leading-relaxed">
+              Reddit&apos;s Responsible Builder Policy is blocking our OAuth
+              app provisioning. Reddit Connect is disabled until approval
+              lands; use the{" "}
+              <span className="font-semibold">manual publish fallback</span>{" "}
+              on <a href="/execution" className="underline">/execution</a> to
+              record posts in the meantime. Every safety gate (whitelist,
+              creative readiness, alt text, rate limit, duplicate, confirmation
+              phrase) still applies on the manual path.
+            </p>
+          </section>
+        ) : null}
+
         <section className="card p-5">
           <h2 className="text-sm font-semibold text-ink-900">OAuth providers</h2>
           <ul className="mt-3 text-xs text-ink-700 space-y-1">
@@ -92,10 +112,18 @@ export default async function AccountsPage() {
                 <span>{PLATFORM_LABELS[p]}</span>
                 <span
                   className={
-                    providerConfigured[p] ? "text-green-700" : "text-amber-700"
+                    p === "reddit" && redditOauthBlocked
+                      ? "text-amber-700"
+                      : providerConfigured[p]
+                        ? "text-green-700"
+                        : "text-amber-700"
                   }
                 >
-                  {providerConfigured[p] ? "Configured" : "Not configured"}
+                  {p === "reddit" && redditOauthBlocked
+                    ? "Blocked — pending Reddit API approval"
+                    : providerConfigured[p]
+                      ? "Configured"
+                      : "Not configured"}
                 </span>
               </li>
             ))}
@@ -159,6 +187,7 @@ export default async function AccountsPage() {
                             accountId={a.id}
                             providerConfigured={providerConfigured[a.platform]}
                             encryptionConfigured={encryptionOn}
+                            redditOauthBlocked={redditOauthBlocked}
                             connectionStatus={c?.connectionStatus ?? "not_connected"}
                             healthStatus={c?.healthStatus ?? "unknown"}
                             hasAccessToken={c?.hasAccessToken ?? false}

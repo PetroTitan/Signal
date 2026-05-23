@@ -1,5 +1,12 @@
 # Reddit Live Connection (Phase F2)
 
+> ⚠️ **Phase F2.5 update — Reddit API approval pending.** Reddit's
+> Responsible Builder Policy blocks the OAuth round-trip at the
+> moment (`invalid_client_id` on `/authorize`). The flow described
+> below will work once approval lands; until then, see
+> [reddit-api-approval-pending.md](./reddit-api-approval-pending.md)
+> for the manual-publish fallback.
+
 Phase F2 ships a real, encrypted Reddit OAuth connection. Phase F2 does
 **not** ship live publishing — that's Phase F3. The connection
 exists so the operator can verify Signal has the right account

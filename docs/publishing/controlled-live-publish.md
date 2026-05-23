@@ -1,5 +1,12 @@
 # Controlled Live Reddit Publish (Phase F2.5)
 
+> ⚠️ **Reddit API approval pending.** The automated path documented
+> below is gated by a working OAuth token, which Reddit hasn't yet
+> approved. Set `REDDIT_OAUTH_STATUS=blocked_pending_reddit_api_approval`
+> to route `/execution/items/<id>` to the **manual-publish fallback**
+> — same gates, operator publishes via copy/paste, permalink recorded
+> back. See [docs/oauth/reddit-api-approval-pending.md](../oauth/reddit-api-approval-pending.md).
+
 Phase F2.5 enables **one** controlled, operator-triggered Reddit
 publish. There is no autonomous publishing. There is no scheduler
 that calls Reddit on its own. There is no comment automation.

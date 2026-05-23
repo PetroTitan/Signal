@@ -287,10 +287,24 @@ export async function oauthConnectionsList(
     return { ...(row as Record<string, unknown>), ...flags };
   });
 
+  const { readRedditOauthStatus } = await import("@/lib/oauth/env");
+  const redditStatus = readRedditOauthStatus();
+
   return ok({
     tool: "signal.oauth.connections.list",
-    summary: `${connections.length} platform connection(s) — no tokens exposed.`,
-    data: { connections },
+    summary: `${connections.length} platform connection(s) — no tokens exposed. reddit oauth status: ${redditStatus}.`,
+    data: {
+      connections,
+      provider_status: {
+        reddit: redditStatus,
+      },
+    },
+    warnings:
+      redditStatus === "blocked_pending_reddit_api_approval"
+        ? [
+            "Reddit OAuth is blocked pending Reddit API approval. Use the manual-publish fallback at /execution/items/<id>.",
+          ]
+        : [],
   });
 }
 

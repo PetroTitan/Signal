@@ -36,6 +36,25 @@ import {
   safeTestModeEnabled,
 } from "./safe-test-env";
 
+/**
+ * Phase F2.5 manual-fallback — same policy as live publish minus the
+ * OAuth/token gates. The operator is publishing on Reddit themselves
+ * via copy/paste; we just record the outcome. Every other gate
+ * (whitelist, confirmation phrase, creative readiness, rate limit,
+ * duplicate fingerprint, schedule) still applies.
+ *
+ * Returns the same verdict shape as `evaluateSafeTestPolicy` so the
+ * UI doesn't have to special-case.
+ */
+export async function evaluateManualPublishPolicy(
+  input: SafeTestPolicyInput,
+): Promise<SafeTestPolicyVerdict> {
+  // Reuse the live-publish evaluator but tell it to skip the
+  // OAuth/token gates. Implemented as a flag on the input rather
+  // than a duplicated function to keep the gate list authoritative.
+  return evaluateSafeTestPolicyInternal({ ...input, skipOauthGates: true });
+}
+
 export type SafeTestReasonCode =
   | "safe_test_mode_disabled"
   | "not_a_post"
@@ -127,6 +146,12 @@ const DUP_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
  */
 export async function evaluateSafeTestPolicy(
   input: SafeTestPolicyInput,
+): Promise<SafeTestPolicyVerdict> {
+  return evaluateSafeTestPolicyInternal(input);
+}
+
+async function evaluateSafeTestPolicyInternal(
+  input: SafeTestPolicyInput & { skipOauthGates?: boolean },
 ): Promise<SafeTestPolicyVerdict> {
   const checks: SafeTestPolicyVerdict["checks"] = [];
   const fail = (
@@ -361,67 +386,78 @@ export async function evaluateSafeTestPolicy(
     detail: `${creative!.creativeType} · ${creative!.sourceType}`,
   });
 
-  // 10. OAuth connection + health + decryptable token
-  const { data: conn } = await input.supabase
-    .from("platform_connections")
-    .select(
-      "id, connection_status, health_status, access_token_encrypted, expires_at",
-    )
-    .eq("workspace_id", input.workspaceId)
-    .eq("account_id", item.accountId)
-    .eq("platform", "reddit")
-    .maybeSingle();
-  const connRow = conn as
-    | {
-        id: string;
-        connection_status: string;
-        health_status: string;
-        access_token_encrypted: string | null;
-        expires_at: string | null;
-      }
-    | null;
-  if (!connRow) {
-    return fail(
-      "OAuth connection",
-      "connection_missing",
-      "No platform_connections row for this account.",
-    );
+  // 10. OAuth connection + health + decryptable token.
+  // Skipped on the manual-publish path — the operator publishes via
+  // copy/paste, so we don't need a working token. Every other gate
+  // (whitelist, creative, schedule, rate limit, dup) still applies.
+  if (input.skipOauthGates) {
+    checks.push({
+      name: "OAuth",
+      status: "warn",
+      detail: "skipped — manual publish (Reddit API approval pending)",
+    });
+  } else {
+    const { data: conn } = await input.supabase
+      .from("platform_connections")
+      .select(
+        "id, connection_status, health_status, access_token_encrypted, expires_at",
+      )
+      .eq("workspace_id", input.workspaceId)
+      .eq("account_id", item.accountId)
+      .eq("platform", "reddit")
+      .maybeSingle();
+    const connRow = conn as
+      | {
+          id: string;
+          connection_status: string;
+          health_status: string;
+          access_token_encrypted: string | null;
+          expires_at: string | null;
+        }
+      | null;
+    if (!connRow) {
+      return fail(
+        "OAuth connection",
+        "connection_missing",
+        "No platform_connections row for this account.",
+      );
+    }
+    if (connRow.connection_status !== "connected") {
+      return fail(
+        "OAuth connection",
+        "connection_missing",
+        `Connection status is '${connRow.connection_status}', not 'connected'.`,
+      );
+    }
+    if (connRow.health_status !== "healthy") {
+      return fail(
+        "OAuth health",
+        "connection_not_healthy",
+        `Health status is '${connRow.health_status}', not 'healthy'. Re-run health check or reauthorize.`,
+      );
+    }
+    if (!connRow.access_token_encrypted) {
+      return fail(
+        "OAuth token",
+        "token_not_decryptable",
+        "No stored encrypted access token.",
+      );
+    }
+    const { decryptForOutboundUse } = await import("@/core/platform-oauth");
+    const plain = decryptForOutboundUse(connRow.access_token_encrypted);
+    if (!plain) {
+      return fail(
+        "OAuth token",
+        "token_not_decryptable",
+        "Stored token failed to decrypt under the current TOKEN_ENCRYPTION_KEY.",
+      );
+    }
+    checks.push({
+      name: "OAuth",
+      status: "pass",
+      detail: "connected · healthy · token decryptable",
+    });
   }
-  if (connRow.connection_status !== "connected") {
-    return fail(
-      "OAuth connection",
-      "connection_missing",
-      `Connection status is '${connRow.connection_status}', not 'connected'.`,
-    );
-  }
-  if (connRow.health_status !== "healthy") {
-    return fail(
-      "OAuth health",
-      "connection_not_healthy",
-      `Health status is '${connRow.health_status}', not 'healthy'. Re-run health check or reauthorize.`,
-    );
-  }
-  if (!connRow.access_token_encrypted) {
-    return fail(
-      "OAuth token",
-      "token_not_decryptable",
-      "No stored encrypted access token.",
-    );
-  }
-  const { decryptForOutboundUse } = await import("@/core/platform-oauth");
-  const plain = decryptForOutboundUse(connRow.access_token_encrypted);
-  if (!plain) {
-    return fail(
-      "OAuth token",
-      "token_not_decryptable",
-      "Stored token failed to decrypt under the current TOKEN_ENCRYPTION_KEY.",
-    );
-  }
-  checks.push({
-    name: "OAuth",
-    status: "pass",
-    detail: "connected · healthy · token decryptable",
-  });
 
   // 11. scheduled time
   if (!item.scheduledAt) {

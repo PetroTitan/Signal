@@ -1,5 +1,11 @@
 # Reddit Publishing Readiness (Phase F2)
 
+> ⚠️ **Phase F2.5 update — Reddit API approval pending.** OAuth-based
+> publishing is currently blocked by Reddit's Responsible Builder
+> Policy. The controlled-publish pipeline is intact and exercised via
+> a manual fallback. See
+> [docs/oauth/reddit-api-approval-pending.md](../oauth/reddit-api-approval-pending.md).
+
 Phase F2 makes a real Reddit OAuth connection possible. It does
 **not** ship live publishing. This document lists every gate that
 must still close before a single `POST /api/submit` goes out.
