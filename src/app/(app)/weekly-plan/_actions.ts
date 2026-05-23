@@ -304,7 +304,7 @@ export async function approveWeeklyPlanAction(
       queue = await createExecutionQueue({
         workspaceId,
         contractId: contract.id,
-        title: `Auto-created queue for ${contract.title}`,
+        title: contract.title,
         weekStart: contract.weekStart,
         weekEnd: contract.weekEnd,
       });

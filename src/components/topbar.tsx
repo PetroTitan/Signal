@@ -1,6 +1,3 @@
-import Link from "next/link";
-import { SearchIcon } from "./icons";
-
 type TopbarProps = {
   title: string;
   description?: string;
@@ -10,7 +7,7 @@ type TopbarProps = {
 export function Topbar({ title, description, actions }: TopbarProps) {
   return (
     <header className="border-b border-ink-100 bg-white">
-      <div className="px-6 lg:px-10 py-6 flex flex-wrap items-start justify-between gap-4">
+      <div className="px-4 sm:px-6 lg:px-10 py-5 sm:py-6 flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
           <h1 className="text-xl font-semibold text-ink-900 leading-tight tracking-tight">
             {title}
@@ -21,16 +18,9 @@ export function Topbar({ title, description, actions }: TopbarProps) {
             </p>
           ) : null}
         </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <Link
-            href="/search"
-            aria-label="Open search"
-            className="btn-ghost p-2"
-          >
-            <SearchIcon />
-          </Link>
-          {actions}
-        </div>
+        {actions ? (
+          <div className="flex items-center gap-2 shrink-0">{actions}</div>
+        ) : null}
       </div>
     </header>
   );
