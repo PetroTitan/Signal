@@ -7,6 +7,9 @@ interface ConnectionControlsProps {
   accountId: string;
   providerConfigured: boolean;
   encryptionConfigured: boolean;
+  /** Phase F2.5 (manual fallback): true when REDDIT_OAUTH_STATUS=blocked_…
+   *  hides the Connect button + shows the operator the manual flow. */
+  redditOauthBlocked?: boolean;
   connectionStatus:
     | "not_connected"
     | "connected"
@@ -105,7 +108,12 @@ export function ConnectionControls(props: ConnectionControlsProps) {
           Last checked {props.lastCheckedAt}
         </div>
       ) : null}
-      {!providerConfigured ? (
+      {props.redditOauthBlocked && platform === "reddit" ? (
+        <div className="text-[10px] text-amber-700">
+          Reddit Connect is blocked — pending Reddit API approval. Use the
+          manual publish fallback on /execution to record posts.
+        </div>
+      ) : !providerConfigured ? (
         <div className="text-[10px] text-amber-700">
           OAuth app not configured yet.
         </div>
@@ -115,7 +123,8 @@ export function ConnectionControls(props: ConnectionControlsProps) {
         </div>
       ) : null}
       <div className="flex gap-2 flex-wrap mt-1">
-        {providerConfigured ? (
+        {providerConfigured &&
+        !(props.redditOauthBlocked && platform === "reddit") ? (
           <a
             href={`/api/oauth/${platform}/start?account_id=${encodeURIComponent(
               accountId,

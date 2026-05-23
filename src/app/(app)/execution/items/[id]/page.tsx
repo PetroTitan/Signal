@@ -16,6 +16,8 @@ import {
   safeTestModeEnabled,
 } from "@/core/publishing/safe-test-env";
 import { PublishForm } from "./_publish-form";
+import { ManualPublishForm } from "./_manual-publish-form";
+import { isRedditOauthBlocked } from "@/lib/oauth/env";
 
 export const dynamic = "force-dynamic";
 
@@ -70,10 +72,22 @@ export default async function ExecutionItemPage({ params }: PageProps) {
   // Run a *dry* policy evaluation with an empty confirmation phrase
   // so we can render the gates inline. The publish action re-runs
   // the same policy with the real phrase before sending.
+  //
+  // When Reddit OAuth is blocked (REDDIT_OAUTH_STATUS=blocked_…), we
+  // evaluate the manual-publish policy instead so the gate list
+  // matches the path the operator can actually take. The manual
+  // policy uses the same checks but skips OAuth/token.
+  const oauthBlocked = isRedditOauthBlocked();
   let verdict: SafeTestPolicyVerdict | null = null;
   if (item.status === "ready" && safeTestModeEnabled()) {
     const supabase = createSupabaseServerClient();
-    verdict = await evaluateSafeTestPolicy({
+    const { evaluateManualPublishPolicy } = await import(
+      "@/core/publishing/safe-test-policy"
+    );
+    const policyFn = oauthBlocked
+      ? evaluateManualPublishPolicy
+      : evaluateSafeTestPolicy;
+    verdict = await policyFn({
       supabase,
       workspaceId,
       executionItem: {
@@ -261,18 +275,32 @@ export default async function ExecutionItemPage({ params }: PageProps) {
                   </pre>
                 </section>
 
-                <PublishForm
-                  executionItemId={item.id}
-                  defaultSubreddit={verdict.preview.subreddit}
-                  payloadPreview={{
-                    title: verdict.preview.title,
-                    body: verdict.preview.body,
-                    kind: verdict.preview.kind,
-                    linkUrl: verdict.preview.linkUrl,
-                    subreddit: verdict.preview.subreddit,
-                    apiPayload: verdict.preview.apiPayload,
-                  }}
-                />
+                {oauthBlocked ? (
+                  <ManualPublishForm
+                    executionItemId={item.id}
+                    defaultSubreddit={verdict.preview.subreddit}
+                    payloadPreview={{
+                      title: verdict.preview.title,
+                      body: verdict.preview.body,
+                      kind: verdict.preview.kind,
+                      linkUrl: verdict.preview.linkUrl,
+                      subreddit: verdict.preview.subreddit,
+                    }}
+                  />
+                ) : (
+                  <PublishForm
+                    executionItemId={item.id}
+                    defaultSubreddit={verdict.preview.subreddit}
+                    payloadPreview={{
+                      title: verdict.preview.title,
+                      body: verdict.preview.body,
+                      kind: verdict.preview.kind,
+                      linkUrl: verdict.preview.linkUrl,
+                      subreddit: verdict.preview.subreddit,
+                      apiPayload: verdict.preview.apiPayload,
+                    }}
+                  />
+                )}
               </>
             ) : null}
           </>

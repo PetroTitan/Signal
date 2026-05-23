@@ -328,3 +328,249 @@ export async function publishItemAction(
     return actionFail(msg);
   }
 }
+
+// =====================================================================
+// Phase F2.5 (manual fallback) — recordManualPublishAction
+// =====================================================================
+//
+// Reddit API approval is currently blocked, so the controlled OAuth
+// publish path can't fire. The manual fallback:
+//   1. Operator copies the prepared payload from /execution/items/<id>
+//   2. Operator manually posts on Reddit in a browser
+//   3. Operator pastes the resulting permalink + confirmation phrase
+//   4. This action runs the same gates as live publish (minus the
+//      OAuth/token gates) and records the publish_history row
+//
+// What this is NOT:
+//   - It does NOT call Reddit's API (the whole point — Reddit hasn't
+//     approved us yet).
+//   - It does NOT bypass the rate limit, duplicate check, whitelist,
+//     creative readiness, or confirmation phrase.
+//   - It does NOT trust an arbitrary URL: the permalink must parse
+//     as a reddit.com /comments/<id> or a redd.it/<id> shortlink.
+
+export type RecordManualPublishResult = ActionResult<{
+  executionItemId: string;
+  permalink: string;
+  providerPostId: string;
+}>;
+
+export async function recordManualPublishAction(
+  _prev: RecordManualPublishResult,
+  formData: FormData,
+): Promise<RecordManualPublishResult> {
+  const executionItemId = String(formData.get("execution_item_id") ?? "").trim();
+  const confirmationPhrase = String(formData.get("confirmation_phrase") ?? "");
+  const subredditRaw = String(formData.get("subreddit") ?? "").trim();
+  const permalinkRaw = String(formData.get("permalink") ?? "").trim();
+  const operatorNotes = String(formData.get("operator_notes") ?? "").trim() || null;
+  if (!executionItemId) return actionFail("Missing execution_item_id.");
+  if (!subredditRaw) return actionFail("Subreddit is required.");
+
+  // Parse the permalink BEFORE we run any DB writes — fail fast on
+  // bad input so we don't end up with half a recorded outcome.
+  const { parseRedditPermalink, permalinkRejectionDetail } = await import(
+    "@/core/publishing/reddit-permalink"
+  );
+  const parsed = parseRedditPermalink(permalinkRaw);
+  if (!parsed) return actionFail(permalinkRejectionDetail(permalinkRaw));
+  if (parsed.subreddit && parsed.subreddit.toLowerCase() !== subredditRaw.toLowerCase()) {
+    return actionFail(
+      `Permalink subreddit r/${parsed.subreddit} does not match the prepared payload's r/${subredditRaw}.`,
+    );
+  }
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    const item = await getExecutionItemById(workspaceId, executionItemId);
+    if (item.status !== "ready") {
+      return actionFail(
+        `Item is in '${item.status}', not 'ready'. Wait for the scheduler to mark it ready_for_publish.`,
+      );
+    }
+
+    const supabase = createSupabaseServerClient();
+    const nowIso = new Date().toISOString();
+
+    // Run the manual-publish policy: same as live minus OAuth/token.
+    const { evaluateManualPublishPolicy } = await import(
+      "@/core/publishing/safe-test-policy"
+    );
+    const verdict = await evaluateManualPublishPolicy({
+      supabase,
+      workspaceId,
+      executionItem: {
+        id: item.id,
+        accountId: item.accountId,
+        productId: item.productId,
+        platform: item.platform,
+        title: item.title,
+        body: item.body,
+        linkUrl: item.linkUrl,
+        scheduledAt: item.scheduledAt,
+        actionType: item.actionType,
+        metadata: item.metadata as Record<string, unknown>,
+      },
+      confirmationPhrase,
+      subreddit: subredditRaw,
+      nowIso,
+    });
+    const fp = await computeFingerprint({
+      platform: "reddit",
+      subreddit: subredditRaw,
+      title: item.title,
+      body: item.body,
+      linkUrl: item.linkUrl,
+    });
+    if (!verdict.ok) {
+      await insertPublishHistory({
+        workspaceId,
+        executionItemId: item.id,
+        accountId: item.accountId,
+        productId: item.productId,
+        platform: "reddit",
+        subreddit: subredditRaw,
+        fingerprint: fp.fingerprint,
+        titleHash: fp.titleHash,
+        bodyHash: fp.bodyHash,
+        linkUrl: item.linkUrl,
+        providerPostId: null,
+        providerPermalink: null,
+        outcome: "blocked",
+        reasonCode: verdict.reasonCode,
+        httpStatus: null,
+        startedAt: nowIso,
+        metadata: {
+          publish_method: "manual",
+          detail: verdict.reasonDetail ?? null,
+        },
+      });
+      await recordLog({
+        workspaceId,
+        queueId: item.queueId,
+        executionItemId: item.id,
+        eventType: "item.blocked",
+        severity: "error",
+        message: `[manual-publish] blocked — ${verdict.reasonCode}: ${verdict.reasonDetail}`,
+        metadata: {
+          reason_code: verdict.reasonCode,
+          publish_method: "manual",
+        },
+      });
+      return actionFail(verdict.reasonDetail ?? "Policy refused publish.");
+    }
+
+    // Walk ready → running → completed.
+    await updateItemStatus({
+      workspaceId,
+      itemId: item.id,
+      to: "running",
+    });
+
+    await insertPublishHistory({
+      workspaceId,
+      executionItemId: item.id,
+      accountId: item.accountId,
+      productId: item.productId,
+      platform: "reddit",
+      subreddit: subredditRaw,
+      fingerprint: fp.fingerprint,
+      titleHash: fp.titleHash,
+      bodyHash: fp.bodyHash,
+      linkUrl: item.linkUrl,
+      providerPostId: parsed.providerPostId,
+      providerPermalink: parsed.normalizedUrl,
+      outcome: "published",
+      reasonCode: null,
+      httpStatus: null, // no API round-trip on the manual path
+      startedAt: nowIso,
+      metadata: {
+        publish_method: "manual",
+        operator_notes: operatorNotes,
+      },
+    });
+    await updateItemStatus({
+      workspaceId,
+      itemId: item.id,
+      to: "completed",
+      patch: {
+        metadata: {
+          ...(item.metadata as Record<string, unknown>),
+          publish_outcome: {
+            status: "published",
+            publish_method: "manual",
+            external_id: parsed.providerPostId,
+            external_url: parsed.normalizedUrl,
+            published_at: new Date().toISOString(),
+          },
+        },
+      },
+    });
+    const planItemId =
+      (item.metadata as { plan_item_id?: string })?.plan_item_id ?? null;
+    if (planItemId) {
+      try {
+        await updatePlanItemStatus({
+          workspaceId,
+          itemId: planItemId,
+          status: "published",
+        });
+      } catch (err) {
+        console.error("[recordManualPublishAction] plan_item mirror failed", err);
+      }
+    }
+    await recordLog({
+      workspaceId,
+      queueId: item.queueId,
+      executionItemId: item.id,
+      eventType: "item.completed",
+      severity: "info",
+      message: `[manual-publish] recorded — ${parsed.normalizedUrl}`,
+      metadata: {
+        permalink: parsed.normalizedUrl,
+        provider_post_id: parsed.providerPostId,
+        subreddit: subredditRaw,
+        publish_method: "manual",
+      },
+    });
+    try {
+      await recordActivity({
+        workspaceId,
+        eventType: "reddit.post_published",
+        entityType: "execution_item",
+        entityId: item.id,
+        title: `Reddit post (manual) recorded — r/${subredditRaw}`,
+        description: parsed.normalizedUrl,
+        metadata: {
+          permalink: parsed.normalizedUrl,
+          provider_post_id: parsed.providerPostId,
+          publish_method: "manual",
+        },
+      });
+    } catch (err) {
+      console.error("[recordManualPublishAction] activity log failed", err);
+    }
+    revalidatePath("/execution");
+    revalidatePath(`/execution/${item.queueId}`);
+    revalidatePath(`/execution/items/${item.id}`);
+    revalidatePath("/weekly-plan");
+    revalidatePath("/activity");
+    return actionOk({
+      executionItemId: item.id,
+      permalink: parsed.normalizedUrl,
+      providerPostId: parsed.providerPostId,
+    });
+  } catch (err) {
+    const msg =
+      err instanceof RepositoryError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : "Manual publish record failed.";
+    console.error("[recordManualPublishAction] failed", err);
+    return actionFail(msg);
+  }
+}
