@@ -211,24 +211,21 @@ export default async function ExecutionItemPage({ params }: PageProps) {
         {!safeTestModeEnabled() ? (
           <section className="card p-5 border-amber-200 bg-amber-50/40">
             <h2 className="text-sm font-semibold text-amber-800">
-              SAFE_TEST_MODE is not enabled
+              Manual publishing mode is off
             </h2>
             <p className="text-xs text-amber-800 mt-1 leading-relaxed">
-              The controlled-publish path is gated by{" "}
-              <span className="font-mono">SAFE_TEST_MODE=true</span>. Until
-              the env var is set, no Reddit publish can be triggered.
+              Publishing through Signal is currently paused. Re-enable it
+              from your environment before this post can go out.
             </p>
           </section>
         ) : !isReady && !isReadyForManual ? (
           <section className="card p-5 border-ink-200">
             <h2 className="text-sm font-semibold text-ink-900">
-              Not ready for publish
+              Not ready to publish yet
             </h2>
             <p className="text-xs text-ink-600 mt-1 leading-relaxed">
-              The scheduler hasn&apos;t marked this item{" "}
-              <span className="font-mono">ready</span> yet. Once{" "}
-              <span className="font-mono">scheduled_at</span> elapses and
-              the next scheduler tick runs, this surface unlocks.
+              This post is still waiting for its scheduled time. Once that
+              moment arrives, the publish controls unlock here.
             </p>
           </section>
         ) : verdict ? (

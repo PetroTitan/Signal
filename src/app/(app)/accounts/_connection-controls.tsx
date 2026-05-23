@@ -110,16 +110,16 @@ export function ConnectionControls(props: ConnectionControlsProps) {
       ) : null}
       {props.redditOauthBlocked && platform === "reddit" ? (
         <div className="text-[10px] text-amber-700">
-          Reddit Connect is blocked — pending Reddit API approval. Use the
-          manual publish fallback on /execution to record posts.
+          Reddit is in manual publish mode while their API approval is
+          pending. You&apos;ll copy and paste from the post preview.
         </div>
       ) : !providerConfigured ? (
         <div className="text-[10px] text-amber-700">
-          OAuth app not configured yet.
+          This platform isn&apos;t set up for connecting yet.
         </div>
       ) : !encryptionConfigured ? (
         <div className="text-[10px] text-amber-700">
-          Token encryption not configured — tokens will not be stored.
+          Secure token storage isn&apos;t configured yet.
         </div>
       ) : null}
       <div className="flex gap-2 flex-wrap mt-1">

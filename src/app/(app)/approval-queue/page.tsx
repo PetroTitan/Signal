@@ -228,8 +228,8 @@ export default async function ApprovalQueuePage() {
                 Product profiles awaiting review ({pendingProducts.length})
               </div>
               <p className="text-xs text-ink-500 mt-0.5">
-                Created by manual entry, the MCP server, or import flows.
-                Approval only confirms the profile.
+                Submitted manually or via import. Approval just confirms
+                the profile is yours.
               </p>
             </header>
             <ul className="row-divider">
@@ -258,8 +258,8 @@ export default async function ApprovalQueuePage() {
                 Account profiles awaiting review ({pendingAccounts.length})
               </div>
               <p className="text-xs text-ink-500 mt-0.5">
-                Created by manual entry or the MCP server. Approval does not
-                connect OAuth.
+                Submitted manually. Approving only confirms the identity —
+                you still connect the account separately.
               </p>
             </header>
             <ul className="row-divider">

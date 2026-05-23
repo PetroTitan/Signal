@@ -38,13 +38,13 @@ export default async function WeeklyContractsPage() {
     return (
       <>
         <Topbar
-          title="Weekly contracts"
+          title="Publishing scope"
           description="Persistence not configured."
         />
         <div className="px-6 lg:px-10 py-12 max-w-3xl">
           <div className="card p-5 text-sm text-ink-600">
-            Supabase is not configured. Configure env vars to enable weekly
-            operating contracts.
+            Supabase is not configured. Configure env vars to enable the
+            weekly publishing scope.
           </div>
         </div>
       </>
@@ -55,9 +55,9 @@ export default async function WeeklyContractsPage() {
   if (!membership) {
     return (
       <>
-        <Topbar title="Weekly contracts" description="No workspace found." />
+        <Topbar title="Publishing scope" description="No workspace found." />
         <div className="px-6 lg:px-10 py-12 max-w-3xl text-sm text-ink-600">
-          Create a workspace before granting weekly approval.
+          Create a workspace before granting a weekly publishing scope.
         </div>
       </>
     );
@@ -76,23 +76,23 @@ export default async function WeeklyContractsPage() {
   return (
     <>
       <Topbar
-        title="Weekly contracts"
-        description="Approve once per week. Signal operates only within the envelope you grant."
+        title="Publishing scope"
+        description="Approve once per week. Signal only publishes within the scope you grant — for that week, on those accounts, up to that risk level."
       />
 
-      <div className="px-6 lg:px-10 py-8 max-w-4xl space-y-6">
-        <section className="card p-5">
-          <h2 className="text-sm font-semibold text-ink-900">Operating model</h2>
+      <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-4xl space-y-5">
+        <section className="rounded-2xl border border-ink-200 bg-white p-5">
+          <h2 className="text-sm font-semibold text-ink-900">How it works</h2>
           <p className="text-sm text-ink-700 mt-2 leading-relaxed">
-            The weekly contract is the only thing that authorizes Signal to
-            act on your behalf. Without an <span className="font-mono text-xs">active</span> contract,
-            every write-side action is hard-blocked. With one, Signal stays
-            inside its scope until the week ends or you pause it.
+            The weekly publishing scope is the only thing that lets Signal
+            publish on your behalf. With no active scope, nothing goes out.
+            Once you approve one, Signal stays inside it until the week ends
+            or you pause it.
           </p>
         </section>
 
-        <section className="card p-5">
-          <h2 className="text-sm font-semibold text-ink-900">What an active contract grants</h2>
+        <section className="rounded-2xl border border-ink-200 bg-white p-5">
+          <h2 className="text-sm font-semibold text-ink-900">What an active scope grants</h2>
           <ul className="mt-2 list-disc list-inside text-sm text-ink-700 space-y-1">
             {WEEKLY_CONTRACT_POLICY_GRANTED.map((line) => (
               <li key={line}>{line}</li>
@@ -100,7 +100,7 @@ export default async function WeeklyContractsPage() {
           </ul>
         </section>
 
-        <section className="card p-5">
+        <section className="rounded-2xl border border-ink-200 bg-white p-5">
           <h2 className="text-sm font-semibold text-ink-900">Always restricted</h2>
           <ul className="mt-2 list-disc list-inside text-sm text-ink-700 space-y-1">
             {WEEKLY_CONTRACT_POLICY_RESTRICTED.map((line) => (
@@ -109,7 +109,7 @@ export default async function WeeklyContractsPage() {
           </ul>
         </section>
 
-        <section className="card p-5 border-amber-200 bg-amber-50/40">
+        <section className="rounded-2xl border border-amber-200 bg-amber-50/40 p-5">
           <h2 className="text-sm font-semibold text-ink-900">Never granted</h2>
           <ul className="mt-2 list-disc list-inside text-sm text-ink-700 space-y-1">
             {WEEKLY_CONTRACT_POLICY_NEVER_GRANTED.map((line) => (
@@ -118,12 +118,12 @@ export default async function WeeklyContractsPage() {
           </ul>
         </section>
 
-        <section className="card">
+        <section className="rounded-2xl border border-ink-200 bg-white">
           <header className="px-5 py-3.5 border-b border-ink-100 flex items-center justify-between">
             <div>
-              <div className="text-sm font-semibold text-ink-900">Contracts</div>
+              <div className="text-sm font-semibold text-ink-900">Approved scopes</div>
               <p className="text-xs text-ink-500 mt-0.5">
-                One row per weekly envelope.
+                One row per weekly publishing scope.
               </p>
             </div>
             <div className="text-xs text-ink-500">
@@ -132,7 +132,7 @@ export default async function WeeklyContractsPage() {
           </header>
           {contracts.length === 0 ? (
             <div className="px-5 py-6 text-sm text-ink-600">
-              No weekly contracts yet. Draft your first one below.
+              No publishing scopes yet. Draft your first one below.
             </div>
           ) : (
             <ul className="row-divider">
@@ -180,8 +180,8 @@ export default async function WeeklyContractsPage() {
           }))}
         />
 
-        <section className="card p-5 text-xs text-ink-600 leading-relaxed">
-          <div className="font-semibold text-ink-900 mb-1">Envelope rules</div>
+        <section className="rounded-2xl border border-ink-200 bg-white p-5 text-xs text-ink-600 leading-relaxed">
+          <div className="font-semibold text-ink-900 mb-1">Scope rules</div>
           <ul className="list-disc list-inside space-y-1">
             {WEEKLY_CONTRACT_ENVELOPE_RULES.map((line) => (
               <li key={line}>{line}</li>
