@@ -5,10 +5,15 @@ import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import {
   createPlanItem,
   createWeeklyPlan,
+  deletePlanItem,
   getCurrentWeeklyPlan,
   getPlanItemById,
   updatePlanItem,
 } from "@/repositories/weekly-plan-repository";
+import {
+  listExecutionItemsByPlanItemIds,
+  updateItemStatus as updateExecutionItemStatus,
+} from "@/repositories/execution-item-repository";
 import { recordActivity } from "@/repositories/activity-repository";
 import { RepositoryError } from "@/repositories/errors";
 import {
@@ -1175,6 +1180,112 @@ export async function sendForApprovalAction(
           ? error.message
           : "Could not send for approval.";
     console.error("[sendForApprovalAction] failed", error);
+    return actionFail(message);
+  }
+}
+
+// =====================================================================
+// F4.3 — Remove / cancel a plan item before it publishes.
+//
+// Behavior by current status:
+//   draft / pending_approval / rejected / backlog / skipped / paused
+//     → hard-delete the row. Creatives cascade. No execution_item
+//       has been created yet, so nothing else to clean up.
+//   approved / scheduled
+//     → cancel any execution_items first (so the scheduler tick
+//       won't pick them up), then hard-delete the plan item.
+//   published / failed
+//     → never destroy the row silently. We refuse and tell the
+//       founder. publish_history is untouched regardless.
+//
+// publish_history rows are NEVER deleted by this action.
+// =====================================================================
+export type RemovePlanItemResult = ActionResult<{ itemId: string }>;
+
+export async function removePlanItemAction(
+  _prev: RemovePlanItemResult,
+  formData: FormData,
+): Promise<RemovePlanItemResult> {
+  const itemId = String(formData.get("item_id") ?? "").trim();
+  if (!itemId) return actionFail("Missing item.");
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    const existing = await getPlanItemById(workspaceId, itemId);
+
+    if (existing.status === "published") {
+      return actionFail(
+        "This post is already published. You can remove or delete it from the platform itself; Signal keeps the record so your history stays intact.",
+      );
+    }
+
+    // For approved / scheduled posts, cancel the corresponding
+    // execution_items first so the scheduler tick can't race us.
+    const requiresExecutionCleanup =
+      existing.status === "approved" || existing.status === "scheduled";
+    let cancelledExecutionItems = 0;
+    if (requiresExecutionCleanup) {
+      const linked = await listExecutionItemsByPlanItemIds(workspaceId, [
+        itemId,
+      ]);
+      for (const ei of linked) {
+        if (
+          ei.status === "completed" ||
+          ei.status === "failed" ||
+          ei.status === "cancelled"
+        ) {
+          continue;
+        }
+        try {
+          await updateExecutionItemStatus({
+            workspaceId,
+            itemId: ei.id,
+            to: "cancelled",
+          });
+          cancelledExecutionItems += 1;
+        } catch (err) {
+          // If the transition isn't legal (e.g. item is 'running'),
+          // refuse to delete the plan item — we'd be racing the publish.
+          console.error("[removePlanItemAction] cannot cancel ei", err);
+          return actionFail(
+            "Signal is currently publishing this post. Wait a few seconds and try again.",
+          );
+        }
+      }
+    }
+
+    await deletePlanItem({ workspaceId, itemId });
+
+    await logActivityBestEffort({
+      workspaceId,
+      eventType: "weekly_plan_item.removed",
+      entityType: "weekly_plan_item",
+      entityId: itemId,
+      title: `"${existing.title ?? "Untitled"}" removed from plan`,
+      description:
+        cancelledExecutionItems > 0
+          ? `Cancelled ${cancelledExecutionItems} scheduled publish${
+              cancelledExecutionItems === 1 ? "" : "es"
+            }.`
+          : null,
+      metadata: { prior_status: existing.status, cancelledExecutionItems },
+    });
+
+    revalidatePath("/weekly-plan");
+    revalidatePath("/dashboard");
+    revalidatePath("/execution");
+    return actionOk({ itemId });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : "Could not remove this post.";
+    console.error("[removePlanItemAction] failed", error);
     return actionFail(message);
   }
 }

@@ -18,7 +18,10 @@ import { CreateContractForm } from "./_create-contract-form";
 
 export const dynamic = "force-dynamic";
 
-const PLATFORM_OPTIONS = ["reddit", "x", "linkedin"] as const;
+// F4.3 — Tier-1 platforms only. X and LinkedIn don't have functional
+// publishers yet, so listing them in the publishing scope would
+// imply support we don't have.
+const PLATFORM_OPTIONS = ["reddit", "devto", "hashnode", "bluesky"] as const;
 
 function isoMonday(date: Date): string {
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));

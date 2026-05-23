@@ -11,6 +11,24 @@ const initial: CreateContractResult = { ok: false, error: "" };
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
+const PLATFORM_LABELS: Record<string, string> = {
+  reddit: "Reddit",
+  devto: "dev.to",
+  hashnode: "Hashnode",
+  bluesky: "Bluesky",
+  x: "X",
+  linkedin: "LinkedIn",
+};
+
+function localTimezoneLabel(): string {
+  if (typeof Intl === "undefined") return "your local time";
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return "your local time";
+  }
+}
+
 interface CreateContractFormProps {
   defaultWeekStart: string;
   defaultWeekEnd: string;
@@ -57,12 +75,15 @@ export function CreateContractForm({
 
   const safe = state ?? initial;
 
+  const tz = localTimezoneLabel();
   return (
-    <section className="card p-5">
-      <h2 className="text-sm font-semibold text-ink-900">Draft a new weekly contract</h2>
+    <section className="rounded-2xl border border-ink-200 bg-white p-5">
+      <h2 className="text-sm font-semibold text-ink-900">
+        Plan a new publishing week
+      </h2>
       <p className="text-xs text-ink-600 mt-1 leading-relaxed">
-        Drafts are not active. After review, submit for approval, type the
-        confirmation phrase, and activate it.
+        Drafts aren&apos;t active. After review, you submit for approval,
+        type the confirmation phrase, and activate the scope.
       </p>
 
       <form
@@ -86,7 +107,7 @@ export function CreateContractForm({
 
           <label className="block">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500 mb-1">
-              Week start
+              Publishing week starts
             </div>
             <input
               type="date"
@@ -99,7 +120,7 @@ export function CreateContractForm({
 
           <label className="block">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500 mb-1">
-              Week end
+              Publishing week ends
             </div>
             <input
               type="date"
@@ -127,39 +148,39 @@ export function CreateContractForm({
 
           <label className="block">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500 mb-1">
-              Max actions / week
+              Most posts this week
             </div>
             <input
               type="number"
               name="max_actions_total"
               min={0}
-              placeholder="No cap"
+              placeholder="No limit"
               className="input w-full"
             />
           </label>
 
           <label className="block">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500 mb-1">
-              Max actions / day
+              Most posts in one day
             </div>
             <input
               type="number"
               name="max_actions_per_day"
               min={0}
-              placeholder="No cap"
+              placeholder="No limit"
               className="input w-full"
             />
           </label>
 
           <label className="block">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500 mb-1">
-              Max actions / platform / day
+              Most per platform per day
             </div>
             <input
               type="number"
               name="max_actions_per_platform_per_day"
               min={0}
-              placeholder="No cap"
+              placeholder="No limit"
               className="input w-full"
             />
           </label>
@@ -216,7 +237,7 @@ export function CreateContractForm({
             {platforms.map((p) => (
               <label key={p} className="flex items-center gap-2 text-xs text-ink-700">
                 <input type="checkbox" name="platforms" value={p} />
-                <span>{p}</span>
+                <span>{PLATFORM_LABELS[p] ?? p}</span>
               </label>
             ))}
           </div>
@@ -224,7 +245,7 @@ export function CreateContractForm({
 
         <fieldset>
           <legend className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
-            Allowed actions
+            What Signal can do
           </legend>
           <div className="mt-1 grid grid-cols-1 md:grid-cols-2 gap-1">
             {actionTypes.map((a) => (
@@ -238,18 +259,23 @@ export function CreateContractForm({
 
         <fieldset>
           <legend className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
-            Execution windows (local time)
+            Allowed publishing hours
           </legend>
+          <p className="text-[11px] text-ink-500 mt-1 leading-relaxed">
+            Signal can publish only during these windows. Times shown in{" "}
+            <span className="font-mono">{tz}</span>.
+          </p>
           <div className="mt-2 space-y-2">
             {windows.map((w, idx) => (
               <div
                 key={w.id}
-                className="flex items-center gap-2 text-xs text-ink-700"
+                className="flex flex-wrap items-center gap-2 text-xs text-ink-700"
               >
                 <select
                   name="window_day"
                   defaultValue={w.dayOfWeek}
-                  className="input"
+                  className="input min-w-[5rem]"
+                  aria-label="Day"
                 >
                   {DAY_LABELS.map((label, i) => (
                     <option key={label} value={i}>
@@ -261,21 +287,23 @@ export function CreateContractForm({
                   type="time"
                   name="window_start"
                   defaultValue={w.startTime}
-                  className="input"
+                  className="input min-w-[6rem]"
+                  aria-label="From"
                 />
-                <span>→</span>
+                <span className="text-ink-400">to</span>
                 <input
                   type="time"
                   name="window_end"
                   defaultValue={w.endTime}
-                  className="input"
+                  className="input min-w-[6rem]"
+                  aria-label="Until"
                 />
                 <button
                   type="button"
-                  className="text-ink-500 hover:text-red-600"
+                  className="text-[11px] text-ink-500 hover:text-red-600"
                   onClick={() => setWindows((ws) => ws.filter((_, i) => i !== idx))}
                 >
-                  remove
+                  Remove
                 </button>
               </div>
             ))}
@@ -290,7 +318,7 @@ export function CreateContractForm({
                 ]);
               }}
             >
-              + add window
+              + Add another window
             </button>
           </div>
         </fieldset>
@@ -302,7 +330,7 @@ export function CreateContractForm({
               name="pause_on_first_failure"
               defaultChecked
             />
-            <span>Pause on first failure</span>
+            <span>Pause publishing if any post fails</span>
           </label>
           <label className="flex items-center gap-2 text-xs text-ink-700">
             <input
@@ -310,7 +338,7 @@ export function CreateContractForm({
               name="pause_on_risk_event"
               defaultChecked
             />
-            <span>Pause on risk event</span>
+            <span>Pause if something looks risky</span>
           </label>
         </div>
 

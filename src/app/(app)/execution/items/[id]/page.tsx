@@ -24,6 +24,8 @@ import { ExecutionStateBadge } from "@/components/publishing/execution-state";
 import { RedditPostPreview } from "@/components/platform-previews/reddit-post";
 import { listCreativesForItems } from "@/repositories/weekly-plan-creative-repository";
 import { getAccountById } from "@/repositories/account-repository";
+import { getPlanItemById } from "@/repositories/weekly-plan-repository";
+import { RemoveButton } from "@/app/(app)/weekly-plan/_remove-button";
 
 export const dynamic = "force-dynamic";
 
@@ -80,6 +82,12 @@ export default async function ExecutionItemPage({ params }: PageProps) {
   const previewCreative = previewCreatives[0] ?? null;
   const accountForPreview = item.accountId
     ? await getAccountById(workspaceId, item.accountId).catch(() => null)
+    : null;
+  // The plan-item drives the "remove / cancel" affordance because it
+  // owns the founder-facing status. The execution_item is the
+  // engine's view; we keep it in sync but don't expose its enum.
+  const linkedPlanItem = planItemId
+    ? await getPlanItemById(workspaceId, planItemId).catch(() => null)
     : null;
 
   // Resolve subreddit: form > metadata.target > whitelisted[0].
@@ -182,8 +190,15 @@ export default async function ExecutionItemPage({ params }: PageProps) {
             : "Not scheduled"
         }
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <ExecutionStateBadge status={item.status} size="md" />
+            {linkedPlanItem && linkedPlanItem.status !== "published" ? (
+              <RemoveButton
+                itemId={linkedPlanItem.id}
+                status={linkedPlanItem.status}
+                size="md"
+              />
+            ) : null}
             <Link href="/execution" className="btn-ghost text-xs">
               ← All publishing
             </Link>
