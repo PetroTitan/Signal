@@ -328,6 +328,7 @@ export interface WeeklyPlanItemUpdate {
 // Phase F2.5 — publish history (rate limit + dup check + audit).
 
 export type PublishHistoryOutcome = "published" | "failed" | "blocked";
+export type PublishHistoryMode = "api" | "manual";
 
 export interface PublishHistoryRow {
   id: string;
@@ -344,6 +345,7 @@ export interface PublishHistoryRow {
   provider_post_id: string | null;
   provider_permalink: string | null;
   outcome: PublishHistoryOutcome;
+  mode: PublishHistoryMode;
   reason_code: string | null;
   http_status: number | null;
   started_at: string;
@@ -366,6 +368,7 @@ export interface PublishHistoryInsert {
   provider_post_id?: string | null;
   provider_permalink?: string | null;
   outcome: PublishHistoryOutcome;
+  mode?: PublishHistoryMode;
   reason_code?: string | null;
   http_status?: number | null;
   started_at: string;
@@ -877,6 +880,7 @@ export type ExecutionItemStatus =
   | "authorized"
   | "scheduled"
   | "ready"
+  | "ready_for_manual_publish"
   | "running"
   | "completed"
   | "blocked"

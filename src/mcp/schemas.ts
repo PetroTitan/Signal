@@ -459,6 +459,62 @@ export function parseExecutionPublishPreview(
   };
 }
 
+export interface ExecutionManualPublishPreviewArgs {
+  execution_item_id: string;
+  subreddit?: string | null;
+}
+export function parseExecutionManualPublishPreview(
+  input: unknown,
+): Parse<ExecutionManualPublishPreviewArgs> {
+  if (!isObject(input)) return { ok: false, errors: ["expected_object"] };
+  if (!str(input.execution_item_id) || !isUuidLike(input.execution_item_id))
+    return { ok: false, errors: ["execution_item_id_invalid"] };
+  return {
+    ok: true,
+    value: {
+      execution_item_id: input.execution_item_id,
+      subreddit: input.subreddit ? String(input.subreddit).trim() : null,
+    },
+  };
+}
+
+export interface ExecutionRecordManualPublishArgs {
+  execution_item_id: string;
+  permalink: string;
+  provider_post_id?: string | null;
+  notes?: string | null;
+}
+export function parseExecutionRecordManualPublish(
+  input: unknown,
+): Parse<ExecutionRecordManualPublishArgs> {
+  if (!isObject(input)) return { ok: false, errors: ["expected_object"] };
+  const errors: string[] = [];
+  if (!str(input.execution_item_id) || !isUuidLike(input.execution_item_id))
+    errors.push("execution_item_id_invalid");
+  if (!str(input.permalink) || (input.permalink as string).trim().length === 0)
+    errors.push("permalink_required");
+  if (
+    input.provider_post_id !== undefined &&
+    input.provider_post_id !== null &&
+    !str(input.provider_post_id)
+  )
+    errors.push("provider_post_id_must_be_string");
+  if (input.notes !== undefined && input.notes !== null && !str(input.notes))
+    errors.push("notes_must_be_string");
+  if (errors.length > 0) return { ok: false, errors };
+  return {
+    ok: true,
+    value: {
+      execution_item_id: input.execution_item_id as string,
+      permalink: (input.permalink as string).trim(),
+      provider_post_id: input.provider_post_id
+        ? String(input.provider_post_id)
+        : null,
+      notes: input.notes ? String(input.notes) : null,
+    },
+  };
+}
+
 export interface ExecutionAuthorizeItemArgs {
   execution_item_id: string;
 }

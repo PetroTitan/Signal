@@ -21,6 +21,7 @@ export interface PublishHistoryEntry {
   providerPostId: string | null;
   providerPermalink: string | null;
   outcome: "published" | "failed" | "blocked";
+  mode: "api" | "manual";
   reasonCode: string | null;
   httpStatus: number | null;
   startedAt: string;
@@ -44,6 +45,7 @@ function toEntry(row: PublishHistoryRow): PublishHistoryEntry {
     providerPostId: row.provider_post_id,
     providerPermalink: row.provider_permalink,
     outcome: row.outcome,
+    mode: row.mode,
     reasonCode: row.reason_code,
     httpStatus: row.http_status,
     startedAt: row.started_at,
@@ -66,6 +68,10 @@ export interface InsertPublishHistoryInput {
   providerPostId: string | null;
   providerPermalink: string | null;
   outcome: "published" | "failed" | "blocked";
+  /** Phase F2.6: distinguishes API publishes from manual records.
+   *  Defaults to 'api' at the DB layer; the manual path passes
+   *  'manual' explicitly. */
+  mode?: "api" | "manual";
   reasonCode: string | null;
   httpStatus: number | null;
   startedAt: string;
@@ -90,6 +96,7 @@ export async function insertPublishHistory(
     provider_post_id: input.providerPostId,
     provider_permalink: input.providerPermalink,
     outcome: input.outcome,
+    mode: input.mode ?? "api",
     reason_code: input.reasonCode,
     http_status: input.httpStatus,
     started_at: input.startedAt,

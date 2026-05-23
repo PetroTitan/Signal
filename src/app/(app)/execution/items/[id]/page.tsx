@@ -17,6 +17,7 @@ import {
 } from "@/core/publishing/safe-test-env";
 import { PublishForm } from "./_publish-form";
 import { ManualPublishForm } from "./_manual-publish-form";
+import { PrepareForManualPublishForm } from "./_prepare-for-manual-form";
 import { isRedditOauthBlocked } from "@/lib/oauth/env";
 
 export const dynamic = "force-dynamic";
@@ -73,18 +74,23 @@ export default async function ExecutionItemPage({ params }: PageProps) {
   // so we can render the gates inline. The publish action re-runs
   // the same policy with the real phrase before sending.
   //
-  // When Reddit OAuth is blocked (REDDIT_OAUTH_STATUS=blocked_…), we
-  // evaluate the manual-publish policy instead so the gate list
-  // matches the path the operator can actually take. The manual
-  // policy uses the same checks but skips OAuth/token.
+  // F2.6: the page evaluates the policy matched to the item's status:
+  //   - 'ready'                    → safe-test policy (API path)
+  //   - 'ready_for_manual_publish' → manual policy (no OAuth gates)
+  // The env-flag (REDDIT_OAUTH_STATUS) just informs which option the
+  // operator should see surfaced first; it no longer auto-routes the
+  // publish form. The operator must explicitly opt in via
+  // "Prepare for manual publish".
   const oauthBlocked = isRedditOauthBlocked();
+  const isReady = item.status === "ready";
+  const isReadyForManual = item.status === "ready_for_manual_publish";
   let verdict: SafeTestPolicyVerdict | null = null;
-  if (item.status === "ready" && safeTestModeEnabled()) {
+  if ((isReady || isReadyForManual) && safeTestModeEnabled()) {
     const supabase = createSupabaseServerClient();
     const { evaluateManualPublishPolicy } = await import(
-      "@/core/publishing/safe-test-policy"
+      "@/core/publishing/manual-publish-policy"
     );
-    const policyFn = oauthBlocked
+    const policyFn = isReadyForManual
       ? evaluateManualPublishPolicy
       : evaluateSafeTestPolicy;
     verdict = await policyFn({
@@ -181,7 +187,7 @@ export default async function ExecutionItemPage({ params }: PageProps) {
               the env var is set, no Reddit publish can be triggered.
             </p>
           </section>
-        ) : item.status !== "ready" ? (
+        ) : !isReady && !isReadyForManual ? (
           <section className="card p-5 border-ink-200">
             <h2 className="text-sm font-semibold text-ink-900">
               Not ready for publish
@@ -275,7 +281,7 @@ export default async function ExecutionItemPage({ params }: PageProps) {
                   </pre>
                 </section>
 
-                {oauthBlocked ? (
+                {isReadyForManual ? (
                   <ManualPublishForm
                     executionItemId={item.id}
                     defaultSubreddit={verdict.preview.subreddit}
@@ -285,21 +291,45 @@ export default async function ExecutionItemPage({ params }: PageProps) {
                       kind: verdict.preview.kind,
                       linkUrl: verdict.preview.linkUrl,
                       subreddit: verdict.preview.subreddit,
+                      creativeAssetUrl:
+                        verdict.preview.creative?.assetUrl ?? null,
+                      altText: verdict.preview.creative?.altText ?? null,
                     }}
                   />
                 ) : (
-                  <PublishForm
-                    executionItemId={item.id}
-                    defaultSubreddit={verdict.preview.subreddit}
-                    payloadPreview={{
-                      title: verdict.preview.title,
-                      body: verdict.preview.body,
-                      kind: verdict.preview.kind,
-                      linkUrl: verdict.preview.linkUrl,
-                      subreddit: verdict.preview.subreddit,
-                      apiPayload: verdict.preview.apiPayload,
-                    }}
-                  />
+                  <>
+                    {oauthBlocked ? (
+                      <section className="card p-5 border-amber-200 bg-amber-50/40">
+                        <h2 className="text-sm font-semibold text-amber-900">
+                          Reddit API publishing is unavailable right now
+                        </h2>
+                        <p className="text-xs text-amber-900 mt-1 leading-relaxed">
+                          Reddit&apos;s Responsible Builder Policy is blocking
+                          our OAuth app provisioning. Use the manual publish
+                          workflow below — Signal prepares the payload and
+                          you publish it manually on Reddit.
+                        </p>
+                      </section>
+                    ) : null}
+                    <PrepareForManualPublishForm
+                      executionItemId={item.id}
+                      apiBlocked={oauthBlocked}
+                    />
+                    {!oauthBlocked ? (
+                      <PublishForm
+                        executionItemId={item.id}
+                        defaultSubreddit={verdict.preview.subreddit}
+                        payloadPreview={{
+                          title: verdict.preview.title,
+                          body: verdict.preview.body,
+                          kind: verdict.preview.kind,
+                          linkUrl: verdict.preview.linkUrl,
+                          subreddit: verdict.preview.subreddit,
+                          apiPayload: verdict.preview.apiPayload,
+                        }}
+                      />
+                    ) : null}
+                  </>
                 )}
               </>
             ) : null}

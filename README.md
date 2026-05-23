@@ -408,6 +408,31 @@ The four tables (`execution_queues`, `execution_items`, `execution_logs`, `execu
 
 See [docs/execution/execution-engine.md](docs/execution/execution-engine.md), [docs/execution/dry-run-mode.md](docs/execution/dry-run-mode.md), [docs/execution/execution-state-machine.md](docs/execution/execution-state-machine.md), [docs/execution/contract-authorization.md](docs/execution/contract-authorization.md), [docs/execution/queue-and-items.md](docs/execution/queue-and-items.md), [docs/execution/retry-policy.md](docs/execution/retry-policy.md), and [docs/execution/execution-logs.md](docs/execution/execution-logs.md).
 
+## Manual Reddit publishing (Phase F2.6)
+
+When Reddit's API approval is pending — or when an operator prefers
+manual control — Signal supports an explicit **manual-publish
+workflow** parallel to the API path. The scheduler still couriers
+items to `ready`; the operator clicks "Prepare for manual publish"
+to move them to `ready_for_manual_publish`. From there `/execution/items/<id>`
+shows the prepared payload + copy buttons + a direct link to
+Reddit's submit page. After publishing, the operator pastes the
+permalink back; Signal records `publish_history.mode='manual'`,
+walks the execution_item to `completed`, mirrors the plan_item to
+`published`, and emits a `manual_publish.recorded` activity event.
+
+Every safety gate (whitelist, creative readiness, alt text, rate
+limit, duplicate fingerprint, confirmation phrase) applies on both
+paths. The DB enforces no duplicate permalink across a workspace.
+
+This is not browser automation. Not scraping. Not API bypass. The
+operator publishes manually on Reddit; Signal just prepares the
+payload and records the audit row.
+
+See [docs/publishing/manual-reddit-publishing.md](docs/publishing/manual-reddit-publishing.md),
+[docs/publishing/reddit-api-approval-fallback.md](docs/publishing/reddit-api-approval-fallback.md),
+and [docs/publishing/manual-publish-audit.md](docs/publishing/manual-publish-audit.md).
+
 ## Simple weekly publishing (Phase F1)
 
 `/weekly-plan` ends with one button: **Approve weekly plan**. Approving promotes every `pending_approval` item to a scheduled `execution_item` under the active weekly contract. From there, [`/api/scheduler/tick`](src/app/api/scheduler/tick/route.ts) runs on a Vercel Cron schedule (`*/5 * * * *`), pulls eligible items, runs the policy gate, and either publishes (dry-run by default) or marks the item `skipped`/`blocked`/`failed` with a reason code.

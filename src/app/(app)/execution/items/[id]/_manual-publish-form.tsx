@@ -19,11 +19,17 @@ export interface ManualPublishFormProps {
     kind: "self" | "link";
     linkUrl: string | null;
     subreddit: string;
+    creativeAssetUrl: string | null;
+    altText: string | null;
   };
 }
 
 export function ManualPublishForm(props: ManualPublishFormProps) {
-  const composeUrl = buildComposeUrl(props.payloadPreview);
+  const submitUrl = `https://www.reddit.com/r/${encodeURIComponent(
+    props.payloadPreview.subreddit,
+  )}/submit`;
+  const fullPayload = buildFullPayloadText(props.payloadPreview);
+
   const [phrase, setPhrase] = useState("");
   const armed =
     phrase.trim().toLowerCase().replace(/\s+/g, " ") === CONFIRMATION_PHRASE;
@@ -31,54 +37,74 @@ export function ManualPublishForm(props: ManualPublishFormProps) {
   const safe = state ?? initial;
 
   return (
-    <section className="card p-5 space-y-4 border-amber-200 bg-amber-50/40">
+    <section className="card p-5 space-y-4 border-emerald-200">
       <header>
-        <h2 className="text-sm font-semibold text-amber-900">
-          Manual Reddit publish (API approval pending)
+        <h2 className="text-sm font-semibold text-ink-900">
+          Manual publish mode
         </h2>
-        <p className="text-xs text-amber-900 mt-1 leading-relaxed">
-          Reddit hasn&apos;t approved Signal&apos;s API access yet. Use this
-          flow to publish manually now; once approval lands the same
-          payload + policy gates will run automatically. Every safety
-          check still applies — whitelist, creative readiness, rate
-          limit, duplicate, confirmation phrase.
+        <p className="text-xs text-ink-700 mt-1 leading-relaxed">
+          Signal prepared this post. You publish it manually on Reddit. This
+          does not use Reddit API automation. After publishing, paste the
+          Reddit permalink here so Signal can record the audit row.
         </p>
       </header>
 
-      <ol className="text-xs text-ink-800 space-y-3 list-decimal list-inside leading-relaxed">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        <CopyButton label="Copy title" value={props.payloadPreview.title} />
+        {props.payloadPreview.kind === "link" ? (
+          <CopyButton
+            label="Copy link URL"
+            value={props.payloadPreview.linkUrl ?? ""}
+          />
+        ) : (
+          <CopyButton
+            label="Copy body"
+            value={props.payloadPreview.body ?? ""}
+          />
+        )}
+        <CopyButton label="Copy full payload" value={fullPayload} />
+        {props.payloadPreview.creativeAssetUrl ? (
+          <CopyButton
+            label="Copy creative URL"
+            value={props.payloadPreview.creativeAssetUrl}
+          />
+        ) : null}
+        <a
+          href={submitUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="btn-ghost text-xs"
+        >
+          Open r/{props.payloadPreview.subreddit} submit page →
+        </a>
+      </div>
+
+      <details className="text-xs text-ink-700">
+        <summary className="cursor-pointer font-semibold text-ink-700">
+          Show prepared payload
+        </summary>
+        <pre className="mt-2 bg-ink-50 p-3 rounded-md overflow-x-auto whitespace-pre-wrap font-mono text-[11px]">
+          {fullPayload}
+        </pre>
+      </details>
+
+      <ol className="text-xs text-ink-700 space-y-1 list-decimal list-inside leading-relaxed">
+        <li>Copy the title and body using the buttons above.</li>
         <li>
-          <span className="font-semibold">Copy the title</span> and{" "}
-          {props.payloadPreview.kind === "link" ? "link URL" : "body"} from the
-          payload preview above.
+          Open <span className="font-mono">r/{props.payloadPreview.subreddit}</span>{" "}
+          submit page, attach the creative manually, and submit.
         </li>
         <li>
-          <span className="font-semibold">Publish on Reddit.</span> Click the
-          link below to open Reddit&apos;s compose page with{" "}
-          <span className="font-mono">r/{props.payloadPreview.subreddit}</span>{" "}
-          pre-filled, paste the title + body, and submit.
-          <div className="mt-1">
-            <a
-              href={composeUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-signal-700 underline font-mono break-all text-[11px]"
-            >
-              {composeUrl}
-            </a>
-          </div>
+          Paste the permalink from your browser address bar into the form
+          below.
         </li>
         <li>
-          <span className="font-semibold">Paste the permalink</span> from your
-          browser&apos;s address bar after the post appears.
-        </li>
-        <li>
-          <span className="font-semibold">Type the confirmation phrase</span>{" "}
-          to record. We use the exact same phrase as the automated path so the
-          audit trail is consistent.
+          Type <span className="font-mono">&quot;{CONFIRMATION_PHRASE}&quot;</span>{" "}
+          to arm the Record button.
         </li>
       </ol>
 
-      <form action={action} className="space-y-3 border-t border-amber-200 pt-4">
+      <form action={action} className="space-y-3 border-t border-ink-100 pt-4">
         <input
           type="hidden"
           name="execution_item_id"
@@ -91,7 +117,7 @@ export function ManualPublishForm(props: ManualPublishFormProps) {
         />
         <label className="block text-xs">
           <div className="font-semibold text-ink-700 mb-1">
-            Reddit permalink (from your browser)
+            Reddit permalink (required)
           </div>
           <input
             type="url"
@@ -101,9 +127,9 @@ export function ManualPublishForm(props: ManualPublishFormProps) {
             className="input w-full text-sm font-mono"
           />
           <div className="text-[11px] text-ink-500 mt-1">
-            Accepts the full permalink or a{" "}
+            Accepts the full permalink or{" "}
             <span className="font-mono">https://redd.it/&lt;id&gt;</span>{" "}
-            shortlink. The subreddit in the URL must match the prepared payload.
+            shortlink. The URL subreddit must match the prepared payload.
           </div>
         </label>
         <label className="block text-xs">
@@ -113,7 +139,7 @@ export function ManualPublishForm(props: ManualPublishFormProps) {
           <textarea
             name="operator_notes"
             rows={2}
-            placeholder="e.g. Posted at 14:32 from u/Webmasterid-core; flair set to Discussion."
+            placeholder="e.g. Posted from u/Webmasterid-core; flair set to Discussion."
             className="input w-full text-sm"
           />
         </label>
@@ -130,13 +156,6 @@ export function ManualPublishForm(props: ManualPublishFormProps) {
             placeholder='Type: publish live reddit post'
             className="input w-full font-mono text-sm"
           />
-          <div className="text-[11px] text-ink-500 mt-1">
-            The Record button arms when you type the phrase{" "}
-            <span className="font-mono text-ink-700">
-              &quot;{CONFIRMATION_PHRASE}&quot;
-            </span>{" "}
-            exactly.
-          </div>
         </label>
 
         <div className="flex items-center gap-3">
@@ -162,6 +181,31 @@ export function ManualPublishForm(props: ManualPublishFormProps) {
   );
 }
 
+function CopyButton({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // navigator.clipboard can be blocked in non-secure contexts; the
+      // operator can still copy from the "Show prepared payload" pre.
+      setCopied(false);
+    }
+  }
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      disabled={value.length === 0}
+      className="btn-ghost text-xs disabled:opacity-50"
+    >
+      {copied ? "✓ Copied" : label}
+    </button>
+  );
+}
+
 function RecordButton({ disabled }: { disabled: boolean }) {
   const { pending } = useFormStatus();
   return (
@@ -170,26 +214,38 @@ function RecordButton({ disabled }: { disabled: boolean }) {
       disabled={pending || disabled}
       className="btn-primary text-sm disabled:opacity-50"
     >
-      {pending ? "Recording…" : "Record manual publish"}
+      {pending ? "Recording…" : "Mark as manually published"}
     </button>
   );
 }
 
-function buildComposeUrl(payload: {
+function buildFullPayloadText(payload: {
   title: string;
   body: string | null;
   kind: "self" | "link";
   linkUrl: string | null;
   subreddit: string;
+  creativeAssetUrl: string | null;
+  altText: string | null;
 }): string {
-  const base = `https://www.reddit.com/r/${encodeURIComponent(payload.subreddit)}/submit`;
-  const params = new URLSearchParams();
-  params.set("title", payload.title);
+  const lines = [
+    `Subreddit: r/${payload.subreddit}`,
+    `Type:      ${payload.kind === "link" ? "link" : "text post"}`,
+    "",
+    `Title:`,
+    payload.title,
+    "",
+  ];
   if (payload.kind === "link" && payload.linkUrl) {
-    params.set("url", payload.linkUrl);
+    lines.push(`URL:`, payload.linkUrl, "");
   } else if (payload.body) {
-    params.set("text", payload.body);
-    params.set("selftext", "true");
+    lines.push(`Body:`, payload.body, "");
   }
-  return `${base}?${params.toString()}`;
+  if (payload.creativeAssetUrl) {
+    lines.push(`Creative:`, payload.creativeAssetUrl, "");
+  }
+  if (payload.altText) {
+    lines.push(`Alt text:`, payload.altText, "");
+  }
+  return lines.join("\n").trimEnd();
 }
