@@ -25,6 +25,10 @@ import { resolveIdentityPlatformGuidance } from "@/core/publishing/platform-guid
 import { buildGenerationPrompt } from "./prompt-builder";
 import { evaluateDraftSafety } from "./safety-rules";
 import { readGenerationProviderStatus } from "./provider-status";
+import {
+  activeProvider,
+  callGenerationProvider,
+} from "./providers";
 import type {
   GenerationInput,
   GenerationPromptContext,
@@ -97,36 +101,13 @@ export async function generateDraft(input: {
 
   const prompt = buildGenerationPrompt(promptContext);
 
-  // ── Provider dispatch.
-  // We intentionally do NOT ship a working HTTP call yet — the
-  // wiring is real, the credentials switch is real, the prompt is
-  // real, but the HTTP shape for each provider is left to the
-  // implementation that drops in the actual key. Returning
-  // provider_unavailable keeps the rest of the flow honest.
-  try {
-    const body = await callProvider(provider.provider, prompt);
-    const verdict = evaluateDraftSafety({
-      title: null,
-      body,
-    });
-    if (!verdict.ok) {
-      return {
-        providerUsed: true,
-        status: "provider_refused",
-        draft: {
-          ...seededDraftFromInputs(input.generation, promptContext),
-          safetyNotes: verdict.violations,
-        },
-        similarityWarning,
-      };
-    }
-    return {
-      providerUsed: true,
-      status: "provider_generated",
-      draft: parseDraft(body, input.generation, promptContext),
-      similarityWarning,
-    };
-  } catch {
+  // ── Real provider dispatch (F4.6).
+  const response = await callGenerationProvider({
+    system: prompt.system,
+    user: prompt.user,
+  });
+
+  if (!response.ok) {
     return {
       providerUsed: false,
       status: "provider_unavailable",
@@ -134,23 +115,36 @@ export async function generateDraft(input: {
       similarityWarning,
     };
   }
+
+  const verdict = evaluateDraftSafety({
+    title: null,
+    body: response.text,
+  });
+  if (!verdict.ok) {
+    return {
+      providerUsed: true,
+      status: "provider_refused",
+      draft: {
+        ...seededDraftFromInputs(input.generation, promptContext),
+        safetyNotes: verdict.violations,
+      },
+      similarityWarning,
+    };
+  }
+
+  return {
+    providerUsed: true,
+    status: "provider_generated",
+    draft: parseDraft(response.text, input.generation, promptContext),
+    similarityWarning,
+  };
 }
 
 /**
- * Stub provider dispatcher. When a real key is configured, replace
- * the `throw` with an HTTP call to Anthropic or OpenAI and return
- * the assistant's text. Until then the function throws so the
- * caller falls through to manual-seed.
- *
- * IMPORTANT: never log the prompt, never log the key, never return
- * raw error bodies that might include either.
+ * Re-export the dispatcher and active-provider helpers for callers
+ * outside this module (e.g. the rewrite flow in F4.6).
  */
-async function callProvider(
-  _provider: "anthropic" | "openai" | null,
-  _prompt: { system: string; user: string },
-): Promise<string> {
-  throw new Error("provider_not_implemented");
-}
+export { activeProvider };
 
 function seededDraftFromInputs(
   input: GenerationInput,

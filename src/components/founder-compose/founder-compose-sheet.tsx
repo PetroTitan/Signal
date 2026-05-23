@@ -14,6 +14,7 @@ import {
 } from "@/core/publishing/schedule-presets";
 import { autosaveLabel, useAutosave } from "./use-autosave";
 import { Markdown } from "./markdown";
+import { RewriteChips } from "./rewrite-chips";
 
 /**
  * Founder compose sheet — the "I had an idea" surface.
@@ -46,6 +47,8 @@ export interface FounderComposeSheetDefaults {
   accounts: { id: string; displayName: string | null; platform: string }[];
   products: { id: string; name: string }[];
   allowedSubreddits: string[];
+  /** F4.6 — true when an AI provider is configured server-side. */
+  aiProviderAvailable?: boolean;
 }
 
 /**
@@ -347,6 +350,13 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
               <span className="font-mono">```code```</span>
             </p>
           </div>
+
+          {/* Editorial rewrite chips (F4.6) */}
+          <RewriteChips
+            itemId={draft.itemId}
+            providerAvailable={props.defaults.aiProviderAvailable ?? false}
+            hasBody={draft.body.trim().length > 0}
+          />
 
           {/* Platform — primary choice, chips not dropdown */}
           <div className="space-y-1.5">
