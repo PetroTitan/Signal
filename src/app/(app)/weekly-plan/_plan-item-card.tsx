@@ -6,10 +6,12 @@ import { useFormState, useFormStatus } from "react-dom";
 import {
   attachCreativeAction,
   duplicatePlanItemAction,
+  sendForApprovalAction,
   updatePlanItemAction,
   uploadCreativeAssetAction,
   type AttachCreativeResult,
   type DuplicatePlanItemResult,
+  type SendForApprovalResult,
   type UpdatePlanItemResult,
   type UploadCreativeAssetResult,
 } from "./_actions";
@@ -25,6 +27,7 @@ const updateInitial: UpdatePlanItemResult = { ok: false, error: "" };
 const creativeInitial: AttachCreativeResult = { ok: false, error: "" };
 const uploadInitial: UploadCreativeAssetResult = { ok: false, error: "" };
 const duplicateInitial: DuplicatePlanItemResult = { ok: false, error: "" };
+const sendInitial: SendForApprovalResult = { ok: false, error: "" };
 
 export interface PlanItemCardProps {
   id: string;
@@ -165,6 +168,10 @@ export function PlanItemCard(props: PlanItemCardProps) {
               >
                 View published →
               </Link>
+            ) : null}
+            {(props.status === "draft" || props.status === "skipped") &&
+            props.isPost ? (
+              <SendForApprovalButton itemId={props.id} />
             ) : null}
             <DuplicateButton itemId={props.id} />
             <QuickReschedule
@@ -768,6 +775,33 @@ function ReadinessTile({
 // =====================================================================
 // Quick actions
 // =====================================================================
+
+function SendForApprovalButton({ itemId }: { itemId: string }) {
+  const [state, action] = useFormState(sendForApprovalAction, sendInitial);
+  const safe = state ?? sendInitial;
+  return (
+    <form action={action} className="inline">
+      <input type="hidden" name="item_id" value={itemId} />
+      <SendSubmit />
+      {safe.error ? (
+        <span className="ml-2 text-[11px] text-amber-700">{safe.error}</span>
+      ) : null}
+    </form>
+  );
+}
+
+function SendSubmit() {
+  const { pending } = useFormStatus();
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      className="btn-primary text-xs disabled:opacity-60"
+    >
+      {pending ? "Sending…" : "Send for approval"}
+    </button>
+  );
+}
 
 function DuplicateButton({ itemId }: { itemId: string }) {
   const [state, action] = useFormState(

@@ -13,11 +13,11 @@ import {
   listCreativesForItems,
 } from "@/repositories/weekly-plan-creative-repository";
 import { listExecutionItemsByPlanItemIds } from "@/repositories/execution-item-repository";
-import { CreateItemForm } from "./_create-item-form";
 import { ApprovePlanForm } from "./_approve-plan-form";
 import { PlanItemCard } from "./_plan-item-card";
 import { ExecutionStateBadge } from "@/components/publishing/execution-state";
 import { readAllowedTestSubreddits } from "@/core/publishing/safe-test-env";
+import { NewPostButton } from "@/components/founder-compose/new-post-button";
 
 export const dynamic = "force-dynamic";
 
@@ -124,6 +124,27 @@ export default async function WeeklyPlanPage() {
   }));
   const allowedSubreddits = readAllowedTestSubreddits();
 
+  // Smart defaults for the founder compose sheet.
+  const confirmedRedditAccounts = accounts.filter(
+    (a) => a.platform === "reddit" && a.reviewStatus === "confirmed",
+  );
+  const confirmedProducts = products.filter(
+    (p) => p.reviewStatus === "confirmed",
+  );
+  const composeDefaults = {
+    timezoneLabel,
+    defaultAccountId:
+      confirmedRedditAccounts.length === 1
+        ? confirmedRedditAccounts[0].id
+        : null,
+    defaultProductId:
+      confirmedProducts.length === 1 ? confirmedProducts[0].id : null,
+    defaultSubreddit: allowedSubreddits[0] ?? "test",
+    accounts: accountOptions,
+    products: productOptions,
+    allowedSubreddits,
+  };
+
   // ---- Day grouping ----
   const groups = groupByDay(items);
 
@@ -137,32 +158,42 @@ export default async function WeeklyPlanPage() {
             : "Everything planned for this week. All times shown in your browser timezone."
         }
         actions={
-          plan ? (
-            <Link href="/approval-queue" className="btn-primary">
-              Open approval queue
-            </Link>
-          ) : null
+          <div className="flex items-center gap-2">
+            <NewPostButton
+              variant="inline"
+              className="hidden md:inline-flex"
+              defaults={composeDefaults}
+            />
+            {plan ? (
+              <Link
+                href="/approval-queue"
+                className="btn-ghost text-xs hidden md:inline-flex"
+              >
+                Approval queue
+              </Link>
+            ) : null}
+          </div>
         }
       />
+      {/* Mobile FAB */}
+      <NewPostButton
+        variant="fab"
+        className="md:hidden"
+        defaults={composeDefaults}
+      />
       <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-3xl space-y-5">
-        {!plan ? (
-          <section className="card p-6 text-center">
+        {!plan || items.length === 0 ? (
+          <section className="rounded-2xl border border-dashed border-ink-300 bg-ink-50/40 p-8 text-center">
             <h2 className="text-base font-semibold text-ink-900">
-              No weekly plan yet
+              {plan ? plan.title : "No posts yet"}
             </h2>
             <p className="text-sm text-ink-500 mt-2 leading-relaxed max-w-md mx-auto">
-              Add your first plan item below. Signal will create the
-              week-of plan automatically.
+              Have an idea? Capture it now — title and body are all you
+              need to start. Schedule and creative can come later.
             </p>
-          </section>
-        ) : items.length === 0 ? (
-          <section className="card p-6 text-center">
-            <h2 className="text-base font-semibold text-ink-900">
-              {plan.title}
-            </h2>
-            <p className="text-sm text-ink-500 mt-2 leading-relaxed">
-              Week of {plan.weekStart}. No items yet — add one below.
-            </p>
+            <div className="mt-4 flex justify-center">
+              <NewPostButton variant="inline" defaults={composeDefaults} />
+            </div>
           </section>
         ) : (
           <>
@@ -194,7 +225,7 @@ export default async function WeeklyPlanPage() {
             {/* Day-grouped cards */}
             <div className="space-y-6">
               {groups.map((group) => (
-                <section key={group.key} className="space-y-2">
+                <section key={group.bucket} className="space-y-2">
                   <DayHeader group={group} />
                   <div className="space-y-2">
                     {group.items.map((it) => {
@@ -274,8 +305,6 @@ export default async function WeeklyPlanPage() {
             </div>
           </>
         )}
-
-        <CreateItemForm products={productOptions} accounts={accountOptions} />
       </div>
     </>
   );
@@ -285,76 +314,139 @@ export default async function WeeklyPlanPage() {
 // Day-grouping helpers
 // =====================================================================
 
+type BucketId = "today" | "tomorrow" | "this_week" | "next_week" | "later" | "unscheduled";
+
 interface DayGroup {
-  /** Sort key — YYYY-MM-DD for scheduled days, "9999" for unscheduled. */
-  key: string;
-  /** ISO date or `null` for the unscheduled bucket. */
-  isoDate: string | null;
-  /** Founder-readable label, e.g. "Mon, May 26". */
+  bucket: BucketId;
+  /** Sort key — lower-is-earlier; unscheduled always last. */
+  sortKey: number;
+  /** Founder-readable group title ("Today", "Tomorrow", …). */
   label: string;
+  /** Optional sublabel: the specific date for Today/Tomorrow. */
+  sublabel: string | null;
   items: Awaited<ReturnType<typeof listPlanItems>>;
+}
+
+const BUCKET_ORDER: Record<BucketId, number> = {
+  today: 0,
+  tomorrow: 1,
+  this_week: 2,
+  next_week: 3,
+  later: 4,
+  unscheduled: 5,
+};
+
+function bucketize(scheduledAt: string | null, now: Date): BucketId {
+  if (!scheduledAt) return "unscheduled";
+  const d = new Date(scheduledAt);
+  if (Number.isNaN(d.getTime())) return "unscheduled";
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  const dayMs = 24 * 60 * 60 * 1000;
+  const dayDelta = Math.floor(
+    (d.getTime() - startOfToday.getTime()) / dayMs,
+  );
+  if (dayDelta <= 0) return "today";
+  if (dayDelta === 1) return "tomorrow";
+  // Days to next Monday (the start of next week).
+  const todayDow = startOfToday.getDay(); // 0=Sun..6=Sat
+  const daysUntilNextMonday = ((1 + 7 - todayDow) % 7) || 7;
+  const daysUntilWeekAfter = daysUntilNextMonday + 7;
+  if (dayDelta < daysUntilNextMonday) return "this_week";
+  if (dayDelta < daysUntilWeekAfter) return "next_week";
+  return "later";
 }
 
 function groupByDay(
   items: Awaited<ReturnType<typeof listPlanItems>>,
 ): DayGroup[] {
-  const byKey = new Map<string, DayGroup>();
+  const now = new Date();
+  const groups: Record<BucketId, DayGroup> = {
+    today: makeGroup("today", "Today", labelForToday(now)),
+    tomorrow: makeGroup("tomorrow", "Tomorrow", labelForTomorrow(now)),
+    this_week: makeGroup("this_week", "Later this week", null),
+    next_week: makeGroup("next_week", "Next week", null),
+    later: makeGroup("later", "Later", null),
+    unscheduled: makeGroup("unscheduled", "Unscheduled", null),
+  };
   for (const it of items) {
-    if (it.scheduledAt) {
-      const d = new Date(it.scheduledAt);
-      if (Number.isNaN(d.getTime())) {
-        // Treat unparseable as unscheduled.
-        ensureGroup(byKey, "9999-99-99", null, "Unscheduled").items.push(it);
-        continue;
-      }
-      const isoDate = toIsoDate(d);
-      const label = d.toLocaleDateString(undefined, {
-        weekday: "short",
-        month: "short",
-        day: "numeric",
-      });
-      ensureGroup(byKey, isoDate, d.toISOString(), label).items.push(it);
-    } else {
-      ensureGroup(byKey, "9999-99-99", null, "Unscheduled").items.push(it);
-    }
+    groups[bucketize(it.scheduledAt, now)].items.push(it);
   }
-  return Array.from(byKey.values()).sort((a, b) => a.key.localeCompare(b.key));
+  // Sort items inside each bucket by scheduled time.
+  for (const g of Object.values(groups)) {
+    g.items.sort((a, b) => {
+      const ta = a.scheduledAt ? new Date(a.scheduledAt).getTime() : Infinity;
+      const tb = b.scheduledAt ? new Date(b.scheduledAt).getTime() : Infinity;
+      return ta - tb;
+    });
+  }
+  // F2.9: always render Today and Tomorrow even when empty — they're
+  // the anchor points the operator scans for. Other buckets only
+  // surface when they have items.
+  return Object.values(groups)
+    .filter((g) => {
+      if (g.bucket === "today" || g.bucket === "tomorrow") return true;
+      return g.items.length > 0;
+    })
+    .sort((a, b) => a.sortKey - b.sortKey);
 }
 
-function ensureGroup(
-  m: Map<string, DayGroup>,
-  key: string,
-  isoDate: string | null,
+function makeGroup(
+  bucket: BucketId,
   label: string,
+  sublabel: string | null,
 ): DayGroup {
-  let g = m.get(key);
-  if (!g) {
-    g = { key, isoDate, label, items: [] };
-    m.set(key, g);
-  }
-  return g;
+  return {
+    bucket,
+    sortKey: BUCKET_ORDER[bucket],
+    label,
+    sublabel,
+    items: [],
+  };
 }
 
-function toIsoDate(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+function labelForToday(now: Date): string {
+  return now.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function labelForTomorrow(now: Date): string {
+  const d = new Date(now);
+  d.setDate(d.getDate() + 1);
+  return d.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 function DayHeader({ group }: { group: DayGroup }) {
-  const isUnscheduled = group.isoDate === null;
+  const accent =
+    group.bucket === "today"
+      ? "bg-signal-50 text-signal-700 border-signal-100"
+      : group.bucket === "tomorrow"
+        ? "bg-emerald-50 text-emerald-700 border-emerald-100"
+        : group.bucket === "unscheduled"
+          ? "bg-amber-50 text-amber-700 border-amber-100"
+          : "bg-ink-100 text-ink-700 border-ink-200";
+  const empty = group.items.length === 0;
   return (
     <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide">
-      <div
-        className={`px-2 py-0.5 rounded-md ${
-          isUnscheduled
-            ? "bg-amber-50 text-amber-700 border border-amber-100"
-            : "bg-ink-100 text-ink-700"
-        } font-semibold`}
-      >
+      <div className={`px-2 py-0.5 rounded-md border font-semibold ${accent}`}>
         {group.label}
       </div>
-      <span className="text-ink-400">
-        {group.items.length} item{group.items.length === 1 ? "" : "s"}
+      {group.sublabel ? (
+        <span className="text-ink-500 normal-case tracking-normal">
+          {group.sublabel}
+        </span>
+      ) : null}
+      <span className="text-ink-400 normal-case tracking-normal">
+        {empty
+          ? "Nothing scheduled."
+          : `${group.items.length} post${group.items.length === 1 ? "" : "s"}`}
       </span>
     </div>
   );
