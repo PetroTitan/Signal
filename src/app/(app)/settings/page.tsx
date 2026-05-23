@@ -90,6 +90,26 @@ export default function SettingsPage() {
         </section>
 
         <section className="card p-5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-ink-900">
+                Publishing platforms
+              </h2>
+              <p className="text-xs text-ink-600 mt-1 leading-relaxed">
+                Where Signal can publish for you, and which connections are
+                set up.
+              </p>
+            </div>
+            <Link
+              href="/settings/publishing-platforms"
+              className="btn-ghost text-xs whitespace-nowrap shrink-0"
+            >
+              Open →
+            </Link>
+          </div>
+        </section>
+
+        <section className="card p-5">
           <h2 className="text-sm font-semibold text-ink-900">
             Platform connections
           </h2>

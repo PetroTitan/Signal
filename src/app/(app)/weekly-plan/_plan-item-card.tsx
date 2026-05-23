@@ -18,6 +18,7 @@ import {
 import { ExecutionStateBadge } from "@/components/publishing/execution-state";
 import { SchedulePresetsInput } from "@/components/publishing/schedule-presets-input";
 import { SubredditPill } from "@/components/publishing/subreddit-pill";
+import { PlatformChip } from "@/components/publishing/platform-chip";
 import {
   FounderComposeSheet,
   type FounderComposeSheetDefaults,
@@ -114,16 +115,17 @@ export function PlanItemCard(props: PlanItemCardProps) {
             {/* Status / target / schedule / account chips */}
             <div className="flex flex-wrap items-center gap-1.5 pt-1">
               <ExecutionStateBadge status={props.status} />
-              {props.isPost ? (
+              {props.platform ? <PlatformChip platform={props.platform} /> : null}
+              {props.isPost && props.platform === "reddit" ? (
                 <SubredditPill
                   subreddit={props.subreddit}
                   allowedList={props.allowedSubreddits}
                 />
-              ) : (
+              ) : !props.isPost ? (
                 <span className="inline-flex items-center rounded-full border border-dashed border-ink-300 px-2 py-0.5 text-[11px] text-ink-500">
                   comment draft
                 </span>
-              )}
+              ) : null}
               {props.scheduledAt ? (
                 <span className="inline-flex items-center rounded-full border border-ink-200 px-2 py-0.5 text-[11px] text-ink-700">
                   {formatSchedule(props.scheduledAt)}
@@ -135,8 +137,7 @@ export function PlanItemCard(props: PlanItemCardProps) {
               )}
               {accountLabel ? (
                 <span className="text-[11px] text-ink-500">
-                  {accountLabel.displayName ?? accountLabel.id} ·{" "}
-                  {accountLabel.platform}
+                  {accountLabel.displayName ?? accountLabel.id}
                 </span>
               ) : null}
             </div>

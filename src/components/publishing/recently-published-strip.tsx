@@ -6,6 +6,8 @@
  * "nothing happened yet" feeling.
  */
 
+import { PlatformChip } from "./platform-chip";
+
 export interface RecentlyPublishedEntry {
   id: string;
   title: string | null;
@@ -54,13 +56,12 @@ export function RecentlyPublishedStrip({
               <div className="text-xs font-medium text-ink-900 truncate">
                 {e.title ?? "Untitled"}
               </div>
-              <div className="text-[11px] text-ink-500 truncate">
+              <div className="text-[11px] text-ink-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                <PlatformChip platform={e.platform} />
                 {e.subreddit ? (
                   <span className="font-mono">r/{e.subreddit}</span>
-                ) : (
-                  e.platform
-                )}{" "}
-                · {formatRelative(e.publishedAt)}
+                ) : null}
+                <span>· {formatRelative(e.publishedAt)}</span>
               </div>
             </div>
             {e.permalink ? (

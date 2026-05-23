@@ -26,6 +26,7 @@ import {
   transformForDevto,
   type DevtoPayload,
 } from "./transformers/devto";
+import { fetchWithTimeout, isTimeoutError } from "./fetch-with-timeout";
 
 const DEVTO_API_BASE = "https://dev.to/api";
 
@@ -78,7 +79,7 @@ export async function publishToDevto(
 
   let response: Response;
   try {
-    response = await fetch(`${DEVTO_API_BASE}/articles`, {
+    response = await fetchWithTimeout(`${DEVTO_API_BASE}/articles`, {
       method: "POST",
       headers: {
         "api-key": apiKey,
@@ -86,8 +87,15 @@ export async function publishToDevto(
         Accept: "application/vnd.forem.api-v1+json",
       },
       body: JSON.stringify(payload),
+      timeoutMs: 20_000,
     });
   } catch (err) {
+    if (isTimeoutError(err)) {
+      return publishFail(
+        "platform_api_error",
+        "dev.to didn't respond in time (20s). The post wasn't sent — try again.",
+      );
+    }
     return publishFail(
       "platform_api_error",
       `dev.to network error: ${err instanceof Error ? err.message : "unknown"}`,

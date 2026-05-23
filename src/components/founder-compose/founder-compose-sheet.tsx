@@ -81,6 +81,17 @@ export interface FounderComposeSheetProps {
   existingItem?: FounderComposeSheetExistingItem;
 }
 
+const PLATFORM_CHOICES: ReadonlyArray<{
+  value: string;
+  label: string;
+  short: string;
+}> = [
+  { value: "reddit", label: "Reddit", short: "r/" },
+  { value: "devto", label: "dev.to", short: "dev" },
+  { value: "hashnode", label: "Hashnode", short: "Hn" },
+  { value: "bluesky", label: "Bluesky", short: "Bs" },
+];
+
 interface DraftState {
   itemId: string | null;
   title: string;
@@ -337,6 +348,49 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
             </p>
           </div>
 
+          {/* Platform — primary choice, chips not dropdown */}
+          <div className="space-y-1.5">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
+              Where
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {PLATFORM_CHOICES.map((p) => {
+                const selected = draft.platform === p.value;
+                return (
+                  <button
+                    key={p.value}
+                    type="button"
+                    onClick={() =>
+                      setDraft((d) => ({ ...d, platform: p.value }))
+                    }
+                    className={`text-[11px] px-3 py-1 rounded-full border transition-colors inline-flex items-center gap-1.5 ${
+                      selected
+                        ? "bg-signal-50 border-signal-300 text-signal-800"
+                        : "bg-white border-ink-200 text-ink-700 hover:bg-ink-50"
+                    }`}
+                  >
+                    <span className="font-mono text-[10px] opacity-80">
+                      {p.short}
+                    </span>
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
+            {draft.platform === "reddit" ? (
+              <input
+                type="text"
+                value={draft.subreddit}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, subreddit: e.target.value }))
+                }
+                className="input w-full text-sm font-mono"
+                placeholder="subreddit (e.g. test)"
+                aria-label="Subreddit"
+              />
+            ) : null}
+          </div>
+
           {/* Schedule */}
           <div className="space-y-1.5">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
@@ -403,36 +457,10 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
             className="rounded-md border border-ink-200"
           >
             <summary className="cursor-pointer text-xs text-ink-600 px-3 py-2 hover:bg-ink-50">
-              Show advanced (platform, account, product, risk, notes)
+              Show advanced (account, product, risk, notes)
             </summary>
             <div className="px-3 py-3 space-y-2.5 text-xs">
               <div className="grid grid-cols-2 gap-2">
-                <label className="block">
-                  <span className="text-ink-500">Platform</span>
-                  <select
-                    value={draft.platform}
-                    onChange={(e) =>
-                      setDraft((d) => ({ ...d, platform: e.target.value }))
-                    }
-                    className="input w-full text-xs mt-0.5"
-                  >
-                    <option value="reddit">Reddit</option>
-                    <option value="x">X</option>
-                    <option value="linkedin">LinkedIn</option>
-                  </select>
-                </label>
-                <label className="block">
-                  <span className="text-ink-500">Subreddit</span>
-                  <input
-                    type="text"
-                    value={draft.subreddit}
-                    onChange={(e) =>
-                      setDraft((d) => ({ ...d, subreddit: e.target.value }))
-                    }
-                    className="input w-full text-xs mt-0.5 font-mono"
-                    placeholder="test"
-                  />
-                </label>
                 <label className="block">
                   <span className="text-ink-500">Account</span>
                   <select
