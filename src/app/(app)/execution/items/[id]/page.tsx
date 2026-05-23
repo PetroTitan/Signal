@@ -18,6 +18,7 @@ import {
 import { PublishForm } from "./_publish-form";
 import { ManualPublishForm } from "./_manual-publish-form";
 import { PrepareForManualPublishForm } from "./_prepare-for-manual-form";
+import { PublishTierOneForm } from "./_publish-tier-one-form";
 import { isRedditOauthBlocked } from "@/lib/oauth/env";
 import { ExecutionStateBadge } from "@/components/publishing/execution-state";
 import { RedditPostPreview } from "@/components/platform-previews/reddit-post";
@@ -103,8 +104,15 @@ export default async function ExecutionItemPage({ params }: PageProps) {
   const oauthBlocked = isRedditOauthBlocked();
   const isReady = item.status === "ready";
   const isReadyForManual = item.status === "ready_for_manual_publish";
+  const isTierOne =
+    item.platform === "devto" ||
+    item.platform === "hashnode" ||
+    item.platform === "bluesky";
   let verdict: SafeTestPolicyVerdict | null = null;
-  if ((isReady || isReadyForManual) && safeTestModeEnabled()) {
+  // Tier-1 platforms (dev.to / Hashnode / Bluesky) skip the
+  // Reddit-shaped safe-test policy entirely — they use API
+  // credentials read from env and a different publish CTA.
+  if (!isTierOne && (isReady || isReadyForManual) && safeTestModeEnabled()) {
     const supabase = createSupabaseServerClient();
     const { evaluateManualPublishPolicy } = await import(
       "@/core/publishing/manual-publish-policy"
@@ -241,7 +249,40 @@ export default async function ExecutionItemPage({ params }: PageProps) {
           </section>
         ) : null}
 
-        {!safeTestModeEnabled() ? (
+        {isTierOne && isReady ? (
+          <>
+            {cadenceWarning ? (
+              <section className="rounded-2xl border border-amber-200 bg-amber-50/40 p-4 flex items-start gap-3">
+                <span
+                  className="shrink-0 mt-0.5 w-5 h-5 rounded-full bg-amber-500 text-white grid place-items-center text-xs"
+                  aria-hidden
+                >
+                  ·
+                </span>
+                <p className="text-xs text-amber-900 leading-relaxed">
+                  {cadenceWarning}
+                </p>
+              </section>
+            ) : null}
+            <PublishTierOneForm
+              executionItemId={item.id}
+              platform={
+                item.platform as "devto" | "hashnode" | "bluesky"
+              }
+              cooldownWarning={null}
+            />
+          </>
+        ) : isTierOne && !isReady ? (
+          <section className="rounded-2xl border border-ink-200 bg-white p-5">
+            <h2 className="text-sm font-semibold text-ink-900">
+              Not ready to publish yet
+            </h2>
+            <p className="text-xs text-ink-600 mt-1 leading-relaxed">
+              This post is still waiting for its scheduled time. Once that
+              moment arrives, the publish controls unlock here.
+            </p>
+          </section>
+        ) : !safeTestModeEnabled() ? (
           <section className="rounded-2xl border border-amber-200 bg-amber-50/40 p-5">
             <h2 className="text-sm font-semibold text-amber-800">
               Manual publishing mode is off

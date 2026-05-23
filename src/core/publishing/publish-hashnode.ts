@@ -24,6 +24,7 @@ import {
   HASHNODE_PUBLISH_POST_MUTATION,
   transformForHashnode,
 } from "./transformers/hashnode";
+import { fetchWithTimeout, isTimeoutError } from "./fetch-with-timeout";
 
 const HASHNODE_GQL_ENDPOINT = "https://gql.hashnode.com/";
 
@@ -76,7 +77,7 @@ export async function publishToHashnode(
 
   let response: Response;
   try {
-    response = await fetch(HASHNODE_GQL_ENDPOINT, {
+    response = await fetchWithTimeout(HASHNODE_GQL_ENDPOINT, {
       method: "POST",
       headers: {
         Authorization: apiKey,
@@ -86,8 +87,15 @@ export async function publishToHashnode(
         query: HASHNODE_PUBLISH_POST_MUTATION,
         variables: { input: inputPayload },
       }),
+      timeoutMs: 20_000,
     });
   } catch (err) {
+    if (isTimeoutError(err)) {
+      return publishFail(
+        "platform_api_error",
+        "Hashnode didn't respond in time (20s). The post wasn't sent — try again.",
+      );
+    }
     return publishFail(
       "platform_api_error",
       `Hashnode network error: ${

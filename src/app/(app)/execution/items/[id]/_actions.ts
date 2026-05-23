@@ -15,6 +15,7 @@ import { evaluateSafeTestPolicy } from "@/core/publishing/safe-test-policy";
 import { decryptForOutboundUse } from "@/core/platform-oauth";
 import { publishToReddit } from "@/core/publishing/publish-reddit";
 import { computeFingerprint } from "@/core/publishing/publish-fingerprint";
+import { friendlyFailure } from "@/core/publishing/founder-error";
 import { RepositoryError } from "@/repositories/errors";
 import {
   actionFail,
@@ -316,7 +317,12 @@ export async function publishItemAction(
     });
     revalidatePath(`/execution/items/${item.id}`);
     revalidatePath(`/execution/${item.queueId}`);
-    return actionFail(outcome.reasonDetail ?? "Reddit refused publish.");
+    const friendly = friendlyFailure({
+      platform: "reddit",
+      reasonCode: outcome.reasonCode,
+      reasonDetail: outcome.reasonDetail,
+    });
+    return actionFail(`${friendly.title} ${friendly.advice}`);
   } catch (err) {
     const msg =
       err instanceof RepositoryError

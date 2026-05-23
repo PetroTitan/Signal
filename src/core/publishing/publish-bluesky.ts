@@ -27,6 +27,8 @@ import { publishFail, publishOk } from "./publishing-result";
 import type { PublishOutcome, PublishRequest } from "./publishing-types";
 import { canonicalPostFromRequest } from "./canonical-post";
 import { transformForBluesky } from "./transformers/bluesky";
+import { fetchWithTimeout, isTimeoutError } from "./fetch-with-timeout";
+import { extractFacets } from "./transformers/bluesky-facets";
 
 export interface PublishBlueskyInput {
   request: PublishRequest;
@@ -52,12 +54,19 @@ async function createSession(
 ): Promise<{ ok: true; session: BlueskySession } | { ok: false; status: number; detail: string }> {
   let resp: Response;
   try {
-    resp = await fetch(`${service}/xrpc/com.atproto.server.createSession`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ identifier, password }),
-    });
+    resp = await fetchWithTimeout(
+      `${service}/xrpc/com.atproto.server.createSession`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identifier, password }),
+        timeoutMs: 15_000,
+      },
+    );
   } catch (err) {
+    if (isTimeoutError(err)) {
+      return { ok: false, status: 0, detail: "Bluesky login timed out (15s)." };
+    }
     return {
       ok: false,
       status: 0,
@@ -105,19 +114,30 @@ async function createPostRecord(
 ): Promise<{ ok: true; record: CreateRecordResponse } | { ok: false; status: number; detail: string }> {
   let resp: Response;
   try {
-    resp = await fetch(`${service}/xrpc/com.atproto.repo.createRecord`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${session.accessJwt}`,
-        "Content-Type": "application/json",
+    resp = await fetchWithTimeout(
+      `${service}/xrpc/com.atproto.repo.createRecord`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.accessJwt}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          repo: session.did,
+          collection: "app.bsky.feed.post",
+          record,
+        }),
+        timeoutMs: 20_000,
       },
-      body: JSON.stringify({
-        repo: session.did,
-        collection: "app.bsky.feed.post",
-        record,
-      }),
-    });
+    );
   } catch (err) {
+    if (isTimeoutError(err)) {
+      return {
+        ok: false,
+        status: 0,
+        detail: "Bluesky didn't respond in time (20s).",
+      };
+    }
     return {
       ok: false,
       status: 0,
@@ -216,12 +236,16 @@ export async function publishToBluesky(
   const createdAt = new Date().toISOString();
 
   for (const part of thread) {
+    const facets = extractFacets(part.text);
     const record: Record<string, unknown> = {
       $type: "app.bsky.feed.post",
       text: part.text,
       createdAt,
       langs: ["en"],
     };
+    if (facets.length > 0) {
+      record.facets = facets;
+    }
     if (rootUri && rootCid && previousUri && previousCid) {
       record.reply = {
         root: { uri: rootUri, cid: rootCid },
