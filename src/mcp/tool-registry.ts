@@ -12,6 +12,7 @@ import {
   parseProductsPrepare,
   parseReportsSubmit,
   parseVerificationRunCheck,
+  parseWeeklyPlanAttachCreative,
   parseWeeklyPlanPrepareItem,
   type Parse,
 } from "./schemas";
@@ -30,6 +31,7 @@ import {
   importsPrepareMapping,
   productsPrepare,
   reportsSubmit,
+  weeklyPlanAttachCreative,
   weeklyPlanPrepareItem,
 } from "./tools/prepare-tools";
 import {
@@ -173,7 +175,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: "signal.weekly_plan.prepare_item",
     description:
-      "Create a weekly_plan_item with status='draft'. Cannot be scheduled/executed without operator approval.",
+      "Create a weekly_plan_item (default pending_approval) and optionally attach a creative plan. Posts default to creative_required=true; if no creative fields are supplied a 'planned' placeholder is dropped so the approval queue shows 'creative missing'. Cannot publish — operator approval still required.",
     requiredScopes: ["weekly_plans:write_pending"],
     riskLevel: "remote_write",
     approvalMode: "approval_required",
@@ -181,6 +183,18 @@ export const TOOLS: ToolDefinition[] = [
     touchesProduction: false,
     parseArgs: parseWeeklyPlanPrepareItem,
     handler: wrap(weeklyPlanPrepareItem),
+  },
+  {
+    name: "signal.weekly_plan.attach_creative",
+    description:
+      "Attach (or update) a creative on an existing weekly_plan_item. Source types: generated, uploaded, wikimedia, official_source, manual_url, planned. External sources require source_url; generated requires prompt. Approve via /approval-queue or /weekly-plan UI.",
+    requiredScopes: ["weekly_plans:write_pending"],
+    riskLevel: "remote_write",
+    approvalMode: "no_approval_needed",
+    writesDatabase: true,
+    touchesProduction: false,
+    parseArgs: parseWeeklyPlanAttachCreative,
+    handler: wrap(weeklyPlanAttachCreative),
   },
   {
     name: "signal.imports.prepare_mapping",

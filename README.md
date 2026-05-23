@@ -434,9 +434,16 @@ Hard guarantees inherited from the policy gate:
 - item `risk_level != 'blocked'`
 - `scheduled_for <= now`
 
+Approval-side guarantees (enforced by `approveWeeklyPlanAction`):
+
+- only `content_type='post'` items enter the publishing queue; comments stay as drafts
+- item must have `scheduled_at` set
+- item must have a creative attached (`weekly_plan_item_creatives` row) with alt text and license/attribution where the source requires it
+- creative `source_type='planned'` is treated as missing for queue purposes
+
 Any failure short-circuits and writes a reason code to `execution_logs`. Until the OAuth token cipher is wired (Phase E3 follow-up), every connection has `access_token_encrypted=NULL` and the gate refuses with `no_token` — so no real POST goes out, even in `live` mode. This is intentional.
 
-See [docs/publishing/simple-weekly-workflow.md](docs/publishing/simple-weekly-workflow.md), [docs/publishing/reddit-publishing.md](docs/publishing/reddit-publishing.md), [docs/publishing/publishing-safety.md](docs/publishing/publishing-safety.md), and [docs/publishing/oauth-requirements.md](docs/publishing/oauth-requirements.md).
+See [docs/publishing/simple-weekly-workflow.md](docs/publishing/simple-weekly-workflow.md), [docs/publishing/reddit-publishing.md](docs/publishing/reddit-publishing.md), [docs/publishing/publishing-safety.md](docs/publishing/publishing-safety.md), [docs/publishing/creative-requirements.md](docs/publishing/creative-requirements.md), and [docs/publishing/oauth-requirements.md](docs/publishing/oauth-requirements.md).
 
 ## Weekly operating contract
 

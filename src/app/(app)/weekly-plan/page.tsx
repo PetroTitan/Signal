@@ -8,8 +8,13 @@ import {
 } from "@/repositories/weekly-plan-repository";
 import { listProducts } from "@/repositories/product-repository";
 import { listAccounts } from "@/repositories/account-repository";
+import {
+  creativeReadinessReason,
+  listCreativesForItems,
+} from "@/repositories/weekly-plan-creative-repository";
 import { CreateItemForm } from "./_create-item-form";
 import { ApprovePlanForm } from "./_approve-plan-form";
+import { PlanItemRow } from "./_item-row";
 
 export const dynamic = "force-dynamic";
 
@@ -82,6 +87,19 @@ export default async function WeeklyPlanPage() {
 
   const items = plan ? await listPlanItems(workspaceId, plan.id) : [];
 
+  const creatives = items.length
+    ? await listCreativesForItems(
+        workspaceId,
+        items.map((i) => i.id),
+      )
+    : [];
+  const creativeByItem = new Map<string, (typeof creatives)[number]>();
+  for (const c of creatives) {
+    if (!creativeByItem.has(c.weeklyPlanItemId)) {
+      creativeByItem.set(c.weeklyPlanItemId, c);
+    }
+  }
+
   const pendingCount = items.filter((i) => i.status === "pending_approval")
     .length;
   const counts = items.reduce<Record<string, number>>((acc, it) => {
@@ -89,11 +107,18 @@ export default async function WeeklyPlanPage() {
     return acc;
   }, {});
 
+  const productOptions = products.map((p) => ({ id: p.id, name: p.name }));
+  const accountOptions = accounts.map((a) => ({
+    id: a.id,
+    displayName: a.displayName,
+    platform: a.platform,
+  }));
+
   return (
     <>
       <Topbar
         title="Weekly plan"
-        description="Everything planned for this week, in one calm list."
+        description="Everything planned for this week. Edit, schedule, attach a creative, then approve once."
         actions={
           plan ? (
             <Link href="/approval-queue" className="btn-primary">
@@ -152,46 +177,93 @@ export default async function WeeklyPlanPage() {
                 ))}
               </div>
               <ul className="row-divider">
-                {items.map((it) => (
-                  <li
-                    key={it.id}
-                    className="px-5 py-3.5 flex items-start justify-between gap-4"
-                  >
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium text-ink-900">
-                        {it.title ?? "Untitled"}
-                      </div>
-                      <div className="text-xs text-ink-500 mt-0.5">
-                        {it.platform ?? "—"}
-                        {it.contentType ? ` · ${it.contentType}` : ""}
-                        {it.scheduledAt
-                          ? ` · ${new Date(it.scheduledAt).toLocaleString()}`
-                          : ""}
-                      </div>
-                      {it.body ? (
-                        <p className="text-xs text-ink-700 mt-1 line-clamp-2">
-                          {it.body}
-                        </p>
-                      ) : null}
-                    </div>
-                    <span className={`${badgeClass(it.status)} text-[10px]`}>
-                      {STATUS_LABELS[it.status] ?? it.status}
-                    </span>
-                  </li>
-                ))}
+                {items.map((it) => {
+                  const isPost = it.contentType === "post";
+                  const creative = creativeByItem.get(it.id) ?? null;
+                  const creativeReason = isPost
+                    ? creativeReadinessReason(creative)
+                    : null;
+                  const warnings: string[] = [];
+                  if (isPost && !it.scheduledAt) {
+                    warnings.push(
+                      "Missing schedule — set a date/time before approving.",
+                    );
+                  }
+                  if (isPost && creativeReason) {
+                    warnings.push(
+                      `Creative not ready: ${creativeReason.replace(/_/g, " ")}.`,
+                    );
+                  }
+
+                  const creativeBadge = creative
+                    ? {
+                        label: `creative · ${creative.status}`,
+                        cls:
+                          creative.status === "approved"
+                            ? "badge-low"
+                            : creative.status === "rejected"
+                              ? "badge-high"
+                              : creative.status === "pending_review"
+                                ? "badge-info"
+                                : "badge-medium",
+                      }
+                    : {
+                        label: "creative missing",
+                        cls: "badge-high",
+                      };
+
+                  return (
+                    <PlanItemRow
+                      key={it.id}
+                      id={it.id}
+                      title={it.title}
+                      body={it.body}
+                      platform={it.platform}
+                      contentType={it.contentType}
+                      productId={it.productId}
+                      accountId={it.accountId}
+                      scheduledAt={it.scheduledAt}
+                      status={it.status}
+                      riskScore={it.riskScore}
+                      riskLevel={it.riskLevel}
+                      notes={
+                        typeof it.metadata?.operator_notes === "string"
+                          ? (it.metadata.operator_notes as string)
+                          : null
+                      }
+                      statusLabel={STATUS_LABELS[it.status] ?? it.status}
+                      statusBadgeClass={badgeClass(it.status)}
+                      isPost={isPost}
+                      warnings={warnings}
+                      products={productOptions}
+                      accounts={accountOptions}
+                      creative={
+                        creative
+                          ? {
+                              id: creative.id,
+                              creativeType: creative.creativeType,
+                              sourceType: creative.sourceType,
+                              sourceUrl: creative.sourceUrl,
+                              assetUrl: creative.assetUrl,
+                              prompt: creative.prompt,
+                              altText: creative.altText,
+                              license: creative.license,
+                              attribution: creative.attribution,
+                              riskNotes: creative.riskNotes,
+                              status: creative.status,
+                            }
+                          : null
+                      }
+                      creativeBadge={creativeBadge}
+                    />
+                  );
+                })}
               </ul>
             </section>
           </>
         )}
 
-        <CreateItemForm
-          products={products.map((p) => ({ id: p.id, name: p.name }))}
-          accounts={accounts.map((a) => ({
-            id: a.id,
-            displayName: a.displayName,
-            platform: a.platform,
-          }))}
-        />
+        <CreateItemForm products={productOptions} accounts={accountOptions} />
       </div>
     </>
   );

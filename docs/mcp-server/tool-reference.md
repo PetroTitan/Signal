@@ -64,16 +64,57 @@ Creates `growth_accounts` row with `review_status='pending_review'`, `connection
 Input:
 
 ```json
-{ "product_id": "...", "account_id": "...", "platform": "...", "title": "...",
-  "body": "...", "content_type": "...", "scheduled_at": "...", "risk_score": 42,
-  "save_as_draft": false }
+{
+  "product_id": "...", "account_id": "...", "platform": "...",
+  "title": "...", "body": "...", "content_type": "post",
+  "scheduled_at": "2026-05-24T14:00:00Z", "timezone": "Europe/Berlin",
+  "risk_score": 42, "save_as_draft": false,
+
+  "creative_required": true,
+  "creative_type": "image|video|animation",
+  "creative_source_type": "generated|uploaded|wikimedia|official_source|manual_url|planned",
+  "creative_prompt": "…",
+  "creative_source_url": "https://commons.wikimedia.org/…",
+  "creative_asset_url": "https://…",
+  "creative_alt_text": "…",
+  "creative_license": "CC-BY-4.0 | Public Domain | © Acme | …",
+  "creative_attribution": "by Jane Doe via Wikimedia Commons",
+  "creative_risk_notes": "…"
+}
 ```
 
 **Default** (`save_as_draft` absent or `false`): the item lands as `status='pending_approval'` and **appears in `/approval-queue`** under "Weekly plan items awaiting approval." The operator approves, rejects, or moves to backlog from that surface.
 
 **`save_as_draft: true`**: the item lands as `status='draft'` (a private holding pen). It does *not* appear in `/approval-queue` and cannot be scheduled or executed until promoted to `pending_approval` and approved.
 
+**Phase F1 — creative attachment.** If `content_type='post'`, the tool defaults `creative_required=true`. If the caller provides creative fields, a real creative row is inserted; otherwise a `source_type='planned'` placeholder is dropped so the approval queue shows "creative missing." Operator approval still required either way.
+
+**Phase F1 — eligibility.** Approval-queue approval only enqueues an item for scheduled publishing if it is a `post` with a `scheduled_at` and a publish-ready creative (alt text + correct license/attribution for the source type). Comments are draft-only and never enter the publishing queue.
+
 Either way: cannot be scheduled or executed until the operator both approves *and* there is an active weekly contract scoping the account, product, platform, and action type. See [./tool-permissions.md](./tool-permissions.md) for the full approval ladder.
+
+### `signal.weekly_plan.attach_creative`
+
+Input:
+
+```json
+{
+  "weekly_plan_item_id": "uuid",
+  "creative_type": "image|video|animation",
+  "source_type": "generated|uploaded|wikimedia|official_source|manual_url|planned",
+  "source_url": "…",
+  "asset_url": "…",
+  "prompt": "…",
+  "alt_text": "…",
+  "license": "…",
+  "attribution": "…",
+  "risk_notes": "…"
+}
+```
+
+Inserts a `weekly_plan_item_creatives` row for an existing item. External sources (`wikimedia`, `manual_url`) require `source_url`; `generated` requires `prompt`. Status is `pending_review` (or `planned` for the placeholder source). The item is still gated by `/approval-queue` — attaching a creative does not approve the item or the creative.
+
+See [docs/publishing/creative-requirements.md](../publishing/creative-requirements.md) for the full creative policy.
 
 ### `signal.imports.prepare_mapping`
 
