@@ -3,6 +3,7 @@ import {
   isApiKeyVerifyPlatform,
   isAppPasswordPlatform,
   isOAuthCapablePlatform,
+  isPersonalApiKeyPlatform,
   resolveConnectIdentityPlan,
   shouldShowManageButton,
   type ConnectIdentityInput,
@@ -104,9 +105,51 @@ describe("resolveConnectIdentityPlan — app-password platforms", () => {
   });
 });
 
-describe("resolveConnectIdentityPlan — API-key verify platforms", () => {
-  it.each(["devto", "hashnode", "telegram"] as const)(
-    "returns an api_key_verify plan for %s (Bluesky is now app_password)",
+describe("resolveConnectIdentityPlan — personal-API-key platforms", () => {
+  it("returns a personal_api_key plan for dev.to (NOT api_key_verify)", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "devto",
+        publishingMode: "api",
+        oauthAvailable: false,
+      }),
+    );
+    expect(plan.kind).toBe("personal_api_key");
+    if (plan.kind !== "personal_api_key") return;
+    expect(plan.connectUrl).toBe("/api/identity/id-1/devto/connect");
+    expect(plan.signOutUrl).toBe("/api/identity/id-1/devto/sign-out");
+    expect(plan.buttonLabel).toBe("Sign in with dev.to API key");
+    expect(plan.credentialNote.toLowerCase()).toContain(
+      "this exact account",
+    );
+    expect(plan.secretFieldLabel.toLowerCase()).toContain("api key");
+  });
+
+  it("dev.to signOutUrl is identity-scoped — two dev.to identities have distinct URLs", () => {
+    const planA = resolveConnectIdentityPlan(
+      input({
+        identityId: "id-A",
+        platform: "devto",
+        publishingMode: "api",
+      }),
+    );
+    const planB = resolveConnectIdentityPlan(
+      input({
+        identityId: "id-B",
+        platform: "devto",
+        publishingMode: "api",
+      }),
+    );
+    if (planA.kind !== "personal_api_key" || planB.kind !== "personal_api_key")
+      throw new Error("expected personal_api_key");
+    expect(planA.signOutUrl).not.toBe(planB.signOutUrl);
+    expect(planA.connectUrl).not.toBe(planB.connectUrl);
+  });
+});
+
+describe("resolveConnectIdentityPlan — API-key verify platforms (workspace-shared key + per-identity verify)", () => {
+  it.each(["hashnode", "telegram"] as const)(
+    "returns an api_key_verify plan for %s (dev.to is now personal_api_key)",
     (platform) => {
       const plan = resolveConnectIdentityPlan(
         input({
@@ -192,13 +235,17 @@ describe("isOAuthCapablePlatform / isAppPasswordPlatform / isApiKeyVerifyPlatfor
     expect(isApiKeyVerifyPlatform("bluesky")).toBe(false);
   });
 
-  it("dev.to/Hashnode/Telegram remain API-key verify platforms", () => {
-    expect(isApiKeyVerifyPlatform("devto")).toBe(true);
+  it("dev.to is a personal-API-key platform (NOT api_key_verify anymore)", () => {
+    expect(isPersonalApiKeyPlatform("devto")).toBe(true);
+    expect(isApiKeyVerifyPlatform("devto")).toBe(false);
+  });
+
+  it("Hashnode/Telegram remain API-key verify platforms (until their PRs land)", () => {
     expect(isApiKeyVerifyPlatform("hashnode")).toBe(true);
     expect(isApiKeyVerifyPlatform("telegram")).toBe(true);
   });
 
-  it("Distribution and manual-only platforms belong to none of the three groups", () => {
+  it("Distribution and manual-only platforms belong to none of the four groups", () => {
     for (const p of [
       "x",
       "linkedin",
@@ -209,6 +256,7 @@ describe("isOAuthCapablePlatform / isAppPasswordPlatform / isApiKeyVerifyPlatfor
     ] as const) {
       expect(isOAuthCapablePlatform(p)).toBe(false);
       expect(isAppPasswordPlatform(p)).toBe(false);
+      expect(isPersonalApiKeyPlatform(p)).toBe(false);
       expect(isApiKeyVerifyPlatform(p)).toBe(false);
     }
   });
@@ -241,8 +289,19 @@ describe("shouldShowManageButton", () => {
     expect(shouldShowManageButton(plan)).toBe(true);
   });
 
-  it("shows Manage for api_key_verify plans (dev.to/Hashnode/Telegram)", () => {
-    for (const platform of ["devto", "hashnode", "telegram"] as const) {
+  it("shows Manage for personal_api_key plans (dev.to)", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "devto",
+        publishingMode: "api",
+        oauthAvailable: false,
+      }),
+    );
+    expect(shouldShowManageButton(plan)).toBe(true);
+  });
+
+  it("shows Manage for api_key_verify plans (Hashnode/Telegram)", () => {
+    for (const platform of ["hashnode", "telegram"] as const) {
       const plan = resolveConnectIdentityPlan(
         input({
           platform,

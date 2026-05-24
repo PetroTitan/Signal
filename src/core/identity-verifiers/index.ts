@@ -53,3 +53,23 @@ export type {
   BlueskySessionPlan,
   BlueskySessionPlanInput,
 } from "./bluesky-session-persistence";
+
+// dev.to personal-API-key verifier
+export {
+  verifyDevtoIdentity,
+  normalizeDevtoUsername,
+  isValidDevtoUsername,
+} from "./devto";
+export type {
+  DevtoVerifierInput,
+  DevtoVerifierResult,
+  DevtoVerifierConnected,
+  DevtoVerifierMismatched,
+  DevtoVerifierError,
+  DevtoVerifierErrorCode,
+} from "./devto";
+export { buildDevtoVerifyPlan } from "./devto-persistence";
+export type {
+  DevtoVerifyPlan,
+  DevtoVerifyPlanInput,
+} from "./devto-persistence";

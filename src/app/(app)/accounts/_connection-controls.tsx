@@ -80,6 +80,18 @@ const STATUS_LABELS: Record<ConnectionControlsProps["connectionStatus"], string>
 };
 
 /**
+ * Display-friendly platform name for the personal_api_key form
+ * header. Backend keys (founder-platform slugs) stay as-is; only the
+ * UI string is friendlier.
+ */
+function planPlatformLabel(platform: string): string {
+  if (platform === "devto") return "dev.to";
+  if (platform === "hashnode") return "Hashnode";
+  if (platform === "telegram") return "Telegram";
+  return platform;
+}
+
+/**
  * Pick the OAuth button label from the resolver's verdict. The
  * existing connection_status alone can't tell "expired" from
  * "mismatched", which need different labels.
@@ -240,6 +252,87 @@ export function ConnectionControls(props: ConnectionControlsProps) {
   const [appPasswordFormOpen, setAppPasswordFormOpen] = useState(false);
   const [appPasswordHandle, setAppPasswordHandle] = useState("");
   const [appPasswordValue, setAppPasswordValue] = useState("");
+
+  // Personal-API-key connect (dev.to today; Hashnode in phase 3).
+  // Single-secret form: only the API key field is needed. The
+  // secret leaves the browser exactly once on submit and is then
+  // cleared from component state regardless of outcome.
+  const [apiKeyFormOpen, setApiKeyFormOpen] = useState(false);
+  const [apiKeyValue, setApiKeyValue] = useState("");
+
+  async function submitPersonalApiKey(
+    e: FormEvent<HTMLFormElement>,
+    connectUrl: string,
+  ) {
+    e.preventDefault();
+    if (inCooldown) return;
+    setBusy("connect");
+    setMessage(null);
+    try {
+      const res = await fetch(connectUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ api_key: apiKeyValue }),
+      });
+      const json = (await res.json()) as {
+        ok?: boolean;
+        code?: string;
+        error?: string;
+        message?: string;
+        authenticated_handle?: string;
+      };
+      // Clear the key from component memory regardless of outcome.
+      setApiKeyValue("");
+      if (res.ok && json.ok) {
+        setMessage(
+          `Signed in as ${json.authenticated_handle ?? "this account"}.`,
+        );
+        setApiKeyFormOpen(false);
+        router.refresh();
+      } else if (json.code === "handle_mismatch") {
+        setMessage(
+          json.message ??
+            "API key belongs to a different account than this identity expects.",
+        );
+        setCooldownUntil(Date.now() + FAILED_AUTH_COOLDOWN_MS);
+      } else if (json.code === "auth_failed") {
+        setMessage(
+          json.message ??
+            "Provider rejected the API key. Double-check the key on the provider's settings page.",
+        );
+        setCooldownUntil(Date.now() + FAILED_AUTH_COOLDOWN_MS);
+      } else {
+        setMessage(json.error ?? json.message ?? "Sign-in failed.");
+        setCooldownUntil(Date.now() + FAILED_AUTH_COOLDOWN_MS);
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function signOutPersonalApiKey(signOutUrl: string) {
+    setBusy("disconnect");
+    setMessage(null);
+    try {
+      const res = await fetch(signOutUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+      });
+      const json = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        message?: string;
+      };
+      if (res.ok && json.ok) {
+        setMessage("Signed out of this account.");
+        router.refresh();
+      } else {
+        setMessage(json.error ?? json.message ?? "Sign-out failed.");
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function signOutBluesky(signOutUrl: string) {
     setBusy("disconnect");
@@ -628,6 +721,166 @@ export function ConnectionControls(props: ConnectionControlsProps) {
                 onClick={() => {
                   setAppPasswordFormOpen(false);
                   setAppPasswordValue("");
+                  setMessage(null);
+                }}
+                className="btn-secondary text-[11px]"
+              >
+                Cancel
+              </button>
+            </div>
+            {inCooldown ? (
+              <p className="text-[10px] text-amber-700 mt-1">
+                Recent sign-in failed. Wait briefly before retrying.
+              </p>
+            ) : null}
+          </form>
+        ) : null}
+
+        {/*
+          Personal API key flow (dev.to today). Same four-state UI
+          pattern as Bluesky: signed-out, signed-in, mismatch, form.
+          The form is single-field (the secret); the handle is
+          already on the identity row.
+        */}
+        {plan?.kind === "personal_api_key" &&
+        !apiKeyFormOpen &&
+        props.publishState === "connected" ? (
+          <div className="basis-full space-y-2">
+            <div className="text-[11px] text-ink-700">
+              Signed in as{" "}
+              <span className="font-mono">
+                {props.handle ?? "this account"}
+              </span>
+              .
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => {
+                  setApiKeyFormOpen(true);
+                  setMessage(null);
+                }}
+                disabled={busy !== null || inCooldown}
+                className="btn-secondary text-[11px]"
+              >
+                Sign in again
+              </button>
+              <button
+                type="button"
+                onClick={() => signOutPersonalApiKey(plan.signOutUrl)}
+                disabled={busy !== null}
+                className="btn-secondary text-[11px]"
+              >
+                {busy === "disconnect" ? "…" : "Sign out of this account"}
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {plan?.kind === "personal_api_key" &&
+        !apiKeyFormOpen &&
+        props.publishState === "mismatched" ? (
+          <div className="basis-full space-y-2">
+            <div className="flex gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => {
+                  setApiKeyFormOpen(true);
+                  setMessage(null);
+                }}
+                disabled={busy !== null || inCooldown}
+                className="btn-primary text-[11px]"
+              >
+                Sign in with correct account
+              </button>
+              <button
+                type="button"
+                onClick={() => signOutPersonalApiKey(plan.signOutUrl)}
+                disabled={busy !== null}
+                className="btn-secondary text-[11px]"
+              >
+                {busy === "disconnect" ? "…" : "Sign out of this account"}
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {plan?.kind === "personal_api_key" &&
+        !apiKeyFormOpen &&
+        props.publishState !== "connected" &&
+        props.publishState !== "mismatched" ? (
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                setApiKeyFormOpen(true);
+                setMessage(null);
+              }}
+              disabled={busy !== null || inCooldown}
+              className="btn-primary text-[11px]"
+            >
+              {plan.buttonLabel}
+            </button>
+          </>
+        ) : null}
+
+        {plan?.kind === "personal_api_key" && inCooldown ? (
+          <p className="basis-full text-[10px] text-amber-700 mt-1">
+            Sign-in is briefly disabled after a failed attempt. Wait a
+            moment before trying again.
+          </p>
+        ) : null}
+
+        {plan?.kind === "personal_api_key" && apiKeyFormOpen ? (
+          <form
+            onSubmit={(e) => submitPersonalApiKey(e, plan.connectUrl)}
+            className="basis-full mt-2 rounded-md border border-ink-200 bg-ink-50/30 p-3 space-y-2"
+          >
+            <div className="text-[11px] font-semibold text-ink-900">
+              Sign in to this {planPlatformLabel(plan.platform)} account
+            </div>
+            <p className="text-[10px] text-amber-800 leading-relaxed">
+              {plan.credentialNote}
+            </p>
+            <label className="block">
+              <span className="text-[10px] font-medium text-ink-600">
+                {plan.secretFieldLabel}
+              </span>
+              <input
+                type="password"
+                autoComplete="new-password"
+                value={apiKeyValue}
+                onChange={(e) => setApiKeyValue(e.target.value)}
+                className="mt-1 w-full rounded border border-ink-200 px-2 py-1 text-[11px] font-mono"
+                required
+              />
+              <span className="mt-1 block text-[10px] text-ink-500">
+                Find your API key at{" "}
+                <a
+                  href={plan.generateUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline"
+                >
+                  {plan.generateLabel}
+                </a>
+                . Signal stores it encrypted and never exposes the key
+                value.
+              </span>
+            </label>
+            <div className="flex gap-2">
+              <button
+                type="submit"
+                disabled={busy === "connect" || inCooldown}
+                className="btn-primary text-[11px]"
+              >
+                {busy === "connect" ? "…" : "Sign in"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setApiKeyFormOpen(false);
+                  setApiKeyValue("");
                   setMessage(null);
                 }}
                 className="btn-secondary text-[11px]"
