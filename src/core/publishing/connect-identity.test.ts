@@ -202,22 +202,56 @@ describe("resolveConnectIdentityPlan — personal-API-key platforms", () => {
 });
 
 describe("resolveConnectIdentityPlan — API-key verify platforms (workspace-shared key + per-identity verify)", () => {
-  it.each(["telegram"] as const)(
-    "returns an api_key_verify plan for %s (dev.to and Hashnode are now personal_api_key)",
-    (platform) => {
-      const plan = resolveConnectIdentityPlan(
-        input({
-          platform,
-          publishingMode: "api",
-          oauthAvailable: false,
-        }),
-      );
-      expect(plan.kind).toBe("api_key_verify");
-      if (plan.kind !== "api_key_verify") return;
-      expect(plan.verifyUrl).toBe(`/api/identity/id-1/verify`);
-      expect(plan.buttonLabel).toBe("Sign in to this account");
-    },
-  );
+  it("returns a telegram-specific api_key_verify plan with dedicated verify + sign-out URLs", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "telegram",
+        publishingMode: "api",
+        oauthAvailable: false,
+      }),
+    );
+    expect(plan.kind).toBe("api_key_verify");
+    if (plan.kind !== "api_key_verify") return;
+    expect(plan.verifyUrl).toBe("/api/identity/id-1/telegram/verify");
+    expect(plan.signOutUrl).toBe("/api/identity/id-1/telegram/sign-out");
+    expect(plan.buttonLabel.toLowerCase()).toContain("telegram");
+  });
+
+  it("Telegram plan carries operator setup instructions (bot must be added as admin)", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "telegram",
+        publishingMode: "api",
+        oauthAvailable: false,
+      }),
+    );
+    if (plan.kind !== "api_key_verify") throw new Error("expected api_key_verify");
+    expect(plan.setupInstructions).toBeDefined();
+    const instructions = (plan.setupInstructions ?? []).join(" ").toLowerCase();
+    expect(instructions).toContain("admin");
+    expect(instructions).toContain("channel");
+  });
+
+  it("Telegram signOutUrl is identity-scoped — two Telegram identities have distinct URLs", () => {
+    const planA = resolveConnectIdentityPlan(
+      input({
+        identityId: "id-A",
+        platform: "telegram",
+        publishingMode: "api",
+      }),
+    );
+    const planB = resolveConnectIdentityPlan(
+      input({
+        identityId: "id-B",
+        platform: "telegram",
+        publishingMode: "api",
+      }),
+    );
+    if (planA.kind !== "api_key_verify" || planB.kind !== "api_key_verify")
+      throw new Error("expected api_key_verify");
+    expect(planA.signOutUrl).not.toBe(planB.signOutUrl);
+    expect(planA.verifyUrl).not.toBe(planB.verifyUrl);
+  });
 
   it("requires publishingMode='api' — manual mode with the same platform falls back to manual", () => {
     const plan = resolveConnectIdentityPlan(
@@ -296,7 +330,7 @@ describe("isOAuthCapablePlatform / isAppPasswordPlatform / isApiKeyVerifyPlatfor
     expect(isApiKeyVerifyPlatform("hashnode")).toBe(false);
   });
 
-  it("Telegram remains an API-key verify platform (until its phase 4 PR lands)", () => {
+  it("Telegram is an API-key verify platform (workspace bot token + per-identity channel verify)", () => {
     expect(isApiKeyVerifyPlatform("telegram")).toBe(true);
     expect(isPersonalApiKeyPlatform("telegram")).toBe(false);
   });

@@ -65,6 +65,17 @@ export interface ApiKeyVerifyConnectPlan {
   verifyUrl: string;
   /** Operator-facing label for the button. */
   buttonLabel: string;
+  /**
+   * Identity-scoped sign-out endpoint. Present for platforms whose
+   * verify flow persists a row (Telegram). Absent for legacy stubs.
+   */
+  signOutUrl?: string;
+  /**
+   * Optional per-platform operator setup instructions, rendered
+   * above the Verify button as a bullet list. Used by Telegram to
+   * explain "add the bot as admin first."
+   */
+  setupInstructions?: ReadonlyArray<string>;
 }
 
 /**
@@ -269,6 +280,14 @@ function buildHashnodeSignOutUrl(input: ConnectIdentityInput): string {
   return `/api/identity/${encodeURIComponent(input.identityId)}/hashnode/sign-out`;
 }
 
+function buildTelegramVerifyUrl(input: ConnectIdentityInput): string {
+  return `/api/identity/${encodeURIComponent(input.identityId)}/telegram/verify`;
+}
+
+function buildTelegramSignOutUrl(input: ConnectIdentityInput): string {
+  return `/api/identity/${encodeURIComponent(input.identityId)}/telegram/sign-out`;
+}
+
 /**
  * Platforms where Signal currently has a usable per-identity OAuth
  * flow. Today: Reddit only. Future flows (X, LinkedIn with their own
@@ -451,11 +470,31 @@ export function resolveConnectIdentityPlan(
     }
   }
 
-  // Workspace API-key platforms with per-identity verify.
+  // Workspace-credential platforms with per-identity verify (today:
+  // Telegram). The workspace owns one bot token; each identity
+  // represents a specific channel the bot publishes to. Verification
+  // confirms (a) the channel exists and (b) the bot has admin access
+  // with permission to post.
   if (
     input.publishingMode === "api" &&
     isApiKeyVerifyPlatform(platform)
   ) {
+    if (platform === "telegram") {
+      return {
+        kind: "api_key_verify",
+        platform,
+        verifyUrl: buildTelegramVerifyUrl(input),
+        signOutUrl: buildTelegramSignOutUrl(input),
+        buttonLabel: "Verify Telegram channel access",
+        setupInstructions: [
+          "Telegram uses the workspace bot.",
+          "Add the bot as an admin to the channel first.",
+          "This identity should use the channel username, e.g. @webmasterid.",
+        ],
+      };
+    }
+    // Fallback for any future api_key_verify platforms that haven't
+    // been implemented yet — uses the legacy stub /verify route.
     return {
       kind: "api_key_verify",
       platform,
