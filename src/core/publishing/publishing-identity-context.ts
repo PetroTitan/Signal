@@ -29,6 +29,15 @@ import {
   type FounderPlatformGuidance,
 } from "./platform-guidance";
 
+export type IdentityLifecycleStatus =
+  | "planned"
+  | "warming"
+  | "active"
+  | "paused"
+  | "setup_needed"
+  | "awaiting_manual_creation"
+  | "archived";
+
 export interface PublishingIdentityContext {
   identityId: string;
   platform: string;
@@ -37,6 +46,19 @@ export interface PublishingIdentityContext {
   handle: string | null;
   /** Operator-written voice profile. Verbatim. */
   voiceProfile: string | null;
+  /**
+   * Account age in days, derived from growth_accounts.created_at.
+   * Drives new-account safety caps inside the platform-native
+   * adapter and QA. Always >= 0; defaults to 0 if createdAt parses
+   * as invalid.
+   */
+  ageDays: number;
+  /**
+   * Narrowed identity lifecycle. Mirrors growth_accounts.status with
+   * a defensive fallback to "active" when an unrecognised value is
+   * stored (older rows from pre-typing).
+   */
+  lifecycleStatus: IdentityLifecycleStatus;
   associatedProduct: {
     id: string;
     name: string;
@@ -52,6 +74,31 @@ export interface PublishingIdentityContext {
   }>;
   /** Editorial guidance about how this platform reads. */
   platformGuidance: FounderPlatformGuidance | null;
+}
+
+const LIFECYCLE_STATUSES: ReadonlySet<IdentityLifecycleStatus> = new Set([
+  "planned",
+  "warming",
+  "active",
+  "paused",
+  "setup_needed",
+  "awaiting_manual_creation",
+  "archived",
+]);
+
+function narrowLifecycle(raw: string | null | undefined): IdentityLifecycleStatus {
+  if (typeof raw === "string" && LIFECYCLE_STATUSES.has(raw as IdentityLifecycleStatus)) {
+    return raw as IdentityLifecycleStatus;
+  }
+  return "active";
+}
+
+function ageDaysFromCreatedAt(createdAt: string | null | undefined): number {
+  if (!createdAt) return 0;
+  const t = Date.parse(createdAt);
+  if (Number.isNaN(t)) return 0;
+  const days = (Date.now() - t) / 86_400_000;
+  return days < 0 ? 0 : Math.floor(days);
 }
 
 /**
@@ -102,6 +149,8 @@ export async function getPublishingIdentityContext(input: {
     // read (the migration already backfills this; the fallback covers
     // pre-migration test environments).
     voiceProfile: identity.voiceProfile ?? identity.role ?? null,
+    ageDays: ageDaysFromCreatedAt(identity.createdAt),
+    lifecycleStatus: narrowLifecycle(identity.status),
     associatedProduct: associatedProduct
       ? {
           id: associatedProduct.id,

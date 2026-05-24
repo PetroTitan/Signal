@@ -23,6 +23,11 @@
 
 import { evaluateDraftSafety } from "@/core/generation/safety-rules";
 import { scanText, guardrailLabels } from "@/core/content-intelligence/guardrails";
+import { detectCrossPlatformCopypaste } from "@/core/platform-native";
+import {
+  getCreativeDirection,
+  type PlatformNativeDraft,
+} from "@/core/platform-native";
 import { newAccountCaps } from "./new-account-mode";
 import {
   NEAR_DUP_THRESHOLD,
@@ -34,6 +39,7 @@ import type {
   QaInput,
   QaResult,
   QaSeverity,
+  QaSiblingDraft,
 } from "./types";
 
 const HASHTAG_RE = /(?:^|\s)#[\p{L}\p{N}_]+/gu;
@@ -159,6 +165,17 @@ export function qaDraft(input: QaInput): QaResult {
     });
   }
 
+  // ---- 4b. Cross-platform copypaste (sibling drafts) ----
+  if (input.siblingDrafts && input.siblingDrafts.length > 0) {
+    const candidate = projectSibling(input.identity.platform, input.draft);
+    const siblings = input.siblingDrafts.map((s) => projectSibling(s.platform, s));
+    const cpcFindings = detectCrossPlatformCopypaste({
+      candidate,
+      siblings,
+    });
+    for (const f of cpcFindings) findings.push(f);
+  }
+
   // ---- 5. Near-duplicate scan ----
   const dupScan = scanForNearDuplicates({
     hook: input.draft.hook,
@@ -206,4 +223,29 @@ function truncate(s: string, n: number): string {
 
 function prettyTopic(t: string): string {
   return t.replace(/_/g, " ");
+}
+
+/**
+ * Project a (platform, hook, body, cta) tuple into the shape
+ * detectCrossPlatformCopypaste expects. The detector only reads
+ * platform/hook/body/cta — we fill the rest with placeholders so
+ * we don't force callers to construct full PlatformNativeDrafts
+ * just to run sibling QA.
+ */
+function projectSibling(
+  platform: QaSiblingDraft["platform"],
+  source: { hook: string; body: string; cta: string | null },
+): PlatformNativeDraft {
+  return {
+    platform,
+    title: null,
+    hook: source.hook,
+    body: source.body,
+    cta: source.cta,
+    format: "single_post",
+    creativeDirection: getCreativeDirection(platform),
+    riskLevel: "low",
+    warnings: [],
+    transformationNotes: [],
+  };
 }

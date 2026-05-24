@@ -83,6 +83,29 @@ export interface QaInput {
   recentHistory: ReadonlyArray<QaRecentPost>;
   /** Optional: topic kind if the caller already classified. */
   topicKind?: TopicKind;
+  /**
+   * Optional sibling drafts — the same canonical idea adapted for
+   * other platforms. When present, the orchestrator runs the
+   * cross_platform_copypaste detector and surfaces warn-level
+   * findings. Detection only — never auto-regenerates.
+   *
+   * Shape is the QaDraft minimum so callers don't need to convert
+   * the full PlatformNativeDraft; the orchestrator only reads hook,
+   * body, cta, and platform.
+   */
+  siblingDrafts?: ReadonlyArray<QaSiblingDraft>;
+}
+
+/**
+ * Minimal sibling-draft shape the orchestrator needs to detect
+ * cross-platform copypaste. Compatible with PlatformNativeDraft
+ * (just project to these fields).
+ */
+export interface QaSiblingDraft {
+  platform: FounderPlatform;
+  hook: string;
+  body: string;
+  cta: string | null;
 }
 
 // =====================================================================

@@ -21,7 +21,11 @@ import "server-only";
  */
 
 import { getPublishingIdentityContext } from "@/core/publishing/publishing-identity-context";
-import { resolveIdentityPlatformGuidance } from "@/core/publishing/platform-guidance";
+import type { PublishingIdentityContext } from "@/core/publishing/publishing-identity-context";
+import {
+  resolveIdentityPlatformGuidance,
+  type FounderPlatform,
+} from "@/core/publishing/platform-guidance";
 import { buildGenerationPrompt } from "./prompt-builder";
 import { evaluateDraftSafety } from "./safety-rules";
 import { readGenerationProviderStatus } from "./provider-status";
@@ -29,11 +33,34 @@ import {
   activeProvider,
   callGenerationProvider,
 } from "./providers";
+import { assemblePlatformNativeDraft } from "./assemble-platform-native-result";
+import type { PlatformNativeDraft } from "@/core/platform-native";
 import type {
+  GenerationDraft,
   GenerationInput,
   GenerationPromptContext,
   GenerationResult,
 } from "./generation-types";
+
+/**
+ * Founder platforms the platform-native engine knows about. Outside
+ * this set we still produce a minimal envelope (see
+ * makeFallbackPlatformNativeDraft) so the return type is always
+ * complete.
+ */
+const NATIVE_ENGINE_PLATFORMS: ReadonlySet<string> = new Set<FounderPlatform>([
+  "reddit",
+  "x",
+  "bluesky",
+  "linkedin",
+  "threads",
+  "instagram",
+  "telegram",
+  "devto",
+  "hashnode",
+  "youtube",
+  "indie_hackers",
+]);
 
 const SIMILARITY_MIN_TOPIC_LEN = 12;
 
@@ -47,10 +74,17 @@ export async function generateDraft(input: {
     historyLimit: 5,
   });
   if (!identityContext) {
+    const fallbackDraft = emptyDraft(input.generation);
     return {
       providerUsed: false,
       status: "provider_unavailable",
-      draft: emptyDraft(input.generation),
+      draft: fallbackDraft,
+      // No identity → no platform context. We still return a
+      // minimal envelope so callers can rely on a complete shape.
+      platformNativeDraft: makeFallbackPlatformNativeDraft({
+        platform: input.generation.platform ?? "x",
+        draft: fallbackDraft,
+      }),
       similarityWarning:
         "Couldn't find this publishing identity. Refresh and try again.",
     };
@@ -91,10 +125,17 @@ export async function generateDraft(input: {
 
   const provider = readGenerationProviderStatus();
   if (!provider.available) {
+    const seeded = seededDraftFromInputs(input.generation, promptContext);
     return {
       providerUsed: false,
       status: "provider_unavailable",
-      draft: seededDraftFromInputs(input.generation, promptContext),
+      draft: seeded,
+      platformNativeDraft: buildEnvelope({
+        identityContext,
+        platform,
+        generation: input.generation,
+        draft: seeded,
+      }),
       similarityWarning,
     };
   }
@@ -108,10 +149,17 @@ export async function generateDraft(input: {
   });
 
   if (!response.ok) {
+    const seeded = seededDraftFromInputs(input.generation, promptContext);
     return {
       providerUsed: false,
       status: "provider_unavailable",
-      draft: seededDraftFromInputs(input.generation, promptContext),
+      draft: seeded,
+      platformNativeDraft: buildEnvelope({
+        identityContext,
+        platform,
+        generation: input.generation,
+        draft: seeded,
+      }),
       similarityWarning,
     };
   }
@@ -121,22 +169,106 @@ export async function generateDraft(input: {
     body: response.text,
   });
   if (!verdict.ok) {
+    const refused: GenerationDraft = {
+      ...seededDraftFromInputs(input.generation, promptContext),
+      safetyNotes: verdict.violations,
+    };
     return {
       providerUsed: true,
       status: "provider_refused",
-      draft: {
-        ...seededDraftFromInputs(input.generation, promptContext),
-        safetyNotes: verdict.violations,
-      },
+      draft: refused,
+      platformNativeDraft: buildEnvelope({
+        identityContext,
+        platform,
+        generation: input.generation,
+        draft: refused,
+      }),
       similarityWarning,
     };
   }
 
+  const generated = parseDraft(response.text, input.generation, promptContext);
   return {
     providerUsed: true,
     status: "provider_generated",
-    draft: parseDraft(response.text, input.generation, promptContext),
+    draft: generated,
+    platformNativeDraft: buildEnvelope({
+      identityContext,
+      platform,
+      generation: input.generation,
+      draft: generated,
+    }),
     similarityWarning,
+  };
+}
+
+/**
+ * Centralized envelope builder. Routes every founder-platform draft
+ * through the platform-native engine so the LLM call site stays the
+ * only place producing body text — the engine layers the typed
+ * envelope (creativeDirection, format, warnings, riskLevel,
+ * transformationNotes) on top.
+ *
+ * For platforms outside the founder set (experimental callers via
+ * MCP, for example), produces a fallback envelope so the return
+ * type is always complete and never null.
+ */
+function buildEnvelope(input: {
+  identityContext: PublishingIdentityContext;
+  platform: string;
+  generation: GenerationInput;
+  draft: GenerationDraft;
+}): PlatformNativeDraft {
+  if (NATIVE_ENGINE_PLATFORMS.has(input.platform)) {
+    return assemblePlatformNativeDraft({
+      identityContext: input.identityContext,
+      platform: input.platform as FounderPlatform,
+      generation: input.generation,
+      draft: input.draft,
+    });
+  }
+  return makeFallbackPlatformNativeDraft({
+    platform: input.platform,
+    draft: input.draft,
+  });
+}
+
+/**
+ * Minimal PlatformNativeDraft for platforms we don't have a profile
+ * for. Carries the body verbatim and surfaces a single warning so
+ * the operator knows the rich shaping wasn't applied. This is the
+ * safety net — never returned for any of the 11 founder platforms.
+ */
+function makeFallbackPlatformNativeDraft(input: {
+  platform: string;
+  draft: GenerationDraft;
+}): PlatformNativeDraft {
+  return {
+    // Cast: callers receiving this fallback should treat platform
+    // string as opaque; the type widening is intentional and gated
+    // by NATIVE_ENGINE_PLATFORMS upstream.
+    platform: input.platform as FounderPlatform,
+    title: input.draft.title,
+    hook: "",
+    body: input.draft.bodyMarkdown,
+    cta: input.draft.ctaSuggestion,
+    format: "single_post",
+    creativeDirection: {
+      mediaRequired: false,
+      mediaType: "none",
+      mediaPromptOrBrief:
+        "Platform-native creative direction unavailable for this platform. Operator decides whether to attach media.",
+      mediaRiskNotes: [
+        "No platform-specific risk notes available — operator must apply judgment.",
+      ],
+    },
+    riskLevel: "medium",
+    warnings: [
+      `Platform "${input.platform}" is outside the platform-native engine — rich shaping not applied. Treat output as draft-only.`,
+    ],
+    transformationNotes: [
+      `Platform "${input.platform}" rendered as a fallback envelope; no platform-native transformation was applied.`,
+    ],
   };
 }
 
