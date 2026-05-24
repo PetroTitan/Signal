@@ -1,27 +1,35 @@
 /**
- * Bluesky identity verifier.
+ * Bluesky public handle resolution.
  *
- * Resolves a declared Bluesky handle to its DID through the AT
- * Protocol's public identity resolution + profile endpoints, then
- * verifies the DID's canonical handle matches the operator's
- * declared handle (defense against handles that have been re-pointed
- * to a different DID since the operator declared the identity).
+ * NOT an identity verifier in the publishing-ownership sense. This
+ * module resolves a declared Bluesky handle to its DID through the
+ * AT Protocol's PUBLIC endpoints, and checks that the DID's
+ * canonical handle still matches the declared handle.
  *
- * Endpoints used:
+ * What this PROVES:
+ *   - The handle currently exists on the AT Protocol network
+ *   - It resolves to a specific DID
+ *   - That DID's canonical handle has not drifted away from the
+ *     declared value
+ *
+ * What this does NOT prove:
+ *   - That the workspace operator OWNS the handle. Anyone can
+ *     resolve anyone's handle.
+ *   - That Signal can publish AS that handle. Publishing requires a
+ *     Bluesky App Password and a server-side authenticated session;
+ *     that is the job of `bluesky-session.ts`.
+ *
+ * Endpoints used (all public, no auth headers):
  *   - com.atproto.identity.resolveHandle   → declared handle → DID
  *   - app.bsky.actor.getProfile            → DID → canonical handle
  *
- * Both are public (no app password, no OAuth, no auth headers). This
- * means the verifier proves the handle EXISTS and is currently
- * resolvable, not that the workspace operator OWNS it. Posting
- * (which does require BLUESKY_APP_PASSWORD) is the de-facto ownership
- * test and runs through the existing publish-bluesky path; this
- * verifier only sets up the per-identity binding so that path knows
- * which DID belongs to which identity.
+ * Result is informational only. The route that calls this does NOT
+ * write a platform_connections row from the result. Connection rows
+ * are written exclusively by the app-password session flow.
  *
- * Pure function. No I/O happens outside the injected `fetchImpl`,
- * which defaults to global fetch in production and is replaced by a
- * mock in tests.
+ * Pure function. No I/O outside the injected `fetchImpl`, which
+ * defaults to global fetch in production and is replaced by a mock
+ * in tests.
  *
  * No secrets accepted, none stored, none returned.
  */
@@ -40,7 +48,7 @@ const BLUESKY_PUBLIC_API = "https://public.api.bsky.app";
 const HANDLE_RE =
   /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
 
-export interface BlueskyVerifierInput {
+export interface BlueskyResolveInput {
   identityId: string;
   workspaceId: string;
   declaredHandle: string;
@@ -51,35 +59,48 @@ export interface BlueskyVerifierInput {
   fetchImpl?: typeof fetch;
 }
 
-export type BlueskyVerifierErrorCode =
+export type BlueskyResolveErrorCode =
   | "handle_invalid"
   | "handle_not_found"
   | "provider_error"
   | "network_error";
 
-export interface BlueskyVerifierVerified {
-  outcome: "verified";
+/**
+ * The handle resolved cleanly and its canonical form still matches
+ * the declared value. The route should NOT mark the identity as
+ * connected based on this outcome — connection requires the
+ * separate app-password session flow.
+ */
+export interface BlueskyHandleResolved {
+  outcome: "handle_resolved";
   providerAccountId: string; // DID
-  authenticatedHandle: string; // canonical, normalized
+  /** Canonical handle, normalized. */
+  authenticatedHandle: string;
 }
 
-export interface BlueskyVerifierMismatched {
+/**
+ * The handle resolved to a DID whose canonical handle is different.
+ * Informational; the route does not persist this either — but the
+ * operator should be told the declared handle has drifted, because
+ * the app-password connect step would also surface it.
+ */
+export interface BlueskyHandleMismatched {
   outcome: "mismatched";
-  declaredHandle: string; // original input (pre-normalization)
-  authenticatedHandle: string; // canonical handle from AT Proto
+  declaredHandle: string;
+  authenticatedHandle: string;
   providerAccountId: string | null;
 }
 
-export interface BlueskyVerifierError {
+export interface BlueskyResolveError {
   outcome: "error";
-  code: BlueskyVerifierErrorCode;
+  code: BlueskyResolveErrorCode;
   message: string;
 }
 
-export type BlueskyVerifierResult =
-  | BlueskyVerifierVerified
-  | BlueskyVerifierMismatched
-  | BlueskyVerifierError;
+export type BlueskyResolveResult =
+  | BlueskyHandleResolved
+  | BlueskyHandleMismatched
+  | BlueskyResolveError;
 
 /**
  * Strip Bluesky display prefix (`@`), lowercase, trim. Returns null
@@ -98,15 +119,15 @@ export function isValidBlueskyHandle(handle: string): boolean {
   return HANDLE_RE.test(handle);
 }
 
-export async function verifyBlueskyIdentity(
-  input: BlueskyVerifierInput,
-): Promise<BlueskyVerifierResult> {
+export async function resolveBlueskyHandle(
+  input: BlueskyResolveInput,
+): Promise<BlueskyResolveResult> {
   const normalized = normalizeBlueskyHandle(input.declaredHandle);
   if (!normalized) {
     return {
       outcome: "error",
       code: "handle_invalid",
-      message: "Identity has no declared Bluesky handle to verify.",
+      message: "Identity has no declared Bluesky handle to resolve.",
     };
   }
   if (!isValidBlueskyHandle(normalized)) {
@@ -165,7 +186,7 @@ export async function verifyBlueskyIdentity(
     };
   }
 
-  // Step 2 — fetch the DID's canonical handle and verify it matches.
+  // Step 2 — fetch the DID's canonical handle and check it matches.
   let canonicalHandle: string;
   try {
     const url = `${BLUESKY_PUBLIC_API}/xrpc/app.bsky.actor.getProfile?actor=${encodeURIComponent(did)}`;
@@ -205,7 +226,7 @@ export async function verifyBlueskyIdentity(
   }
 
   return {
-    outcome: "verified",
+    outcome: "handle_resolved",
     providerAccountId: did,
     authenticatedHandle: canonicalNormalized,
   };

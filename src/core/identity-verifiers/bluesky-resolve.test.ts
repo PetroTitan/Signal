@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   isValidBlueskyHandle,
   normalizeBlueskyHandle,
-  verifyBlueskyIdentity,
-} from "./bluesky";
+  resolveBlueskyHandle,
+} from "./bluesky-resolve";
 
 // ---------------------------------------------------------------------
 // Mock fetch builder. The verifier accepts an injected fetchImpl with
@@ -79,7 +79,7 @@ describe("isValidBlueskyHandle", () => {
 });
 
 // =====================================================================
-// verifyBlueskyIdentity
+// resolveBlueskyHandle
 // =====================================================================
 
 const IDENTITY_INPUT = {
@@ -87,7 +87,7 @@ const IDENTITY_INPUT = {
   workspaceId: "ws-1",
 };
 
-describe("verifyBlueskyIdentity — success", () => {
+describe("resolveBlueskyHandle — success", () => {
   it("returns 'verified' with DID + normalized handle for a clean resolution", async () => {
     const fetchImpl = makeFetch([
       (url) => {
@@ -108,14 +108,14 @@ describe("verifyBlueskyIdentity — success", () => {
       },
     ]);
 
-    const result = await verifyBlueskyIdentity({
+    const result = await resolveBlueskyHandle({
       ...IDENTITY_INPUT,
       declaredHandle: "@webmasterid.bsky.social",
       fetchImpl,
     });
 
-    expect(result.outcome).toBe("verified");
-    if (result.outcome !== "verified") return;
+    expect(result.outcome).toBe("handle_resolved");
+    if (result.outcome !== "handle_resolved") return;
     expect(result.providerAccountId).toBe("did:plc:abc123def456");
     expect(result.authenticatedHandle).toBe("webmasterid.bsky.social");
   });
@@ -133,12 +133,12 @@ describe("verifyBlueskyIdentity — success", () => {
         return null;
       },
     ]);
-    const first = await verifyBlueskyIdentity({
+    const first = await resolveBlueskyHandle({
       ...IDENTITY_INPUT,
       declaredHandle: "webmasterid.bsky.social",
       fetchImpl,
     });
-    const second = await verifyBlueskyIdentity({
+    const second = await resolveBlueskyHandle({
       ...IDENTITY_INPUT,
       declaredHandle: "webmasterid.bsky.social",
       fetchImpl,
@@ -162,12 +162,12 @@ describe("verifyBlueskyIdentity — success", () => {
         return null;
       },
     ]);
-    const result = await verifyBlueskyIdentity({
+    const result = await resolveBlueskyHandle({
       ...IDENTITY_INPUT,
       declaredHandle: "@webmasterid.bsky.social",
       fetchImpl,
     });
-    expect(result.outcome).toBe("verified");
+    expect(result.outcome).toBe("handle_resolved");
   });
 });
 
@@ -177,7 +177,7 @@ describe("verifyBlueskyIdentity — success", () => {
 // was declared).
 // =====================================================================
 
-describe("verifyBlueskyIdentity — mismatch", () => {
+describe("resolveBlueskyHandle — mismatch", () => {
   it("returns 'mismatched' when the DID's canonical handle differs from the declared handle", async () => {
     const fetchImpl = makeFetch([
       (url) => {
@@ -195,7 +195,7 @@ describe("verifyBlueskyIdentity — mismatch", () => {
       },
     ]);
 
-    const result = await verifyBlueskyIdentity({
+    const result = await resolveBlueskyHandle({
       ...IDENTITY_INPUT,
       declaredHandle: "webmasterid.bsky.social",
       fetchImpl,
@@ -213,10 +213,10 @@ describe("verifyBlueskyIdentity — mismatch", () => {
 // Error paths
 // =====================================================================
 
-describe("verifyBlueskyIdentity — handle invalid", () => {
+describe("resolveBlueskyHandle — handle invalid", () => {
   it("rejects empty handle without making a network call", async () => {
     const fetchImpl = alwaysThrowing();
-    const result = await verifyBlueskyIdentity({
+    const result = await resolveBlueskyHandle({
       ...IDENTITY_INPUT,
       declaredHandle: "",
       fetchImpl,
@@ -228,7 +228,7 @@ describe("verifyBlueskyIdentity — handle invalid", () => {
 
   it("rejects malformed handle (no dot) without making a network call", async () => {
     const fetchImpl = alwaysThrowing();
-    const result = await verifyBlueskyIdentity({
+    const result = await resolveBlueskyHandle({
       ...IDENTITY_INPUT,
       declaredHandle: "webmasterid",
       fetchImpl,
@@ -240,7 +240,7 @@ describe("verifyBlueskyIdentity — handle invalid", () => {
 
   it("rejects handles with invalid characters", async () => {
     const fetchImpl = alwaysThrowing();
-    const result = await verifyBlueskyIdentity({
+    const result = await resolveBlueskyHandle({
       ...IDENTITY_INPUT,
       declaredHandle: "webmaster id.bsky.social",
       fetchImpl,
@@ -251,7 +251,7 @@ describe("verifyBlueskyIdentity — handle invalid", () => {
   });
 });
 
-describe("verifyBlueskyIdentity — handle not found", () => {
+describe("resolveBlueskyHandle — handle not found", () => {
   it("returns 'handle_not_found' when Bluesky returns 400 HandleNotFound", async () => {
     const fetchImpl = makeFetch([
       (url) => {
@@ -266,7 +266,7 @@ describe("verifyBlueskyIdentity — handle not found", () => {
         return null;
       },
     ]);
-    const result = await verifyBlueskyIdentity({
+    const result = await resolveBlueskyHandle({
       ...IDENTITY_INPUT,
       declaredHandle: "nonexistent-handle-xyz123.bsky.social",
       fetchImpl,
@@ -287,7 +287,7 @@ describe("verifyBlueskyIdentity — handle not found", () => {
         return null;
       },
     ]);
-    const result = await verifyBlueskyIdentity({
+    const result = await resolveBlueskyHandle({
       ...IDENTITY_INPUT,
       declaredHandle: "stale-handle.bsky.social",
       fetchImpl,
@@ -298,7 +298,7 @@ describe("verifyBlueskyIdentity — handle not found", () => {
   });
 });
 
-describe("verifyBlueskyIdentity — provider errors", () => {
+describe("resolveBlueskyHandle — provider errors", () => {
   it("returns 'provider_error' on resolveHandle 500", async () => {
     const fetchImpl = makeFetch([
       (url) => {
@@ -307,7 +307,7 @@ describe("verifyBlueskyIdentity — provider errors", () => {
         return null;
       },
     ]);
-    const result = await verifyBlueskyIdentity({
+    const result = await resolveBlueskyHandle({
       ...IDENTITY_INPUT,
       declaredHandle: "webmasterid.bsky.social",
       fetchImpl,
@@ -325,7 +325,7 @@ describe("verifyBlueskyIdentity — provider errors", () => {
         return null;
       },
     ]);
-    const result = await verifyBlueskyIdentity({
+    const result = await resolveBlueskyHandle({
       ...IDENTITY_INPUT,
       declaredHandle: "webmasterid.bsky.social",
       fetchImpl,
@@ -345,7 +345,7 @@ describe("verifyBlueskyIdentity — provider errors", () => {
         return null;
       },
     ]);
-    const result = await verifyBlueskyIdentity({
+    const result = await resolveBlueskyHandle({
       ...IDENTITY_INPUT,
       declaredHandle: "webmasterid.bsky.social",
       fetchImpl,
@@ -356,10 +356,10 @@ describe("verifyBlueskyIdentity — provider errors", () => {
   });
 });
 
-describe("verifyBlueskyIdentity — network errors", () => {
+describe("resolveBlueskyHandle — network errors", () => {
   it("returns 'network_error' when fetch throws", async () => {
     const fetchImpl = alwaysThrowing();
-    const result = await verifyBlueskyIdentity({
+    const result = await resolveBlueskyHandle({
       ...IDENTITY_INPUT,
       declaredHandle: "webmasterid.bsky.social",
       fetchImpl,
@@ -374,7 +374,7 @@ describe("verifyBlueskyIdentity — network errors", () => {
 // Safety: no secrets accepted, none returned, only public endpoints
 // =====================================================================
 
-describe("verifyBlueskyIdentity — safety", () => {
+describe("resolveBlueskyHandle — safety", () => {
   it("does not pass any auth header to the Bluesky API (public endpoint only)", async () => {
     let capturedInit: RequestInit | undefined;
     const fetchImpl = (async (
@@ -390,7 +390,7 @@ describe("verifyBlueskyIdentity — safety", () => {
 
     // The verifier may pass no init at all (default fetch). We check
     // that if init exists, it does NOT carry an Authorization header.
-    await verifyBlueskyIdentity({
+    await resolveBlueskyHandle({
       ...IDENTITY_INPUT,
       declaredHandle: "webmasterid.bsky.social",
       fetchImpl,
@@ -406,7 +406,7 @@ describe("verifyBlueskyIdentity — safety", () => {
     const fetchImpl = (async () => {
       throw new Error("network down with secret value xyz");
     }) as typeof fetch;
-    const result = await verifyBlueskyIdentity({
+    const result = await resolveBlueskyHandle({
       ...IDENTITY_INPUT,
       declaredHandle: "webmasterid.bsky.social",
       fetchImpl,

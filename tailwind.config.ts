@@ -1,5 +1,20 @@
 import type { Config } from "tailwindcss";
 
+/**
+ * Signal Tailwind theme — Phase 1.
+ *
+ * Color tokens read from CSS variables defined in `src/app/globals.css`
+ * so the same class names (`bg-signal-500`, `text-ink-700`, etc.) stay
+ * stable while their resolved values move to the new brand palette.
+ *
+ * The RGB triplet + `<alpha-value>` pattern lets Tailwind continue to
+ * support `bg-signal-500/10`, `text-ink-900/60`, and friends.
+ *
+ * Native Tailwind palettes (emerald/amber/red/blue/sky/violet) are
+ * intentionally left untouched — they're used for semantic states and
+ * platform-brand chips that should NOT take on the Signal brand color.
+ */
+
 const config: Config = {
   content: [
     "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
@@ -10,31 +25,42 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // Calm, infrastructure-grade palette
         ink: {
-          50: "#f6f7f9",
-          100: "#eceef2",
-          200: "#d5dae2",
-          300: "#b0b9c7",
-          400: "#8593a5",
-          500: "#647284",
-          600: "#4f5b6c",
-          700: "#404a58",
-          800: "#363e4a",
-          900: "#1f242c",
-          950: "#13171c",
+          50: "rgb(var(--ink-50) / <alpha-value>)",
+          100: "rgb(var(--ink-100) / <alpha-value>)",
+          200: "rgb(var(--ink-200) / <alpha-value>)",
+          300: "rgb(var(--ink-300) / <alpha-value>)",
+          400: "rgb(var(--ink-400) / <alpha-value>)",
+          500: "rgb(var(--ink-500) / <alpha-value>)",
+          600: "rgb(var(--ink-600) / <alpha-value>)",
+          700: "rgb(var(--ink-700) / <alpha-value>)",
+          800: "rgb(var(--ink-800) / <alpha-value>)",
+          900: "rgb(var(--ink-900) / <alpha-value>)",
+          950: "rgb(var(--ink-950) / <alpha-value>)",
         },
         signal: {
-          50: "#eef6ff",
-          100: "#d9eaff",
-          200: "#bcd9ff",
-          300: "#8ec0ff",
-          400: "#599cff",
-          500: "#3479ff",
-          600: "#1c5af0",
-          700: "#1648d6",
-          800: "#173dac",
-          900: "#193786",
+          50: "rgb(var(--signal-50) / <alpha-value>)",
+          100: "rgb(var(--signal-100) / <alpha-value>)",
+          200: "rgb(var(--signal-200) / <alpha-value>)",
+          300: "rgb(var(--signal-300) / <alpha-value>)",
+          400: "rgb(var(--signal-400) / <alpha-value>)",
+          500: "rgb(var(--signal-500) / <alpha-value>)",
+          600: "rgb(var(--signal-600) / <alpha-value>)",
+          700: "rgb(var(--signal-700) / <alpha-value>)",
+          800: "rgb(var(--signal-800) / <alpha-value>)",
+          900: "rgb(var(--signal-900) / <alpha-value>)",
+        },
+        accent: {
+          50: "rgb(var(--accent-50) / <alpha-value>)",
+          100: "rgb(var(--accent-100) / <alpha-value>)",
+          200: "rgb(var(--accent-200) / <alpha-value>)",
+          300: "rgb(var(--accent-300) / <alpha-value>)",
+          400: "rgb(var(--accent-400) / <alpha-value>)",
+          500: "rgb(var(--accent-500) / <alpha-value>)",
+          600: "rgb(var(--accent-600) / <alpha-value>)",
+          700: "rgb(var(--accent-700) / <alpha-value>)",
+          800: "rgb(var(--accent-800) / <alpha-value>)",
+          900: "rgb(var(--accent-900) / <alpha-value>)",
         },
         risk: {
           low: "#16a34a",
@@ -43,11 +69,31 @@ const config: Config = {
         },
       },
       fontFamily: {
-        sans: ["ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "Inter", "sans-serif"],
-        mono: ["ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
+        sans: [
+          "var(--font-sans)",
+          "ui-sans-serif",
+          "system-ui",
+          "-apple-system",
+          "Segoe UI",
+          "Inter",
+          "sans-serif",
+        ],
+        mono: [
+          "var(--font-mono)",
+          "ui-monospace",
+          "SFMono-Regular",
+          "Menlo",
+          "monospace",
+        ],
+      },
+      borderRadius: {
+        xs: "4px",
       },
       boxShadow: {
-        card: "0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06)",
+        xs: "var(--shadow-xs)",
+        card: "var(--shadow-sm)",
+        focus: "var(--shadow-focus)",
+        "focus-success": "var(--shadow-focus-success)",
       },
     },
   },
