@@ -179,6 +179,28 @@ export interface IdentityConnection {
   providerAccountId: string | null;
   /** Optional: ISO timestamp of expiry, if known. Drives logging only. */
   expiresAt?: string | null;
+  /**
+   * True when a prior auth attempt persisted a handle-mismatch
+   * record on the connection (e.g. the OAuth callback wrote
+   * `metadata.handle_mismatch = { declared, authenticated,
+   * observedAt }` because the authenticated handle disagreed with
+   * the identity's declared handle).
+   *
+   * The callback sets `connectionStatus = "error"` in that case to
+   * keep `publishing-policy.ts` refusing to publish. Without this
+   * flag the resolver would map "error" through
+   * narrowConnectionAuthStatus → "not_connected" → `pending_auth`
+   * and the operator would lose the mismatch explanation after the
+   * redirect cycle. Setting `handleMismatchObserved = true` makes
+   * the resolver short-circuit to `mismatched` so the UI keeps
+   * surfacing the expected-vs-authenticated banner.
+   *
+   * Cleared automatically by a successful reconnect:
+   * `upsertPlatformConnection` replaces `metadata` wholesale, so
+   * the success-path metadata (which does NOT include
+   * handle_mismatch) drops the prior payload.
+   */
+  handleMismatchObserved?: boolean;
 }
 
 /**
@@ -376,6 +398,17 @@ export function resolveIdentityPublishState(
   // an input incorrectly we must not honour it.
   if (connection.workspaceId !== identity.workspaceId) {
     return "pending_auth";
+  }
+
+  // 7b. Persistent handle-mismatch — short-circuit to `mismatched`
+  // when the connection carries a recorded mismatch from a prior
+  // auth attempt. This overrides the auth-status switch below
+  // because reconnecting (which is the only path that clears the
+  // mismatch) is also the only useful action for the operator —
+  // even if the token has also expired, "reconnect with correct
+  // account" is the right next step.
+  if (connection.handleMismatchObserved) {
+    return "mismatched";
   }
 
   // 8-11. Map the auth status.

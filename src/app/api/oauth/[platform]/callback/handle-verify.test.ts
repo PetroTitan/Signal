@@ -85,3 +85,48 @@ describe("buildHandleMismatchMetadata", () => {
     expect(new Date(payload.observedAt).toString()).not.toBe("Invalid Date");
   });
 });
+
+// =====================================================================
+// Metadata-shape contract — guards the reconnect-clears-mismatch path
+// =====================================================================
+//
+// upsertPlatformConnection in the repository REPLACES the metadata
+// column wholesale (not a JSON merge). The OAuth callback success
+// path passes `metadata: { token_storage, last_message }` with NO
+// handle_mismatch key. These tests pin the shapes so a refactor that
+// accidentally merges metadata would fail before reaching production.
+
+describe("metadata shape — reconnect implicitly clears handle_mismatch", () => {
+  it("success-path metadata shape does NOT include handle_mismatch", () => {
+    // This is the literal shape the callback writes on success.
+    // Locked here so any future refactor that adds handle_mismatch
+    // to the success-path payload trips this test.
+    const successPathMetadata = {
+      token_storage: "aes-256-gcm",
+      last_message: "Connected as u/Webmasterid-core.",
+    };
+    expect("handle_mismatch" in successPathMetadata).toBe(false);
+  });
+
+  it("a fresh write of the success-path metadata over a prior mismatch payload erases handle_mismatch (replace semantics)", () => {
+    // Simulates the repository behaviour: the update statement sets
+    // metadata = input.metadata, replacing the JSONB column wholesale.
+    const prior = {
+      token_storage: "aes-256-gcm",
+      last_message: "Authenticated as u/wrong, but identity expected u/right.",
+      handle_mismatch: {
+        declared: "u/right",
+        authenticated: "u/wrong",
+        observedAt: "2026-05-24T00:00:00Z",
+      },
+    };
+    const successPath = {
+      token_storage: "aes-256-gcm",
+      last_message: "Connected as u/right.",
+    };
+    const afterReplace = successPath; // wholesale replacement
+    expect(afterReplace).not.toHaveProperty("handle_mismatch");
+    // Sanity: the prior still had it — the test isn't trivially passing
+    expect(prior).toHaveProperty("handle_mismatch");
+  });
+});

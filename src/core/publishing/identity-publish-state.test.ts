@@ -360,6 +360,157 @@ describe("narrowConnectionAuthStatus", () => {
 });
 
 // =====================================================================
+// Persistent mismatch — metadata-driven (across the OAuth redirect cycle)
+// =====================================================================
+
+describe("resolveIdentityPublishState — handleMismatchObserved", () => {
+  it("returns 'mismatched' when handleMismatchObserved is true, even though authStatus collapses to not_connected", () => {
+    // This is the realistic post-callback shape: callback wrote
+    // connection_status='error' (so publishing-policy refuses to
+    // publish) and stored metadata.handle_mismatch. The caller
+    // sets handleMismatchObserved=true; the resolver must surface
+    // 'mismatched' so the UI banner shows.
+    expect(
+      resolveIdentityPublishState(
+        input({
+          connection: connection({
+            authStatus: "not_connected",
+            handleMismatchObserved: true,
+          }),
+        }),
+      ),
+    ).toBe("mismatched");
+  });
+
+  it("'mismatched' overrides 'expired' — operator must reconnect-with-correct-account, not just reauthorize", () => {
+    expect(
+      resolveIdentityPublishState(
+        input({
+          connection: connection({
+            authStatus: "expired",
+            handleMismatchObserved: true,
+          }),
+        }),
+      ),
+    ).toBe("mismatched");
+  });
+
+  it("'mismatched' overrides 'revoked'", () => {
+    expect(
+      resolveIdentityPublishState(
+        input({
+          connection: connection({
+            authStatus: "revoked",
+            handleMismatchObserved: true,
+          }),
+        }),
+      ),
+    ).toBe("mismatched");
+  });
+
+  it("a reconnect that clears metadata returns to 'connected' (no handleMismatchObserved + auth ok + handle matches)", () => {
+    // Simulates the post-reconnect read shape: the success-path
+    // metadata replaced the prior payload, so handleMismatchObserved
+    // is false. The handle now matches.
+    expect(
+      resolveIdentityPublishState(
+        input({
+          connection: connection({
+            authStatus: "connected",
+            handleMismatchObserved: false,
+          }),
+        }),
+      ),
+    ).toBe("connected");
+  });
+
+  it("undefined handleMismatchObserved behaves the same as false (back-compat with older callers)", () => {
+    expect(
+      resolveIdentityPublishState(
+        input({
+          connection: connection({
+            authStatus: "connected",
+            // handleMismatchObserved deliberately omitted
+          }),
+        }),
+      ),
+    ).toBe("connected");
+  });
+
+  it("publishing remains blocked: canAutoPublish is false for the mismatched verdict", () => {
+    const state = resolveIdentityPublishState(
+      input({
+        connection: connection({
+          authStatus: "not_connected",
+          handleMismatchObserved: true,
+        }),
+      }),
+    );
+    expect(state).toBe("mismatched");
+    expect(canAutoPublish(state)).toBe(false);
+  });
+
+  it("regression: pending_auth still fires when there's no connection row at all (no metadata, no mismatch flag)", () => {
+    expect(
+      resolveIdentityPublishState(input({ connection: null })),
+    ).toBe("pending_auth");
+  });
+
+  it("regression: expired without mismatch still returns 'expired' as before", () => {
+    expect(
+      resolveIdentityPublishState(
+        input({
+          connection: connection({
+            authStatus: "expired",
+            handleMismatchObserved: false,
+          }),
+        }),
+      ),
+    ).toBe("expired");
+  });
+
+  it("regression: revoked without mismatch still returns 'pending_auth' as before", () => {
+    expect(
+      resolveIdentityPublishState(
+        input({
+          connection: connection({
+            authStatus: "revoked",
+            handleMismatchObserved: false,
+          }),
+        }),
+      ),
+    ).toBe("pending_auth");
+  });
+
+  it("disabled still beats mismatch — archived identities never publish, even with a recorded mismatch", () => {
+    expect(
+      resolveIdentityPublishState(
+        input({
+          identity: identity({ lifecycleStatus: "archived" }),
+          connection: connection({
+            authStatus: "not_connected",
+            handleMismatchObserved: true,
+          }),
+        }),
+      ),
+    ).toBe("disabled");
+  });
+
+  it("unsupported still beats mismatch — irrelevant platforms can't be in mismatch state", () => {
+    expect(
+      resolveIdentityPublishState(
+        input({
+          platform: platform({ publishingMode: "not_implemented" }),
+          connection: connection({
+            handleMismatchObserved: true,
+          }),
+        }),
+      ),
+    ).toBe("unsupported");
+  });
+});
+
+// =====================================================================
 // Handle mismatch — token belongs to another account on the same platform
 // =====================================================================
 

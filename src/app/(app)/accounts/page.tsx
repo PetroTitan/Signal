@@ -194,6 +194,13 @@ export default async function AccountsPage() {
             authenticatedHandle: connection.handle,
             providerAccountId: null,
             expiresAt: connection.expiresAt,
+            // Persist the mismatch verdict across the redirect cycle:
+            // the callback writes connection_status='error' (so
+            // publishing-policy keeps refusing) and stores the
+            // mismatch payload on metadata. The resolver reads this
+            // flag to short-circuit to `mismatched`.
+            handleMismatchObserved:
+              extractMismatchEvidence(connection.metadata) !== null,
           }
         : null,
     });
