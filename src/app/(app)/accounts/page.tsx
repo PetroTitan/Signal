@@ -17,7 +17,7 @@ import { ConnectionControls } from "./_connection-controls";
 import { VoiceProfileEditor } from "./_voice-profile-editor";
 import { PublishingCapabilitiesPanel } from "./_capabilities-panel";
 import { GenerateDraftButton } from "./_generate-draft-button";
-import { AccountIdentityCard } from "@/components/publishing/account-identity-card";
+import { IdentityCardWithManage } from "./_identity-card-with-manage";
 import {
   resolveIdentityPlatformGuidance,
   type FounderPlatform,
@@ -298,11 +298,16 @@ export default async function AccountsPage() {
                   ? extractMismatchEvidence(c?.metadata)
                   : null;
 
-              // OAuth + api_key_verify both render through
-              // ConnectionControls; manual / unsupported render the
-              // existing italic helper text.
-              const oauthControls =
-                plan && (plan.kind === "oauth" || plan.kind === "api_key_verify") ? (
+              // Auth controls visible only when Manage panel is open.
+              // OAuth + api_key_verify + app_password all dispatch via
+              // ConnectionControls; manual platforms get a steady-
+              // state hint (rendered both when Manage is open and
+              // when collapsed).
+              const authControls =
+                plan &&
+                (plan.kind === "oauth" ||
+                  plan.kind === "api_key_verify" ||
+                  plan.kind === "app_password") ? (
                   <ConnectionControls
                     platform={a.platform}
                     accountId={a.id}
@@ -317,18 +322,23 @@ export default async function AccountsPage() {
                     healthStatus={c?.healthStatus ?? "unknown"}
                     hasAccessToken={c?.hasAccessToken ?? false}
                     lastCheckedAt={c?.lastCheckedAt ?? null}
+                    handle={c?.handle ?? a.handle}
                     publishState={identityPublishState}
                     connectPlan={plan}
                     mismatchEvidence={mismatchEvidence}
                   />
-                ) : plan?.kind === "manual" ? (
+                ) : null;
+
+              const manualHint =
+                plan?.kind === "manual" ? (
                   <p className="text-[11px] text-ink-500 italic">
                     {plan.hint}
                   </p>
                 ) : null;
-              const controls = (
+
+              const controlsWhenOpen = (
                 <div className="flex flex-col gap-3">
-                  {oauthControls}
+                  {authControls ?? manualHint}
                   <div className="flex items-center gap-2 flex-wrap">
                     {generateButton}
                   </div>
@@ -343,7 +353,7 @@ export default async function AccountsPage() {
                 />
               );
               return (
-                <AccountIdentityCard
+                <IdentityCardWithManage
                   key={a.id}
                   platform={a.platform}
                   displayName={a.displayName}
@@ -355,7 +365,9 @@ export default async function AccountsPage() {
                   notes={null}
                   helperNote={helperNote}
                   voiceProfile={voiceProfileSlot}
-                  controls={controls}
+                  connectPlan={plan}
+                  controlsWhenOpen={controlsWhenOpen}
+                  steadyStateHint={manualHint}
                   archiveControl={archive}
                 />
               );

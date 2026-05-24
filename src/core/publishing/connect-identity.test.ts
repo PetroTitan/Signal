@@ -4,6 +4,7 @@ import {
   isAppPasswordPlatform,
   isOAuthCapablePlatform,
   resolveConnectIdentityPlan,
+  shouldShowManageButton,
   type ConnectIdentityInput,
 } from "./connect-identity";
 
@@ -65,6 +66,7 @@ describe("resolveConnectIdentityPlan — app-password platforms", () => {
     if (plan.kind !== "app_password") return;
     expect(plan.resolveUrl).toBe("/api/identity/id-1/verify");
     expect(plan.connectUrl).toBe("/api/identity/id-1/bluesky/connect");
+    expect(plan.signOutUrl).toBe("/api/identity/id-1/bluesky/sign-out");
     expect(plan.buttonLabel).toBe("Sign in with Bluesky App Password");
     // The note must explicitly steer the operator away from their
     // main password — the whole point of the corrected model.
@@ -75,6 +77,30 @@ describe("resolveConnectIdentityPlan — app-password platforms", () => {
     // Mentions the per-account scope so the operator understands the
     // App Password must be specific to this identity's account.
     expect(plan.credentialNote.toLowerCase()).toContain("this exact account");
+  });
+
+  it("signOutUrl is identity-scoped — two identities on the same platform have distinct sign-out URLs", () => {
+    const planA = resolveConnectIdentityPlan(
+      input({
+        identityId: "identity-a",
+        platform: "bluesky",
+        publishingMode: "api",
+      }),
+    );
+    const planB = resolveConnectIdentityPlan(
+      input({
+        identityId: "identity-b",
+        platform: "bluesky",
+        publishingMode: "api",
+      }),
+    );
+    if (planA.kind !== "app_password" || planB.kind !== "app_password")
+      throw new Error("expected app_password");
+    expect(planA.signOutUrl).toBe("/api/identity/identity-a/bluesky/sign-out");
+    expect(planB.signOutUrl).toBe("/api/identity/identity-b/bluesky/sign-out");
+    expect(planA.signOutUrl).not.toBe(planB.signOutUrl);
+    // Same for connect: two identities never collide.
+    expect(planA.connectUrl).not.toBe(planB.connectUrl);
   });
 });
 
@@ -185,5 +211,72 @@ describe("isOAuthCapablePlatform / isAppPasswordPlatform / isApiKeyVerifyPlatfor
       expect(isAppPasswordPlatform(p)).toBe(false);
       expect(isApiKeyVerifyPlatform(p)).toBe(false);
     }
+  });
+});
+
+// =====================================================================
+// shouldShowManageButton — drives the identity-card Manage affordance
+// =====================================================================
+
+describe("shouldShowManageButton", () => {
+  it("shows Manage for OAuth plans", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "reddit",
+        publishingMode: "manual",
+        oauthAvailable: true,
+      }),
+    );
+    expect(shouldShowManageButton(plan)).toBe(true);
+  });
+
+  it("shows Manage for app_password plans (Bluesky)", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "bluesky",
+        publishingMode: "api",
+        oauthAvailable: false,
+      }),
+    );
+    expect(shouldShowManageButton(plan)).toBe(true);
+  });
+
+  it("shows Manage for api_key_verify plans (dev.to/Hashnode/Telegram)", () => {
+    for (const platform of ["devto", "hashnode", "telegram"] as const) {
+      const plan = resolveConnectIdentityPlan(
+        input({
+          platform,
+          publishingMode: "api",
+          oauthAvailable: false,
+        }),
+      );
+      expect(shouldShowManageButton(plan)).toBe(true);
+    }
+  });
+
+  it("shows Manage for manual plans (so manual platforms get the same affordance + steady-state explanation)", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "x",
+        publishingMode: "manual",
+        distributionOnly: true,
+        oauthAvailable: false,
+      }),
+    );
+    expect(shouldShowManageButton(plan)).toBe(true);
+  });
+
+  it("hides Manage for unsupported plans (no action surface)", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "reddit",
+        publishingMode: "not_implemented",
+      }),
+    );
+    expect(shouldShowManageButton(plan)).toBe(false);
+  });
+
+  it("hides Manage when no plan is provided", () => {
+    expect(shouldShowManageButton(undefined)).toBe(false);
   });
 });

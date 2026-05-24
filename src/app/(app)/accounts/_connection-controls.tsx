@@ -31,6 +31,13 @@ interface ConnectionControlsProps {
   hasAccessToken: boolean;
   lastCheckedAt: string | null;
   /**
+   * The handle currently bound to this identity (from the
+   * platform_connections row when signed in, or the operator's
+   * declared handle when not). Used in the "Signed in as <handle>"
+   * line in the Manage panel.
+   */
+  handle?: string | null;
+  /**
    * Resolved identity publish state from
    * resolveIdentityPublishState(). Drives the sign-in button label
    * ("Sign in to this account" / "Sign in again" / "Sign in with
@@ -97,6 +104,20 @@ export function ConnectionControls(props: ConnectionControlsProps) {
   const { platform, accountId, providerConfigured, encryptionConfigured } = props;
   const [busy, setBusy] = useState<"connect" | "disconnect" | "health" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+
+  // ── Rate-limiting state ─────────────────────────────────────────
+  // All account-access actions are explicit-click only — there are
+  // no useEffect-driven fetches, no setInterval polling, no
+  // background reconnect loops. After a failed sign-in, the button
+  // is disabled for FAILED_AUTH_COOLDOWN_MS so the operator can't
+  // accidentally rapid-fire bad credentials at the provider (and
+  // get the account temporarily locked there). Check-account-access
+  // gets a shorter cooldown to discourage click-spam against AT
+  // Protocol's public API.
+  const FAILED_AUTH_COOLDOWN_MS = 30_000;
+  const CHECK_ACCESS_COOLDOWN_MS = 5_000;
+  const [cooldownUntil, setCooldownUntil] = useState(0);
+  const inCooldown = Date.now() < cooldownUntil;
 
   async function disconnect() {
     setBusy("disconnect");
@@ -200,11 +221,81 @@ export function ConnectionControls(props: ConnectionControlsProps) {
   const [appPasswordHandle, setAppPasswordHandle] = useState("");
   const [appPasswordValue, setAppPasswordValue] = useState("");
 
+  async function signOutBluesky(signOutUrl: string) {
+    setBusy("disconnect");
+    setMessage(null);
+    try {
+      const res = await fetch(signOutUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+      });
+      const json = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        message?: string;
+      };
+      if (res.ok && json.ok) {
+        setMessage("Signed out of this account.");
+      } else {
+        setMessage(json.error ?? json.message ?? "Sign-out failed.");
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /**
+   * Bluesky "Check account access" via the public-resolve route.
+   * Resolves the declared handle and confirms it still maps to a
+   * DID — a real round-trip sanity check that does NOT need the
+   * App Password (the password isn't re-prompted). Does not write
+   * a row; purely informational. Click-only; gated by a short
+   * cooldown to discourage rapid spam against AT Protocol's
+   * public API.
+   */
+  async function checkBlueskyAccess(resolveUrl: string) {
+    if (inCooldown) return;
+    setBusy("health");
+    setMessage(null);
+    try {
+      const res = await fetch(resolveUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+      });
+      const json = (await res.json()) as {
+        ok?: boolean;
+        code?: string;
+        resolved_handle?: string;
+        provider_account_id?: string;
+        message?: string;
+        error?: string;
+      };
+      if (res.ok && json.code === "handle_resolved") {
+        setMessage(
+          `Handle resolves to ${json.resolved_handle ?? "this account"}.`,
+        );
+      } else if (json.code === "handle_mismatch") {
+        setMessage(
+          json.message ??
+            "Handle now resolves to a different account. Sign in again.",
+        );
+      } else {
+        setMessage(json.error ?? json.message ?? "Account-access check failed.");
+      }
+      // Short cooldown after every Check, success or not, to keep
+      // the action manual / low-frequency.
+      setCooldownUntil(Date.now() + CHECK_ACCESS_COOLDOWN_MS);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function submitAppPassword(
     e: FormEvent<HTMLFormElement>,
     connectUrl: string,
   ) {
     e.preventDefault();
+    if (inCooldown) return;
     setBusy("connect");
     setMessage(null);
     try {
@@ -236,12 +327,21 @@ export function ConnectionControls(props: ConnectionControlsProps) {
           json.message ??
             "Signed in as a different Bluesky account than this identity expects.",
         );
+        // Mismatch counts as failed credentials for this identity —
+        // the operator typed wrong handle or App Password. Cool down.
+        setCooldownUntil(Date.now() + FAILED_AUTH_COOLDOWN_MS);
       } else if (json.code === "auth_failed") {
         setMessage(
           "Bluesky rejected the credentials. Double-check the handle and App Password.",
         );
+        // Cool down to prevent rapid retries that would let Bluesky
+        // rate-limit (or lock) the account upstream.
+        setCooldownUntil(Date.now() + FAILED_AUTH_COOLDOWN_MS);
       } else {
         setMessage(json.error ?? json.message ?? "Sign-in failed.");
+        // Other failures (network, provider error, invalid input)
+        // also cool down — same reason.
+        setCooldownUntil(Date.now() + FAILED_AUTH_COOLDOWN_MS);
       }
     } finally {
       setBusy(null);
@@ -326,19 +426,96 @@ export function ConnectionControls(props: ConnectionControlsProps) {
           flow and only marks the identity connected after a
           handle/DID match.
         */}
-        {plan?.kind === "app_password" && !appPasswordFormOpen ? (
+        {/*
+          Bluesky app_password compact views by state. All buttons
+          are explicit-click only — no useEffect-driven fetches, no
+          auto-retry. After a failed sign-in the form button is
+          gated by the cooldown so the operator can't rapid-fire
+          credentials at Bluesky.
+        */}
+        {plan?.kind === "app_password" &&
+        !appPasswordFormOpen &&
+        props.publishState === "connected" ? (
+          <div className="basis-full space-y-2">
+            <div className="text-[11px] text-ink-700">
+              Signed in as{" "}
+              <span className="font-mono">
+                {props.handle ?? "this account"}
+              </span>
+              .
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => checkBlueskyAccess(plan.resolveUrl)}
+                disabled={busy !== null || inCooldown}
+                className="btn-secondary text-[11px]"
+              >
+                {busy === "health" ? "…" : "Check account access"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAppPasswordFormOpen(true);
+                  setMessage(null);
+                }}
+                disabled={busy !== null || inCooldown}
+                className="btn-secondary text-[11px]"
+              >
+                Sign in again
+              </button>
+              <button
+                type="button"
+                onClick={() => signOutBluesky(plan.signOutUrl)}
+                disabled={busy !== null}
+                className="btn-secondary text-[11px]"
+              >
+                {busy === "disconnect" ? "…" : "Sign out of this account"}
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {plan?.kind === "app_password" &&
+        !appPasswordFormOpen &&
+        props.publishState === "mismatched" ? (
+          <div className="basis-full space-y-2">
+            <div className="flex gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => {
+                  setAppPasswordFormOpen(true);
+                  setMessage(null);
+                }}
+                disabled={busy !== null || inCooldown}
+                className="btn-primary text-[11px]"
+              >
+                Sign in with correct account
+              </button>
+              <button
+                type="button"
+                onClick={() => signOutBluesky(plan.signOutUrl)}
+                disabled={busy !== null}
+                className="btn-secondary text-[11px]"
+              >
+                {busy === "disconnect" ? "…" : "Sign out of this account"}
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {plan?.kind === "app_password" &&
+        !appPasswordFormOpen &&
+        props.publishState !== "connected" &&
+        props.publishState !== "mismatched" ? (
           <>
             <button
               type="button"
               onClick={() => {
                 setAppPasswordFormOpen(true);
                 setMessage(null);
-                // Pre-fill the handle from the identity row so the
-                // operator doesn't have to retype it.
-                if (!appPasswordHandle) {
-                  setAppPasswordHandle(props.accountId ? "" : "");
-                }
               }}
+              disabled={busy !== null || inCooldown}
               className="btn-primary text-[11px]"
             >
               {plan.buttonLabel}
@@ -351,6 +528,13 @@ export function ConnectionControls(props: ConnectionControlsProps) {
               access.
             </p>
           </>
+        ) : null}
+
+        {plan?.kind === "app_password" && inCooldown ? (
+          <p className="basis-full text-[10px] text-amber-700 mt-1">
+            Sign-in is briefly disabled after a failed attempt. Wait a
+            moment before trying again.
+          </p>
         ) : null}
 
         {plan?.kind === "app_password" && appPasswordFormOpen ? (
@@ -408,7 +592,7 @@ export function ConnectionControls(props: ConnectionControlsProps) {
             <div className="flex gap-2">
               <button
                 type="submit"
-                disabled={busy === "connect"}
+                disabled={busy === "connect" || inCooldown}
                 className="btn-primary text-[11px]"
               >
                 {busy === "connect" ? "…" : "Sign in"}
@@ -425,6 +609,11 @@ export function ConnectionControls(props: ConnectionControlsProps) {
                 Cancel
               </button>
             </div>
+            {inCooldown ? (
+              <p className="text-[10px] text-amber-700 mt-1">
+                Recent sign-in failed. Wait briefly before retrying.
+              </p>
+            ) : null}
           </form>
         ) : null}
 

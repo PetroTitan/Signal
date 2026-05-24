@@ -138,6 +138,14 @@ export interface AccountIdentityCardProps {
   archiveControl?: React.ReactNode;
   /** F4.4 — voice profile editor / display slot. */
   voiceProfile?: React.ReactNode;
+  /**
+   * Identity-scoped "Manage" control rendered next to the state
+   * pill. Renders nothing when the wrapper has no actions to offer
+   * (e.g. unsupported platform). Owned by the page-level client
+   * wrapper so the toggle state is per-card and never bleeds across
+   * identities.
+   */
+  manageButton?: React.ReactNode;
 }
 
 export function AccountIdentityCard(props: AccountIdentityCardProps) {
@@ -191,11 +199,14 @@ export function AccountIdentityCard(props: AccountIdentityCardProps) {
                   ) : null}
                 </div>
               </div>
-              {props.publishState ? (
-                <IdentityPublishStatePill state={props.publishState} />
-              ) : (
-                <ConnectionStatePill state={props.connectionState} />
-              )}
+              <div className="flex items-center gap-2 shrink-0">
+                {props.publishState ? (
+                  <IdentityPublishStatePill state={props.publishState} />
+                ) : (
+                  <ConnectionStatePill state={props.connectionState} />
+                )}
+                {props.manageButton}
+              </div>
             </div>
 
             {props.helperNote ? (
