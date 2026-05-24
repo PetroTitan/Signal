@@ -26,6 +26,7 @@ import type {
   PlatformNativeFormat,
   PlatformRiskLevel,
 } from "@/core/platform-native";
+import { CopyButton } from "./_copy-button";
 
 interface PlatformNativePreviewProps {
   draft: PlatformNativeDraft;
@@ -163,8 +164,11 @@ export function PlatformNativePreview({ draft }: PlatformNativePreviewProps) {
 
       {/* Body */}
       <section>
-        <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500 mb-1">
-          Body
+        <div className="flex items-center justify-between mb-1">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
+            Body
+          </div>
+          <CopyButton value={draft.body} label="body" />
         </div>
         <pre className="text-[12px] text-ink-800 leading-relaxed whitespace-pre-wrap font-sans">
           {draft.body}
@@ -174,8 +178,11 @@ export function PlatformNativePreview({ draft }: PlatformNativePreviewProps) {
       {/* CTA — only when the engine produced one */}
       {draft.cta ? (
         <section>
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500 mb-1">
-            Call to action
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
+              Call to action
+            </div>
+            <CopyButton value={draft.cta} label="CTA" />
           </div>
           <p className="text-[12px] text-ink-700 leading-relaxed italic">
             {draft.cta}
@@ -250,8 +257,11 @@ function CreativeDirectionBlock({
       </div>
 
       <div className="mt-2 text-[12px] text-ink-700 leading-relaxed">
-        <span className="font-medium">What to create:</span>{" "}
-        {direction.mediaPromptOrBrief}
+        <div className="flex items-start justify-between gap-2 mb-1">
+          <span className="font-medium">What to create:</span>
+          <CopyButton value={direction.mediaPromptOrBrief} label="brief" />
+        </div>
+        <div>{direction.mediaPromptOrBrief}</div>
       </div>
 
       {direction.mediaRequired ? (

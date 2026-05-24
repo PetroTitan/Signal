@@ -216,6 +216,43 @@ describe("PlatformNativePreview — operator-facing language", () => {
 });
 
 // =====================================================================
+// Copy buttons — body / CTA / media brief
+// =====================================================================
+
+describe("PlatformNativePreview — copy buttons", () => {
+  it("renders a body copy button when body has content", () => {
+    const html = render(draft({ platform: "x", body: "Body content goes here." }));
+    expect(html).toContain('aria-label="Copy body"');
+  });
+
+  it("renders a CTA copy button when CTA is present", () => {
+    const html = render(
+      draft({
+        platform: "linkedin",
+        body: "...",
+        cta: "Curious how others approached this.",
+      }),
+    );
+    expect(html).toContain('aria-label="Copy cta"');
+  });
+
+  it("does NOT render a CTA copy button when CTA is null", () => {
+    const html = render(draft({ platform: "x", body: "...", cta: null }));
+    expect(html).not.toContain('aria-label="Copy cta"');
+  });
+
+  it("renders a media-brief copy button (every platform's brief is non-empty)", () => {
+    const html = render(draft({ platform: "instagram", body: "..." }));
+    expect(html).toContain('aria-label="Copy brief"');
+  });
+
+  it("body copy button does not render when body is empty", () => {
+    const html = render(draft({ platform: "x", body: "" }));
+    expect(html).not.toContain('aria-label="Copy body"');
+  });
+});
+
+// =====================================================================
 // Per-platform smoke: every founder platform renders without error
 // =====================================================================
 
