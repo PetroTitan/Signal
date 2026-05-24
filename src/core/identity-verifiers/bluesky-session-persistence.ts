@@ -85,8 +85,13 @@ export function buildBlueskySessionPlan(
             code: "token_storage_unavailable",
             platform: "bluesky",
             identity_id: identityId,
+            // Operator-facing copy: name the configuration symptom,
+            // steer to the fix, never reference key VALUES, never
+            // include stack traces. Internal diagnostic detail
+            // (env-var name, etc.) is the only platform-specific
+            // hint operators need to find the env var dashboard.
             message:
-              "Signal cannot encrypt session tokens (TOKEN_ENCRYPTION_KEY missing or refused). Connection not stored.",
+              "Server session encryption is not configured correctly. Ask an administrator to configure TOKEN_ENCRYPTION_KEY and redeploy.",
           },
         },
       };

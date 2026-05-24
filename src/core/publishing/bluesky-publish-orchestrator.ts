@@ -277,7 +277,7 @@ export async function publishBlueskyForIdentity(
     );
     return publishFail(
       "session_expired",
-      "Bluesky refresh succeeded but tokens could not be encrypted. Sign in again.",
+      "Server session encryption is not configured correctly. Ask an administrator to configure TOKEN_ENCRYPTION_KEY and redeploy. The existing session will be marked expired and a fresh sign-in will be required after the key is configured.",
     );
   }
 

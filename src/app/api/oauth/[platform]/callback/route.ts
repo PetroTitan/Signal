@@ -105,8 +105,7 @@ export async function GET(
         connectionStatus: "error",
         metadata: {
           last_message:
-            "OAuth callback received but token encryption is not configured. " +
-            "No real tokens were stored. Set TOKEN_ENCRYPTION_KEY and re-run the flow.",
+            "Server session encryption is not configured correctly. Ask an administrator to configure TOKEN_ENCRYPTION_KEY and redeploy. No tokens were stored; sign in again after the key is configured.",
           token_storage: "not_configured",
         },
       });
@@ -114,8 +113,9 @@ export async function GET(
         workspaceId: stateRow.workspace_id,
         connectionId: conn.id,
         type: "platform_connection.failed",
-        title: `${platform} OAuth callback received; tokens not stored`,
-        description: "Token encryption is not configured.",
+        title: `${platform} sign-in incomplete (server encryption not configured)`,
+        description:
+          "Server session encryption is not configured correctly. Ask an administrator to configure TOKEN_ENCRYPTION_KEY and redeploy.",
       });
       const redirectUrl = new URL(
         safeRedirect(stateRow.redirect_after, url.origin),
