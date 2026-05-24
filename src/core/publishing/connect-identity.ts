@@ -287,22 +287,22 @@ export function resolveConnectIdentityPlan(
       kind: "oauth",
       platform,
       authorizeUrl: buildOAuthAuthorizeUrl(input),
-      buttonLabel: "Connect identity",
+      buttonLabel: "Sign in to this account",
     };
   }
 
   // Per-identity app-password platforms (today: Bluesky). Each
-  // identity needs its own app password; "verifying" via the public
-  // handle-resolution endpoint is informational only.
+  // identity needs its own app password; resolving the public
+  // handle is informational only and does not sign Signal in.
   if (input.publishingMode === "api" && isAppPasswordPlatform(platform)) {
     return {
       kind: "app_password",
       platform,
       resolveUrl: buildResolveUrl(input),
       connectUrl: buildBlueskyConnectUrl(input),
-      buttonLabel: "Connect with App Password",
+      buttonLabel: "Sign in with Bluesky App Password",
       credentialNote:
-        "Use a Bluesky App Password, not your main account password. " +
+        "Use a Bluesky App Password for this exact account, not your main password. " +
         "Create one at bsky.app/settings/app-passwords.",
     };
   }
@@ -316,7 +316,7 @@ export function resolveConnectIdentityPlan(
       kind: "api_key_verify",
       platform,
       verifyUrl: buildVerifyUrl(input),
-      buttonLabel: "Verify identity",
+      buttonLabel: "Sign in to this account",
     };
   }
 
