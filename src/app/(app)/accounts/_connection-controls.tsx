@@ -1,9 +1,18 @@
 "use client";
 
 import { useState } from "react";
+import type { ConnectIdentityPlan } from "@/core/publishing/connect-identity";
+import type { IdentityPublishState } from "@/core/publishing/identity-publish-state";
 
 interface ConnectionControlsProps {
-  platform: "reddit" | "x" | "linkedin";
+  /**
+   * Widened from the legacy OAuth-only union ("reddit" | "x" |
+   * "linkedin") to any founder platform, so the component can render
+   * the api_key_verify and manual variants too. OAuth-only sub-paths
+   * (disconnect, health check) are gated on plan.kind === "oauth"
+   * inside the component.
+   */
+  platform: string;
   accountId: string;
   providerConfigured: boolean;
   encryptionConfigured: boolean;
@@ -21,6 +30,28 @@ interface ConnectionControlsProps {
   healthStatus: "healthy" | "degraded" | "expired" | "revoked" | "unknown";
   hasAccessToken: boolean;
   lastCheckedAt: string | null;
+  /**
+   * Resolved identity publish state from
+   * resolveIdentityPublishState(). Drives whether the connect button
+   * label is "Connect identity" / "Reauthorize" / "Reconnect with
+   * correct account".
+   */
+  publishState?: IdentityPublishState;
+  /**
+   * Resolved connect plan from resolveConnectIdentityPlan(). When
+   * present, the component dispatches based on plan.kind instead of
+   * hardcoding the Reddit OAuth path.
+   */
+  connectPlan?: ConnectIdentityPlan;
+  /**
+   * Handle-mismatch evidence pulled from
+   * connection.metadata.handle_mismatch. Rendered as a banner when
+   * publishState === "mismatched".
+   */
+  mismatchEvidence?: {
+    declared: string | null;
+    authenticated: string | null;
+  } | null;
 }
 
 const STATUS_LABELS: Record<ConnectionControlsProps["connectionStatus"], string> = {
@@ -32,6 +63,24 @@ const STATUS_LABELS: Record<ConnectionControlsProps["connectionStatus"], string>
   disabled: "Disabled",
   reauthorization_required: "Reauthorization required",
 };
+
+/**
+ * Pick the OAuth button label from the resolver's verdict. The
+ * existing connection_status alone can't tell "expired" from
+ * "mismatched", which need different labels.
+ */
+function oauthButtonLabel(publishState: IdentityPublishState | undefined): string {
+  switch (publishState) {
+    case "connected":
+      return "Reauthorize";
+    case "expired":
+      return "Reconnect";
+    case "mismatched":
+      return "Reconnect with correct account";
+    default:
+      return "Connect identity";
+  }
+}
 
 export function ConnectionControls(props: ConnectionControlsProps) {
   const { platform, accountId, providerConfigured, encryptionConfigured } = props;
@@ -95,6 +144,39 @@ export function ConnectionControls(props: ConnectionControlsProps) {
     }
   }
 
+  async function verifyApiKey(verifyUrl: string) {
+    setBusy("connect");
+    setMessage(null);
+    try {
+      const res = await fetch(verifyUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+      });
+      const json = (await res.json()) as {
+        ok?: boolean;
+        code?: string;
+        error?: string;
+        message?: string;
+      };
+      if (res.status === 501 || json.code === "not_implemented") {
+        setMessage(
+          json.message ??
+            "Verification for this platform isn't wired up yet. A follow-up PR will add the provider client.",
+        );
+      } else if (!res.ok || json.ok === false) {
+        setMessage(json.error ?? "Verification failed.");
+      } else {
+        setMessage("Identity verified.");
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const plan = props.connectPlan;
+  const oauthLabel = oauthButtonLabel(props.publishState);
+  const showMismatchBanner = props.publishState === "mismatched";
+
   return (
     <div className="text-[11px] text-ink-500 space-y-1">
       <div>
@@ -108,38 +190,64 @@ export function ConnectionControls(props: ConnectionControlsProps) {
           Last checked {props.lastCheckedAt}
         </div>
       ) : null}
+
+      {showMismatchBanner ? (
+        <div className="text-[11px] rounded-md border border-red-200 bg-red-50 text-red-800 px-2.5 py-1.5 leading-relaxed">
+          <div className="font-semibold">Connected account differs from identity.</div>
+          <div className="mt-0.5">
+            Expected{" "}
+            <span className="font-mono">
+              {props.mismatchEvidence?.declared ?? "—"}
+            </span>
+            ; authenticated as{" "}
+            <span className="font-mono">
+              {props.mismatchEvidence?.authenticated ?? "—"}
+            </span>
+            . Reconnect with the correct account on the platform.
+          </div>
+        </div>
+      ) : null}
+
       {props.redditOauthBlocked && platform === "reddit" ? (
         <div className="text-[10px] text-amber-700">
           Reddit is in manual publish mode while their API approval is
           pending. You&apos;ll copy and paste from the post preview.
         </div>
-      ) : !providerConfigured ? (
+      ) : !providerConfigured && plan?.kind === "oauth" ? (
         <div className="text-[10px] text-amber-700">
           This platform isn&apos;t set up for connecting yet.
         </div>
-      ) : !encryptionConfigured ? (
+      ) : !encryptionConfigured && plan?.kind === "oauth" ? (
         <div className="text-[10px] text-amber-700">
           Secure token storage isn&apos;t configured yet.
         </div>
       ) : null}
+
       <div className="flex gap-2 flex-wrap mt-1">
-        {providerConfigured &&
+        {plan?.kind === "oauth" &&
+        providerConfigured &&
         !(props.redditOauthBlocked && platform === "reddit") ? (
-          <a
-            href={`/api/oauth/${platform}/start?account_id=${encodeURIComponent(
-              accountId,
-            )}&redirect_after=${encodeURIComponent("/accounts")}`}
-            className="btn-primary text-[11px]"
-          >
-            {props.connectionStatus === "connected"
-              ? "Reauthorize"
-              : "Connect via OAuth"}
+          <a href={plan.authorizeUrl} className="btn-primary text-[11px]">
+            {oauthLabel}
           </a>
         ) : null}
-        {props.connectionStatus === "connected" ||
-        props.connectionStatus === "expired" ||
-        props.connectionStatus === "reauthorization_required" ||
-        props.connectionStatus === "error" ? (
+
+        {plan?.kind === "api_key_verify" ? (
+          <button
+            type="button"
+            onClick={() => verifyApiKey(plan.verifyUrl)}
+            disabled={busy === "connect"}
+            className="btn-primary text-[11px]"
+          >
+            {busy === "connect" ? "…" : plan.buttonLabel}
+          </button>
+        ) : null}
+
+        {plan?.kind === "oauth" &&
+        (props.connectionStatus === "connected" ||
+          props.connectionStatus === "expired" ||
+          props.connectionStatus === "reauthorization_required" ||
+          props.connectionStatus === "error") ? (
           <button
             type="button"
             onClick={disconnect}
@@ -149,7 +257,9 @@ export function ConnectionControls(props: ConnectionControlsProps) {
             {busy === "disconnect" ? "…" : "Disconnect"}
           </button>
         ) : null}
-        {props.hasAccessToken || props.connectionStatus !== "not_connected" ? (
+
+        {plan?.kind === "oauth" &&
+        (props.hasAccessToken || props.connectionStatus !== "not_connected") ? (
           <button
             type="button"
             onClick={check}
