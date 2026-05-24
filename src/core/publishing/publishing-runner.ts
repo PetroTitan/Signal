@@ -21,10 +21,9 @@ import { publishToX } from "./publish-x";
 import { publishToLinkedIn } from "./publish-linkedin";
 import { publishToDevto } from "./publish-devto";
 import { publishToHashnode } from "./publish-hashnode";
-import { publishToBluesky } from "./publish-bluesky";
+import { publishBlueskyForIdentity } from "./bluesky-publish-orchestrator";
 import { publishToTelegram } from "./publish-telegram";
 import {
-  readBlueskyCredentials,
   readDevtoCredentials,
   readHashnodeCredentials,
   readTelegramCredentials,
@@ -84,19 +83,15 @@ export async function runPublish(input: RunnerInput): Promise<PublishOutcome> {
       });
     }
     case "bluesky": {
-      const creds = readBlueskyCredentials();
-      if (!creds) {
-        return publishFail(
-          "missing_identifier",
-          "BLUESKY_IDENTIFIER / BLUESKY_APP_PASSWORD are not configured.",
-        );
-      }
-      return publishToBluesky({
-        request: input.request,
-        identifier: creds.identifier,
-        appPassword: creds.appPassword,
-        service: creds.service,
-      });
+      // Identity-scoped publishing: the orchestrator loads THIS
+      // identity's encrypted session, decrypts it for outbound use,
+      // and runs the publish + at-most-one-refresh flow. The
+      // workspace-level BLUESKY_APP_PASSWORD is reached only as an
+      // opt-in legacy fallback when (a) the identity has no
+      // session AND (b) BLUESKY_LEGACY_FALLBACK is explicitly
+      // enabled. Default behaviour is fail-safe with
+      // session_missing.
+      return publishBlueskyForIdentity({ request: input.request });
     }
     case "telegram": {
       const creds = readTelegramCredentials();

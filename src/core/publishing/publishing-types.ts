@@ -56,6 +56,14 @@ export const PUBLISH_REASON_CODES = [
   "cadence_cooldown",
   "safe_test_mode_ready_for_publish",
   "unknown_error",
+  // Phase F5.4 — identity-scoped publishing codes for Bluesky.
+  // `reason_code` is a free-text column in publish_history (no DB
+  // CHECK), so this is a pure TS-side widening.
+  "session_missing",
+  "session_expired",
+  "handle_mismatch",
+  "missing_account",
+  "platform_mismatch",
 ] as const;
 export type PublishReasonCode = (typeof PUBLISH_REASON_CODES)[number];
 

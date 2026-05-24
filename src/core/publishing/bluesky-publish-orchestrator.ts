@@ -1,0 +1,428 @@
+import "server-only";
+/**
+ * Bluesky identity-session publish orchestrator.
+ *
+ * The pure publisher in `publish-bluesky.ts` posts under a given
+ * (did, accessJwt). This module owns the impure parts: loading the
+ * identity's encrypted session, decrypting, calling the publisher,
+ * handling 401 with exactly one refresh attempt, persisting new
+ * tokens, and surfacing mismatch state if the refreshed handle
+ * drifts away from the identity's declared handle.
+ *
+ * Strict scope rules (matches the brief):
+ *
+ *   - Publishing uses the signed-in session belonging to THIS
+ *     identity. The lookup is keyed by (workspace, account, "bluesky")
+ *     so identity A can never accidentally publish through identity
+ *     B's session.
+ *
+ *   - No background loops. No automatic re-sign-in. At most one
+ *     refresh attempt per publish call. On refresh failure, the
+ *     identity's connection is marked expired/revoked and publishing
+ *     stops safely.
+ *
+ *   - On mismatch after refresh (DID/handle no longer matches the
+ *     identity's declared handle), the connection is marked 'error'
+ *     with metadata.handle_mismatch and publishing is blocked. The
+ *     existing resolver short-circuits to "mismatched" so the UI
+ *     surfaces it immediately.
+ *
+ *   - No tokens / app passwords appear in any returned outcome
+ *     metadata, log line, or error message. Encrypted blobs cross
+ *     module boundaries; plaintext is held only in the runner stack
+ *     frame for the duration of the publish + refresh round-trips.
+ *
+ *   - The optional legacy workspace-fallback path is reachable only
+ *     when (a) no identity session exists AND (b)
+ *     BLUESKY_LEGACY_FALLBACK is explicitly enabled. Default behaviour
+ *     fails safe with "session_missing".
+ */
+
+import {
+  decryptForOutboundUse,
+  getTokenCipher,
+} from "@/core/platform-oauth";
+import { encryptTokenResponse } from "@/core/platform-oauth/token-storage";
+import {
+  getAccountById,
+  setAccountConnectionStatus,
+} from "@/repositories/account-repository";
+import {
+  getConnectionForAccount,
+  markConnectionStatus,
+  upsertPlatformConnection,
+} from "@/repositories/platform-connection-repository";
+import { refreshBlueskySession } from "@/core/identity-verifiers/bluesky-session";
+import { normalizeBlueskyHandle } from "@/core/identity-verifiers/bluesky-resolve";
+import {
+  publishToBluesky,
+  publishToBlueskyAsIdentity,
+} from "./publish-bluesky";
+import {
+  isBlueskyLegacyFallbackEnabled,
+  readBlueskyCredentials,
+  readBlueskyServiceUrl,
+} from "./platform-credentials";
+import { publishFail } from "./publishing-result";
+import type { PublishOutcome, PublishRequest } from "./publishing-types";
+
+export interface OrchestratorInput {
+  request: PublishRequest;
+}
+
+/**
+ * Resolves the publish path for a Bluesky request:
+ *   1. Load the identity row + its platform_connections row.
+ *   2. If the identity has encrypted access JWTs, use the per-
+ *      identity path. On 401, refresh + retry once. On refresh
+ *      failure, mark the connection expired and fail safely. On
+ *      DID/handle drift after refresh, mark mismatched.
+ *   3. If no encrypted session AND fallback is enabled, fall back to
+ *      the workspace credentials with a clear isolated marker. Other-
+ *      wise fail with `session_missing`.
+ *
+ * Identity-scoped throughout. Touches only the (workspace, account,
+ * "bluesky") row.
+ */
+export async function publishBlueskyForIdentity(
+  input: OrchestratorInput,
+): Promise<PublishOutcome> {
+  const { request } = input;
+
+  if (!request.accountId) {
+    return publishFail(
+      "missing_account",
+      "Bluesky publish requires an identity (accountId).",
+    );
+  }
+
+  // 1. Identity row.
+  let identity;
+  try {
+    identity = await getAccountById(request.workspaceId, request.accountId);
+  } catch {
+    return publishFail("missing_account", "Identity not found in workspace.");
+  }
+  if (identity.platform !== "bluesky") {
+    return publishFail(
+      "platform_mismatch",
+      `Identity is on "${identity.platform}", not Bluesky.`,
+    );
+  }
+
+  const service = readBlueskyServiceUrl();
+
+  // 2. Connection row (per-identity).
+  const conn = await getConnectionForAccount(
+    request.workspaceId,
+    request.accountId,
+    "bluesky" as never,
+  );
+
+  // The identity-session path requires: a row exists, the row has
+  // encrypted access JWT, connection_status is healthy, and the
+  // cipher is available to decrypt.
+  const hasIdentitySession =
+    conn !== null &&
+    conn.hasAccessToken &&
+    (conn.connectionStatus === "connected" ||
+      conn.connectionStatus === "expired" ||
+      conn.connectionStatus === "reauthorization_required") &&
+    getTokenCipher().isAvailable();
+
+  if (!hasIdentitySession) {
+    if (isBlueskyLegacyFallbackEnabled()) {
+      // LEGACY workspace-level fallback. Opt-in only. The outcome
+      // metadata marks the path so audit logs make the fallback
+      // visible.
+      const creds = readBlueskyCredentials();
+      if (!creds) {
+        return publishFail(
+          "session_missing",
+          "Identity is not signed in to Bluesky and no legacy fallback credentials are configured.",
+        );
+      }
+      const outcome = await publishToBluesky({
+        request,
+        identifier: creds.identifier,
+        appPassword: creds.appPassword,
+        service: creds.service,
+      });
+      return tagLegacyFallback(outcome);
+    }
+    return publishFail(
+      "session_missing",
+      "Bluesky identity is not signed in. Sign in via the Manage panel to enable publishing.",
+    );
+  }
+
+  // 3. Identity-scoped path. Decrypt the access JWT for outbound use.
+  // We re-fetch the raw encrypted columns because the domain
+  // projection in PlatformConnection strips them (which is the
+  // correct default — only the orchestrator should pull plaintext).
+  const { readEncryptedTokens } = await import(
+    "@/repositories/platform-connection-repository"
+  );
+  const enc = await readEncryptedTokens(request.workspaceId, conn!.id);
+  if (!enc) {
+    return publishFail(
+      "session_missing",
+      "Bluesky identity session present but unreadable.",
+    );
+  }
+  const accessJwt = decryptForOutboundUse(enc.accessTokenEncrypted);
+  if (!accessJwt) {
+    return publishFail(
+      "session_missing",
+      "Bluesky session could not be decrypted.",
+    );
+  }
+
+  const did = conn!.providerAccountId;
+  const handle = conn!.handle ?? identity.handle ?? "";
+  if (!did || !did.startsWith("did:")) {
+    return publishFail(
+      "session_missing",
+      "Bluesky connection row is missing a DID.",
+    );
+  }
+
+  // First publish attempt.
+  const firstOutcome = await publishToBlueskyAsIdentity({
+    request,
+    accessJwt,
+    did,
+    handle,
+    service,
+  });
+
+  if (
+    firstOutcome.status === "published" ||
+    firstOutcome.reasonCode !== "session_expired"
+  ) {
+    return firstOutcome;
+  }
+
+  // 4. Refresh path. Exactly one attempt.
+  const refreshJwt = enc.refreshTokenEncrypted
+    ? decryptForOutboundUse(enc.refreshTokenEncrypted)
+    : null;
+  if (!refreshJwt) {
+    await markIdentityExpired(
+      request.workspaceId,
+      request.accountId,
+      conn!.id,
+      "Access JWT expired; no refresh token available.",
+    );
+    return publishFail(
+      "session_expired",
+      "Bluesky session expired and no refresh token is available. Sign in again.",
+    );
+  }
+
+  const refreshResult = await refreshBlueskySession({ refreshJwt, service });
+  if (refreshResult.outcome !== "refreshed") {
+    await markIdentityExpired(
+      request.workspaceId,
+      request.accountId,
+      conn!.id,
+      `Refresh failed: ${refreshResult.message}`,
+    );
+    return publishFail(
+      "session_expired",
+      `Bluesky session refresh failed (${refreshResult.code}). Sign in again.`,
+    );
+  }
+
+  // 5. Mismatch check after refresh.
+  const declaredNormalized = normalizeBlueskyHandle(identity.handle);
+  const refreshedNormalized = normalizeBlueskyHandle(refreshResult.handle);
+  if (
+    declaredNormalized &&
+    refreshedNormalized &&
+    declaredNormalized !== refreshedNormalized
+  ) {
+    await markIdentityMismatched(
+      request.workspaceId,
+      request.accountId,
+      conn!.id,
+      {
+        declared: identity.handle,
+        authenticated: refreshResult.handle,
+      },
+    );
+    return publishFail(
+      "handle_mismatch",
+      "Refreshed session belongs to a different Bluesky account. Sign in again with the correct account.",
+    );
+  }
+
+  // 6. Encrypt + persist refreshed tokens. Keep all other row fields
+  // intact (provider_account_id, scopes, etc.).
+  const encrypted = encryptTokenResponse({
+    platform: "bluesky",
+    response: {
+      accessToken: refreshResult.accessJwt,
+      refreshToken: refreshResult.refreshJwt,
+      expiresInSeconds: null,
+      scopes: [],
+    },
+  });
+  if (!encrypted.ok) {
+    await markIdentityExpired(
+      request.workspaceId,
+      request.accountId,
+      conn!.id,
+      `Refreshed but encryption refused: ${encrypted.reason}`,
+    );
+    return publishFail(
+      "session_expired",
+      "Bluesky refresh succeeded but tokens could not be encrypted. Sign in again.",
+    );
+  }
+
+  // Persist via upsert — finds the existing row by (workspace,
+  // account, platform) and updates in place. Metadata is replaced
+  // wholesale; this is acceptable here because we're following a
+  // successful refresh, not a sign-in flow, and the success-path
+  // metadata carries no secrets.
+  await upsertPlatformConnection({
+    workspaceId: request.workspaceId,
+    accountId: request.accountId,
+    platform: "bluesky",
+    providerAccountId: refreshResult.did,
+    handle: refreshResult.handle,
+    displayName: refreshResult.handle,
+    scopes: [],
+    accessTokenEncrypted: encrypted.accessTokenEncrypted,
+    refreshTokenEncrypted: encrypted.refreshTokenEncrypted,
+    expiresAt: encrypted.expiresAt,
+    connectionStatus: "connected",
+    metadata: {
+      verification_method: "atproto.server.refreshSession",
+      last_message: `Session refreshed for ${refreshResult.handle}.`,
+    },
+  });
+
+  // 7. Retry publish exactly once with the fresh access JWT. The
+  // pure publisher receives the new accessJwt; no recursion, no
+  // further retry.
+  const retry = await publishToBlueskyAsIdentity({
+    request,
+    accessJwt: refreshResult.accessJwt,
+    did: refreshResult.did,
+    handle: refreshResult.handle,
+    service,
+  });
+  // If the retry also fails, the refresh path didn't help —
+  // Bluesky is rejecting both tokens. Return whatever outcome the
+  // retry produced and stop. No second refresh, no recursion.
+  return retry;
+}
+
+async function markIdentityExpired(
+  workspaceId: string,
+  accountId: string,
+  connectionId: string,
+  message: string,
+): Promise<void> {
+  try {
+    await markConnectionStatus({
+      workspaceId,
+      connectionId,
+      status: "expired",
+      healthStatus: "expired",
+      message,
+      // Failed refresh is a "session-dead" signal; drop any prior
+      // handle_mismatch payload that no longer reflects reality.
+      clearMetadataKeys: ["handle_mismatch"],
+    });
+  } catch (err) {
+    console.error("[bluesky-orch] markConnectionStatus expired failed", err);
+  }
+  try {
+    await setAccountConnectionStatus({
+      workspaceId,
+      accountId,
+      connectionStatus: "expired",
+    });
+  } catch (err) {
+    console.error(
+      "[bluesky-orch] growth_accounts mirror expired failed",
+      err,
+    );
+  }
+}
+
+async function markIdentityMismatched(
+  workspaceId: string,
+  accountId: string,
+  connectionId: string,
+  mismatch: { declared: string | null; authenticated: string },
+): Promise<void> {
+  try {
+    // markConnectionStatus's metadata model is wholesale-replace
+    // when we pass a message; for the mismatch case we need to set
+    // an explicit handle_mismatch payload. Use upsert against the
+    // same row (find-by-id semantics) to set the metadata cleanly
+    // without disturbing the encrypted tokens.
+    const { readEncryptedTokens } = await import(
+      "@/repositories/platform-connection-repository"
+    );
+    const enc = await readEncryptedTokens(workspaceId, connectionId);
+    await upsertPlatformConnection({
+      workspaceId,
+      accountId,
+      platform: "bluesky",
+      providerAccountId: null,
+      handle: mismatch.authenticated,
+      displayName: mismatch.authenticated,
+      scopes: [],
+      // Persist nothing for tokens — we won't publish under the
+      // wrong account.
+      accessTokenEncrypted: null,
+      refreshTokenEncrypted: enc?.refreshTokenEncrypted ?? null,
+      expiresAt: null,
+      connectionStatus: "error",
+      metadata: {
+        verification_method: "atproto.server.refreshSession",
+        last_message: `Refreshed session belongs to ${mismatch.authenticated}, but identity expected ${mismatch.declared ?? "(unknown)"}.`,
+        handle_mismatch: {
+          declared: mismatch.declared,
+          authenticated: mismatch.authenticated,
+          observedAt: new Date().toISOString(),
+        },
+      },
+    });
+  } catch (err) {
+    console.error("[bluesky-orch] mark mismatched failed", err);
+  }
+  try {
+    await setAccountConnectionStatus({
+      workspaceId,
+      accountId,
+      connectionStatus: "error",
+    });
+  } catch (err) {
+    console.error(
+      "[bluesky-orch] growth_accounts mirror error failed",
+      err,
+    );
+  }
+}
+
+/**
+ * Wraps a legacy-fallback PublishOutcome with a metadata marker so
+ * publish_history audit rows make the fallback path visible. Lets
+ * us grep production data to find workspaces still relying on the
+ * legacy shim.
+ */
+function tagLegacyFallback(outcome: PublishOutcome): PublishOutcome {
+  return {
+    ...outcome,
+    metadata: {
+      ...outcome.metadata,
+      bluesky_publish_path: "legacy_workspace_fallback",
+    },
+  };
+}
