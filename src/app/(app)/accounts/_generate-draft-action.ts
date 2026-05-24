@@ -48,6 +48,8 @@ import {
   type ActionResult,
 } from "@/lib/forms/action-result";
 
+import type { PlatformNativeDraft } from "@/core/platform-native";
+
 export type GenerateDraftResult = ActionResult<{
   itemId: string;
   similarityWarning: string | null;
@@ -57,6 +59,14 @@ export type GenerateDraftResult = ActionResult<{
     | "manual_seed_created"
     | "provider_unavailable"
     | "provider_refused";
+  /**
+   * The platform-native envelope produced by this generation. The
+   * compose sheet renders it inline before the operator navigates
+   * away. Optional — falls back silently to the legacy status
+   * banner when the envelope can't be produced (e.g. an experimental
+   * platform outside the founder set).
+   */
+  platformNativeDraft: PlatformNativeDraft | null;
 }>;
 
 const MAX_TOPIC_LEN = 500;
@@ -269,6 +279,11 @@ export async function generateDraftAction(
       similarityWarning: result.similarityWarning,
       providerUsed: result.providerUsed,
       status: friendlyStatus,
+      // Surface the platform-native envelope to the sheet so the
+      // operator sees the structured preview (creative direction,
+      // warnings, transformation notes) before navigating to the
+      // weekly plan.
+      platformNativeDraft: result.platformNativeDraft,
     });
   } catch (error) {
     const message =
