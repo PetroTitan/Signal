@@ -65,6 +65,17 @@ export interface ApiKeyVerifyConnectPlan {
   verifyUrl: string;
   /** Operator-facing label for the button. */
   buttonLabel: string;
+  /**
+   * Identity-scoped sign-out endpoint. Present for platforms whose
+   * verify flow persists a row (Telegram). Absent for legacy stubs.
+   */
+  signOutUrl?: string;
+  /**
+   * Optional per-platform operator setup instructions, rendered
+   * above the Verify button as a bullet list. Used by Telegram to
+   * explain "add the bot as admin first."
+   */
+  setupInstructions?: ReadonlyArray<string>;
 }
 
 /**
@@ -261,6 +272,22 @@ function buildDevtoSignOutUrl(input: ConnectIdentityInput): string {
   return `/api/identity/${encodeURIComponent(input.identityId)}/devto/sign-out`;
 }
 
+function buildHashnodeConnectUrl(input: ConnectIdentityInput): string {
+  return `/api/identity/${encodeURIComponent(input.identityId)}/hashnode/connect`;
+}
+
+function buildHashnodeSignOutUrl(input: ConnectIdentityInput): string {
+  return `/api/identity/${encodeURIComponent(input.identityId)}/hashnode/sign-out`;
+}
+
+function buildTelegramVerifyUrl(input: ConnectIdentityInput): string {
+  return `/api/identity/${encodeURIComponent(input.identityId)}/telegram/verify`;
+}
+
+function buildTelegramSignOutUrl(input: ConnectIdentityInput): string {
+  return `/api/identity/${encodeURIComponent(input.identityId)}/telegram/sign-out`;
+}
+
 /**
  * Platforms where Signal currently has a usable per-identity OAuth
  * flow. Today: Reddit only. Future flows (X, LinkedIn with their own
@@ -280,10 +307,13 @@ const APP_PASSWORD_PLATFORMS: ReadonlyArray<FounderPlatform> = ["bluesky"];
 /**
  * Platforms that authenticate identities through a per-identity
  * personal API key (one key per account, NOT a workspace-level
- * shared key). The key is verified against /me, then stored
- * encrypted. Today: dev.to. Hashnode joins in the next phase PR.
+ * shared key). The key is verified against the provider's "who am I"
+ * endpoint and stored encrypted. Today: dev.to + Hashnode.
  */
-const PERSONAL_API_KEY_PLATFORMS: ReadonlyArray<FounderPlatform> = ["devto"];
+const PERSONAL_API_KEY_PLATFORMS: ReadonlyArray<FounderPlatform> = [
+  "devto",
+  "hashnode",
+];
 
 /**
  * Platforms that authenticate identities through a workspace-level
@@ -294,7 +324,6 @@ const PERSONAL_API_KEY_PLATFORMS: ReadonlyArray<FounderPlatform> = ["devto"];
  * one).
  */
 const API_KEY_VERIFY_PLATFORMS: ReadonlyArray<FounderPlatform> = [
-  "hashnode",
   "telegram",
 ];
 
@@ -405,32 +434,67 @@ export function resolveConnectIdentityPlan(
     };
   }
 
-  // Per-identity personal-API-key platforms (today: dev.to). Each
-  // identity has its own API key (one per dev.to account).
+  // Per-identity personal-API-key platforms. Each identity has its
+  // own API key. Per-platform config (URLs, button labels, generate
+  // link) lives in the branch so the operator copy is platform-
+  // specific.
   if (
     input.publishingMode === "api" &&
-    isPersonalApiKeyPlatform(platform) &&
-    platform === "devto"
+    isPersonalApiKeyPlatform(platform)
   ) {
-    return {
-      kind: "personal_api_key",
-      platform,
-      connectUrl: buildDevtoConnectUrl(input),
-      signOutUrl: buildDevtoSignOutUrl(input),
-      buttonLabel: "Sign in with dev.to API key",
-      credentialNote:
-        "Use a dev.to API key for this exact account.",
-      generateUrl: "https://dev.to/settings/extensions",
-      generateLabel: "dev.to → Settings → Extensions → DEV API Keys",
-      secretFieldLabel: "dev.to API key",
-    };
+    if (platform === "devto") {
+      return {
+        kind: "personal_api_key",
+        platform,
+        connectUrl: buildDevtoConnectUrl(input),
+        signOutUrl: buildDevtoSignOutUrl(input),
+        buttonLabel: "Sign in with dev.to API key",
+        credentialNote: "Use a dev.to API key for this exact account.",
+        generateUrl: "https://dev.to/settings/extensions",
+        generateLabel: "dev.to → Settings → Extensions → DEV API Keys",
+        secretFieldLabel: "dev.to API key",
+      };
+    }
+    if (platform === "hashnode") {
+      return {
+        kind: "personal_api_key",
+        platform,
+        connectUrl: buildHashnodeConnectUrl(input),
+        signOutUrl: buildHashnodeSignOutUrl(input),
+        buttonLabel: "Sign in with Hashnode API key",
+        credentialNote: "Use a Hashnode API key for this exact account.",
+        generateUrl: "https://hashnode.com/settings/developer",
+        generateLabel: "Hashnode → Settings → Developer → Generate Token",
+        secretFieldLabel: "Hashnode API key",
+      };
+    }
   }
 
-  // Workspace API-key platforms with per-identity verify.
+  // Workspace-credential platforms with per-identity verify (today:
+  // Telegram). The workspace owns one bot token; each identity
+  // represents a specific channel the bot publishes to. Verification
+  // confirms (a) the channel exists and (b) the bot has admin access
+  // with permission to post.
   if (
     input.publishingMode === "api" &&
     isApiKeyVerifyPlatform(platform)
   ) {
+    if (platform === "telegram") {
+      return {
+        kind: "api_key_verify",
+        platform,
+        verifyUrl: buildTelegramVerifyUrl(input),
+        signOutUrl: buildTelegramSignOutUrl(input),
+        buttonLabel: "Verify Telegram channel access",
+        setupInstructions: [
+          "Telegram uses the workspace bot.",
+          "Add the bot as an admin to the channel first.",
+          "This identity should use the channel username, e.g. @webmasterid.",
+        ],
+      };
+    }
+    // Fallback for any future api_key_verify platforms that haven't
+    // been implemented yet — uses the legacy stub /verify route.
     return {
       kind: "api_key_verify",
       platform,

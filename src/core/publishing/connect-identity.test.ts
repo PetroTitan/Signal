@@ -145,25 +145,113 @@ describe("resolveConnectIdentityPlan — personal-API-key platforms", () => {
     expect(planA.signOutUrl).not.toBe(planB.signOutUrl);
     expect(planA.connectUrl).not.toBe(planB.connectUrl);
   });
+
+  it("returns a personal_api_key plan for Hashnode (NOT api_key_verify)", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "hashnode",
+        publishingMode: "api",
+        oauthAvailable: false,
+      }),
+    );
+    expect(plan.kind).toBe("personal_api_key");
+    if (plan.kind !== "personal_api_key") return;
+    expect(plan.connectUrl).toBe("/api/identity/id-1/hashnode/connect");
+    expect(plan.signOutUrl).toBe("/api/identity/id-1/hashnode/sign-out");
+    expect(plan.buttonLabel).toBe("Sign in with Hashnode API key");
+    expect(plan.credentialNote.toLowerCase()).toContain(
+      "this exact account",
+    );
+    expect(plan.secretFieldLabel.toLowerCase()).toContain("hashnode");
+    expect(plan.generateUrl).toContain("hashnode.com");
+  });
+
+  it("Hashnode signOutUrl is identity-scoped — two Hashnode identities have distinct URLs", () => {
+    const planA = resolveConnectIdentityPlan(
+      input({
+        identityId: "id-A",
+        platform: "hashnode",
+        publishingMode: "api",
+      }),
+    );
+    const planB = resolveConnectIdentityPlan(
+      input({
+        identityId: "id-B",
+        platform: "hashnode",
+        publishingMode: "api",
+      }),
+    );
+    if (planA.kind !== "personal_api_key" || planB.kind !== "personal_api_key")
+      throw new Error("expected personal_api_key");
+    expect(planA.signOutUrl).not.toBe(planB.signOutUrl);
+    expect(planA.connectUrl).not.toBe(planB.connectUrl);
+  });
+
+  it("dev.to and Hashnode plans don't collide — distinct connect/sign-out URLs per platform", () => {
+    const devto = resolveConnectIdentityPlan(
+      input({ platform: "devto", publishingMode: "api" }),
+    );
+    const hashnode = resolveConnectIdentityPlan(
+      input({ platform: "hashnode", publishingMode: "api" }),
+    );
+    if (devto.kind !== "personal_api_key" || hashnode.kind !== "personal_api_key")
+      throw new Error("expected personal_api_key");
+    expect(devto.connectUrl).not.toBe(hashnode.connectUrl);
+    expect(devto.signOutUrl).not.toBe(hashnode.signOutUrl);
+  });
 });
 
 describe("resolveConnectIdentityPlan — API-key verify platforms (workspace-shared key + per-identity verify)", () => {
-  it.each(["hashnode", "telegram"] as const)(
-    "returns an api_key_verify plan for %s (dev.to is now personal_api_key)",
-    (platform) => {
-      const plan = resolveConnectIdentityPlan(
-        input({
-          platform,
-          publishingMode: "api",
-          oauthAvailable: false,
-        }),
-      );
-      expect(plan.kind).toBe("api_key_verify");
-      if (plan.kind !== "api_key_verify") return;
-      expect(plan.verifyUrl).toBe(`/api/identity/id-1/verify`);
-      expect(plan.buttonLabel).toBe("Sign in to this account");
-    },
-  );
+  it("returns a telegram-specific api_key_verify plan with dedicated verify + sign-out URLs", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "telegram",
+        publishingMode: "api",
+        oauthAvailable: false,
+      }),
+    );
+    expect(plan.kind).toBe("api_key_verify");
+    if (plan.kind !== "api_key_verify") return;
+    expect(plan.verifyUrl).toBe("/api/identity/id-1/telegram/verify");
+    expect(plan.signOutUrl).toBe("/api/identity/id-1/telegram/sign-out");
+    expect(plan.buttonLabel.toLowerCase()).toContain("telegram");
+  });
+
+  it("Telegram plan carries operator setup instructions (bot must be added as admin)", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "telegram",
+        publishingMode: "api",
+        oauthAvailable: false,
+      }),
+    );
+    if (plan.kind !== "api_key_verify") throw new Error("expected api_key_verify");
+    expect(plan.setupInstructions).toBeDefined();
+    const instructions = (plan.setupInstructions ?? []).join(" ").toLowerCase();
+    expect(instructions).toContain("admin");
+    expect(instructions).toContain("channel");
+  });
+
+  it("Telegram signOutUrl is identity-scoped — two Telegram identities have distinct URLs", () => {
+    const planA = resolveConnectIdentityPlan(
+      input({
+        identityId: "id-A",
+        platform: "telegram",
+        publishingMode: "api",
+      }),
+    );
+    const planB = resolveConnectIdentityPlan(
+      input({
+        identityId: "id-B",
+        platform: "telegram",
+        publishingMode: "api",
+      }),
+    );
+    if (planA.kind !== "api_key_verify" || planB.kind !== "api_key_verify")
+      throw new Error("expected api_key_verify");
+    expect(planA.signOutUrl).not.toBe(planB.signOutUrl);
+    expect(planA.verifyUrl).not.toBe(planB.verifyUrl);
+  });
 
   it("requires publishingMode='api' — manual mode with the same platform falls back to manual", () => {
     const plan = resolveConnectIdentityPlan(
@@ -235,14 +323,16 @@ describe("isOAuthCapablePlatform / isAppPasswordPlatform / isApiKeyVerifyPlatfor
     expect(isApiKeyVerifyPlatform("bluesky")).toBe(false);
   });
 
-  it("dev.to is a personal-API-key platform (NOT api_key_verify anymore)", () => {
+  it("dev.to + Hashnode are personal-API-key platforms (NOT api_key_verify anymore)", () => {
     expect(isPersonalApiKeyPlatform("devto")).toBe(true);
+    expect(isPersonalApiKeyPlatform("hashnode")).toBe(true);
     expect(isApiKeyVerifyPlatform("devto")).toBe(false);
+    expect(isApiKeyVerifyPlatform("hashnode")).toBe(false);
   });
 
-  it("Hashnode/Telegram remain API-key verify platforms (until their PRs land)", () => {
-    expect(isApiKeyVerifyPlatform("hashnode")).toBe(true);
+  it("Telegram is an API-key verify platform (workspace bot token + per-identity channel verify)", () => {
     expect(isApiKeyVerifyPlatform("telegram")).toBe(true);
+    expect(isPersonalApiKeyPlatform("telegram")).toBe(false);
   });
 
   it("Distribution and manual-only platforms belong to none of the four groups", () => {
@@ -300,8 +390,19 @@ describe("shouldShowManageButton", () => {
     expect(shouldShowManageButton(plan)).toBe(true);
   });
 
-  it("shows Manage for api_key_verify plans (Hashnode/Telegram)", () => {
-    for (const platform of ["hashnode", "telegram"] as const) {
+  it("shows Manage for personal_api_key plans (Hashnode)", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "hashnode",
+        publishingMode: "api",
+        oauthAvailable: false,
+      }),
+    );
+    expect(shouldShowManageButton(plan)).toBe(true);
+  });
+
+  it("shows Manage for api_key_verify plans (Telegram only — Hashnode moved out)", () => {
+    for (const platform of ["telegram"] as const) {
       const plan = resolveConnectIdentityPlan(
         input({
           platform,

@@ -73,3 +73,43 @@ export type {
   DevtoVerifyPlan,
   DevtoVerifyPlanInput,
 } from "./devto-persistence";
+
+// Hashnode personal-API-key verifier (GraphQL)
+export {
+  verifyHashnodeIdentity,
+  normalizeHashnodeUsername,
+  isValidHashnodeUsername,
+} from "./hashnode";
+export type {
+  HashnodeVerifierInput,
+  HashnodeVerifierResult,
+  HashnodeVerifierConnected,
+  HashnodeVerifierMismatched,
+  HashnodeVerifierError,
+  HashnodeVerifierErrorCode,
+} from "./hashnode";
+export { buildHashnodeVerifyPlan } from "./hashnode-persistence";
+export type {
+  HashnodeVerifyPlan,
+  HashnodeVerifyPlanInput,
+} from "./hashnode-persistence";
+
+// Telegram workspace-bot + per-identity-channel verifier
+export {
+  verifyTelegramIdentity,
+  normalizeTelegramHandle,
+  isValidTelegramHandle,
+} from "./telegram";
+export type {
+  TelegramVerifierInput,
+  TelegramVerifierResult,
+  TelegramVerifierConnected,
+  TelegramVerifierMismatched,
+  TelegramVerifierError,
+  TelegramVerifierErrorCode,
+} from "./telegram";
+export { buildTelegramVerifyPlan } from "./telegram-persistence";
+export type {
+  TelegramVerifyPlan,
+  TelegramVerifyPlanInput,
+} from "./telegram-persistence";

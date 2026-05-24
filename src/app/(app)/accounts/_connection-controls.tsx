@@ -216,28 +216,37 @@ export function ConnectionControls(props: ConnectionControlsProps) {
         code?: string;
         error?: string;
         message?: string;
+        authenticated_handle?: string;
       };
       if (res.status === 501 || json.code === "not_implemented") {
         setMessage(
           json.message ??
             "Verification for this platform isn't wired up yet. A follow-up PR will add the provider client.",
         );
-      } else if (!res.ok || json.ok === false) {
-        setMessage(json.error ?? "Verification failed.");
-      } else {
-        // NOTE: this handler is wired only for the api_key_verify
-        // plan kind (dev.to / Hashnode / Telegram). Bluesky uses the
-        // separate app_password flow. The verbiage below is
-        // deliberately not "Identity verified" — that would imply
-        // ownership has been proven, which a workspace-level API-key
-        // lookup does not establish on its own.
+      } else if (json.code === "bot_not_admin") {
+        // Telegram-specific clear setup instruction. The route
+        // already provides operator-facing copy; we surface it.
         setMessage(
-          json.message ?? "Handle resolved via workspace credentials.",
+          json.message ??
+            "Add the Signal Telegram bot as an admin to this channel, then try again.",
         );
-        // Future verifiers (dev.to / Hashnode / Telegram) will
-        // persist a connection row on success. Re-fetch so the
-        // panel renders the resulting state instead of staying on
-        // the verify button.
+      } else if (json.code === "chat_not_found") {
+        setMessage(
+          json.message ??
+            "The channel was not found or isn't accessible to the bot.",
+        );
+      } else if (json.code === "handle_mismatch") {
+        setMessage(
+          json.message ??
+            "Verified a different account than this identity expects.",
+        );
+      } else if (!res.ok || json.ok === false) {
+        setMessage(json.error ?? json.message ?? "Verification failed.");
+      } else {
+        const handle = json.authenticated_handle;
+        setMessage(
+          handle ? `Signed in as @${handle}.` : "Verification succeeded.",
+        );
         router.refresh();
       }
     } finally {
@@ -526,7 +535,86 @@ export function ConnectionControls(props: ConnectionControlsProps) {
           </a>
         ) : null}
 
-        {plan?.kind === "api_key_verify" ? (
+        {/*
+          api_key_verify is the workspace-credential + per-identity-
+          verify shape (Telegram today). The UI is state-aware so
+          operators get clear setup instructions when not yet
+          verified, and a Sign out button after verification.
+        */}
+        {plan?.kind === "api_key_verify" &&
+        plan.setupInstructions &&
+        props.publishState !== "connected" ? (
+          <ul className="basis-full text-[10px] text-ink-600 leading-relaxed list-disc pl-4 space-y-0.5">
+            {plan.setupInstructions.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        ) : null}
+
+        {plan?.kind === "api_key_verify" &&
+        props.publishState === "connected" ? (
+          <div className="basis-full space-y-2">
+            <div className="text-[11px] text-ink-700">
+              Signed in as{" "}
+              <span className="font-mono">
+                {props.handle
+                  ? `@${(props.handle ?? "").replace(/^@/, "")}`
+                  : "this channel"}
+              </span>
+              .
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => verifyApiKey(plan.verifyUrl)}
+                disabled={busy !== null || inCooldown}
+                className="btn-secondary text-[11px]"
+              >
+                {busy === "connect" ? "…" : "Check channel access"}
+              </button>
+              {plan.signOutUrl ? (
+                <button
+                  type="button"
+                  onClick={() => signOutPersonalApiKey(plan.signOutUrl!)}
+                  disabled={busy !== null}
+                  className="btn-secondary text-[11px]"
+                >
+                  {busy === "disconnect" ? "…" : "Sign out of this account"}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {plan?.kind === "api_key_verify" &&
+        props.publishState === "mismatched" ? (
+          <div className="basis-full space-y-2">
+            <div className="flex gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => verifyApiKey(plan.verifyUrl)}
+                disabled={busy !== null || inCooldown}
+                className="btn-primary text-[11px]"
+              >
+                {busy === "connect" ? "…" : "Verify with correct channel"}
+              </button>
+              {plan.signOutUrl ? (
+                <button
+                  type="button"
+                  onClick={() => signOutPersonalApiKey(plan.signOutUrl!)}
+                  disabled={busy !== null}
+                  className="btn-secondary text-[11px]"
+                >
+                  {busy === "disconnect" ? "…" : "Sign out of this account"}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {plan?.kind === "api_key_verify" &&
+        props.publishState !== "connected" &&
+        props.publishState !== "mismatched" ? (
           <button
             type="button"
             onClick={() => verifyApiKey(plan.verifyUrl)}
