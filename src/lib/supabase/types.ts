@@ -1077,7 +1077,19 @@ export interface PlatformConnectionRow {
   id: string;
   workspace_id: string;
   account_id: string | null;
-  platform: OAuthPlatform;
+  /**
+   * Mirrors the platform_connections.platform CHECK constraint
+   * (phase_f5_3 migration). Wider than `OAuthPlatform` because the
+   * api_key_verify Connect-Identity flow persists per-identity rows
+   * for Bluesky / dev.to / Hashnode / Telegram in addition to the
+   * OAuth-capable platforms.
+   */
+  platform:
+    | OAuthPlatform
+    | "bluesky"
+    | "devto"
+    | "hashnode"
+    | "telegram";
   provider_account_id: string | null;
   handle: string | null;
   display_name: string | null;
@@ -1103,7 +1115,13 @@ export interface PlatformConnectionInsert {
   id?: string;
   workspace_id: string;
   account_id?: string | null;
-  platform: OAuthPlatform;
+  /** Mirrors PlatformConnectionRow.platform — see note above. */
+  platform:
+    | OAuthPlatform
+    | "bluesky"
+    | "devto"
+    | "hashnode"
+    | "telegram";
   provider_account_id?: string | null;
   handle?: string | null;
   display_name?: string | null;

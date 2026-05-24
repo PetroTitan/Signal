@@ -25,6 +25,30 @@ export const OAUTH_PLATFORM_LABELS: Record<OAuthPlatform, string> = {
   linkedin: "LinkedIn",
 };
 
+/**
+ * Platforms that can have a row in `platform_connections`. Wider
+ * than `OAuthPlatform` because API-key platforms (Bluesky / dev.to /
+ * Hashnode / Telegram) also persist a per-identity connection row
+ * via the api_key_verify path, even though they don't go through
+ * OAuth.
+ *
+ * Distribution-only platforms (X, LinkedIn, YouTube, Threads,
+ * Instagram, Indie Hackers) are deliberately excluded — Signal
+ * doesn't authenticate to publish for those; the operator publishes
+ * on the platform itself, so no connection row is ever written.
+ *
+ * X and LinkedIn appear in `OAuthPlatform` for legacy schema reasons
+ * (they were once OAuth-capable in the codebase) but Signal uses
+ * them in manual-distribution mode only today. They're included here
+ * so the repository function signatures stay compatible.
+ */
+export type ConnectionPlatform =
+  | OAuthPlatform
+  | "bluesky"
+  | "devto"
+  | "hashnode"
+  | "telegram";
+
 export const PLATFORM_CONNECTION_STATUS_LABELS: Record<
   PlatformConnectionConnectionStatus,
   string
@@ -57,7 +81,13 @@ export interface PlatformConnection {
   id: string;
   workspaceId: string;
   accountId: string | null;
-  platform: OAuthPlatform;
+  /**
+   * Wider than `OAuthPlatform` since the api_key_verify flow
+   * (Bluesky today) also produces rows on this table. Mirrors the
+   * platform_connections.platform CHECK constraint widened by the
+   * phase_f5_3 migration.
+   */
+  platform: ConnectionPlatform;
   providerAccountId: string | null;
   handle: string | null;
   displayName: string | null;

@@ -243,6 +243,23 @@ export function ConnectionControls(props: ConnectionControlsProps) {
           </button>
         ) : null}
 
+        {/*
+          Honesty about what Bluesky verification proves. AT Protocol's
+          public resolveHandle endpoint confirms the handle exists and
+          resolves to a DID; it does NOT prove this workspace owns
+          that DID. Posting (which uses the workspace's
+          BLUESKY_APP_PASSWORD) is the de-facto ownership test.
+          Surface this so the green pill isn't read as "Signal verified
+          full ownership."
+        */}
+        {plan?.kind === "api_key_verify" && plan.platform === "bluesky" ? (
+          <p className="basis-full text-[10px] text-ink-500 leading-relaxed italic mt-1">
+            Verification confirms this Bluesky handle exists and
+            resolves to a DID. Publishing still depends on this
+            workspace&apos;s Bluesky credentials.
+          </p>
+        ) : null}
+
         {plan?.kind === "oauth" &&
         (props.connectionStatus === "connected" ||
           props.connectionStatus === "expired" ||
