@@ -127,6 +127,101 @@ describe("authControls gate coverage (page.tsx)", () => {
 // Leaked copy guards — these strings must NEVER appear in src/app/
 // =====================================================================
 
+// =====================================================================
+// Personal-API-key sign-in copy: the form must read like account
+// sign-in, not a developer-settings dump. This guards the rewrite
+// that put a real description, a readonly handle field, and clearer
+// help text into the dev.to + Hashnode forms.
+// =====================================================================
+
+describe("personal_api_key plan copy is account-sign-in shaped", () => {
+  it.each(["devto", "hashnode"] as const)(
+    "%s credentialNote explains why an API key is the sign-in method and that it's scoped to this identity",
+    (platform) => {
+      const plan = resolveConnectIdentityPlan(
+        input({ platform, publishingMode: "api", oauthAvailable: false }),
+      );
+      if (plan.kind !== "personal_api_key")
+        throw new Error("expected personal_api_key");
+      const note = plan.credentialNote.toLowerCase();
+      // Explains the purpose ("publish as this account") and the scope
+      // ("only for this identity"), not just an instruction to use a key.
+      expect(note).toContain("publish");
+      expect(note).toContain("api key");
+      expect(note).toContain("this identity");
+      // Must not leak internal terms.
+      expect(note).not.toContain("api_key_verify");
+      expect(note).not.toContain("personal_api_key");
+      expect(note).not.toContain("connection row");
+      expect(note).not.toContain("platform_connections");
+      // Must not ask for a regular password.
+      expect(note).not.toContain("password");
+    },
+  );
+
+  it.each(["devto", "hashnode"] as const)(
+    "%s plan exposes a generateLabel path the operator can follow",
+    (platform) => {
+      const plan = resolveConnectIdentityPlan(
+        input({ platform, publishingMode: "api", oauthAvailable: false }),
+      );
+      if (plan.kind !== "personal_api_key")
+        throw new Error("expected personal_api_key");
+      // The label is the breadcrumb path inside the provider's UI.
+      // Must include "Settings" and "API Key"/"Token" so the operator
+      // can find the page without leaving the form.
+      expect(plan.generateLabel).toMatch(/Settings/);
+      expect(plan.generateLabel).toMatch(/API Key|Token/i);
+    },
+  );
+
+  it("dev.to and Hashnode buttonLabel reads as account sign-in ('Sign in'), not a developer action", () => {
+    for (const platform of ["devto", "hashnode"] as const) {
+      const plan = resolveConnectIdentityPlan(
+        input({ platform, publishingMode: "api", oauthAvailable: false }),
+      );
+      if (plan.kind !== "personal_api_key")
+        throw new Error("expected personal_api_key");
+      // Account-sign-in language — not "Verify", not "Connect API",
+      // not "Save key".
+      expect(plan.buttonLabel.toLowerCase()).toMatch(/sign in/);
+      expect(plan.buttonLabel.toLowerCase()).not.toMatch(/connect api/);
+      expect(plan.buttonLabel.toLowerCase()).not.toMatch(/save key/);
+    }
+  });
+});
+
+// =====================================================================
+// Personal-API-key form structure (rendered JSX): the form must
+// include a readonly handle field + the password-style API key
+// field, mirroring the Bluesky App Password form layout.
+// =====================================================================
+
+describe("personal_api_key form renders both handle and key fields", () => {
+  const formSource = readFileSync(
+    join(APP_ROOT, "(app)", "accounts", "_connection-controls.tsx"),
+    "utf8",
+  );
+
+  it("includes a readonly handle field bound to props.handle", () => {
+    // The handle input must be readonly so the operator sees which
+    // account they're signing into but can't accidentally edit it.
+    // We require BOTH `readOnly` (JSX) and `aria-readonly` to keep
+    // screen readers in sync.
+    expect(formSource).toContain("readOnly");
+    expect(formSource).toContain('aria-readonly="true"');
+    expect(formSource).toMatch(/value=\{props\.handle/);
+  });
+
+  it("includes a password-type input for the API key with autoComplete='new-password'", () => {
+    expect(formSource).toMatch(/type="password"[\s\S]*?autoComplete="new-password"/);
+  });
+
+  it("help text uses an action verb ('Create') and points at the provider's settings path", () => {
+    expect(formSource).toMatch(/Create a \{planPlatformLabel\(plan\.platform\)\} API key/);
+  });
+});
+
 describe("legacy stub copy must not be present anywhere under src/app/", () => {
   const FORBIDDEN = [
     /not implemented yet/i,

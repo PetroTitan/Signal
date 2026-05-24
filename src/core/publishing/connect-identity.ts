@@ -448,8 +448,9 @@ export function resolveConnectIdentityPlan(
         platform,
         connectUrl: buildDevtoConnectUrl(input),
         signOutUrl: buildDevtoSignOutUrl(input),
-        buttonLabel: "Sign in with dev.to API key",
-        credentialNote: "Use a dev.to API key for this exact account.",
+        buttonLabel: "Sign in",
+        credentialNote:
+          "To let Signal publish as this dev.to account, create a dev.to API key and paste it here. Signal uses it only for this identity.",
         generateUrl: "https://dev.to/settings/extensions",
         generateLabel: "dev.to → Settings → Extensions → DEV API Keys",
         secretFieldLabel: "dev.to API key",
@@ -461,8 +462,9 @@ export function resolveConnectIdentityPlan(
         platform,
         connectUrl: buildHashnodeConnectUrl(input),
         signOutUrl: buildHashnodeSignOutUrl(input),
-        buttonLabel: "Sign in with Hashnode API key",
-        credentialNote: "Use a Hashnode API key for this exact account.",
+        buttonLabel: "Sign in",
+        credentialNote:
+          "To let Signal publish as this Hashnode account, create a Hashnode API key and paste it here. Signal uses it only for this identity.",
         generateUrl: "https://hashnode.com/settings/developer",
         generateLabel: "Hashnode → Settings → Developer → Generate Token",
         secretFieldLabel: "Hashnode API key",
