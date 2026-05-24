@@ -344,30 +344,89 @@ describe("buildBlueskySessionPlan — error outcomes", () => {
 // =====================================================================
 
 describe("buildBlueskySessionPlan — token storage refusal", () => {
-  it("returns 503 token_storage_unavailable when the cipher refuses (no upsert, no token persistence)", async () => {
-    // Force the cipher to refuse by clearing the key BEFORE the
-    // module loads. We have to dynamically reimport because the
-    // cipher caches on first read.
-    delete process.env.TOKEN_ENCRYPTION_KEY;
+  async function buildWithEnv(envValue: string | undefined) {
+    if (envValue === undefined) delete process.env.TOKEN_ENCRYPTION_KEY;
+    else process.env.TOKEN_ENCRYPTION_KEY = envValue;
     vi.resetModules();
     const { buildBlueskySessionPlan: buildFresh } = await import(
       "./bluesky-session-persistence"
     );
-    const plan = buildFresh({
+    return buildFresh({
       result: {
         outcome: "connected",
         providerAccountId: "did:plc:abc",
         authenticatedHandle: "webmasterid.bsky.social",
-        accessJwt: "x",
-        refreshJwt: "y",
+        accessJwt: "secret-access-jwt-value",
+        refreshJwt: "secret-refresh-jwt-value",
       },
       workspaceId: WS,
       identityId: ID,
       declaredHandle: "webmasterid.bsky.social",
     });
+  }
+
+  it("missing TOKEN_ENCRYPTION_KEY: returns 503, no upsert, no growth promote", async () => {
+    const plan = await buildWithEnv(undefined);
     expect(plan.upsert).toBeNull();
     expect(plan.promoteGrowthAccount).toBe(false);
     expect(plan.response.status).toBe(503);
     expect(plan.response.body.code).toBe("token_storage_unavailable");
+  });
+
+  it("malformed TOKEN_ENCRYPTION_KEY (wrong length): same 503 + no persistence", async () => {
+    // 16 random base64 chars decode to 12 bytes — not 32. The
+    // cipher's self-test rejects this and the persistence helper
+    // refuses to persist.
+    const plan = await buildWithEnv("dGhpcyBpcyB0b28gc2hvcnQ=");
+    expect(plan.upsert).toBeNull();
+    expect(plan.promoteGrowthAccount).toBe(false);
+    expect(plan.response.status).toBe(503);
+    expect(plan.response.body.code).toBe("token_storage_unavailable");
+  });
+
+  it("malformed TOKEN_ENCRYPTION_KEY (gibberish): same 503 + no persistence", async () => {
+    const plan = await buildWithEnv("not-a-valid-base64-key-at-all-!!!");
+    expect(plan.upsert).toBeNull();
+    expect(plan.response.status).toBe(503);
+    expect(plan.response.body.code).toBe("token_storage_unavailable");
+  });
+
+  it("valid TOKEN_ENCRYPTION_KEY (32 bytes base64): persists with encrypted tokens", async () => {
+    // 32 bytes of base64 = 44 chars including padding. This is the
+    // shape `openssl rand -base64 32` produces.
+    const plan = await buildWithEnv(
+      "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    );
+    expect(plan.upsert).not.toBeNull();
+    expect(plan.upsert!.connectionStatus).toBe("connected");
+    expect(plan.upsert!.accessTokenEncrypted).not.toBeNull();
+    expect(plan.upsert!.accessTokenEncrypted).not.toContain(
+      "secret-access-jwt-value",
+    );
+    expect(plan.response.status).toBe(200);
+  });
+
+  it("error response NEVER includes the access JWT, the refresh JWT, the key value, or a stack trace", async () => {
+    const plan = await buildWithEnv(undefined);
+    const serialized = JSON.stringify(plan.response.body);
+    expect(serialized).not.toContain("secret-access-jwt-value");
+    expect(serialized).not.toContain("secret-refresh-jwt-value");
+    // The env-var NAME may appear (it's a diagnostic hint for the
+    // operator). Actual key VALUES would never have a shape like
+    // "TOKEN_ENCRYPTION_KEY", but pin the absence of stack-trace
+    // hallmarks anyway.
+    expect(serialized).not.toContain("at Object.");
+    expect(serialized).not.toContain("\\n    at ");
+  });
+
+  it("operator-facing message names the env-var symptom + the fix path", async () => {
+    const plan = await buildWithEnv(undefined);
+    const message = String(plan.response.body.message ?? "");
+    expect(message.toLowerCase()).toContain(
+      "server session encryption",
+    );
+    expect(message).toContain("TOKEN_ENCRYPTION_KEY");
+    expect(message.toLowerCase()).toContain("administrator");
+    expect(message.toLowerCase()).toContain("redeploy");
   });
 });
