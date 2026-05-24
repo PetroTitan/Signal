@@ -106,6 +106,44 @@ export interface AppPasswordConnectPlan {
 }
 
 /**
+ * "Connect via per-identity personal API key." For platforms where
+ * each identity has its own long-lived API key (NOT a workspace-
+ * level shared key). Today: dev.to. Hashnode joins this list in a
+ * follow-up PR.
+ *
+ * Single-secret credential model (no session JWT, no refresh —
+ * the key IS the credential). The form takes one secret field. The
+ * key is encrypted server-side with TOKEN_ENCRYPTION_KEY and stored
+ * in platform_connections.access_token_encrypted exactly like
+ * Bluesky's access JWT.
+ *
+ * Same identity-scoped guarantees as the app_password flow:
+ *   - connectUrl and signOutUrl are per-identity
+ *   - the route refuses platforms other than the expected one
+ *   - the response carries only the public username + id, never the
+ *     key
+ */
+export interface PersonalApiKeyConnectPlan {
+  kind: "personal_api_key";
+  platform: FounderPlatform;
+  connectUrl: string;
+  signOutUrl: string;
+  /** Operator-facing label for the connect button. */
+  buttonLabel: string;
+  /** Operator-facing security note rendered next to the key input. */
+  credentialNote: string;
+  /**
+   * Where the operator generates the API key on the provider side.
+   * Rendered as a link inside the form.
+   */
+  generateUrl: string;
+  /** Label for the generate link ("dev.to API settings"). */
+  generateLabel: string;
+  /** Field label for the secret input ("dev.to API key"). */
+  secretFieldLabel: string;
+}
+
+/**
  * "Nothing to connect." Distribution-only and manual-only platforms.
  * The UI renders a steady-state hint instead of a button.
  */
@@ -129,6 +167,7 @@ export type ConnectIdentityPlan =
   | OAuthConnectPlan
   | ApiKeyVerifyConnectPlan
   | AppPasswordConnectPlan
+  | PersonalApiKeyConnectPlan
   | ManualConnectPlan
   | UnsupportedConnectPlan;
 
@@ -214,6 +253,14 @@ function buildBlueskySignOutUrl(input: ConnectIdentityInput): string {
   return `/api/identity/${encodeURIComponent(input.identityId)}/bluesky/sign-out`;
 }
 
+function buildDevtoConnectUrl(input: ConnectIdentityInput): string {
+  return `/api/identity/${encodeURIComponent(input.identityId)}/devto/connect`;
+}
+
+function buildDevtoSignOutUrl(input: ConnectIdentityInput): string {
+  return `/api/identity/${encodeURIComponent(input.identityId)}/devto/sign-out`;
+}
+
 /**
  * Platforms where Signal currently has a usable per-identity OAuth
  * flow. Today: Reddit only. Future flows (X, LinkedIn with their own
@@ -231,17 +278,22 @@ const OAUTH_PLATFORMS: ReadonlyArray<FounderPlatform> = ["reddit"];
 const APP_PASSWORD_PLATFORMS: ReadonlyArray<FounderPlatform> = ["bluesky"];
 
 /**
+ * Platforms that authenticate identities through a per-identity
+ * personal API key (one key per account, NOT a workspace-level
+ * shared key). The key is verified against /me, then stored
+ * encrypted. Today: dev.to. Hashnode joins in the next phase PR.
+ */
+const PERSONAL_API_KEY_PLATFORMS: ReadonlyArray<FounderPlatform> = ["devto"];
+
+/**
  * Platforms that authenticate identities through a workspace-level
- * API credential + a handle resolve step. These produce
- * `api_key_verify` plans. The verify route is a stub for these; the
- * actual provider verifiers ship per-platform in follow-up PRs.
- *
- * Bluesky was previously in this list but moved to `app_password`
- * because workspace-level API-key semantics don't apply (each
- * Bluesky identity needs its own app password).
+ * API credential + a per-identity verify step (e.g. a bot token +
+ * per-channel registration). These produce `api_key_verify` plans.
+ * Today: Telegram (Hashnode + dev.to moved out to personal_api_key
+ * because each identity has its own key, not a workspace-shared
+ * one).
  */
 const API_KEY_VERIFY_PLATFORMS: ReadonlyArray<FounderPlatform> = [
-  "devto",
   "hashnode",
   "telegram",
 ];
@@ -263,8 +315,18 @@ export function isAppPasswordPlatform(platform: FounderPlatform): boolean {
 }
 
 /**
+ * Returns whether a platform uses per-identity personal API key
+ * auth (one key per account, encrypted server-side).
+ */
+export function isPersonalApiKeyPlatform(
+  platform: FounderPlatform,
+): boolean {
+  return PERSONAL_API_KEY_PLATFORMS.includes(platform);
+}
+
+/**
  * Returns whether a platform uses workspace-level API credentials
- * with a per-identity handle verify step.
+ * with a per-identity verify step.
  */
 export function isApiKeyVerifyPlatform(platform: FounderPlatform): boolean {
   return API_KEY_VERIFY_PLATFORMS.includes(platform);
@@ -289,6 +351,7 @@ export function shouldShowManageButton(
   return (
     plan.kind === "oauth" ||
     plan.kind === "app_password" ||
+    plan.kind === "personal_api_key" ||
     plan.kind === "api_key_verify" ||
     plan.kind === "manual"
   );
@@ -339,6 +402,27 @@ export function resolveConnectIdentityPlan(
       credentialNote:
         "Use a Bluesky App Password for this exact account, not your main password. " +
         "Create one at bsky.app/settings/app-passwords.",
+    };
+  }
+
+  // Per-identity personal-API-key platforms (today: dev.to). Each
+  // identity has its own API key (one per dev.to account).
+  if (
+    input.publishingMode === "api" &&
+    isPersonalApiKeyPlatform(platform) &&
+    platform === "devto"
+  ) {
+    return {
+      kind: "personal_api_key",
+      platform,
+      connectUrl: buildDevtoConnectUrl(input),
+      signOutUrl: buildDevtoSignOutUrl(input),
+      buttonLabel: "Sign in with dev.to API key",
+      credentialNote:
+        "Use a dev.to API key for this exact account.",
+      generateUrl: "https://dev.to/settings/extensions",
+      generateLabel: "dev.to → Settings → Extensions → DEV API Keys",
+      secretFieldLabel: "dev.to API key",
     };
   }
 
