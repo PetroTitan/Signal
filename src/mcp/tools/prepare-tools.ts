@@ -63,6 +63,9 @@ export async function productsPrepare(
   });
 }
 
+const ACCOUNT_SELECT_COLUMNS =
+  "id, platform, handle, display_name, voice_profile, product_id, status, connection_status, source, review_status, created_at";
+
 export async function accountsPrepare(
   ctx: ToolContext,
   args: AccountsPrepareArgs,
@@ -82,6 +85,68 @@ export async function accountsPrepare(
       });
     }
   }
+
+  const reviewStatus = args.review_status ?? "pending_review";
+
+  // Idempotency — if an identity already exists for this
+  // (workspace, platform, handle) tuple, update it in place instead of
+  // creating a duplicate. Handle is the natural uniqueness key the UI
+  // uses to identify an account; null handle means "the unhandled
+  // identity for that platform" and is also matched.
+  const existingQuery = ctx.db
+    .from("growth_accounts")
+    .select(ACCOUNT_SELECT_COLUMNS)
+    .eq("workspace_id", ctx.workspaceId)
+    .eq("platform", args.platform)
+    .neq("status", "archived");
+  const { data: existing } = await (args.handle
+    ? existingQuery.eq("handle", args.handle)
+    : existingQuery.is("handle", null)
+  ).maybeSingle();
+
+  if (existing) {
+    const existingId = (existing as { id: string }).id;
+    const patch: Record<string, unknown> = {
+      display_name: args.display_name,
+      review_status: reviewStatus,
+    };
+    if (args.voice_profile !== undefined) patch.voice_profile = args.voice_profile;
+    if (args.product_id !== undefined) patch.product_id = args.product_id;
+    const { data: updated, error: updateError } = await ctx.db
+      .from("growth_accounts")
+      .update(patch as never)
+      .eq("workspace_id", ctx.workspaceId)
+      .eq("id", existingId)
+      .select(ACCOUNT_SELECT_COLUMNS)
+      .single();
+    if (updateError || !updated)
+      return failed({
+        tool: "signal.accounts.prepare",
+        summary: updateError?.message ?? "update_failed",
+      });
+    await ctx.db.from("activity_events").insert(
+      {
+        workspace_id: ctx.workspaceId,
+        event_type: "mcp.account_profile_updated",
+        entity_type: "growth_account",
+        entity_id: existingId,
+        title: `MCP updated ${args.platform} account: ${args.display_name}`,
+        description: args.source_note ?? null,
+        source: "mcp_operation",
+        metadata: { operator_token_id: ctx.operatorTokenId },
+      } as never,
+    );
+    return ok({
+      tool: "signal.accounts.prepare",
+      summary:
+        reviewStatus === "confirmed"
+          ? "Updated existing growth account (confirmed)."
+          : "Updated existing growth account (pending_review).",
+      data: { account: updated, idempotent: true },
+      requiresUserApproval: reviewStatus !== "confirmed",
+    });
+  }
+
   const { data, error } = await ctx.db
     .from("growth_accounts")
     .insert(
@@ -92,15 +157,14 @@ export async function accountsPrepare(
         handle: args.handle,
         display_name: args.display_name,
         role: null,
+        voice_profile: args.voice_profile ?? null,
         status: "planned",
         connection_status: "not_connected",
         source: "mcp_operation",
-        review_status: "pending_review",
+        review_status: reviewStatus,
       } as never,
     )
-    .select(
-      "id, platform, handle, display_name, status, connection_status, source, review_status, created_at",
-    )
+    .select(ACCOUNT_SELECT_COLUMNS)
     .single();
   if (error || !data)
     return failed({
@@ -110,7 +174,10 @@ export async function accountsPrepare(
   await ctx.db.from("activity_events").insert(
     {
       workspace_id: ctx.workspaceId,
-      event_type: "mcp.account_profile_create_pending",
+      event_type:
+        reviewStatus === "confirmed"
+          ? "mcp.account_profile_created"
+          : "mcp.account_profile_create_pending",
       entity_type: "growth_account",
       entity_id: (data as { id: string }).id,
       title: `MCP prepared ${args.platform} account: ${args.display_name}`,
@@ -121,9 +188,12 @@ export async function accountsPrepare(
   );
   return ok({
     tool: "signal.accounts.prepare",
-    summary: "Created growth account as pending_review.",
-    data: { account: data },
-    requiresUserApproval: true,
+    summary:
+      reviewStatus === "confirmed"
+        ? "Created growth account (confirmed)."
+        : "Created growth account as pending_review.",
+    data: { account: data, idempotent: false },
+    requiresUserApproval: reviewStatus !== "confirmed",
   });
 }
 

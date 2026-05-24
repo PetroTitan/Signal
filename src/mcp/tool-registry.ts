@@ -182,7 +182,8 @@ export const TOOLS: ToolDefinition[] = [
   },
   {
     name: "signal.accounts.prepare",
-    description: "Create a growth_account with review_status='pending_review'.",
+    description:
+      "Create or update a publishing identity (growth_account) for any platform supported by the founder UI. Accepts platform, display_name, optional handle, product_id, source_note, voice_profile (<=1500 chars), and review_status ('pending_review' default, 'confirmed' for trusted operator-token seeding). Idempotent on (workspace, platform, handle): re-running with the same tuple updates instead of duplicating.",
     requiredScopes: ["accounts:write_pending"],
     riskLevel: "remote_write",
     approvalMode: "approval_required",

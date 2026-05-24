@@ -7,6 +7,11 @@
  * `invalid_arguments` response.
  */
 
+import {
+  FOUNDER_PLATFORMS,
+  type FounderPlatform,
+} from "@/core/publishing/platform-guidance";
+
 type ParseOk<T> = { ok: true; value: T };
 type ParseFail = { ok: false; errors: string[] };
 export type Parse<T> = ParseOk<T> | ParseFail;
@@ -66,18 +71,37 @@ export function parseProductsPrepare(input: unknown): Parse<ProductsPrepareArgs>
   };
 }
 
+// Voice profile must match the UI's textarea limit so MCP-created
+// identities can never carry a longer profile than the operator could
+// type in /accounts.
+export const VOICE_PROFILE_MAX_CHARS = 1500;
+
+// The MCP allowlist is derived from the founder-UI list so the two
+// surfaces can never drift. Adding a platform to the UI automatically
+// makes it valid here.
+export const ACCOUNTS_PREPARE_PLATFORMS: ReadonlyArray<FounderPlatform> =
+  FOUNDER_PLATFORMS;
+
+export type AccountsPrepareReviewHint = "pending_review" | "confirmed";
+
 export interface AccountsPrepareArgs {
-  platform: "reddit" | "x" | "linkedin" | "google";
+  platform: FounderPlatform;
   display_name: string;
   handle?: string | null;
   product_id?: string | null;
   source_note?: string | null;
+  voice_profile?: string | null;
+  // Optional. When omitted, the handler keeps the safe default
+  // (`pending_review`). Operator-driven seeding can pass `confirmed`
+  // to skip the review gate; the handler still requires an
+  // authenticated operator token + the tool's existing approval mode.
+  review_status?: AccountsPrepareReviewHint;
 }
 export function parseAccountsPrepare(input: unknown): Parse<AccountsPrepareArgs> {
   if (!isObject(input)) return { ok: false, errors: ["expected_object"] };
   const errors: string[] = [];
   if (!str(input.platform)) errors.push("platform_required");
-  else if (!["reddit", "x", "linkedin", "google"].includes(input.platform))
+  else if (!ACCOUNTS_PREPARE_PLATFORMS.includes(input.platform as FounderPlatform))
     errors.push("platform_unsupported");
   if (!str(input.display_name) || input.display_name.trim().length === 0)
     errors.push("display_name_required");
@@ -89,15 +113,41 @@ export function parseAccountsPrepare(input: unknown): Parse<AccountsPrepareArgs>
   }
   if (input.source_note !== undefined && input.source_note !== null && !str(input.source_note))
     errors.push("source_note_must_be_string");
+  if (input.voice_profile !== undefined && input.voice_profile !== null) {
+    if (!str(input.voice_profile)) {
+      errors.push("voice_profile_must_be_string");
+    } else if (input.voice_profile.length > VOICE_PROFILE_MAX_CHARS) {
+      errors.push("voice_profile_too_long");
+    }
+  }
+  if (input.review_status !== undefined && input.review_status !== null) {
+    if (!str(input.review_status)) {
+      errors.push("review_status_must_be_string");
+    } else if (
+      input.review_status !== "pending_review" &&
+      input.review_status !== "confirmed"
+    ) {
+      errors.push("review_status_unsupported");
+    }
+  }
   if (errors.length > 0) return { ok: false, errors };
+  const voiceProfileRaw =
+    input.voice_profile === undefined || input.voice_profile === null
+      ? null
+      : String(input.voice_profile).trim();
   return {
     ok: true,
     value: {
-      platform: input.platform as AccountsPrepareArgs["platform"],
+      platform: input.platform as FounderPlatform,
       display_name: (input.display_name as string).trim(),
       handle: input.handle ? String(input.handle).trim() : null,
       product_id: input.product_id ? String(input.product_id) : null,
       source_note: input.source_note ? String(input.source_note).trim() : null,
+      voice_profile:
+        voiceProfileRaw && voiceProfileRaw.length > 0 ? voiceProfileRaw : null,
+      review_status: input.review_status as
+        | AccountsPrepareReviewHint
+        | undefined,
     },
   };
 }
