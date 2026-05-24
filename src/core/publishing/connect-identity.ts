@@ -89,6 +89,12 @@ export interface AppPasswordConnectPlan {
   platform: FounderPlatform;
   resolveUrl: string;
   connectUrl: string;
+  /**
+   * Identity-scoped sign-out endpoint. Hitting this only affects
+   * THIS identity's connection row; other identities on the same
+   * platform are untouched.
+   */
+  signOutUrl: string;
   /** Operator-facing label for the connect button. */
   buttonLabel: string;
   /**
@@ -204,6 +210,10 @@ function buildBlueskyConnectUrl(input: ConnectIdentityInput): string {
   return `/api/identity/${encodeURIComponent(input.identityId)}/bluesky/connect`;
 }
 
+function buildBlueskySignOutUrl(input: ConnectIdentityInput): string {
+  return `/api/identity/${encodeURIComponent(input.identityId)}/bluesky/sign-out`;
+}
+
 /**
  * Platforms where Signal currently has a usable per-identity OAuth
  * flow. Today: Reddit only. Future flows (X, LinkedIn with their own
@@ -261,6 +271,30 @@ export function isApiKeyVerifyPlatform(platform: FounderPlatform): boolean {
 }
 
 /**
+ * UI-side decision: should the identity card render a "Manage"
+ * button next to the state pill?
+ *
+ * - `oauth` / `app_password` / `api_key_verify`: yes — there are
+ *   real account-access actions to perform.
+ * - `manual`: yes — the panel renders a steady explanation so the
+ *   operator sees the same affordance on every card.
+ * - `unsupported` or undefined plan: no — nothing to manage.
+ *
+ * Pure function so the wrapper component stays display-only.
+ */
+export function shouldShowManageButton(
+  plan: ConnectIdentityPlan | undefined,
+): boolean {
+  if (!plan) return false;
+  return (
+    plan.kind === "oauth" ||
+    plan.kind === "app_password" ||
+    plan.kind === "api_key_verify" ||
+    plan.kind === "manual"
+  );
+}
+
+/**
  * Pure deterministic resolver. Picks the right Connect plan for an
  * identity based on platform capability + the platform's auth mode.
  *
@@ -300,6 +334,7 @@ export function resolveConnectIdentityPlan(
       platform,
       resolveUrl: buildResolveUrl(input),
       connectUrl: buildBlueskyConnectUrl(input),
+      signOutUrl: buildBlueskySignOutUrl(input),
       buttonLabel: "Sign in with Bluesky App Password",
       credentialNote:
         "Use a Bluesky App Password for this exact account, not your main password. " +
