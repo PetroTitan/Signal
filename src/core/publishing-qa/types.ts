@@ -98,7 +98,8 @@ export type QaCategory =
   | "topic_fit" // wrong platform for this topic kind
   | "new_account" // warming-account caps violated
   | "link_safety" // too many outbound links for the platform/age
-  | "structure"; // thread on a platform that discourages threads, etc.
+  | "structure" // thread on a platform that discourages threads, etc.
+  | "cross_platform_copypaste"; // same hook/CTA/structure as a sibling-platform draft
 
 export interface QaFinding {
   category: QaCategory;

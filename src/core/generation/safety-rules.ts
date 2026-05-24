@@ -134,7 +134,19 @@ export const FABRICATION_PATTERNS: ReadonlyArray<RegExp> = [
   /\bfeatured\s+(?:in|on)\s+(?:techcrunch|hacker news|product hunt)/i,
 ];
 
-/** Tone instructions handed to the AI provider. */
+/**
+ * Tone instructions handed to the AI provider.
+ *
+ * These are PLATFORM-NEUTRAL safety + honesty constraints. The
+ * earlier version of this list ended with "End with a calm, founder-
+ * shaped CTA — invitation to discuss, ..." — that single line was
+ * biasing every platform's output toward Reddit-style discussion-
+ * CTAs (LinkedIn 'thoughts?', X 'agree?', Bluesky engagement bait).
+ * CTA shape now lives per-platform in
+ * src/core/platform-native/style-profiles.ts (PlatformStyleProfile.
+ * ctaStyle) and is injected by the platform-shape block. The global
+ * tone instructions only cover universal safety + honesty.
+ */
 export const TONE_INSTRUCTIONS: ReadonlyArray<string> = [
   "Write as a real builder sharing operational lessons.",
   "Be calm, specific, technically honest.",
@@ -145,7 +157,10 @@ export const TONE_INSTRUCTIONS: ReadonlyArray<string> = [
   "No legal, medical, or financial claims without a source.",
   "No fake authority — never claim industry-wide leadership or superiority.",
   "No engagement bait — no rage takes, fake controversy, or manipulative hooks.",
-  "End with a calm, founder-shaped CTA — invitation to discuss, request for feedback, or a quiet build-update.",
+  // CTA shape is platform-specific — see the per-platform CTA style
+  // injected by the platform-shape block. Do not default to a
+  // discussion-CTA closer; some platforms (X, Bluesky, Telegram,
+  // Instagram) ship without an explicit CTA most of the time.
 ];
 
 export interface SafetyVerdict {
