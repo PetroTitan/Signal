@@ -202,6 +202,28 @@ export async function generateDraftAction(
     if (result.draft.tags.length > 0) {
       metadata.tags = result.draft.tags;
     }
+    // The platform-native envelope carries the structured fields
+    // operators and the (future) preview surface need — creative
+    // direction, format, warnings, risk level, transformation notes.
+    // No DB migration required: weekly_plan_items.metadata is jsonb.
+    metadata.platform_native_draft = {
+      platform: result.platformNativeDraft.platform,
+      title: result.platformNativeDraft.title,
+      hook: result.platformNativeDraft.hook,
+      cta: result.platformNativeDraft.cta,
+      format: result.platformNativeDraft.format,
+      creative_direction: {
+        media_required: result.platformNativeDraft.creativeDirection.mediaRequired,
+        media_type: result.platformNativeDraft.creativeDirection.mediaType,
+        media_prompt_or_brief:
+          result.platformNativeDraft.creativeDirection.mediaPromptOrBrief,
+        media_risk_notes:
+          result.platformNativeDraft.creativeDirection.mediaRiskNotes,
+      },
+      risk_level: result.platformNativeDraft.riskLevel,
+      warnings: result.platformNativeDraft.warnings,
+      transformation_notes: result.platformNativeDraft.transformationNotes,
+    };
 
     const created = await createPlanItem({
       workspaceId,

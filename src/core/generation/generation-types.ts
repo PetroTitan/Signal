@@ -9,6 +9,7 @@
  */
 
 import type { CanonicalPost } from "@/core/publishing/canonical-post";
+import type { PlatformNativeDraft } from "@/core/platform-native";
 
 export type GenerationTone =
   | "calm_technical"
@@ -80,6 +81,20 @@ export interface GenerationResult {
     | "provider_unavailable"
     | "provider_refused";
   draft: GenerationDraft;
+  /**
+   * Required platform-native envelope. Carries the same body content
+   * as `draft` but adds the structured fields the platform-native
+   * engine produces: hook, format, creativeDirection (REQUIRED
+   * field — mediaRequired + mediaType + mediaPromptOrBrief +
+   * mediaRiskNotes), warnings, riskLevel, transformationNotes.
+   *
+   * Always populated — even on provider_unavailable / provider_refused
+   * paths, so operators see the platform shape and creative direction
+   * regardless of whether an AI body was produced. The body fields
+   * (hook / body / cta) are populated from the seeded / generated
+   * draft text.
+   */
+  platformNativeDraft: PlatformNativeDraft;
   /**
    * Optional similarity warning when the topic looks close to a
    * recently published post. Always advisory — never blocks.
