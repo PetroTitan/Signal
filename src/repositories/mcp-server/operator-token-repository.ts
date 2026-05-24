@@ -21,6 +21,8 @@ export interface OperatorToken {
   expiresAt: string | null;
   revokedAt: string | null;
   createdAt: string;
+  assistantLabel: string | null;
+  renamedAt: string | null;
 }
 
 function toToken(row: McpOperatorTokenRow): OperatorToken {
@@ -36,6 +38,8 @@ function toToken(row: McpOperatorTokenRow): OperatorToken {
     expiresAt: row.expires_at,
     revokedAt: row.revoked_at,
     createdAt: row.created_at,
+    assistantLabel: row.assistant_label,
+    renamedAt: row.renamed_at,
   };
 }
 
@@ -44,6 +48,7 @@ export interface CreateOperatorTokenInput {
   name: string;
   scopes: string[];
   expiresAt: string | null;
+  assistantLabel: string | null;
 }
 
 export interface CreatedOperatorToken {
@@ -71,6 +76,7 @@ export async function createOperatorToken(
     status: "active",
     scopes: input.scopes,
     expires_at: input.expiresAt,
+    assistant_label: input.assistantLabel,
   };
   const { data, error } = await supabase
     .from("mcp_operator_tokens")
@@ -112,6 +118,28 @@ export async function getOperatorTokenById(input: {
     .maybeSingle();
   if (error) throw fromPostgres(error, "Failed to load operator token.");
   if (!data) throw notFound("Operator token");
+  return toToken(data as unknown as McpOperatorTokenRow);
+}
+
+export async function renameOperatorToken(input: {
+  workspaceId: string;
+  tokenId: string;
+  name: string;
+}): Promise<OperatorToken> {
+  const supabase = createSupabaseServerClient();
+  const patch: McpOperatorTokenUpdate = {
+    name: input.name,
+    renamed_at: new Date().toISOString(),
+  };
+  const { data, error } = await supabase
+    .from("mcp_operator_tokens")
+    .update(patch as never)
+    .eq("workspace_id", input.workspaceId)
+    .eq("id", input.tokenId)
+    .select("*")
+    .single();
+  if (error || !data)
+    throw fromPostgres(error, "Failed to rename operator token.");
   return toToken(data as unknown as McpOperatorTokenRow);
 }
 

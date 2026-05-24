@@ -1415,6 +1415,8 @@ export interface McpOperatorTokenRow {
   expires_at: string | null;
   revoked_at: string | null;
   created_at: string;
+  assistant_label: string | null;
+  renamed_at: string | null;
 }
 export interface McpOperatorTokenInsert {
   id?: string;
@@ -1428,6 +1430,7 @@ export interface McpOperatorTokenInsert {
   last_used_at?: string | null;
   expires_at?: string | null;
   revoked_at?: string | null;
+  assistant_label?: string | null;
 }
 export interface McpOperatorTokenUpdate {
   name?: string;
@@ -1436,6 +1439,8 @@ export interface McpOperatorTokenUpdate {
   last_used_at?: string | null;
   expires_at?: string | null;
   revoked_at?: string | null;
+  assistant_label?: string | null;
+  renamed_at?: string | null;
 }
 
 export type McpToolCallStatus =
