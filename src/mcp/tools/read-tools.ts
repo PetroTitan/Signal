@@ -62,7 +62,7 @@ export async function accountsList(ctx: ToolContext): Promise<McpToolResponse> {
   const { data, error } = await ctx.db
     .from("growth_accounts")
     .select(
-      "id, product_id, platform, handle, display_name, role, status, connection_status, source, review_status, created_at, updated_at",
+      "id, product_id, platform, handle, display_name, role, voice_profile, status, connection_status, source, review_status, created_at, updated_at",
     )
     .eq("workspace_id", ctx.workspaceId)
     .order("created_at", { ascending: false })

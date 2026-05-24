@@ -86,8 +86,6 @@ export async function accountsPrepare(
     }
   }
 
-  const reviewStatus = args.review_status ?? "pending_review";
-
   // Idempotency — if an identity already exists for this
   // (workspace, platform, handle) tuple, update it in place instead of
   // creating a duplicate. Handle is the natural uniqueness key the UI
@@ -106,12 +104,16 @@ export async function accountsPrepare(
 
   if (existing) {
     const existingId = (existing as { id: string }).id;
+    // Only patch fields the caller explicitly provided. The parser
+    // preserves `undefined` for absent fields, so this preserves
+    // existing voice_profile / review_status / product_id values when
+    // the caller didn't mean to change them.
     const patch: Record<string, unknown> = {
       display_name: args.display_name,
-      review_status: reviewStatus,
     };
     if (args.voice_profile !== undefined) patch.voice_profile = args.voice_profile;
     if (args.product_id !== undefined) patch.product_id = args.product_id;
+    if (args.review_status !== undefined) patch.review_status = args.review_status;
     const { data: updated, error: updateError } = await ctx.db
       .from("growth_accounts")
       .update(patch as never)
@@ -124,6 +126,10 @@ export async function accountsPrepare(
         tool: "signal.accounts.prepare",
         summary: updateError?.message ?? "update_failed",
       });
+    const effectiveReview =
+      (updated as { review_status?: string }).review_status ??
+      (existing as { review_status?: string }).review_status ??
+      "pending_review";
     await ctx.db.from("activity_events").insert(
       {
         workspace_id: ctx.workspaceId,
@@ -139,22 +145,25 @@ export async function accountsPrepare(
     return ok({
       tool: "signal.accounts.prepare",
       summary:
-        reviewStatus === "confirmed"
+        effectiveReview === "confirmed"
           ? "Updated existing growth account (confirmed)."
           : "Updated existing growth account (pending_review).",
       data: { account: updated, idempotent: true },
-      requiresUserApproval: reviewStatus !== "confirmed",
+      requiresUserApproval: effectiveReview !== "confirmed",
     });
   }
 
+  // Insert path — only here do we default review_status, since this is
+  // a brand-new row with no prior state to preserve.
+  const reviewStatus = args.review_status ?? "pending_review";
   const { data, error } = await ctx.db
     .from("growth_accounts")
     .insert(
       {
         workspace_id: ctx.workspaceId,
-        product_id: args.product_id,
+        product_id: args.product_id ?? null,
         platform: args.platform,
-        handle: args.handle,
+        handle: args.handle ?? null,
         display_name: args.display_name,
         role: null,
         voice_profile: args.voice_profile ?? null,
