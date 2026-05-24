@@ -7,6 +7,7 @@ import {
   generateDraftAction,
   type GenerateDraftResult,
 } from "./_generate-draft-action";
+import { PlatformNativePreview } from "./_platform-native-preview";
 
 const initial: GenerateDraftResult = { ok: false, error: "" };
 
@@ -33,18 +34,17 @@ export function GenerateDraftSheet(props: GenerateDraftSheetProps) {
 
   if (!props.open) return null;
 
-  // Successful generation → close + navigate to /weekly-plan so the
-  // founder lands on the new draft.
-  if (safe.ok) {
-    queueMicrotask(() => {
-      props.onClose();
-      startTransition(() => router.push("/weekly-plan"));
-    });
-  }
-
+  // After a successful generation the sheet flips to a preview mode
+  // that renders the platform-native envelope (creative direction,
+  // warnings, transformation notes). The operator explicitly clicks
+  // "Open in weekly plan" to navigate — no auto-navigate, so the
+  // preview is actually readable. The button below also calls
+  // router.refresh so the new plan item lands on the weekly-plan
+  // page without a hard reload.
   const statusBanner = safe.ok
     ? statusBannerCopy(safe.status, safe.providerUsed)
     : null;
+  const envelope = safe.ok ? safe.platformNativeDraft : null;
 
   return (
     <div
@@ -79,6 +79,34 @@ export function GenerateDraftSheet(props: GenerateDraftSheetProps) {
           </button>
         </div>
 
+        {safe.ok ? (
+          <div className="flex-1 overflow-y-auto px-4 py-4 md:px-6 md:py-5 space-y-4">
+            <div
+              role="status"
+              className="rounded-md bg-emerald-50 text-emerald-800 px-3 py-2 text-xs leading-relaxed"
+            >
+              {statusBanner}
+              {safe.similarityWarning ? (
+                <div className="mt-1 text-amber-800">
+                  {safe.similarityWarning}
+                </div>
+              ) : null}
+            </div>
+
+            {envelope ? (
+              <PlatformNativePreview draft={envelope} />
+            ) : (
+              // Silent fallback for older drafts / non-founder platforms:
+              // surface a calm, operator-facing note pointing them at
+              // the weekly plan to finish writing. No internal field
+              // names; no implication that anything went wrong.
+              <div className="rounded-md border border-ink-200 bg-white p-4 text-xs text-ink-600 leading-relaxed">
+                Draft saved. Open it on the weekly plan to review the body
+                and finish writing.
+              </div>
+            )}
+          </div>
+        ) : (
         <form
           action={formAction}
           className="flex-1 overflow-y-auto px-4 py-4 md:px-6 md:py-5 space-y-4"
@@ -196,19 +224,7 @@ export function GenerateDraftSheet(props: GenerateDraftSheetProps) {
             />
           </label>
 
-          {safe.ok ? (
-            <div
-              role="status"
-              className="rounded-md bg-emerald-50 text-emerald-800 px-3 py-2 text-xs leading-relaxed"
-            >
-              {statusBanner}
-              {safe.similarityWarning ? (
-                <div className="mt-1 text-amber-800">
-                  {safe.similarityWarning}
-                </div>
-              ) : null}
-            </div>
-          ) : safe.error ? (
+          {safe.error ? (
             <div
               role="alert"
               className="rounded-md bg-amber-50 text-amber-800 px-3 py-2 text-xs leading-relaxed"
@@ -217,6 +233,7 @@ export function GenerateDraftSheet(props: GenerateDraftSheetProps) {
             </div>
           ) : null}
         </form>
+        )}
 
         <div
           className="flex items-center justify-between gap-2 px-4 py-3 border-t border-ink-100 shrink-0 bg-white"
@@ -224,11 +241,31 @@ export function GenerateDraftSheet(props: GenerateDraftSheetProps) {
             paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))",
           }}
         >
-          <p className="text-[11px] text-ink-500 leading-snug">
-            Drafts land as <span className="font-medium">draft</span>. You
-            review, edit, schedule, and approve before publishing.
-          </p>
-          <SubmitButton disabled={topic.trim().length === 0} />
+          {safe.ok ? (
+            <>
+              <p className="text-[11px] text-ink-500 leading-snug">
+                Open the draft on the weekly plan to edit and schedule.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  props.onClose();
+                  startTransition(() => router.push("/weekly-plan"));
+                }}
+                className="btn-primary text-sm"
+              >
+                Open in weekly plan
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="text-[11px] text-ink-500 leading-snug">
+                Drafts land as <span className="font-medium">draft</span>.
+                You review, edit, schedule, and approve before publishing.
+              </p>
+              <SubmitButton disabled={topic.trim().length === 0} />
+            </>
+          )}
         </div>
       </div>
     </div>
