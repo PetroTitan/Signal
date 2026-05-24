@@ -2,6 +2,7 @@ import Link from "next/link";
 import {
   FOUNDER_PLATFORMS,
   resolveIdentityPlatformGuidance,
+  type FounderPlatform,
 } from "@/core/publishing/platform-guidance";
 import { readTierOneConfigStatus } from "@/core/publishing/platform-credentials";
 import { isRedditOauthBlocked } from "@/lib/oauth/env";
@@ -17,6 +18,20 @@ import { isRedditOauthBlocked } from "@/lib/oauth/env";
  *
  * Each row reads as "Platform — Mode" with a small status chip on
  * the right.
+ *
+ * Phase 5 hardening: this panel was previously labelling the
+ * workspace-level credential check (env-var presence) as "Connected"
+ * in green. That conflated workspace integration state with identity
+ * authentication state. The panel now distinguishes:
+ *
+ *   - "Workspace ready" — env-var credentials are configured but
+ *      zero identities have authenticated yet. Neutral tone.
+ *   - "n/m connected"   — at least one identity is authenticated.
+ *      Green tone, with the count visible.
+ *   - "Setup needed"    — workspace-level credentials are missing.
+ *   - "Manual"          — platform always publishes manually for
+ *      this workspace (Reddit pre-API approval; X / LinkedIn /
+ *      YouTube / Threads / Instagram distribution; Indie Hackers).
  */
 
 type RowKind = "automated" | "manual_first" | "manual_only" | "not_connected";
@@ -27,71 +42,82 @@ interface PlatformRow {
   mode: string;
   status:
     | { kind: "ready"; detail: string }
+    | { kind: "workspace_ready"; detail: string }
     | { kind: "manual"; detail: string }
     | { kind: "missing"; detail: string };
   rowKind: RowKind;
 }
 
-export function PublishingCapabilitiesPanel() {
+/**
+ * Counts of authenticated identities per platform, sourced from
+ * platform_connections joined with growth_accounts. The panel uses
+ * these to label the green "Connected" pill only when ≥1 identity
+ * is actually authenticated.
+ */
+export interface IdentityAuthCounts {
+  authenticated: number;
+  total: number;
+}
+
+export interface PublishingCapabilitiesPanelProps {
+  /** Per-platform identity auth counts. Missing keys default to 0/0. */
+  identityAuthCounts?: Partial<Record<FounderPlatform, IdentityAuthCounts>>;
+}
+
+function authedDetail(counts: IdentityAuthCounts | undefined): string {
+  const c = counts ?? { authenticated: 0, total: 0 };
+  return `${c.authenticated}/${c.total} connected`;
+}
+
+export function PublishingCapabilitiesPanel({
+  identityAuthCounts,
+}: PublishingCapabilitiesPanelProps = {}) {
   const tier1 = readTierOneConfigStatus();
   const redditBlocked = isRedditOauthBlocked();
+  const counts = identityAuthCounts ?? {};
 
   const rows: PlatformRow[] = FOUNDER_PLATFORMS.map((p) => {
     const meta = resolveIdentityPlatformGuidance(p);
     const label = meta?.label ?? p;
     const short = meta?.short ?? p.slice(0, 2);
 
-    if (p === "devto") {
-      return tier1.devto.configured
-        ? {
-            label,
-            short,
-            mode: "Automated when connected",
-            status: { kind: "ready", detail: "Connected" },
-            rowKind: "automated",
-          }
-        : {
-            label,
-            short,
-            mode: "Automated when connected",
-            status: { kind: "missing", detail: "Not connected" },
-            rowKind: "not_connected",
-          };
-    }
-    if (p === "hashnode") {
-      return tier1.hashnode.configured
-        ? {
-            label,
-            short,
-            mode: "Automated when connected",
-            status: { kind: "ready", detail: "Connected" },
-            rowKind: "automated",
-          }
-        : {
-            label,
-            short,
-            mode: "Automated when connected",
-            status: { kind: "missing", detail: "Not connected" },
-            rowKind: "not_connected",
-          };
-    }
-    if (p === "bluesky") {
-      return tier1.bluesky.configured
-        ? {
-            label,
-            short,
-            mode: "Automated when connected",
-            status: { kind: "ready", detail: "Connected" },
-            rowKind: "automated",
-          }
-        : {
-            label,
-            short,
-            mode: "Automated when connected",
-            status: { kind: "missing", detail: "Not connected" },
-            rowKind: "not_connected",
-          };
-    }
+    // Helper closure: workspace-level configured + per-identity auth
+    // counts → row. "Connected" (green) only fires when at least one
+    // identity is authenticated; workspace-credentials-present-but-
+    // no-identity-yet renders as the neutral "Workspace ready" tone.
+    const apiRow = (configured: boolean): PlatformRow => {
+      if (!configured) {
+        return {
+          label,
+          short,
+          mode: "Automated when connected",
+          status: { kind: "missing", detail: "Setup needed" },
+          rowKind: "not_connected",
+        };
+      }
+      const c = counts[p];
+      const authed = c?.authenticated ?? 0;
+      if (authed > 0) {
+        return {
+          label,
+          short,
+          mode: "Automated when connected",
+          status: { kind: "ready", detail: authedDetail(c) },
+          rowKind: "automated",
+        };
+      }
+      return {
+        label,
+        short,
+        mode: "Automated when connected",
+        status: { kind: "workspace_ready", detail: "Workspace ready · no identity connected" },
+        rowKind: "not_connected",
+      };
+    };
+
+    if (p === "devto") return apiRow(tier1.devto.configured);
+    if (p === "hashnode") return apiRow(tier1.hashnode.configured);
+    if (p === "bluesky") return apiRow(tier1.bluesky.configured);
     if (p === "reddit") {
       return {
         label,
@@ -127,21 +153,36 @@ export function PublishingCapabilitiesPanel() {
     if (p === "telegram") {
       // F5.1 — semi-automated via Telegram Bot API. The bot only
       // posts to channels the founder explicitly configured.
-      return tier1.telegram.configured
-        ? {
-            label,
-            short,
-            mode: "Automated when bot is admin",
-            status: { kind: "ready", detail: "Connected" },
-            rowKind: "automated",
-          }
-        : {
-            label,
-            short,
-            mode: "Automated when bot is admin",
-            status: { kind: "missing", detail: "Not connected" },
-            rowKind: "not_connected",
-          };
+      if (!tier1.telegram.configured) {
+        return {
+          label,
+          short,
+          mode: "Automated when bot is admin",
+          status: { kind: "missing", detail: "Setup needed" },
+          rowKind: "not_connected",
+        };
+      }
+      const c = counts[p];
+      const authed = c?.authenticated ?? 0;
+      if (authed > 0) {
+        return {
+          label,
+          short,
+          mode: "Automated when bot is admin",
+          status: { kind: "ready", detail: authedDetail(c) },
+          rowKind: "automated",
+        };
+      }
+      return {
+        label,
+        short,
+        mode: "Automated when bot is admin",
+        status: {
+          kind: "workspace_ready",
+          detail: "Workspace ready · no channel connected",
+        },
+        rowKind: "not_connected",
+      };
     }
     // indie_hackers
     return {
@@ -199,21 +240,29 @@ function StatusBadge({
   kind,
   detail,
 }: {
-  kind: "ready" | "manual" | "missing";
+  kind: "ready" | "workspace_ready" | "manual" | "missing";
   detail: string;
 }) {
+  // "workspace_ready" is a deliberately neutral tone (signal-blue),
+  // not green. The workspace has the credentials it needs, but no
+  // identity is authenticated yet — this is not the same state as
+  // an identity actively being connected.
   const tone =
     kind === "ready"
       ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-      : kind === "manual"
-        ? "bg-amber-50 text-amber-700 border-amber-200"
-        : "bg-ink-50 text-ink-500 border-ink-200";
+      : kind === "workspace_ready"
+        ? "bg-signal-50 text-signal-700 border-signal-200"
+        : kind === "manual"
+          ? "bg-amber-50 text-amber-700 border-amber-200"
+          : "bg-ink-50 text-ink-500 border-ink-200";
   const dot =
     kind === "ready"
       ? "bg-emerald-500"
-      : kind === "manual"
-        ? "bg-amber-500"
-        : "bg-ink-300";
+      : kind === "workspace_ready"
+        ? "bg-signal-500"
+        : kind === "manual"
+          ? "bg-amber-500"
+          : "bg-ink-300";
   return (
     <span
       className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium shrink-0 ${tone}`}

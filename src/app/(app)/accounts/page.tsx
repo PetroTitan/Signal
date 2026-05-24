@@ -18,7 +18,18 @@ import { VoiceProfileEditor } from "./_voice-profile-editor";
 import { PublishingCapabilitiesPanel } from "./_capabilities-panel";
 import { GenerateDraftButton } from "./_generate-draft-button";
 import { AccountIdentityCard } from "@/components/publishing/account-identity-card";
-import { resolveIdentityPlatformGuidance } from "@/core/publishing/platform-guidance";
+import {
+  resolveIdentityPlatformGuidance,
+  type FounderPlatform,
+} from "@/core/publishing/platform-guidance";
+import {
+  narrowConnectionAuthStatus,
+  resolveIdentityPublishState,
+  toPlatformCapability,
+  type IdentityPublishState,
+} from "@/core/publishing/identity-publish-state";
+import { readTierOneConfigStatus } from "@/core/publishing/platform-credentials";
+import type { IdentityAuthCounts } from "./_capabilities-panel";
 import { readGenerationProviderStatus } from "@/core/generation/provider-status";
 
 export const dynamic = "force-dynamic";
@@ -110,6 +121,78 @@ export default async function AccountsPage() {
     }
   }
 
+  // Phase 5 — per-identity publish-state resolution. The resolver is
+  // the single source of truth for "can Signal publish for this
+  // identity right now?" — it composes platform capability + workspace
+  // integration + identity auth + handle match into one deterministic
+  // verdict.
+  const tier1 = readTierOneConfigStatus();
+  const tier1Configured: Partial<Record<FounderPlatform, boolean>> = {
+    devto: tier1.devto.configured,
+    hashnode: tier1.hashnode.configured,
+    bluesky: tier1.bluesky.configured,
+    telegram: tier1.telegram.configured,
+  };
+
+  const identityPublishStateById = new Map<string, IdentityPublishState>();
+  const identityAuthCounts: Partial<Record<FounderPlatform, IdentityAuthCounts>> = {};
+
+  for (const account of accounts) {
+    const platformKey = account.platform as FounderPlatform;
+    const guidance = resolveIdentityPlatformGuidance(platformKey);
+    const platformCapability = guidance
+      ? toPlatformCapability(guidance)
+      : { publishingMode: "not_implemented" as const };
+
+    const connection = connectionByAccountPlatform.get(
+      `${account.id}|${account.platform}`,
+    );
+
+    const workspaceConfigured = tier1Configured[platformKey];
+    const workspace =
+      workspaceConfigured === undefined
+        ? null
+        : { configured: workspaceConfigured };
+
+    const publishState = resolveIdentityPublishState({
+      identity: {
+        platform: platformKey,
+        workspaceId: account.workspaceId,
+        declaredHandle: account.handle,
+        disabled: account.status === "paused",
+        lifecycleStatus: account.status as
+          | "planned"
+          | "warming"
+          | "active"
+          | "paused"
+          | "setup_needed"
+          | "awaiting_manual_creation"
+          | "archived",
+      },
+      platform: platformCapability,
+      workspace,
+      connection: connection
+        ? {
+            authStatus: narrowConnectionAuthStatus(connection.connectionStatus),
+            platform: connection.platform as FounderPlatform,
+            workspaceId: connection.workspaceId,
+            authenticatedHandle: connection.handle,
+            providerAccountId: null,
+            expiresAt: connection.expiresAt,
+          }
+        : null,
+    });
+    identityPublishStateById.set(account.id, publishState);
+
+    const existing = identityAuthCounts[platformKey] ?? {
+      authenticated: 0,
+      total: 0,
+    };
+    existing.total += 1;
+    if (publishState === "connected") existing.authenticated += 1;
+    identityAuthCounts[platformKey] = existing;
+  }
+
   return (
     <>
       <Topbar
@@ -118,7 +201,7 @@ export default async function AccountsPage() {
       />
 
       <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-3xl space-y-5">
-        <PublishingCapabilitiesPanel />
+        <PublishingCapabilitiesPanel identityAuthCounts={identityAuthCounts} />
 
         {accounts.length === 0 ? (
           <section className="rounded-2xl border border-dashed border-ink-300 bg-ink-50/40 p-8 text-center">
@@ -210,6 +293,7 @@ export default async function AccountsPage() {
                   displayName={a.displayName}
                   handle={c?.handle ?? a.handle}
                   connectionState={c?.connectionStatus ?? "not_connected"}
+                  publishState={identityPublishStateById.get(a.id)}
                   lastPublishedAt={lastPublishByAccount.get(a.id) ?? null}
                   lastCheckedAt={c?.lastCheckedAt ?? null}
                   notes={null}
