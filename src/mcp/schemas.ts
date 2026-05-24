@@ -131,25 +131,37 @@ export function parseAccountsPrepare(input: unknown): Parse<AccountsPrepareArgs>
     }
   }
   if (errors.length > 0) return { ok: false, errors };
-  const voiceProfileRaw =
-    input.voice_profile === undefined || input.voice_profile === null
-      ? null
-      : String(input.voice_profile).trim();
-  return {
-    ok: true,
-    value: {
-      platform: input.platform as FounderPlatform,
-      display_name: (input.display_name as string).trim(),
-      handle: input.handle ? String(input.handle).trim() : null,
-      product_id: input.product_id ? String(input.product_id) : null,
-      source_note: input.source_note ? String(input.source_note).trim() : null,
-      voice_profile:
-        voiceProfileRaw && voiceProfileRaw.length > 0 ? voiceProfileRaw : null,
-      review_status: input.review_status as
-        | AccountsPrepareReviewHint
-        | undefined,
-    },
+  // The parser preserves `undefined` for absent optional fields and
+  // converts explicit-null/explicit-empty inputs to `null`. The
+  // handler relies on this distinction: undefined means "leave
+  // existing value untouched on UPDATE", null means "clear it".
+  const value: AccountsPrepareArgs = {
+    platform: input.platform as FounderPlatform,
+    display_name: (input.display_name as string).trim(),
   };
+  if (input.handle !== undefined) {
+    value.handle = input.handle === null ? null : String(input.handle).trim();
+  }
+  if (input.product_id !== undefined) {
+    value.product_id =
+      input.product_id === null ? null : String(input.product_id);
+  }
+  if (input.source_note !== undefined) {
+    value.source_note =
+      input.source_note === null ? null : String(input.source_note).trim();
+  }
+  if (input.voice_profile !== undefined) {
+    if (input.voice_profile === null) {
+      value.voice_profile = null;
+    } else {
+      const trimmed = String(input.voice_profile).trim();
+      value.voice_profile = trimmed.length > 0 ? trimmed : null;
+    }
+  }
+  if (input.review_status !== undefined) {
+    value.review_status = input.review_status as AccountsPrepareReviewHint;
+  }
+  return { ok: true, value };
 }
 
 export interface WeeklyPlanPrepareItemArgs {

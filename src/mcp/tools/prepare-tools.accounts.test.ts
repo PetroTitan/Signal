@@ -263,6 +263,74 @@ describe("accountsPrepare — idempotency", () => {
   });
 });
 
+describe("accountsPrepare — UPDATE preserves omitted fields", () => {
+  it("preserves voice_profile when re-called without one", async () => {
+    const store = emptyStore();
+    const ctx = makeCtx(store);
+    await accountsPrepare(ctx, {
+      platform: "x",
+      display_name: "WebmasterID — X",
+      handle: "@Webmasteridcore",
+      voice_profile: "calm, technical, operational",
+      review_status: "confirmed",
+    });
+    // Caller only changes display_name. voice_profile and
+    // review_status must not be touched.
+    await accountsPrepare(ctx, {
+      platform: "x",
+      display_name: "WebmasterID — X (renamed)",
+      handle: "@Webmasteridcore",
+    });
+    expect(store.growth_accounts).toHaveLength(1);
+    expect(store.growth_accounts[0].voice_profile).toBe(
+      "calm, technical, operational",
+    );
+    expect(store.growth_accounts[0].review_status).toBe("confirmed");
+    expect(store.growth_accounts[0].display_name).toBe(
+      "WebmasterID — X (renamed)",
+    );
+  });
+
+  it("clears voice_profile only when caller passes explicit null", async () => {
+    const store = emptyStore();
+    const ctx = makeCtx(store);
+    await accountsPrepare(ctx, {
+      platform: "reddit",
+      display_name: "WebmasterID — Reddit",
+      handle: "u/Webmasterid-core",
+      voice_profile: "discussion-first",
+    });
+    await accountsPrepare(ctx, {
+      platform: "reddit",
+      display_name: "WebmasterID — Reddit",
+      handle: "u/Webmasterid-core",
+      voice_profile: null,
+    });
+    expect(store.growth_accounts[0].voice_profile).toBeNull();
+  });
+
+  it("preserves confirmed review_status across no-op updates", async () => {
+    const store = emptyStore();
+    const ctx = makeCtx(store);
+    await accountsPrepare(ctx, {
+      platform: "bluesky",
+      display_name: "WebmasterID — Bluesky",
+      handle: "@webmasterid.bsky.social",
+      voice_profile: "slower, calmer",
+      review_status: "confirmed",
+    });
+    const second = await accountsPrepare(ctx, {
+      platform: "bluesky",
+      display_name: "WebmasterID — Bluesky",
+      handle: "@webmasterid.bsky.social",
+    });
+    expect(store.growth_accounts[0].review_status).toBe("confirmed");
+    // requires_user_approval reflects effective review state, even
+    // though caller didn't pass it.
+    expect(second.ok && second.requires_user_approval).toBe(false);
+  });
+});
+
 describe("accountsPrepare — activity log", () => {
   it("records mcp.account_profile_create_pending when pending_review", async () => {
     const store = emptyStore();
