@@ -57,8 +57,27 @@ export type HashnodeVerifierErrorCode =
   | "handle_invalid"
   | "credentials_missing"
   | "auth_failed"
+  | "api_unavailable"
   | "provider_error"
   | "network_error";
+
+/**
+ * Operator-facing copy for the api_unavailable case.
+ *
+ * Hashnode retired free GraphQL API access on 2026-05-13 (see
+ * https://hashnode.com/announcements/graphql-api). Requests to
+ * gql.hashnode.com now return a Cloudflare-level 301 redirect to
+ * the announcement HTML page BEFORE the Authorization header is
+ * ever evaluated. The verifier surfaces this case with the
+ * operator-friendly copy below so they understand the request never
+ * reached Hashnode's auth layer — claiming "invalid token" would
+ * be wrong and would send operators chasing a phantom credential
+ * problem.
+ */
+const API_UNAVAILABLE_MESSAGE =
+  "Hashnode GraphQL API access is not available for this account. " +
+  "Hashnode now requires API access to be enabled for the publication/account. " +
+  "Use manual publishing for now, or enable the required Hashnode plan and try again.";
 
 export interface HashnodeVerifierConnected {
   outcome: "connected";
@@ -129,6 +148,11 @@ export async function verifyHashnodeIdentity(
   const doFetch = input.fetchImpl ?? fetch;
 
   // ── POST the GraphQL query ─────────────────────────────────────
+  // We pass `redirect: "manual"` so the verifier observes Hashnode's
+  // 301 directly rather than transparently following it to the
+  // HTML announcement page. Without this, the response we'd actually
+  // inspect would be a 200 of `text/html`, and operators would see
+  // "unexpected response shape" instead of the real cause.
   let body: Record<string, unknown>;
   try {
     const res = await doFetch(HASHNODE_GQL_ENDPOINT, {
@@ -140,7 +164,30 @@ export async function verifyHashnodeIdentity(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ query: ME_QUERY }),
+      redirect: "manual",
     });
+
+    // ── api_unavailable: Hashnode redirected the request ────────
+    // 301/302/307/308 against the GraphQL endpoint means Hashnode
+    // routed us away from the API resolver. The redirect happens
+    // at the edge before any auth check, so we MUST NOT call this
+    // auth_failed — the token was never even inspected.
+    if (
+      res.status === 301 ||
+      res.status === 302 ||
+      res.status === 307 ||
+      res.status === 308 ||
+      // `redirect: "manual"` surfaces some implementations as
+      // `res.type === "opaqueredirect"` with status 0. Treat that
+      // the same way.
+      res.type === "opaqueredirect"
+    ) {
+      return {
+        outcome: "error",
+        code: "api_unavailable",
+        message: API_UNAVAILABLE_MESSAGE,
+      };
+    }
 
     if (res.status === 401 || res.status === 403) {
       // Hashnode returns 401/403 for malformed auth headers; the
@@ -160,7 +207,34 @@ export async function verifyHashnodeIdentity(
         message: `Hashnode GraphQL failed: HTTP ${res.status}.`,
       };
     }
-    body = (await safeJson(res)) ?? {};
+
+    // ── api_unavailable: HTML body instead of JSON ──────────────
+    // Defensive: if Cloudflare ever changes the redirect to a 200
+    // serving the announcement HTML directly (which is exactly the
+    // shape that produced the original "unexpected shape" error),
+    // we should still recognise it as the paywall scenario, not as
+    // a generic shape problem.
+    const contentType = (res.headers.get("content-type") ?? "").toLowerCase();
+    if (contentType.includes("text/html")) {
+      return {
+        outcome: "error",
+        code: "api_unavailable",
+        message: API_UNAVAILABLE_MESSAGE,
+      };
+    }
+
+    const parsed = await safeJson(res);
+    if (parsed === null) {
+      // Body was not JSON and not flagged as HTML by content-type.
+      // The endpoint is misbehaving — surface that honestly without
+      // claiming auth/shape problems.
+      return {
+        outcome: "error",
+        code: "api_unavailable",
+        message: API_UNAVAILABLE_MESSAGE,
+      };
+    }
+    body = parsed;
   } catch (err) {
     return {
       outcome: "error",
