@@ -73,3 +73,23 @@ export type {
   DevtoVerifyPlan,
   DevtoVerifyPlanInput,
 } from "./devto-persistence";
+
+// Hashnode personal-API-key verifier (GraphQL)
+export {
+  verifyHashnodeIdentity,
+  normalizeHashnodeUsername,
+  isValidHashnodeUsername,
+} from "./hashnode";
+export type {
+  HashnodeVerifierInput,
+  HashnodeVerifierResult,
+  HashnodeVerifierConnected,
+  HashnodeVerifierMismatched,
+  HashnodeVerifierError,
+  HashnodeVerifierErrorCode,
+} from "./hashnode";
+export { buildHashnodeVerifyPlan } from "./hashnode-persistence";
+export type {
+  HashnodeVerifyPlan,
+  HashnodeVerifyPlanInput,
+} from "./hashnode-persistence";

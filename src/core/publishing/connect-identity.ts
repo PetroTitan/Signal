@@ -261,6 +261,14 @@ function buildDevtoSignOutUrl(input: ConnectIdentityInput): string {
   return `/api/identity/${encodeURIComponent(input.identityId)}/devto/sign-out`;
 }
 
+function buildHashnodeConnectUrl(input: ConnectIdentityInput): string {
+  return `/api/identity/${encodeURIComponent(input.identityId)}/hashnode/connect`;
+}
+
+function buildHashnodeSignOutUrl(input: ConnectIdentityInput): string {
+  return `/api/identity/${encodeURIComponent(input.identityId)}/hashnode/sign-out`;
+}
+
 /**
  * Platforms where Signal currently has a usable per-identity OAuth
  * flow. Today: Reddit only. Future flows (X, LinkedIn with their own
@@ -280,10 +288,13 @@ const APP_PASSWORD_PLATFORMS: ReadonlyArray<FounderPlatform> = ["bluesky"];
 /**
  * Platforms that authenticate identities through a per-identity
  * personal API key (one key per account, NOT a workspace-level
- * shared key). The key is verified against /me, then stored
- * encrypted. Today: dev.to. Hashnode joins in the next phase PR.
+ * shared key). The key is verified against the provider's "who am I"
+ * endpoint and stored encrypted. Today: dev.to + Hashnode.
  */
-const PERSONAL_API_KEY_PLATFORMS: ReadonlyArray<FounderPlatform> = ["devto"];
+const PERSONAL_API_KEY_PLATFORMS: ReadonlyArray<FounderPlatform> = [
+  "devto",
+  "hashnode",
+];
 
 /**
  * Platforms that authenticate identities through a workspace-level
@@ -294,7 +305,6 @@ const PERSONAL_API_KEY_PLATFORMS: ReadonlyArray<FounderPlatform> = ["devto"];
  * one).
  */
 const API_KEY_VERIFY_PLATFORMS: ReadonlyArray<FounderPlatform> = [
-  "hashnode",
   "telegram",
 ];
 
@@ -405,25 +415,40 @@ export function resolveConnectIdentityPlan(
     };
   }
 
-  // Per-identity personal-API-key platforms (today: dev.to). Each
-  // identity has its own API key (one per dev.to account).
+  // Per-identity personal-API-key platforms. Each identity has its
+  // own API key. Per-platform config (URLs, button labels, generate
+  // link) lives in the branch so the operator copy is platform-
+  // specific.
   if (
     input.publishingMode === "api" &&
-    isPersonalApiKeyPlatform(platform) &&
-    platform === "devto"
+    isPersonalApiKeyPlatform(platform)
   ) {
-    return {
-      kind: "personal_api_key",
-      platform,
-      connectUrl: buildDevtoConnectUrl(input),
-      signOutUrl: buildDevtoSignOutUrl(input),
-      buttonLabel: "Sign in with dev.to API key",
-      credentialNote:
-        "Use a dev.to API key for this exact account.",
-      generateUrl: "https://dev.to/settings/extensions",
-      generateLabel: "dev.to → Settings → Extensions → DEV API Keys",
-      secretFieldLabel: "dev.to API key",
-    };
+    if (platform === "devto") {
+      return {
+        kind: "personal_api_key",
+        platform,
+        connectUrl: buildDevtoConnectUrl(input),
+        signOutUrl: buildDevtoSignOutUrl(input),
+        buttonLabel: "Sign in with dev.to API key",
+        credentialNote: "Use a dev.to API key for this exact account.",
+        generateUrl: "https://dev.to/settings/extensions",
+        generateLabel: "dev.to → Settings → Extensions → DEV API Keys",
+        secretFieldLabel: "dev.to API key",
+      };
+    }
+    if (platform === "hashnode") {
+      return {
+        kind: "personal_api_key",
+        platform,
+        connectUrl: buildHashnodeConnectUrl(input),
+        signOutUrl: buildHashnodeSignOutUrl(input),
+        buttonLabel: "Sign in with Hashnode API key",
+        credentialNote: "Use a Hashnode API key for this exact account.",
+        generateUrl: "https://hashnode.com/settings/developer",
+        generateLabel: "Hashnode → Settings → Developer → Generate Token",
+        secretFieldLabel: "Hashnode API key",
+      };
+    }
   }
 
   // Workspace API-key platforms with per-identity verify.
