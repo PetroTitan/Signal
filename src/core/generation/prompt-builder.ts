@@ -18,7 +18,23 @@
  */
 
 import { TONE_INSTRUCTIONS, describeSafetyRules } from "./safety-rules";
+import { buildPlatformShape } from "@/core/platform-native/prompt-shape";
+import type { FounderPlatform } from "@/core/publishing/platform-guidance";
 import type { GenerationPromptContext } from "./generation-types";
+
+const NATIVE_ENGINE_PLATFORMS: ReadonlySet<FounderPlatform> = new Set([
+  "reddit",
+  "x",
+  "bluesky",
+  "linkedin",
+  "threads",
+  "instagram",
+  "telegram",
+  "devto",
+  "hashnode",
+  "youtube",
+  "indie_hackers",
+]);
 
 export interface GenerationPrompt {
   system: string;
@@ -36,8 +52,14 @@ export function buildGenerationPrompt(
     "Voice profile (the operator's own words — match this voice closely):",
     context.voiceProfile?.trim() || "(no explicit voice profile — write as a calm, technical founder sharing a build update)",
     "",
-    "Platform shape:",
-    platformShape(context.platform),
+    // Platform shape: prefer the typed platform-native engine when
+    // the target platform is one of the supported founder platforms;
+    // fall back to the legacy switch for anything outside the set
+    // (preserves backward compatibility with callers that pass
+    // experimental platform strings).
+    NATIVE_ENGINE_PLATFORMS.has(context.platform as FounderPlatform)
+      ? buildPlatformShape(context.platform as FounderPlatform)
+      : `Platform shape:\n${platformShape(context.platform)}`,
     context.platformVoiceHint ? `Platform note: ${context.platformVoiceHint}` : "",
     "",
     "Tone rules:",
