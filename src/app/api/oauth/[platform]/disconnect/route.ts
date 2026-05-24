@@ -103,6 +103,13 @@ export async function POST(
         : revokeOutcome.detail === "not_attempted"
           ? "Operator disconnected; provider revoke not attempted (no token to revoke)."
           : `Operator disconnected; provider revoke failed (${revokeOutcome.httpStatus}).`,
+      // An explicit operator disconnect is a clean reset for the
+      // identity. Drop the handle_mismatch marker (if any) so the
+      // resolver returns to clean `pending_auth` on the next render
+      // instead of leaving the identity stuck in 'mismatched'. The
+      // other metadata (token_storage, diagnostic fields) is
+      // preserved.
+      clearMetadataKeys: ["handle_mismatch"],
     });
 
     try {
