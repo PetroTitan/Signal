@@ -153,7 +153,15 @@ describe("resolveConnectIdentityPlan — personal-API-key platforms", () => {
     expect(planA.connectUrl).not.toBe(planB.connectUrl);
   });
 
-  it("returns a personal_api_key plan for Hashnode (NOT api_key_verify)", () => {
+  // NOTE: as of fix/hashnode-manual-mode the platform-guidance file
+  // sets Hashnode's publishingMode to "manual", so in production
+  // these "Hashnode + api mode" tests no longer match the deployed
+  // flow. They stay in place because the verifier and route code
+  // remain in the tree — flipping platform-guidance back to "api"
+  // is the one-line re-enable, and these tests then immediately
+  // start describing live behavior again. The Hashnode-as-manual
+  // production behavior is covered in the dedicated suite below.
+  it("(re-enable contract) when publishingMode='api', Hashnode resolves to personal_api_key", () => {
     const plan = resolveConnectIdentityPlan(
       input({
         platform: "hashnode",
@@ -177,7 +185,7 @@ describe("resolveConnectIdentityPlan — personal-API-key platforms", () => {
     );
   });
 
-  it("Hashnode signOutUrl is identity-scoped — two Hashnode identities have distinct URLs", () => {
+  it("(re-enable contract) Hashnode signOutUrl is identity-scoped under publishingMode='api'", () => {
     const planA = resolveConnectIdentityPlan(
       input({
         identityId: "id-A",
@@ -198,7 +206,7 @@ describe("resolveConnectIdentityPlan — personal-API-key platforms", () => {
     expect(planA.connectUrl).not.toBe(planB.connectUrl);
   });
 
-  it("dev.to and Hashnode plans don't collide — distinct connect/sign-out URLs per platform", () => {
+  it("(re-enable contract) dev.to and Hashnode plans don't collide under publishingMode='api'", () => {
     const devto = resolveConnectIdentityPlan(
       input({ platform: "devto", publishingMode: "api" }),
     );
@@ -306,6 +314,92 @@ describe("resolveConnectIdentityPlan — manual / distribution platforms", () =>
     expect(plan.kind).toBe("manual");
     if (plan.kind !== "manual") return;
     expect(plan.hint.toLowerCase()).toContain("manual publish");
+  });
+
+  // ─────────────────────────────────────────────────────────────────
+  // Hashnode-as-manual (production behavior after fix/hashnode-manual-mode).
+  // Platform-guidance sets publishingMode='manual' until Pro API
+  // access is verified. The resolver carries Hashnode-specific copy
+  // so operators understand this is a deliberate hold, not a
+  // missing feature.
+  // ─────────────────────────────────────────────────────────────────
+
+  it("Hashnode (publishingMode='manual') resolves to a Hashnode-specific manual plan", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "hashnode",
+        publishingMode: "manual",
+        distributionOnly: false,
+        oauthAvailable: false,
+      }),
+    );
+    expect(plan.kind).toBe("manual");
+    if (plan.kind !== "manual") return;
+    // Hint names the platform — operators shouldn't have to read
+    // "you publish on the platform" for a publishing tool.
+    expect(plan.hint).toBe(
+      "Manual publish — Signal prepares the draft; you publish it on Hashnode.",
+    );
+    // Note carries the why — this is a temporary hold, not a stance.
+    expect(plan.note).toBe(
+      "Hashnode API publishing requires enabled Hashnode API access. Until verified, this workspace uses manual publishing.",
+    );
+  });
+
+  it("Hashnode manual hint/note do not leak internal terms", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "hashnode",
+        publishingMode: "manual",
+        oauthAvailable: false,
+      }),
+    );
+    if (plan.kind !== "manual") throw new Error("expected manual");
+    const combined = `${plan.hint} ${plan.note ?? ""}`.toLowerCase();
+    for (const internal of [
+      "api_unavailable",
+      "personal_api_key",
+      "api_key_verify",
+      "graphql",
+      "platform_connections",
+      "connection row",
+    ]) {
+      expect(combined).not.toContain(internal);
+    }
+  });
+
+  it("Hashnode manual plan does NOT carry an API-key sign-in surface (no verify/connect/signOut URLs)", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "hashnode",
+        publishingMode: "manual",
+        oauthAvailable: false,
+      }),
+    );
+    expect(plan.kind).toBe("manual");
+    // The manual plan shape intentionally has no auth fields. We
+    // assert that statically by narrowing — if the resolver ever
+    // changes shape and adds an auth surface, this test fails to
+    // compile or fails the equality check.
+    if (plan.kind !== "manual") throw new Error("expected manual");
+    expect("connectUrl" in plan).toBe(false);
+    expect("signOutUrl" in plan).toBe(false);
+    expect("verifyUrl" in plan).toBe(false);
+    expect("authorizeUrl" in plan).toBe(false);
+  });
+
+  it("Distribution-only platforms still get their distribution copy, not the Hashnode-style hold copy", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "x",
+        publishingMode: "manual",
+        distributionOnly: true,
+        oauthAvailable: false,
+      }),
+    );
+    if (plan.kind !== "manual") throw new Error("expected manual");
+    expect(plan.hint.toLowerCase()).toContain("manual distribution");
+    expect(plan.note).toBeUndefined();
   });
 });
 

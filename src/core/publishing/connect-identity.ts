@@ -163,6 +163,14 @@ export interface ManualConnectPlan {
   platform: FounderPlatform;
   /** One-line hint to render in place of a Connect button. */
   hint: string;
+  /**
+   * Optional second paragraph for platforms whose manual mode is a
+   * deliberate hold rather than a permanent stance. Today: Hashnode,
+   * while we wait for verified Pro/API access. The UI renders this
+   * below `hint` in a muted-italic style so the steady-state copy
+   * still leads.
+   */
+  note?: string;
 }
 
 /**
@@ -506,6 +514,23 @@ export function resolveConnectIdentityPlan(
   }
 
   // Distribution-only or manual-only — nothing to authenticate.
+  //
+  // Hashnode is a deliberate hold: the verifier + connect route stay
+  // in the tree but the platform guidance sets publishingMode='manual'
+  // because Hashnode retired free GraphQL API access on 2026-05-13.
+  // We surface a Hashnode-specific note explaining the hold so
+  // operators don't think Signal is unaware of the platform — and so
+  // flipping back to API mode (when a Pro path is verified) is one
+  // line in platform-guidance.ts with no further UI work.
+  if (platform === "hashnode") {
+    return {
+      kind: "manual",
+      platform,
+      hint: "Manual publish — Signal prepares the draft; you publish it on Hashnode.",
+      note: "Hashnode API publishing requires enabled Hashnode API access. Until verified, this workspace uses manual publishing.",
+    };
+  }
+
   return {
     kind: "manual",
     platform,

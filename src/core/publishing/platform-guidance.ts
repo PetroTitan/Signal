@@ -69,7 +69,15 @@ const GUIDANCE: Record<FounderPlatform, FounderPlatformGuidance> = {
     short: "Hn",
     voiceHint:
       "Technical publishing with stronger engineering audiences. Cover image and series help discoverability.",
-    publishingMode: "api",
+    // Temporarily manual: Hashnode retired free GraphQL API access on
+    // 2026-05-13 and publication-level API access must be enabled on
+    // a paid plan. Until we've verified a working Pro response, the
+    // /accounts Manage panel renders a manual-publish hint instead of
+    // the API-key sign-in form. The verifier code and the
+    // hashnode/connect route stay in the tree so re-enabling is a
+    // one-line flip back to "api" — see also the matching note in
+    // connect-identity.ts.
+    publishingMode: "manual",
   },
   bluesky: {
     label: "Bluesky",
