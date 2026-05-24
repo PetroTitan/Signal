@@ -12,6 +12,11 @@
  */
 
 import type { PlatformConnectionConnectionStatus } from "@/core/platform-oauth";
+import {
+  IDENTITY_PUBLISH_STATE_LABELS,
+  IDENTITY_PUBLISH_STATE_TONES,
+  type IdentityPublishState,
+} from "@/core/publishing/identity-publish-state";
 
 export type AccountConnectionState =
   | "not_connected"
@@ -73,11 +78,47 @@ export function ConnectionStatePill({
   );
 }
 
+/**
+ * Phase 5 hardening — pill driven by the deterministic identity
+ * publish-state resolver. Preferred over `ConnectionStatePill` when
+ * available; the resolver guarantees that "Connected" only renders
+ * for an identity with a valid + handle-matched token.
+ */
+export function IdentityPublishStatePill({
+  state,
+}: {
+  state: IdentityPublishState;
+}) {
+  const tone = IDENTITY_PUBLISH_STATE_TONES[state];
+  const label = IDENTITY_PUBLISH_STATE_LABELS[state];
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium ${TONE[tone]}`}
+    >
+      <span
+        className={`w-1.5 h-1.5 rounded-full ${TONE_DOT[tone]}`}
+        aria-hidden
+      />
+      {label}
+    </span>
+  );
+}
+
 export interface AccountIdentityCardProps {
   platform: "reddit" | "x" | "linkedin" | string;
   displayName: string | null;
   handle: string | null;
+  /**
+   * Legacy raw connection status from the DB. Used as fallback when
+   * `publishState` is not provided.
+   */
   connectionState: AccountConnectionState | PlatformConnectionConnectionStatus;
+  /**
+   * Phase 5 — resolved identity publish state from
+   * `resolveIdentityPublishState(...)`. When provided, drives the
+   * status pill instead of the raw `connectionState`.
+   */
+  publishState?: IdentityPublishState;
   lastPublishedAt: string | null;
   lastCheckedAt: string | null;
   /** Operator notes — kept calm; max ~1 short line. */
@@ -143,7 +184,11 @@ export function AccountIdentityCard(props: AccountIdentityCardProps) {
                   ) : null}
                 </div>
               </div>
-              <ConnectionStatePill state={props.connectionState} />
+              {props.publishState ? (
+                <IdentityPublishStatePill state={props.publishState} />
+              ) : (
+                <ConnectionStatePill state={props.connectionState} />
+              )}
             </div>
 
             {props.helperNote ? (
