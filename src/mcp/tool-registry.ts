@@ -11,6 +11,10 @@ import {
   parseExecutionManualPublishPreview,
   parseExecutionPublishPreview,
   parseExecutionRecordManualPublish,
+  parseGenerateDraft,
+  parseGenerateMultiweekPlan,
+  parseGenerateWeeklyPlan,
+  parseIdentitiesUpdate,
   parseImportsPrepareMapping,
   parseProductsPrepare,
   parseReportsSubmit,
@@ -38,6 +42,12 @@ import {
   weeklyPlanAttachCreative,
   weeklyPlanPrepareItem,
 } from "./tools/prepare-tools";
+import {
+  generateDraftTool,
+  generateMultiweekPlanTool,
+  generateWeeklyPlanTool,
+  identitiesUpdateTool,
+} from "./tools/planning-tools";
 import {
   executionAuthorizeItem,
   executionDryRun,
@@ -323,6 +333,95 @@ export const TOOLS: ToolDefinition[] = [
     touchesProduction: false,
     parseArgs: parseExecutionAuthorizeItem,
     handler: wrap(executionAuthorizeItem),
+  },
+  // Planning / draft generation tools -----------------------------------
+  //
+  // These let Claude prepare drafts and weekly/multi-week plans through
+  // the same internal services the compose UI uses. Every output lands
+  // in `draft` state — these tools never publish, never schedule live
+  // posts, never bypass operator approval.
+  {
+    name: "signal.generate_draft",
+    description:
+      "Generate ONE platform-native draft for a publishing identity and persist it as a draft weekly_plan_items row. Calls the same generateDraft() the compose UI uses; metadata.platform_native_draft is populated with creativeDirection, warnings, riskLevel, and transformationNotes. Never publishes — operator approves via /weekly-plan?focus=<id>.",
+    requiredScopes: ["accounts:read", "weekly_plans:write_pending"],
+    riskLevel: "remote_write",
+    approvalMode: "approval_required",
+    writesDatabase: true,
+    touchesProduction: false,
+    parseArgs: parseGenerateDraft,
+    handler: wrap(generateDraftTool),
+  },
+  {
+    name: "signal.generate_weekly_plan",
+    description:
+      "Generate a full weekly plan: fan out a list of canonical topics across a list of identities, producing one platform-native draft per (identity, topic) pair. Capped at 12 items per call. Optional max_posts_per_platform throttles per-platform fan-out. Never publishes — every item lands as draft.",
+    requiredScopes: [
+      "products:read",
+      "accounts:read",
+      "weekly_plans:write_pending",
+    ],
+    riskLevel: "remote_write",
+    approvalMode: "approval_required",
+    writesDatabase: true,
+    touchesProduction: false,
+    parseArgs: parseGenerateWeeklyPlan,
+    handler: wrap(generateWeeklyPlanTool),
+  },
+  {
+    name: "signal.generate_multiweek_plan",
+    description:
+      "Generate several weeks of platform-native drafts in advance. Caps: max 4 weeks per call, max 40 total items per call. Requires approval_mode='operator_review_required' explicitly — the tool refuses any other value. Every item lands as draft; operator reviews each weekly plan.",
+    requiredScopes: [
+      "products:read",
+      "accounts:read",
+      "weekly_plans:write_pending",
+    ],
+    riskLevel: "remote_write",
+    approvalMode: "approval_required",
+    writesDatabase: true,
+    touchesProduction: false,
+    parseArgs: parseGenerateMultiweekPlan,
+    handler: wrap(generateMultiweekPlanTool),
+  },
+  {
+    name: "signal.identities.update",
+    description:
+      "Update an existing publishing identity's display_name, handle, product_id, or voice_profile. Does NOT touch credentials, tokens, or connection state. At least one updatable field must be provided.",
+    requiredScopes: ["accounts:write_pending"],
+    riskLevel: "remote_write",
+    approvalMode: "no_approval_needed",
+    writesDatabase: true,
+    touchesProduction: false,
+    parseArgs: parseIdentitiesUpdate,
+    handler: wrap(identitiesUpdateTool),
+  },
+  // Operator-facing aliases for product / identity creation. They
+  // delegate to the existing prepare-tool handlers; same scopes, same
+  // behavior, friendlier names for Claude-driven flows.
+  {
+    name: "signal.products.create",
+    description:
+      "Alias of signal.products.prepare — create a product with review_status='pending_review'. Same behavior, friendlier name for planning-tool flows.",
+    requiredScopes: ["products:write_pending"],
+    riskLevel: "remote_write",
+    approvalMode: "approval_required",
+    writesDatabase: true,
+    touchesProduction: false,
+    parseArgs: parseProductsPrepare,
+    handler: wrap(productsPrepare),
+  },
+  {
+    name: "signal.identities.create",
+    description:
+      "Alias of signal.accounts.prepare — create a publishing identity. Idempotent on (workspace, platform, handle). Same behavior, friendlier name for planning-tool flows.",
+    requiredScopes: ["accounts:write_pending"],
+    riskLevel: "remote_write",
+    approvalMode: "approval_required",
+    writesDatabase: true,
+    touchesProduction: false,
+    parseArgs: parseAccountsPrepare,
+    handler: wrap(accountsPrepare),
   },
 ];
 

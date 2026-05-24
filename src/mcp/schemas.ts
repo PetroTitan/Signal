@@ -588,3 +588,394 @@ export function parseExecutionAuthorizeItem(
     return { ok: false, errors: ["execution_item_id_invalid"] };
   return { ok: true, value: { execution_item_id: input.execution_item_id } };
 }
+
+// =====================================================================
+// Planning tools — generation + identity management
+// =====================================================================
+//
+// These tools let Claude prepare drafts, weekly plans, and multi-week
+// plans through the same internal services the compose UI uses. They
+// never publish — every output lands in draft/pending_review state.
+//
+// Generation caps enforced in the parsers so over-budget calls fail
+// fast with a clear error instead of producing partial state.
+
+export const GENERATE_DRAFT_TOPIC_MAX = 500;
+export const GENERATE_DRAFT_FREEFORM_MAX = 1000;
+export const GENERATE_DRAFT_URL_MAX = 600;
+
+export const WEEKLY_PLAN_MAX_ITEMS = 12;
+export const MULTIWEEK_MAX_WEEKS = 4;
+export const MULTIWEEK_MAX_TOTAL_ITEMS = 40;
+
+function isIsoDate(s: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
+}
+
+function trimTo(value: unknown, max: number): string | null {
+  if (!str(value)) return null;
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? null : trimmed.slice(0, max);
+}
+
+// ── signal.generate_draft ─────────────────────────────────────────
+
+export interface GenerateDraftArgs {
+  identity_id: string;
+  topic: string;
+  goal: string | null;
+  cta: string | null;
+  source_url: string | null;
+  tone_adjustment: string | null;
+  schedule_preference: string | null;
+  week_start: string | null;
+}
+
+export function parseGenerateDraft(
+  input: unknown,
+): Parse<GenerateDraftArgs> {
+  if (!isObject(input)) return { ok: false, errors: ["expected_object"] };
+  const errors: string[] = [];
+  if (!str(input.identity_id) || !isUuidLike(input.identity_id))
+    errors.push("identity_id_invalid");
+  const topic = trimTo(input.topic, GENERATE_DRAFT_TOPIC_MAX);
+  if (!topic) errors.push("topic_required");
+  if (input.week_start !== undefined && input.week_start !== null) {
+    if (!str(input.week_start) || !isIsoDate(input.week_start))
+      errors.push("week_start_invalid");
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  return {
+    ok: true,
+    value: {
+      identity_id: input.identity_id as string,
+      topic: topic as string,
+      goal: trimTo(input.goal, GENERATE_DRAFT_FREEFORM_MAX),
+      cta: trimTo(input.cta, GENERATE_DRAFT_FREEFORM_MAX),
+      source_url: trimTo(input.source_url, GENERATE_DRAFT_URL_MAX),
+      tone_adjustment: trimTo(input.tone_adjustment, GENERATE_DRAFT_FREEFORM_MAX),
+      schedule_preference: trimTo(
+        input.schedule_preference,
+        GENERATE_DRAFT_FREEFORM_MAX,
+      ),
+      week_start:
+        input.week_start === undefined || input.week_start === null
+          ? null
+          : (input.week_start as string),
+    },
+  };
+}
+
+// ── signal.generate_weekly_plan ───────────────────────────────────
+
+export interface WeeklyPlanTopic {
+  topic: string;
+  goal: string | null;
+  cta: string | null;
+  source_url: string | null;
+}
+
+export interface GenerateWeeklyPlanArgs {
+  product_id: string;
+  week_start: string;
+  identity_ids: ReadonlyArray<string>;
+  topics: ReadonlyArray<WeeklyPlanTopic>;
+  strategic_theme: string | null;
+  max_posts_per_platform: number | null;
+  include_media_briefs: boolean;
+}
+
+export function parseGenerateWeeklyPlan(
+  input: unknown,
+): Parse<GenerateWeeklyPlanArgs> {
+  if (!isObject(input)) return { ok: false, errors: ["expected_object"] };
+  const errors: string[] = [];
+  if (!str(input.product_id) || !isUuidLike(input.product_id))
+    errors.push("product_id_invalid");
+  if (!str(input.week_start) || !isIsoDate(input.week_start))
+    errors.push("week_start_invalid");
+
+  // Identities are required — the MVP does not auto-pick identities
+  // for a product. Caller passes the exact set.
+  const identityIds: string[] = [];
+  if (!Array.isArray(input.identity_ids)) {
+    errors.push("identity_ids_required");
+  } else if (input.identity_ids.length === 0) {
+    errors.push("identity_ids_empty");
+  } else {
+    for (const id of input.identity_ids) {
+      if (!str(id) || !isUuidLike(id)) {
+        errors.push("identity_id_invalid_in_list");
+        break;
+      }
+      identityIds.push(id);
+    }
+  }
+
+  // Topics: list of canonical ideas. Each topic fans out to each
+  // identity, producing |identities| × |topics| items, capped.
+  const topics: WeeklyPlanTopic[] = [];
+  if (!Array.isArray(input.topics)) {
+    errors.push("topics_required");
+  } else if (input.topics.length === 0) {
+    errors.push("topics_empty");
+  } else {
+    for (const raw of input.topics) {
+      if (!isObject(raw)) {
+        errors.push("topics_item_must_be_object");
+        break;
+      }
+      const t = trimTo(raw.topic, GENERATE_DRAFT_TOPIC_MAX);
+      if (!t) {
+        errors.push("topics_item_topic_required");
+        break;
+      }
+      topics.push({
+        topic: t,
+        goal: trimTo(raw.goal, GENERATE_DRAFT_FREEFORM_MAX),
+        cta: trimTo(raw.cta, GENERATE_DRAFT_FREEFORM_MAX),
+        source_url: trimTo(raw.source_url, GENERATE_DRAFT_URL_MAX),
+      });
+    }
+  }
+
+  const totalItems = identityIds.length * topics.length;
+  if (totalItems > WEEKLY_PLAN_MAX_ITEMS) {
+    errors.push(
+      `cap_exceeded:max_${WEEKLY_PLAN_MAX_ITEMS}_items_per_weekly_plan_got_${totalItems}`,
+    );
+  }
+
+  let maxPostsPerPlatform: number | null = null;
+  if (input.max_posts_per_platform !== undefined && input.max_posts_per_platform !== null) {
+    if (
+      typeof input.max_posts_per_platform !== "number" ||
+      !Number.isFinite(input.max_posts_per_platform) ||
+      input.max_posts_per_platform <= 0
+    ) {
+      errors.push("max_posts_per_platform_invalid");
+    } else {
+      maxPostsPerPlatform = Math.floor(input.max_posts_per_platform);
+    }
+  }
+
+  if (errors.length > 0) return { ok: false, errors };
+
+  return {
+    ok: true,
+    value: {
+      product_id: input.product_id as string,
+      week_start: input.week_start as string,
+      identity_ids: identityIds,
+      topics,
+      strategic_theme: trimTo(input.strategic_theme, GENERATE_DRAFT_FREEFORM_MAX),
+      max_posts_per_platform: maxPostsPerPlatform,
+      include_media_briefs: input.include_media_briefs !== false,
+    },
+  };
+}
+
+// ── signal.generate_multiweek_plan ────────────────────────────────
+
+export interface GenerateMultiweekPlanArgs {
+  product_id: string;
+  start_date: string;
+  number_of_weeks: number;
+  identity_ids: ReadonlyArray<string>;
+  topics_per_week: ReadonlyArray<WeeklyPlanTopic>;
+  strategic_theme: string;
+  max_posts_per_week: number | null;
+  approval_mode: "operator_review_required";
+}
+
+export function parseGenerateMultiweekPlan(
+  input: unknown,
+): Parse<GenerateMultiweekPlanArgs> {
+  if (!isObject(input)) return { ok: false, errors: ["expected_object"] };
+  const errors: string[] = [];
+  if (!str(input.product_id) || !isUuidLike(input.product_id))
+    errors.push("product_id_invalid");
+  if (!str(input.start_date) || !isIsoDate(input.start_date))
+    errors.push("start_date_invalid");
+
+  let numWeeks = 0;
+  if (
+    typeof input.number_of_weeks !== "number" ||
+    !Number.isFinite(input.number_of_weeks) ||
+    input.number_of_weeks <= 0
+  ) {
+    errors.push("number_of_weeks_invalid");
+  } else if (input.number_of_weeks > MULTIWEEK_MAX_WEEKS) {
+    errors.push(
+      `cap_exceeded:max_${MULTIWEEK_MAX_WEEKS}_weeks_per_call_got_${input.number_of_weeks}`,
+    );
+  } else {
+    numWeeks = Math.floor(input.number_of_weeks);
+  }
+
+  const identityIds: string[] = [];
+  if (!Array.isArray(input.identity_ids)) {
+    errors.push("identity_ids_required");
+  } else if (input.identity_ids.length === 0) {
+    errors.push("identity_ids_empty");
+  } else {
+    for (const id of input.identity_ids) {
+      if (!str(id) || !isUuidLike(id)) {
+        errors.push("identity_id_invalid_in_list");
+        break;
+      }
+      identityIds.push(id);
+    }
+  }
+
+  const topicsPerWeek: WeeklyPlanTopic[] = [];
+  if (!Array.isArray(input.topics_per_week)) {
+    errors.push("topics_per_week_required");
+  } else if (input.topics_per_week.length === 0) {
+    errors.push("topics_per_week_empty");
+  } else {
+    for (const raw of input.topics_per_week) {
+      if (!isObject(raw)) {
+        errors.push("topics_per_week_item_must_be_object");
+        break;
+      }
+      const t = trimTo(raw.topic, GENERATE_DRAFT_TOPIC_MAX);
+      if (!t) {
+        errors.push("topics_per_week_topic_required");
+        break;
+      }
+      topicsPerWeek.push({
+        topic: t,
+        goal: trimTo(raw.goal, GENERATE_DRAFT_FREEFORM_MAX),
+        cta: trimTo(raw.cta, GENERATE_DRAFT_FREEFORM_MAX),
+        source_url: trimTo(raw.source_url, GENERATE_DRAFT_URL_MAX),
+      });
+    }
+  }
+
+  const strategicTheme = trimTo(input.strategic_theme, GENERATE_DRAFT_FREEFORM_MAX);
+  if (!strategicTheme) errors.push("strategic_theme_required");
+
+  if (input.approval_mode !== "operator_review_required") {
+    errors.push("approval_mode_must_be_operator_review_required");
+  }
+
+  const totalItems = identityIds.length * topicsPerWeek.length * numWeeks;
+  if (totalItems > MULTIWEEK_MAX_TOTAL_ITEMS) {
+    errors.push(
+      `cap_exceeded:max_${MULTIWEEK_MAX_TOTAL_ITEMS}_items_per_call_got_${totalItems}`,
+    );
+  }
+
+  let maxPostsPerWeek: number | null = null;
+  if (input.max_posts_per_week !== undefined && input.max_posts_per_week !== null) {
+    if (
+      typeof input.max_posts_per_week !== "number" ||
+      !Number.isFinite(input.max_posts_per_week) ||
+      input.max_posts_per_week <= 0
+    ) {
+      errors.push("max_posts_per_week_invalid");
+    } else {
+      maxPostsPerWeek = Math.floor(input.max_posts_per_week);
+    }
+  }
+
+  if (errors.length > 0) return { ok: false, errors };
+
+  return {
+    ok: true,
+    value: {
+      product_id: input.product_id as string,
+      start_date: input.start_date as string,
+      number_of_weeks: numWeeks,
+      identity_ids: identityIds,
+      topics_per_week: topicsPerWeek,
+      strategic_theme: strategicTheme as string,
+      max_posts_per_week: maxPostsPerWeek,
+      approval_mode: "operator_review_required",
+    },
+  };
+}
+
+// ── signal.identities.update ──────────────────────────────────────
+
+export interface IdentitiesUpdateArgs {
+  identity_id: string;
+  display_name?: string;
+  handle?: string | null;
+  product_id?: string | null;
+  voice_profile?: string | null;
+  source_note?: string | null;
+}
+
+export function parseIdentitiesUpdate(
+  input: unknown,
+): Parse<IdentitiesUpdateArgs> {
+  if (!isObject(input)) return { ok: false, errors: ["expected_object"] };
+  const errors: string[] = [];
+  if (!str(input.identity_id) || !isUuidLike(input.identity_id))
+    errors.push("identity_id_invalid");
+
+  // At least one updatable field must be present so we don't waste a
+  // database round-trip on a no-op update.
+  const updatableKeys = [
+    "display_name",
+    "handle",
+    "product_id",
+    "voice_profile",
+    "source_note",
+  ];
+  const presentKeys = updatableKeys.filter((k) => input[k] !== undefined);
+  if (presentKeys.length === 0) {
+    errors.push("at_least_one_field_required");
+  }
+
+  if (input.display_name !== undefined) {
+    if (!str(input.display_name) || input.display_name.trim().length === 0)
+      errors.push("display_name_must_be_non_empty_string");
+  }
+  if (input.handle !== undefined && input.handle !== null && !str(input.handle))
+    errors.push("handle_must_be_string");
+  if (input.product_id !== undefined && input.product_id !== null) {
+    if (!str(input.product_id) || !isUuidLike(input.product_id))
+      errors.push("product_id_invalid");
+  }
+  if (input.voice_profile !== undefined && input.voice_profile !== null) {
+    if (!str(input.voice_profile)) {
+      errors.push("voice_profile_must_be_string");
+    } else if (input.voice_profile.length > VOICE_PROFILE_MAX_CHARS) {
+      errors.push("voice_profile_too_long");
+    }
+  }
+  if (
+    input.source_note !== undefined &&
+    input.source_note !== null &&
+    !str(input.source_note)
+  )
+    errors.push("source_note_must_be_string");
+
+  if (errors.length > 0) return { ok: false, errors };
+
+  const value: IdentitiesUpdateArgs = {
+    identity_id: input.identity_id as string,
+  };
+  if (input.display_name !== undefined)
+    value.display_name = (input.display_name as string).trim();
+  if (input.handle !== undefined)
+    value.handle = input.handle === null ? null : (input.handle as string).trim();
+  if (input.product_id !== undefined)
+    value.product_id =
+      input.product_id === null ? null : (input.product_id as string);
+  if (input.voice_profile !== undefined) {
+    if (input.voice_profile === null) {
+      value.voice_profile = null;
+    } else {
+      const trimmed = (input.voice_profile as string).trim();
+      value.voice_profile = trimmed.length > 0 ? trimmed : null;
+    }
+  }
+  if (input.source_note !== undefined)
+    value.source_note =
+      input.source_note === null ? null : (input.source_note as string).trim();
+  return { ok: true, value };
+}
