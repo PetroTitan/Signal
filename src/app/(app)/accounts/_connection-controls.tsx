@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import type { ConnectIdentityPlan } from "@/core/publishing/connect-identity";
 import type { IdentityPublishState } from "@/core/publishing/identity-publish-state";
 
@@ -102,6 +103,7 @@ function oauthButtonLabel(publishState: IdentityPublishState | undefined): strin
 
 export function ConnectionControls(props: ConnectionControlsProps) {
   const { platform, accountId, providerConfigured, encryptionConfigured } = props;
+  const router = useRouter();
   const [busy, setBusy] = useState<"connect" | "disconnect" | "health" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -133,6 +135,19 @@ export function ConnectionControls(props: ConnectionControlsProps) {
         setMessage(json.error ?? "Sign-out failed.");
       } else {
         setMessage("Signed out of this account.");
+        // Re-fetch server props — same reason as the Bluesky path:
+        // the OAuth disconnect leaves the panel rendering the
+        // "Signed in as <handle>" + sign-out button until the page
+        // navigates away.
+        router.refresh();
+        // The pill, "Signed in as <handle>" line, and signed-in
+        // action buttons are all driven by server-rendered props
+        // (publishState, handle, connectionStatus). Without a
+        // refresh they'd stay rendered as if still signed in until
+        // the next navigation, which leaves the operator looking at
+        // stale state. router.refresh() re-runs the server component
+        // with fresh data from platform_connections.
+        router.refresh();
       }
     } finally {
       setBusy(null);
@@ -207,6 +222,11 @@ export function ConnectionControls(props: ConnectionControlsProps) {
         setMessage(
           json.message ?? "Handle resolved via workspace credentials.",
         );
+        // Future verifiers (dev.to / Hashnode / Telegram) will
+        // persist a connection row on success. Re-fetch so the
+        // panel renders the resulting state instead of staying on
+        // the verify button.
+        router.refresh();
       }
     } finally {
       setBusy(null);
@@ -322,7 +342,13 @@ export function ConnectionControls(props: ConnectionControlsProps) {
           `Signed in as ${json.authenticated_handle ?? "this account"}.`,
         );
         setAppPasswordFormOpen(false);
-      } else if (json.code === "handle_mismatch") {
+        // Sign-in is the other half of the same stale-UI fix:
+        // without this, the pill would stay "Not signed in" and the
+        // panel would still show the sign-in form (after we closed
+        // it) until the operator navigates. router.refresh re-runs
+        // the server component so the new "Signed in" state lands
+        // immediately.
+        router.refresh();
         setMessage(
           json.message ??
             "Signed in as a different Bluesky account than this identity expects.",
