@@ -8,6 +8,7 @@ import type {
   PlatformConnectionUpdate,
 } from "@/lib/supabase/types";
 import type {
+  ConnectionPlatform,
   OAuthPlatform,
   PlatformConnection,
   PlatformConnectionConnectionStatus,
@@ -107,7 +108,15 @@ export async function getConnectionForAccount(
 export interface UpsertConnectionInput {
   workspaceId: string;
   accountId: string | null;
-  platform: OAuthPlatform;
+  /**
+   * Widened from `OAuthPlatform` to `ConnectionPlatform` so the
+   * api_key_verify path (Bluesky today; dev.to / Hashnode / Telegram
+   * in follow-ups) can persist per-identity rows through the same
+   * repository function. OAuth callers still pass `OAuthPlatform`
+   * values, which are a subset of `ConnectionPlatform` — no change
+   * required.
+   */
+  platform: ConnectionPlatform;
   providerAccountId: string | null;
   handle: string | null;
   displayName: string | null;

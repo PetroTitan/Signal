@@ -1,9 +1,16 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
-import { getAccountById } from "@/repositories/account-repository";
+import {
+  getAccountById,
+  setAccountConnectionStatus,
+} from "@/repositories/account-repository";
+import { upsertPlatformConnection } from "@/repositories/platform-connection-repository";
+import { recordActivity } from "@/repositories/activity-repository";
 import { isApiKeyVerifyPlatform } from "@/core/publishing/connect-identity";
 import type { FounderPlatform } from "@/core/publishing/platform-guidance";
+import { verifyBlueskyIdentity } from "@/core/identity-verifiers";
+import { buildBlueskyVerifyPlan } from "@/core/identity-verifiers/bluesky-persistence";
 
 /**
  * POST /api/identity/:identityId/verify
@@ -81,6 +88,78 @@ export async function POST(
       );
     }
 
+    if (platform === "bluesky") {
+      // Bluesky verification uses public AT Protocol endpoints. No
+      // secrets are accepted, none are stored. The DID + canonical
+      // handle are the only fields we persist.
+      const verifyResult = await verifyBlueskyIdentity({
+        identityId,
+        workspaceId: membership.workspace.id,
+        declaredHandle: identity.handle ?? "",
+      });
+
+      const plan = buildBlueskyVerifyPlan({
+        result: verifyResult,
+        workspaceId: membership.workspace.id,
+        identityId,
+        declaredHandle: identity.handle,
+      });
+
+      if (plan.upsert) {
+        try {
+          const conn = await upsertPlatformConnection(plan.upsert);
+          // Best-effort activity log; failure doesn't change the
+          // response.
+          try {
+            await recordActivity({
+              workspaceId: membership.workspace.id,
+              eventType:
+                plan.upsert.connectionStatus === "connected"
+                  ? "platform_connection.connected"
+                  : "platform_connection.failed",
+              entityType: "platform_connection",
+              entityId: conn.id,
+              title:
+                plan.upsert.connectionStatus === "connected"
+                  ? `Bluesky verified as ${plan.upsert.handle}`
+                  : `Bluesky handle mismatch`,
+              description:
+                typeof plan.upsert.metadata?.last_message === "string"
+                  ? plan.upsert.metadata.last_message
+                  : null,
+            });
+          } catch (err) {
+            console.error("[identity/verify] activity log failed", err);
+          }
+        } catch (err) {
+          console.error("[identity/verify] upsert failed", err);
+          return jsonError(500, "persist_failed", "Could not persist the connection.");
+        }
+      }
+
+      if (plan.promoteGrowthAccount) {
+        try {
+          await setAccountConnectionStatus({
+            workspaceId: membership.workspace.id,
+            accountId: identityId,
+            connectionStatus: "connected",
+          });
+        } catch (err) {
+          console.error(
+            "[identity/verify] growth_accounts promote failed",
+            err,
+          );
+        }
+      }
+
+      return NextResponse.json(plan.response.body, {
+        status: plan.response.status,
+      });
+    }
+
+    // Other api_key_verify platforms still pending their provider
+    // verifiers. The architecture is in place; the per-platform
+    // clients land in follow-up PRs.
     return NextResponse.json(
       {
         ok: false,
