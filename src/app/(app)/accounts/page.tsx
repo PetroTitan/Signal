@@ -299,15 +299,19 @@ export default async function AccountsPage() {
                   : null;
 
               // Auth controls visible only when Manage panel is open.
-              // OAuth + api_key_verify + app_password all dispatch via
-              // ConnectionControls; manual platforms get a steady-
-              // state hint (rendered both when Manage is open and
-              // when collapsed).
+              // Every plan kind with real sign-in actions dispatches
+              // via ConnectionControls. Manual platforms get a
+              // steady-state hint instead (rendered both when Manage
+              // is open and when collapsed). Keep this list in sync
+              // with the render branches inside ConnectionControls —
+              // dropping a kind here leaves operators with an empty
+              // Manage panel.
               const authControls =
                 plan &&
                 (plan.kind === "oauth" ||
                   plan.kind === "api_key_verify" ||
-                  plan.kind === "app_password") ? (
+                  plan.kind === "app_password" ||
+                  plan.kind === "personal_api_key") ? (
                   <ConnectionControls
                     platform={a.platform}
                     accountId={a.id}
