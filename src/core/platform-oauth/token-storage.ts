@@ -17,7 +17,7 @@
 import "server-only";
 import { getTokenCipher } from "./token-encryption";
 import { composeTokenPersistence, type TokenResponse } from "./token-lifecycle";
-import type { OAuthPlatform } from "./oauth-types";
+import type { ConnectionPlatform } from "./oauth-types";
 
 export interface EncryptedTokens {
   accessTokenEncrypted: string;
@@ -41,7 +41,7 @@ export type EncryptTokensResult =
  * normal flow that surfaces as a connection_status='error' record.
  */
 export function encryptTokenResponse(input: {
-  platform: OAuthPlatform;
+  platform: ConnectionPlatform;
   response: TokenResponse;
 }): EncryptTokensResult {
   const cipher = getTokenCipher();

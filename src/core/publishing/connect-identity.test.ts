@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isApiKeyVerifyPlatform,
+  isAppPasswordPlatform,
   isOAuthCapablePlatform,
   resolveConnectIdentityPlan,
   type ConnectIdentityInput,
@@ -51,9 +52,32 @@ describe("resolveConnectIdentityPlan — OAuth platforms", () => {
   });
 });
 
+describe("resolveConnectIdentityPlan — app-password platforms", () => {
+  it("returns an app_password plan for Bluesky (NOT api_key_verify)", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "bluesky",
+        publishingMode: "api",
+        oauthAvailable: false,
+      }),
+    );
+    expect(plan.kind).toBe("app_password");
+    if (plan.kind !== "app_password") return;
+    expect(plan.resolveUrl).toBe("/api/identity/id-1/verify");
+    expect(plan.connectUrl).toBe("/api/identity/id-1/bluesky/connect");
+    expect(plan.buttonLabel).toBe("Connect with App Password");
+    // The note must explicitly steer the operator away from their
+    // main password — the whole point of the corrected model.
+    expect(plan.credentialNote.toLowerCase()).toContain("app password");
+    expect(plan.credentialNote.toLowerCase()).toContain(
+      "not your main account password",
+    );
+  });
+});
+
 describe("resolveConnectIdentityPlan — API-key verify platforms", () => {
-  it.each(["bluesky", "devto", "hashnode", "telegram"] as const)(
-    "returns an api_key_verify plan for %s",
+  it.each(["devto", "hashnode", "telegram"] as const)(
+    "returns an api_key_verify plan for %s (Bluesky is now app_password)",
     (platform) => {
       const plan = resolveConnectIdentityPlan(
         input({
@@ -126,7 +150,7 @@ describe("resolveConnectIdentityPlan — unsupported platforms", () => {
   });
 });
 
-describe("isOAuthCapablePlatform / isApiKeyVerifyPlatform", () => {
+describe("isOAuthCapablePlatform / isAppPasswordPlatform / isApiKeyVerifyPlatform", () => {
   it("Reddit is OAuth-capable; nothing else (yet)", () => {
     expect(isOAuthCapablePlatform("reddit")).toBe(true);
     expect(isOAuthCapablePlatform("bluesky")).toBe(false);
@@ -134,14 +158,18 @@ describe("isOAuthCapablePlatform / isApiKeyVerifyPlatform", () => {
     expect(isOAuthCapablePlatform("linkedin")).toBe(false);
   });
 
-  it("Bluesky/dev.to/Hashnode/Telegram are API-key verify platforms", () => {
-    expect(isApiKeyVerifyPlatform("bluesky")).toBe(true);
+  it("Bluesky is an app-password platform (NOT api_key_verify anymore)", () => {
+    expect(isAppPasswordPlatform("bluesky")).toBe(true);
+    expect(isApiKeyVerifyPlatform("bluesky")).toBe(false);
+  });
+
+  it("dev.to/Hashnode/Telegram remain API-key verify platforms", () => {
     expect(isApiKeyVerifyPlatform("devto")).toBe(true);
     expect(isApiKeyVerifyPlatform("hashnode")).toBe(true);
     expect(isApiKeyVerifyPlatform("telegram")).toBe(true);
   });
 
-  it("Distribution and manual-only platforms are neither", () => {
+  it("Distribution and manual-only platforms belong to none of the three groups", () => {
     for (const p of [
       "x",
       "linkedin",
@@ -151,6 +179,7 @@ describe("isOAuthCapablePlatform / isApiKeyVerifyPlatform", () => {
       "indie_hackers",
     ] as const) {
       expect(isOAuthCapablePlatform(p)).toBe(false);
+      expect(isAppPasswordPlatform(p)).toBe(false);
       expect(isApiKeyVerifyPlatform(p)).toBe(false);
     }
   });

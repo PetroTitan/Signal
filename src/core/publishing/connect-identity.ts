@@ -68,6 +68,38 @@ export interface ApiKeyVerifyConnectPlan {
 }
 
 /**
+ * "Connect via per-identity app-password authentication." Used by
+ * Bluesky: the operator provides a Bluesky App Password (NOT their
+ * main account password); Signal authenticates against the AT
+ * Protocol session API; tokens are encrypted server-side and stored
+ * on platform_connections. Only after a successful authenticated
+ * session (and a verified DID/handle match) is the identity marked
+ * connected.
+ *
+ * `resolveUrl` points at the existing public handle-resolution route
+ * — purely informational, used by the UI to show "handle resolves"
+ * before the operator submits credentials. The route does NOT write
+ * a connection row.
+ *
+ * `connectUrl` accepts a POST body of `{ handle, app_password }` and
+ * runs the ownership-proving flow.
+ */
+export interface AppPasswordConnectPlan {
+  kind: "app_password";
+  platform: FounderPlatform;
+  resolveUrl: string;
+  connectUrl: string;
+  /** Operator-facing label for the connect button. */
+  buttonLabel: string;
+  /**
+   * Operator-facing security note rendered next to the password
+   * input. Same string lives in the policy so the UI doesn't have
+   * to invent copy.
+   */
+  credentialNote: string;
+}
+
+/**
  * "Nothing to connect." Distribution-only and manual-only platforms.
  * The UI renders a steady-state hint instead of a button.
  */
@@ -90,6 +122,7 @@ export interface UnsupportedConnectPlan {
 export type ConnectIdentityPlan =
   | OAuthConnectPlan
   | ApiKeyVerifyConnectPlan
+  | AppPasswordConnectPlan
   | ManualConnectPlan
   | UnsupportedConnectPlan;
 
@@ -156,6 +189,22 @@ function buildVerifyUrl(input: ConnectIdentityInput): string {
 }
 
 /**
+ * Build the public-handle-resolution URL used by the Bluesky
+ * app_password flow as a pre-flight check. Same /verify endpoint;
+ * Bluesky's branch is informational-only.
+ */
+function buildResolveUrl(input: ConnectIdentityInput): string {
+  return `/api/identity/${encodeURIComponent(input.identityId)}/verify`;
+}
+
+/**
+ * Build the Signal-side connect URL for Bluesky's app-password flow.
+ */
+function buildBlueskyConnectUrl(input: ConnectIdentityInput): string {
+  return `/api/identity/${encodeURIComponent(input.identityId)}/bluesky/connect`;
+}
+
+/**
  * Platforms where Signal currently has a usable per-identity OAuth
  * flow. Today: Reddit only. Future flows (X, LinkedIn with their own
  * OAuth) flip to true here once the start/callback routes are
@@ -164,13 +213,24 @@ function buildVerifyUrl(input: ConnectIdentityInput): string {
 const OAUTH_PLATFORMS: ReadonlyArray<FounderPlatform> = ["reddit"];
 
 /**
+ * Platforms that authenticate identities through a per-identity app
+ * password (NOT the operator's main account password). The session
+ * is authenticated against the platform's session API; tokens are
+ * encrypted server-side. Today: Bluesky.
+ */
+const APP_PASSWORD_PLATFORMS: ReadonlyArray<FounderPlatform> = ["bluesky"];
+
+/**
  * Platforms that authenticate identities through a workspace-level
  * API credential + a handle resolve step. These produce
- * `api_key_verify` plans. The verify route is a stub in this PR;
- * actual provider verifiers ship per-platform.
+ * `api_key_verify` plans. The verify route is a stub for these; the
+ * actual provider verifiers ship per-platform in follow-up PRs.
+ *
+ * Bluesky was previously in this list but moved to `app_password`
+ * because workspace-level API-key semantics don't apply (each
+ * Bluesky identity needs its own app password).
  */
 const API_KEY_VERIFY_PLATFORMS: ReadonlyArray<FounderPlatform> = [
-  "bluesky",
   "devto",
   "hashnode",
   "telegram",
@@ -183,6 +243,13 @@ const API_KEY_VERIFY_PLATFORMS: ReadonlyArray<FounderPlatform> = [
  */
 export function isOAuthCapablePlatform(platform: FounderPlatform): boolean {
   return OAUTH_PLATFORMS.includes(platform);
+}
+
+/**
+ * Returns whether a platform uses per-identity app-password auth.
+ */
+export function isAppPasswordPlatform(platform: FounderPlatform): boolean {
+  return APP_PASSWORD_PLATFORMS.includes(platform);
 }
 
 /**
@@ -221,6 +288,22 @@ export function resolveConnectIdentityPlan(
       platform,
       authorizeUrl: buildOAuthAuthorizeUrl(input),
       buttonLabel: "Connect identity",
+    };
+  }
+
+  // Per-identity app-password platforms (today: Bluesky). Each
+  // identity needs its own app password; "verifying" via the public
+  // handle-resolution endpoint is informational only.
+  if (input.publishingMode === "api" && isAppPasswordPlatform(platform)) {
+    return {
+      kind: "app_password",
+      platform,
+      resolveUrl: buildResolveUrl(input),
+      connectUrl: buildBlueskyConnectUrl(input),
+      buttonLabel: "Connect with App Password",
+      credentialNote:
+        "Use a Bluesky App Password, not your main account password. " +
+        "Create one at bsky.app/settings/app-passwords.",
     };
   }
 

@@ -1,16 +1,10 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
-import {
-  getAccountById,
-  setAccountConnectionStatus,
-} from "@/repositories/account-repository";
-import { upsertPlatformConnection } from "@/repositories/platform-connection-repository";
-import { recordActivity } from "@/repositories/activity-repository";
+import { getAccountById } from "@/repositories/account-repository";
 import { isApiKeyVerifyPlatform } from "@/core/publishing/connect-identity";
 import type { FounderPlatform } from "@/core/publishing/platform-guidance";
-import { verifyBlueskyIdentity } from "@/core/identity-verifiers";
-import { buildBlueskyVerifyPlan } from "@/core/identity-verifiers/bluesky-persistence";
+import { resolveBlueskyHandle } from "@/core/identity-verifiers";
 
 /**
  * POST /api/identity/:identityId/verify
@@ -89,72 +83,73 @@ export async function POST(
     }
 
     if (platform === "bluesky") {
-      // Bluesky verification uses public AT Protocol endpoints. No
-      // secrets are accepted, none are stored. The DID + canonical
-      // handle are the only fields we persist.
-      const verifyResult = await verifyBlueskyIdentity({
+      // Public handle resolution ONLY. This route MUST NOT mark the
+      // identity as connected. Connection (ownership-proving) goes
+      // through POST /api/identity/[id]/bluesky/connect which takes
+      // a Bluesky App Password and runs the AT Protocol
+      // com.atproto.server.createSession flow.
+      //
+      // No DB writes happen here — neither on success nor on
+      // mismatch. The route is informational: the operator can
+      // sanity-check that the declared handle resolves before
+      // providing credentials. The UI surfaces this as
+      // "Handle resolved · publishing credentials not connected".
+      const resolveResult = await resolveBlueskyHandle({
         identityId,
         workspaceId: membership.workspace.id,
         declaredHandle: identity.handle ?? "",
       });
 
-      const plan = buildBlueskyVerifyPlan({
-        result: verifyResult,
-        workspaceId: membership.workspace.id,
-        identityId,
-        declaredHandle: identity.handle,
-      });
-
-      if (plan.upsert) {
-        try {
-          const conn = await upsertPlatformConnection(plan.upsert);
-          // Best-effort activity log; failure doesn't change the
-          // response.
-          try {
-            await recordActivity({
-              workspaceId: membership.workspace.id,
-              eventType:
-                plan.upsert.connectionStatus === "connected"
-                  ? "platform_connection.connected"
-                  : "platform_connection.failed",
-              entityType: "platform_connection",
-              entityId: conn.id,
-              title:
-                plan.upsert.connectionStatus === "connected"
-                  ? `Bluesky verified as ${plan.upsert.handle}`
-                  : `Bluesky handle mismatch`,
-              description:
-                typeof plan.upsert.metadata?.last_message === "string"
-                  ? plan.upsert.metadata.last_message
-                  : null,
-            });
-          } catch (err) {
-            console.error("[identity/verify] activity log failed", err);
-          }
-        } catch (err) {
-          console.error("[identity/verify] upsert failed", err);
-          return jsonError(500, "persist_failed", "Could not persist the connection.");
-        }
+      if (resolveResult.outcome === "handle_resolved") {
+        return NextResponse.json({
+          ok: true,
+          code: "handle_resolved",
+          platform: "bluesky",
+          identity_id: identityId,
+          declared_handle: identity.handle,
+          resolved_handle: resolveResult.authenticatedHandle,
+          provider_account_id: resolveResult.providerAccountId,
+          message:
+            "Handle resolved. Provide a Bluesky App Password via the connect form to authenticate this identity for publishing.",
+        });
       }
 
-      if (plan.promoteGrowthAccount) {
-        try {
-          await setAccountConnectionStatus({
-            workspaceId: membership.workspace.id,
-            accountId: identityId,
-            connectionStatus: "connected",
-          });
-        } catch (err) {
-          console.error(
-            "[identity/verify] growth_accounts promote failed",
-            err,
-          );
-        }
+      if (resolveResult.outcome === "mismatched") {
+        return NextResponse.json(
+          {
+            ok: false,
+            code: "handle_mismatch",
+            platform: "bluesky",
+            identity_id: identityId,
+            declared: resolveResult.declaredHandle,
+            authenticated: resolveResult.authenticatedHandle,
+            provider_account_id: resolveResult.providerAccountId,
+            message:
+              "Declared handle resolves to a different account on Bluesky. Update the identity handle or contact the operator who registered it.",
+          },
+          { status: 409 },
+        );
       }
 
-      return NextResponse.json(plan.response.body, {
-        status: plan.response.status,
-      });
+      // resolveResult.outcome === "error"
+      const status =
+        resolveResult.code === "handle_invalid" ||
+        resolveResult.code === "handle_not_found"
+          ? 400
+          : resolveResult.code === "network_error"
+            ? 503
+            : 502;
+      return NextResponse.json(
+        {
+          ok: false,
+          code: resolveResult.code,
+          platform: "bluesky",
+          identity_id: identityId,
+          declared: identity.handle,
+          message: resolveResult.message,
+        },
+        { status },
+      );
     }
 
     // Other api_key_verify platforms still pending their provider

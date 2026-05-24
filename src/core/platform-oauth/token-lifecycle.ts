@@ -16,7 +16,7 @@
  * 'error'` and `metadata.token_storage = 'not_configured'`.
  */
 
-import type { OAuthPlatform } from "./oauth-types";
+import type { ConnectionPlatform } from "./oauth-types";
 import * as encryption from "./token-encryption";
 
 export interface TokenCipher {
@@ -65,7 +65,7 @@ export interface TokenResponse {
  * mark the connection as connected.
  */
 export function composeTokenPersistence(input: {
-  platform: OAuthPlatform;
+  platform: ConnectionPlatform;
   response: TokenResponse;
   cipher: TokenCipher;
 }): {
