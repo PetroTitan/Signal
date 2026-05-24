@@ -28,6 +28,10 @@ import {
   toPlatformCapability,
   type IdentityPublishState,
 } from "@/core/publishing/identity-publish-state";
+import {
+  resolveConnectIdentityPlan,
+  type ConnectIdentityPlan,
+} from "@/core/publishing/connect-identity";
 import { readTierOneConfigStatus } from "@/core/publishing/platform-credentials";
 import type { IdentityAuthCounts } from "./_capabilities-panel";
 import { readGenerationProviderStatus } from "@/core/generation/provider-status";
@@ -39,14 +43,25 @@ function isOAuthPlatform(p: string): p is OAuthPlatform {
 }
 
 /**
- * F5.0 — only Reddit currently has a functional OAuth flow worth
- * surfacing in the founder UI. X and LinkedIn are accepted as
- * OAuth platforms by the legacy schema but Signal uses them in
- * manual-distribution mode only — Connect / Disconnect controls
- * don't apply.
+ * Pulls the structured handle-mismatch payload off a connection's
+ * metadata blob. The OAuth callback writes `metadata.handle_mismatch
+ * = { declared, authenticated, observedAt }` when the authenticated
+ * handle disagrees with the identity's declared handle. Untyped
+ * because the connection metadata column is JSONB; we narrow at the
+ * read site.
  */
-function hasInProductConnectionFlow(p: string): boolean {
-  return p === "reddit";
+function extractMismatchEvidence(
+  metadata: unknown,
+): { declared: string | null; authenticated: string | null } | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const raw = (metadata as Record<string, unknown>).handle_mismatch;
+  if (!raw || typeof raw !== "object") return null;
+  const m = raw as Record<string, unknown>;
+  return {
+    declared: typeof m.declared === "string" ? m.declared : null,
+    authenticated:
+      typeof m.authenticated === "string" ? m.authenticated : null,
+  };
 }
 
 export default async function AccountsPage() {
@@ -179,6 +194,13 @@ export default async function AccountsPage() {
             authenticatedHandle: connection.handle,
             providerAccountId: null,
             expiresAt: connection.expiresAt,
+            // Persist the mismatch verdict across the redirect cycle:
+            // the callback writes connection_status='error' (so
+            // publishing-policy keeps refusing) and stores the
+            // mismatch payload on metadata. The resolver reads this
+            // flag to short-circuit to `mismatched`.
+            handleMismatchObserved:
+              extractMismatchEvidence(connection.metadata) !== null,
           }
         : null,
     });
@@ -191,6 +213,30 @@ export default async function AccountsPage() {
     existing.total += 1;
     if (publishState === "connected") existing.authenticated += 1;
     identityAuthCounts[platformKey] = existing;
+  }
+
+  // Resolve the Connect plan per identity (oauth / api_key_verify /
+  // manual / unsupported). Drives the per-identity Connect button.
+  const connectPlanByIdentity = new Map<string, ConnectIdentityPlan>();
+  for (const account of accounts) {
+    const platformKey = account.platform as FounderPlatform;
+    const guidance = resolveIdentityPlatformGuidance(platformKey);
+    const plan = resolveConnectIdentityPlan({
+      identityId: account.id,
+      platform: platformKey,
+      publishingMode: guidance?.publishingMode ?? "not_implemented",
+      distributionOnly: guidance?.distributionOnly ?? false,
+      // Reddit is the only OAuth-capable platform that is also
+      // currently runnable: providerConfigured says env-var clientId
+      // is set, and redditOauthBlocked says the API approval isn't
+      // live. Both must be true for the oauth plan to be useful.
+      oauthAvailable:
+        platformKey === "reddit"
+          ? providerConfigured.reddit && !redditOauthBlocked && encryptionOn
+          : false,
+      redirectAfter: "/accounts",
+    });
+    connectPlanByIdentity.set(account.id, plan);
   }
 
   return (
@@ -216,9 +262,14 @@ export default async function AccountsPage() {
         ) : (
           <div className="space-y-3">
             {accounts.map((a) => {
-              const c = isOAuthPlatform(a.platform)
-                ? connectionByAccountPlatform.get(`${a.id}|${a.platform}`)
-                : undefined;
+              // Look up the per-identity connection row regardless of
+              // platform — once api_key_verify platforms ship their
+              // verifiers, those rows will live in platform_
+              // connections too. (Today only OAuth platforms have
+              // rows; the lookup just returns undefined for others.)
+              const c = connectionByAccountPlatform.get(
+                `${a.id}|${a.platform}`,
+              );
               const helperNote =
                 a.platform === "reddit" && redditOauthBlocked
                   ? "Reddit is in manual publish mode while their API approval is pending. Drafts still flow through the weekly plan."
@@ -240,34 +291,39 @@ export default async function AccountsPage() {
                   providerAvailable={providerStatus.available}
                 />
               );
+              const plan = connectPlanByIdentity.get(a.id);
+              const identityPublishState = identityPublishStateById.get(a.id);
+              const mismatchEvidence =
+                identityPublishState === "mismatched"
+                  ? extractMismatchEvidence(c?.metadata)
+                  : null;
+
+              // OAuth + api_key_verify both render through
+              // ConnectionControls; manual / unsupported render the
+              // existing italic helper text.
               const oauthControls =
-                isOAuthPlatform(a.platform) &&
-                hasInProductConnectionFlow(a.platform) ? (
+                plan && (plan.kind === "oauth" || plan.kind === "api_key_verify") ? (
                   <ConnectionControls
                     platform={a.platform}
                     accountId={a.id}
-                    providerConfigured={providerConfigured[a.platform]}
+                    providerConfigured={
+                      isOAuthPlatform(a.platform)
+                        ? providerConfigured[a.platform]
+                        : true
+                    }
                     encryptionConfigured={encryptionOn}
                     redditOauthBlocked={redditOauthBlocked}
                     connectionStatus={c?.connectionStatus ?? "not_connected"}
                     healthStatus={c?.healthStatus ?? "unknown"}
                     hasAccessToken={c?.hasAccessToken ?? false}
                     lastCheckedAt={c?.lastCheckedAt ?? null}
+                    publishState={identityPublishState}
+                    connectPlan={plan}
+                    mismatchEvidence={mismatchEvidence}
                   />
-                ) : a.platform === "x" ||
-                  a.platform === "linkedin" ||
-                  a.platform === "youtube" ||
-                  a.platform === "threads" ||
-                  a.platform === "instagram" ? (
+                ) : plan?.kind === "manual" ? (
                   <p className="text-[11px] text-ink-500 italic">
-                    Manual distribution — Signal opens the native composer
-                    and you publish on the platform itself.
-                  </p>
-                ) : a.platform === "telegram" ? (
-                  <p className="text-[11px] text-ink-500 italic">
-                    Telegram channel. Add the channel @username as the
-                    handle, and add this workspace&apos;s bot to your
-                    channel as an admin.
+                    {plan.hint}
                   </p>
                 ) : null;
               const controls = (

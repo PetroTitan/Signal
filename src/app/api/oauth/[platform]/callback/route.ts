@@ -17,8 +17,15 @@ import {
   consumeOAuthState,
   upsertPlatformConnection,
 } from "@/repositories/platform-connection-repository";
-import { setAccountConnectionStatus } from "@/repositories/account-repository";
+import {
+  getAccountById,
+  setAccountConnectionStatus,
+} from "@/repositories/account-repository";
 import { recordActivity } from "@/repositories/activity-repository";
+import {
+  buildHandleMismatchMetadata,
+  verifyIdentityHandle,
+} from "./handle-verify";
 
 /**
  * GET /api/oauth/:platform/callback
@@ -242,7 +249,137 @@ export async function GET(
       return NextResponse.redirect(redirectUrl.toString());
     }
 
+    // ── Gate 5: handle verification.
+    // When the operator clicked Connect on a specific identity (state
+    // carries account_id), the authenticated Reddit username MUST
+    // match the identity's declared handle. Otherwise the connection
+    // would bind the wrong account to this identity.
+    //
+    // Mismatch lands as connection_status='error' with a structured
+    // metadata.handle_mismatch payload. growth_accounts.connection_
+    // status is NOT promoted to 'connected'.
+    let declaredHandle: string | null = null;
+    if (stateRow.account_id) {
+      try {
+        const account = await getAccountById(
+          stateRow.workspace_id,
+          stateRow.account_id,
+        );
+        declaredHandle = account.handle;
+      } catch (err) {
+        // Identity row missing or workspace mismatch — treat as a
+        // refusal to mark connected. This protects against the case
+        // where the identity was archived between Start and Callback,
+        // or against any RLS slip that surfaced a row that doesn't
+        // belong here.
+        console.error("[oauth/callback] identity lookup failed", err);
+        const conn = await upsertPlatformConnection({
+          workspaceId: stateRow.workspace_id,
+          accountId: stateRow.account_id,
+          platform,
+          providerAccountId: meResult.data.id,
+          handle: meResult.data.name,
+          displayName: meResult.data.name,
+          scopes,
+          accessTokenEncrypted: enc.accessTokenEncrypted,
+          refreshTokenEncrypted: enc.refreshTokenEncrypted,
+          expiresAt: enc.expiresAt,
+          connectionStatus: "error",
+          metadata: {
+            last_message:
+              "Callback succeeded but the identity row could not be loaded.",
+            identity_lookup_failed: true,
+          },
+        });
+        await safeRecordActivity({
+          workspaceId: stateRow.workspace_id,
+          connectionId: conn.id,
+          type: "platform_connection.failed",
+          title: `${platform} identity lookup failed`,
+          description: "Identity row missing or out of workspace.",
+        });
+        const redirectUrl = new URL(
+          safeRedirect(stateRow.redirect_after, url.origin),
+        );
+        redirectUrl.searchParams.set("oauth", "identity_missing");
+        return NextResponse.redirect(redirectUrl.toString());
+      }
+    }
+
+    const verify = verifyIdentityHandle({
+      declaredHandle,
+      authenticatedHandle: meResult.data.name,
+    });
+
+    if (verify.outcome === "mismatch") {
+      const conn = await upsertPlatformConnection({
+        workspaceId: stateRow.workspace_id,
+        accountId: stateRow.account_id ?? null,
+        platform,
+        providerAccountId: meResult.data.id,
+        handle: meResult.data.name,
+        displayName: meResult.data.name,
+        scopes,
+        accessTokenEncrypted: enc.accessTokenEncrypted,
+        refreshTokenEncrypted: enc.refreshTokenEncrypted,
+        expiresAt: enc.expiresAt,
+        // Mismatch lands as 'error'. The identity-publish-state
+        // resolver maps this (combined with the metadata payload) to
+        // its `mismatched` verdict for the UI.
+        connectionStatus: "error",
+        metadata: {
+          token_storage: cipher.describe(),
+          last_message: `Authenticated as u/${meResult.data.name}, but identity expected ${verify.declaredHandle}.`,
+          handle_mismatch: buildHandleMismatchMetadata(verify),
+        },
+      });
+
+      // Crucially, do NOT promote growth_accounts.connection_status
+      // to 'connected'. Mirror the platform_connections row's 'error'
+      // state instead, so any code path that still reads the legacy
+      // mirror (or the next operator viewing the row before the
+      // resolver runs) sees a state consistent with reality. The
+      // mirror set is best-effort — failure is logged but doesn't
+      // change the outcome of the callback.
+      if (stateRow.account_id) {
+        try {
+          await setAccountConnectionStatus({
+            workspaceId: stateRow.workspace_id,
+            accountId: stateRow.account_id,
+            connectionStatus: "error",
+          });
+        } catch (err) {
+          console.error(
+            "[oauth/callback] growth_accounts mirror to 'error' failed",
+            err,
+          );
+        }
+      }
+
+      await safeRecordActivity({
+        workspaceId: stateRow.workspace_id,
+        connectionId: conn.id,
+        type: "platform_connection.failed",
+        title: `${platform} handle mismatch`,
+        description: `Expected ${verify.declaredHandle}; authenticated as ${verify.authenticatedHandle}.`,
+      });
+
+      const redirectUrl = new URL(
+        safeRedirect(stateRow.redirect_after, url.origin),
+      );
+      redirectUrl.searchParams.set("oauth", "handle_mismatch");
+      if (verify.declaredHandle)
+        redirectUrl.searchParams.set("declared", verify.declaredHandle);
+      if (verify.authenticatedHandle)
+        redirectUrl.searchParams.set("authenticated", verify.authenticatedHandle);
+      return NextResponse.redirect(redirectUrl.toString());
+    }
+
     // ── Success path: persist connection + mirror growth_accounts.
+    // verify.outcome is 'match' or 'indeterminate' here. Indeterminate
+    // happens when the identity carries no declared handle yet (rare;
+    // legacy rows). We trust the token in that case — no claim to
+    // refuse against.
     const conn = await upsertPlatformConnection({
       workspaceId: stateRow.workspace_id,
       accountId: stateRow.account_id ?? null,
