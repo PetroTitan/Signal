@@ -267,6 +267,8 @@ export function ConnectionControls(props: ConnectionControlsProps) {
         error?: string;
         message?: string;
         authenticated_handle?: string;
+        declared?: string;
+        authenticated?: string;
       };
       // Clear the key from component memory regardless of outcome.
       setApiKeyValue("");
@@ -277,16 +279,17 @@ export function ConnectionControls(props: ConnectionControlsProps) {
         setApiKeyFormOpen(false);
         router.refresh();
       } else if (json.code === "handle_mismatch") {
+        // Show the actual usernames so the operator can decide
+        // whether to grab a key for the right account or fix the
+        // identity handle.
+        const authenticated = json.authenticated ?? "another account";
+        const declared = json.declared ?? props.handle ?? "this identity";
         setMessage(
-          json.message ??
-            "API key belongs to a different account than this identity expects.",
+          `Account mismatch — this key belongs to ${authenticated}, but this identity expects ${declared}.`,
         );
         setCooldownUntil(Date.now() + FAILED_AUTH_COOLDOWN_MS);
       } else if (json.code === "auth_failed") {
-        setMessage(
-          json.message ??
-            "Provider rejected the API key. Double-check the key on the provider's settings page.",
-        );
+        setMessage("Sign-in failed. Check the API key and try again.");
         setCooldownUntil(Date.now() + FAILED_AUTH_COOLDOWN_MS);
       } else {
         setMessage(json.error ?? json.message ?? "Sign-in failed.");
@@ -898,9 +901,29 @@ export function ConnectionControls(props: ConnectionControlsProps) {
             <div className="text-[11px] font-semibold text-ink-900">
               Sign in to this {planPlatformLabel(plan.platform)} account
             </div>
-            <p className="text-[10px] text-amber-800 leading-relaxed">
+            {/*
+              The credential note explains *why* an API key is the
+              correct sign-in method here — operators expect a
+              password-style flow on a publishing platform, so we
+              spell out the per-identity scope and that the key
+              isn't a developer setting.
+            */}
+            <p className="text-[10px] text-ink-600 leading-relaxed">
               {plan.credentialNote}
             </p>
+            <label className="block">
+              <span className="text-[10px] font-medium text-ink-600">
+                {planPlatformLabel(plan.platform)} username
+              </span>
+              <input
+                type="text"
+                value={props.handle ?? ""}
+                readOnly
+                aria-readonly="true"
+                tabIndex={-1}
+                className="mt-1 w-full rounded border border-ink-200 bg-ink-100/40 px-2 py-1 text-[11px] font-mono text-ink-700 cursor-not-allowed"
+              />
+            </label>
             <label className="block">
               <span className="text-[10px] font-medium text-ink-600">
                 {plan.secretFieldLabel}
@@ -914,7 +937,7 @@ export function ConnectionControls(props: ConnectionControlsProps) {
                 required
               />
               <span className="mt-1 block text-[10px] text-ink-500">
-                Find your API key at{" "}
+                Create a {planPlatformLabel(plan.platform)} API key in{" "}
                 <a
                   href={plan.generateUrl}
                   target="_blank"
@@ -923,8 +946,7 @@ export function ConnectionControls(props: ConnectionControlsProps) {
                 >
                   {plan.generateLabel}
                 </a>
-                . Signal stores it encrypted and never exposes the key
-                value.
+                . Signal stores it encrypted and never exposes the key.
               </span>
             </label>
             <div className="flex gap-2">

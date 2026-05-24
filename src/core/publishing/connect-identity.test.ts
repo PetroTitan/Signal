@@ -118,11 +118,18 @@ describe("resolveConnectIdentityPlan — personal-API-key platforms", () => {
     if (plan.kind !== "personal_api_key") return;
     expect(plan.connectUrl).toBe("/api/identity/id-1/devto/connect");
     expect(plan.signOutUrl).toBe("/api/identity/id-1/devto/sign-out");
-    expect(plan.buttonLabel).toBe("Sign in with dev.to API key");
-    expect(plan.credentialNote.toLowerCase()).toContain(
-      "this exact account",
-    );
+    expect(plan.buttonLabel).toBe("Sign in");
+    // Description must explain WHY an API key is the sign-in method
+    // and that it's scoped to this single identity — not a generic
+    // developer-settings reading.
+    const note = plan.credentialNote.toLowerCase();
+    expect(note).toContain("dev.to");
+    expect(note).toContain("api key");
+    expect(note).toContain("this identity");
     expect(plan.secretFieldLabel.toLowerCase()).toContain("api key");
+    expect(plan.generateLabel).toBe(
+      "dev.to → Settings → Extensions → DEV API Keys",
+    );
   });
 
   it("dev.to signOutUrl is identity-scoped — two dev.to identities have distinct URLs", () => {
@@ -158,12 +165,16 @@ describe("resolveConnectIdentityPlan — personal-API-key platforms", () => {
     if (plan.kind !== "personal_api_key") return;
     expect(plan.connectUrl).toBe("/api/identity/id-1/hashnode/connect");
     expect(plan.signOutUrl).toBe("/api/identity/id-1/hashnode/sign-out");
-    expect(plan.buttonLabel).toBe("Sign in with Hashnode API key");
-    expect(plan.credentialNote.toLowerCase()).toContain(
-      "this exact account",
-    );
+    expect(plan.buttonLabel).toBe("Sign in");
+    const note = plan.credentialNote.toLowerCase();
+    expect(note).toContain("hashnode");
+    expect(note).toContain("api key");
+    expect(note).toContain("this identity");
     expect(plan.secretFieldLabel.toLowerCase()).toContain("hashnode");
     expect(plan.generateUrl).toContain("hashnode.com");
+    expect(plan.generateLabel).toBe(
+      "Hashnode → Settings → Developer → Generate Token",
+    );
   });
 
   it("Hashnode signOutUrl is identity-scoped — two Hashnode identities have distinct URLs", () => {
