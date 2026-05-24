@@ -286,15 +286,47 @@ export async function markConnectionStatus(input: {
   status: PlatformConnectionConnectionStatus;
   healthStatus?: PlatformConnection["healthStatus"];
   message?: string;
+  /**
+   * Metadata keys to explicitly remove from the connection. Used by
+   * the disconnect path to drop `handle_mismatch` so an identity
+   * doesn't stay stuck in 'mismatched' after the operator has
+   * explicitly disconnected it.
+   *
+   * Triggers a read-modify-write so the rest of the metadata
+   * (e.g. token_storage diagnostics) is preserved. When omitted, the
+   * function keeps its original wholesale-replace behaviour for
+   * backwards compatibility with the health-check callers.
+   */
+  clearMetadataKeys?: ReadonlyArray<string>;
 }): Promise<PlatformConnection> {
   const supabase = createSupabaseServerClient();
+  const nowIso = new Date().toISOString();
   const patch: PlatformConnectionUpdate = {
     connection_status: input.status,
-    last_checked_at: new Date().toISOString(),
+    last_checked_at: nowIso,
     health_status: input.healthStatus ?? "unknown",
-    revoked_at: input.status === "revoked" ? new Date().toISOString() : null,
-    metadata: input.message ? { last_message: input.message } : undefined,
+    revoked_at: input.status === "revoked" ? nowIso : null,
   };
+
+  if (input.clearMetadataKeys && input.clearMetadataKeys.length > 0) {
+    // Read-modify-write path: preserve existing metadata, drop the
+    // listed keys, and layer last_message on top if provided.
+    const existing = await getPlatformConnectionById(
+      input.workspaceId,
+      input.connectionId,
+    );
+    const merged: Record<string, unknown> = { ...existing.metadata };
+    for (const key of input.clearMetadataKeys) {
+      delete merged[key];
+    }
+    if (input.message) merged.last_message = input.message;
+    patch.metadata = merged;
+  } else if (input.message) {
+    // Backwards-compatible wholesale-replace path for callers that
+    // didn't opt into selective clearing.
+    patch.metadata = { last_message: input.message };
+  }
+
   // When revoking, clear the encrypted tokens too.
   if (input.status === "revoked") {
     patch.access_token_encrypted = null;
