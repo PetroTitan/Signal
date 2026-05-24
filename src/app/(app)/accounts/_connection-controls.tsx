@@ -63,23 +63,6 @@ interface ConnectionControlsProps {
 }
 
 /**
- * Operator-facing status badge text. The KEY is the raw
- * connection_status enum value (backend term, never changes); the
- * VALUE is the operator-readable string rendered on the identity
- * card. Sign-in language matches the rest of the identity-card
- * surface.
- */
-const STATUS_LABELS: Record<ConnectionControlsProps["connectionStatus"], string> = {
-  not_connected: "Not signed in",
-  connected: "Signed in",
-  expired: "Sign-in expired",
-  revoked: "Signed out",
-  error: "Sign-in error",
-  disabled: "Disabled",
-  reauthorization_required: "Sign in again",
-};
-
-/**
  * Display-friendly platform name for the personal_api_key form
  * header. Backend keys (founder-platform slugs) stay as-is; only the
  * UI string is friendlier.
@@ -218,12 +201,7 @@ export function ConnectionControls(props: ConnectionControlsProps) {
         message?: string;
         authenticated_handle?: string;
       };
-      if (res.status === 501 || json.code === "not_implemented") {
-        setMessage(
-          json.message ??
-            "Verification for this platform isn't wired up yet. A follow-up PR will add the provider client.",
-        );
-      } else if (json.code === "bot_not_admin") {
+      if (json.code === "bot_not_admin") {
         // Telegram-specific clear setup instruction. The route
         // already provides operator-facing copy; we surface it.
         setMessage(
@@ -444,19 +422,19 @@ export function ConnectionControls(props: ConnectionControlsProps) {
           `Signed in as ${json.authenticated_handle ?? "this account"}.`,
         );
         setAppPasswordFormOpen(false);
-        // Sign-in is the other half of the same stale-UI fix:
-        // without this, the pill would stay "Not signed in" and the
-        // panel would still show the sign-in form (after we closed
-        // it) until the operator navigates. router.refresh re-runs
-        // the server component so the new "Signed in" state lands
-        // immediately.
+        // Re-run the server component so the pill and panel reflect
+        // the new state. Without this, the page would still show
+        // "Not signed in" + the sign-in form until navigation.
         router.refresh();
+      } else if (json.code === "handle_mismatch") {
+        // The App Password authenticated, but to a different Bluesky
+        // account than this identity is bound to. Surface the
+        // mismatch and cool down so the operator can't rapid-fire
+        // bad attempts.
         setMessage(
           json.message ??
             "Signed in as a different Bluesky account than this identity expects.",
         );
-        // Mismatch counts as failed credentials for this identity —
-        // the operator typed wrong handle or App Password. Cool down.
         setCooldownUntil(Date.now() + FAILED_AUTH_COOLDOWN_MS);
       } else if (json.code === "auth_failed") {
         setMessage(
@@ -481,19 +459,12 @@ export function ConnectionControls(props: ConnectionControlsProps) {
   const showMismatchBanner = props.publishState === "mismatched";
 
   return (
-    <div className="text-[11px] text-ink-500 space-y-1">
-      <div>
-        <span className="badge-neutral text-[10px]">
-          {STATUS_LABELS[props.connectionStatus]}
-        </span>
-        <span className="ml-2">health: {props.healthStatus}</span>
-      </div>
-      {props.lastCheckedAt ? (
-        <div className="text-[10px] text-ink-400">
-          Last checked {props.lastCheckedAt}
-        </div>
-      ) : null}
-
+    <div className="text-[11px] text-ink-500 space-y-2">
+      {/*
+        The identity card already renders the publish-state pill +
+        the formatted "Last checked" line. Don't duplicate them here
+        or echo raw enum values — keep the panel focused on actions.
+      */}
       {showMismatchBanner ? (
         <div className="text-[11px] rounded-md border border-red-200 bg-red-50 text-red-800 px-2.5 py-1.5 leading-relaxed">
           <div className="font-semibold">Account mismatch.</div>
