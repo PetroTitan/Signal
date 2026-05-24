@@ -444,13 +444,27 @@ export function resolveIdentityPublishState(
  * "Connected" is reserved for the identity-level connected state
  * only.
  */
+/**
+ * Operator-facing labels rendered on the identity card pill.
+ *
+ * IMPORTANT: these are operator-UI strings, NOT backend enum values.
+ * The internal enum names (`connected`, `pending_auth`, etc.) and
+ * the resolver / repository / DB / MCP terminology stay technical
+ * — those continue to describe the system layer. These strings
+ * speak to a human operator about a specific social account on a
+ * specific identity card, so they use sign-in language.
+ *
+ * Platform-level capability labels (in `_capabilities-panel.tsx`)
+ * stay technical because they describe the workspace's relationship
+ * to a platform integration, not an account's auth state.
+ */
 export const IDENTITY_PUBLISH_STATE_LABELS: Record<
   IdentityPublishState,
   string
 > = {
-  connected: "Connected",
-  expired: "Reauthorize",
-  pending_auth: "Not connected",
+  connected: "Signed in",
+  expired: "Sign in again",
+  pending_auth: "Not signed in",
   mismatched: "Account mismatch",
   manual: "Manual publish",
   unsupported: "Not supported",
@@ -458,19 +472,21 @@ export const IDENTITY_PUBLISH_STATE_LABELS: Record<
 };
 
 /**
- * Operator-facing one-line hint matching each state.
+ * Operator-facing one-line hint matching each state. Same UI-only
+ * sign-in language as the labels above.
  */
 export const IDENTITY_PUBLISH_STATE_HINTS: Record<
   IdentityPublishState,
   string
 > = {
-  connected: "Signal can publish for this identity.",
-  expired: "Connection expired. Reauthorize to resume publishing.",
-  pending_auth: "Identity needs authentication before Signal can publish.",
+  connected: "Signal is signed in to this account and can publish.",
+  expired:
+    "Sign-in for this account has expired. Sign in again to resume publishing.",
+  pending_auth:
+    "Sign in to this account before Signal can publish for it.",
   mismatched:
-    "Connected account differs from this identity's handle. Reconnect with the correct account.",
-  manual:
-    "Signal prepares the post; you publish on the platform itself.",
+    "Signed in as a different account than this identity expects. Sign in with the correct account.",
+  manual: "Signal prepares the post; you publish on the platform itself.",
   unsupported: "Signal has no publishing path for this platform yet.",
   disabled: "Identity is disabled. Re-enable to resume.",
 };

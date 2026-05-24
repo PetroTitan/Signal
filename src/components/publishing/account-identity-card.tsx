@@ -27,18 +27,25 @@ export type AccountConnectionState =
   | "disabled"
   | "reauthorization_required";
 
+/**
+ * Operator-facing labels for the legacy fallback pill. Used when
+ * the resolver-driven IdentityPublishStatePill prop isn't provided
+ * (older call sites). Keys are raw connection_status enum values
+ * (backend, unchanged); values are sign-in language matching the
+ * rest of the identity card.
+ */
 const STATE_META: Record<
   AccountConnectionState,
   { label: string; tone: "info" | "success" | "warn" | "danger" | "muted" }
 > = {
-  not_connected: { label: "Not connected", tone: "muted" },
-  connected: { label: "Connected", tone: "success" },
-  expired: { label: "Token expired", tone: "warn" },
-  revoked: { label: "Revoked", tone: "muted" },
-  error: { label: "Connection error", tone: "danger" },
+  not_connected: { label: "Not signed in", tone: "muted" },
+  connected: { label: "Signed in", tone: "success" },
+  expired: { label: "Sign-in expired", tone: "warn" },
+  revoked: { label: "Signed out", tone: "muted" },
+  error: { label: "Sign-in error", tone: "danger" },
   disabled: { label: "Disabled", tone: "muted" },
   reauthorization_required: {
-    label: "Needs reauthorization",
+    label: "Sign in again",
     tone: "warn",
   },
 };

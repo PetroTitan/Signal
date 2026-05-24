@@ -32,9 +32,9 @@ interface ConnectionControlsProps {
   lastCheckedAt: string | null;
   /**
    * Resolved identity publish state from
-   * resolveIdentityPublishState(). Drives whether the connect button
-   * label is "Connect identity" / "Reauthorize" / "Reconnect with
-   * correct account".
+   * resolveIdentityPublishState(). Drives the sign-in button label
+   * ("Sign in to this account" / "Sign in again" / "Sign in with
+   * correct account").
    */
   publishState?: IdentityPublishState;
   /**
@@ -54,31 +54,42 @@ interface ConnectionControlsProps {
   } | null;
 }
 
+/**
+ * Operator-facing status badge text. The KEY is the raw
+ * connection_status enum value (backend term, never changes); the
+ * VALUE is the operator-readable string rendered on the identity
+ * card. Sign-in language matches the rest of the identity-card
+ * surface.
+ */
 const STATUS_LABELS: Record<ConnectionControlsProps["connectionStatus"], string> = {
-  not_connected: "Not connected",
-  connected: "Connected",
-  expired: "Token expired",
-  revoked: "Revoked",
-  error: "Error",
+  not_connected: "Not signed in",
+  connected: "Signed in",
+  expired: "Sign-in expired",
+  revoked: "Signed out",
+  error: "Sign-in error",
   disabled: "Disabled",
-  reauthorization_required: "Reauthorization required",
+  reauthorization_required: "Sign in again",
 };
 
 /**
  * Pick the OAuth button label from the resolver's verdict. The
  * existing connection_status alone can't tell "expired" from
  * "mismatched", which need different labels.
+ *
+ * Labels speak to the operator about a specific account, not the
+ * underlying OAuth API connection. The route + state-enum names
+ * stay technical.
  */
 function oauthButtonLabel(publishState: IdentityPublishState | undefined): string {
   switch (publishState) {
     case "connected":
-      return "Reauthorize";
+      return "Sign in again";
     case "expired":
-      return "Reconnect";
+      return "Sign in again";
     case "mismatched":
-      return "Reconnect with correct account";
+      return "Sign in with correct account";
     default:
-      return "Connect identity";
+      return "Sign in to this account";
   }
 }
 
@@ -98,9 +109,9 @@ export function ConnectionControls(props: ConnectionControlsProps) {
       });
       const json = await res.json();
       if (!res.ok) {
-        setMessage(json.error ?? "Disconnect failed.");
+        setMessage(json.error ?? "Sign-out failed.");
       } else {
-        setMessage("Disconnected.");
+        setMessage("Signed out of this account.");
       }
     } finally {
       setBusy(null);
@@ -126,8 +137,8 @@ export function ConnectionControls(props: ConnectionControlsProps) {
       };
       if (json.ok && json.health === "healthy") {
         setMessage(
-          `Healthy${json.handle ? ` — connected as u/${json.handle}` : ""}${
-            json.refreshed ? " (token refreshed)" : ""
+          `Account access OK${json.handle ? ` — signed in as u/${json.handle}` : ""}${
+            json.refreshed ? " (session refreshed)" : ""
           }.`,
         );
       } else if (json.health) {
@@ -137,7 +148,7 @@ export function ConnectionControls(props: ConnectionControlsProps) {
           }`,
         );
       } else {
-        setMessage(json.error ?? "Health check failed.");
+        setMessage(json.error ?? "Account-access check failed.");
       }
     } finally {
       setBusy(null);
@@ -217,20 +228,20 @@ export function ConnectionControls(props: ConnectionControlsProps) {
       setAppPasswordValue("");
       if (res.ok && json.ok) {
         setMessage(
-          `Connected as ${json.authenticated_handle ?? "this account"}.`,
+          `Signed in as ${json.authenticated_handle ?? "this account"}.`,
         );
         setAppPasswordFormOpen(false);
       } else if (json.code === "handle_mismatch") {
         setMessage(
           json.message ??
-            "Credentials belong to a different Bluesky account.",
+            "Signed in as a different Bluesky account than this identity expects.",
         );
       } else if (json.code === "auth_failed") {
         setMessage(
           "Bluesky rejected the credentials. Double-check the handle and App Password.",
         );
       } else {
-        setMessage(json.error ?? json.message ?? "Connection failed.");
+        setMessage(json.error ?? json.message ?? "Sign-in failed.");
       }
     } finally {
       setBusy(null);
@@ -257,17 +268,17 @@ export function ConnectionControls(props: ConnectionControlsProps) {
 
       {showMismatchBanner ? (
         <div className="text-[11px] rounded-md border border-red-200 bg-red-50 text-red-800 px-2.5 py-1.5 leading-relaxed">
-          <div className="font-semibold">Connected account differs from identity.</div>
+          <div className="font-semibold">Account mismatch.</div>
           <div className="mt-0.5">
-            Expected{" "}
-            <span className="font-mono">
-              {props.mismatchEvidence?.declared ?? "—"}
-            </span>
-            ; authenticated as{" "}
+            Signed in as{" "}
             <span className="font-mono">
               {props.mismatchEvidence?.authenticated ?? "—"}
             </span>
-            . Reconnect with the correct account on the platform.
+            , expected{" "}
+            <span className="font-mono">
+              {props.mismatchEvidence?.declared ?? "—"}
+            </span>
+            . Sign in again with the correct account.
           </div>
         </div>
       ) : null}
@@ -333,10 +344,11 @@ export function ConnectionControls(props: ConnectionControlsProps) {
               {plan.buttonLabel}
             </button>
             <p className="basis-full text-[10px] text-ink-500 leading-relaxed italic mt-1">
-              Public handle resolution alone does not connect the
-              identity for publishing. The connect form authenticates
-              against Bluesky using an App Password so Signal can post
-              as this exact handle.
+              This identity represents a specific Bluesky account.
+              Resolving the public handle confirms it exists, but
+              doesn&apos;t sign Signal in. Use a Bluesky App Password
+              for this exact account to give Signal publishing
+              access.
             </p>
           </>
         ) : null}
@@ -347,7 +359,7 @@ export function ConnectionControls(props: ConnectionControlsProps) {
             className="basis-full mt-2 rounded-md border border-ink-200 bg-ink-50/30 p-3 space-y-2"
           >
             <div className="text-[11px] font-semibold text-ink-900">
-              Connect Bluesky identity
+              Sign in to this Bluesky account
             </div>
             <p className="text-[10px] text-amber-800 leading-relaxed">
               {plan.credentialNote}
@@ -389,8 +401,8 @@ export function ConnectionControls(props: ConnectionControlsProps) {
                 >
                   bsky.app/settings/app-passwords
                 </a>
-                . Signal stores the resulting session tokens encrypted
-                and never the App Password.
+                . Signal stores the resulting session encrypted and
+                never the App Password itself.
               </span>
             </label>
             <div className="flex gap-2">
@@ -399,7 +411,7 @@ export function ConnectionControls(props: ConnectionControlsProps) {
                 disabled={busy === "connect"}
                 className="btn-primary text-[11px]"
               >
-                {busy === "connect" ? "…" : "Authenticate"}
+                {busy === "connect" ? "…" : "Sign in"}
               </button>
               <button
                 type="button"
@@ -427,7 +439,7 @@ export function ConnectionControls(props: ConnectionControlsProps) {
             disabled={busy === "disconnect"}
             className="btn-secondary text-[11px]"
           >
-            {busy === "disconnect" ? "…" : "Disconnect"}
+            {busy === "disconnect" ? "…" : "Sign out of this account"}
           </button>
         ) : null}
 
@@ -439,7 +451,7 @@ export function ConnectionControls(props: ConnectionControlsProps) {
             disabled={busy === "health"}
             className="btn-secondary text-[11px]"
           >
-            {busy === "health" ? "…" : "Check connection"}
+            {busy === "health" ? "…" : "Check account access"}
           </button>
         ) : null}
       </div>

@@ -28,7 +28,7 @@ describe("resolveConnectIdentityPlan — OAuth platforms", () => {
     expect(plan.authorizeUrl).toBe(
       "/api/oauth/reddit/start?account_id=id-1",
     );
-    expect(plan.buttonLabel).toBe("Connect identity");
+    expect(plan.buttonLabel).toBe("Sign in to this account");
   });
 
   it("includes redirect_after in the authorize URL when provided", () => {
@@ -65,13 +65,16 @@ describe("resolveConnectIdentityPlan — app-password platforms", () => {
     if (plan.kind !== "app_password") return;
     expect(plan.resolveUrl).toBe("/api/identity/id-1/verify");
     expect(plan.connectUrl).toBe("/api/identity/id-1/bluesky/connect");
-    expect(plan.buttonLabel).toBe("Connect with App Password");
+    expect(plan.buttonLabel).toBe("Sign in with Bluesky App Password");
     // The note must explicitly steer the operator away from their
     // main password — the whole point of the corrected model.
     expect(plan.credentialNote.toLowerCase()).toContain("app password");
     expect(plan.credentialNote.toLowerCase()).toContain(
-      "not your main account password",
+      "not your main password",
     );
+    // Mentions the per-account scope so the operator understands the
+    // App Password must be specific to this identity's account.
+    expect(plan.credentialNote.toLowerCase()).toContain("this exact account");
   });
 });
 
@@ -89,7 +92,7 @@ describe("resolveConnectIdentityPlan — API-key verify platforms", () => {
       expect(plan.kind).toBe("api_key_verify");
       if (plan.kind !== "api_key_verify") return;
       expect(plan.verifyUrl).toBe(`/api/identity/id-1/verify`);
-      expect(plan.buttonLabel).toBe("Verify identity");
+      expect(plan.buttonLabel).toBe("Sign in to this account");
     },
   );
 
