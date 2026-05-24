@@ -75,11 +75,15 @@ const AUTH_PLAN_KINDS = [
 ] as const;
 
 describe("authControls gate coverage (page.tsx)", () => {
+  // NOTE: Hashnode is intentionally absent — fix/hashnode-manual-mode
+  // moved it to publishingMode='manual' in platform-guidance.ts.
+  // Hashnode now renders through the manualHint branch, NOT the auth
+  // gate. The Hashnode-as-manual case is covered in the dedicated
+  // suite below.
   it.each([
     { platform: "reddit", publishingMode: "manual", oauthAvailable: true, expectedKind: "oauth" },
     { platform: "bluesky", publishingMode: "api", oauthAvailable: false, expectedKind: "app_password" },
     { platform: "devto", publishingMode: "api", oauthAvailable: false, expectedKind: "personal_api_key" },
-    { platform: "hashnode", publishingMode: "api", oauthAvailable: false, expectedKind: "personal_api_key" },
     { platform: "telegram", publishingMode: "api", oauthAvailable: false, expectedKind: "api_key_verify" },
   ] as const)(
     "%j resolves to a plan kind the Manage panel can render",
@@ -98,6 +102,25 @@ describe("authControls gate coverage (page.tsx)", () => {
       expect(AUTH_PLAN_KINDS).toContain(plan.kind);
     },
   );
+
+  it("Hashnode (publishingMode='manual') resolves to manual — NOT one of the auth-gated kinds", () => {
+    // Production routing for Hashnode after the manual-mode flip:
+    // the Manage panel renders the Hashnode-specific hint + note,
+    // never the personal_api_key sign-in form.
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "hashnode",
+        publishingMode: "manual",
+        oauthAvailable: false,
+      }),
+    );
+    expect(plan.kind).toBe("manual");
+    expect(AUTH_PLAN_KINDS).not.toContain(plan.kind as never);
+    if (plan.kind === "manual") {
+      expect(plan.hint.toLowerCase()).toContain("hashnode");
+      expect(plan.note).toBeDefined();
+    }
+  });
 
   it("Manual + distribution platforms render through manualHint, NOT the auth gate", () => {
     for (const platform of ["x", "linkedin", "youtube", "threads", "instagram", "indie_hackers"] as const) {
@@ -129,65 +152,61 @@ describe("authControls gate coverage (page.tsx)", () => {
 
 // =====================================================================
 // Personal-API-key sign-in copy: the form must read like account
-// sign-in, not a developer-settings dump. This guards the rewrite
-// that put a real description, a readonly handle field, and clearer
-// help text into the dev.to + Hashnode forms.
+// sign-in, not a developer-settings dump. dev.to is the only
+// platform currently surfacing this in production — Hashnode moved
+// to manual mode in fix/hashnode-manual-mode, and the equivalent
+// dev.to-only tests below still guard the form copy contract.
+// (The Hashnode personal_api_key plan IS still produced by the
+// resolver when given publishingMode='api' — see the "re-enable
+// contract" tests in connect-identity.test.ts.)
 // =====================================================================
 
 describe("personal_api_key plan copy is account-sign-in shaped", () => {
-  it.each(["devto", "hashnode"] as const)(
-    "%s credentialNote explains why an API key is the sign-in method and that it's scoped to this identity",
-    (platform) => {
-      const plan = resolveConnectIdentityPlan(
-        input({ platform, publishingMode: "api", oauthAvailable: false }),
-      );
-      if (plan.kind !== "personal_api_key")
-        throw new Error("expected personal_api_key");
-      const note = plan.credentialNote.toLowerCase();
-      // Explains the purpose ("publish as this account") and the scope
-      // ("only for this identity"), not just an instruction to use a key.
-      expect(note).toContain("publish");
-      expect(note).toContain("api key");
-      expect(note).toContain("this identity");
-      // Must not leak internal terms.
-      expect(note).not.toContain("api_key_verify");
-      expect(note).not.toContain("personal_api_key");
-      expect(note).not.toContain("connection row");
-      expect(note).not.toContain("platform_connections");
-      // Must not ask for a regular password.
-      expect(note).not.toContain("password");
-    },
-  );
+  it("dev.to credentialNote explains why an API key is the sign-in method and that it's scoped to this identity", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({ platform: "devto", publishingMode: "api", oauthAvailable: false }),
+    );
+    if (plan.kind !== "personal_api_key")
+      throw new Error("expected personal_api_key");
+    const note = plan.credentialNote.toLowerCase();
+    // Explains the purpose ("publish as this account") and the scope
+    // ("only for this identity"), not just an instruction to use a key.
+    expect(note).toContain("publish");
+    expect(note).toContain("api key");
+    expect(note).toContain("this identity");
+    // Must not leak internal terms.
+    expect(note).not.toContain("api_key_verify");
+    expect(note).not.toContain("personal_api_key");
+    expect(note).not.toContain("connection row");
+    expect(note).not.toContain("platform_connections");
+    // Must not ask for a regular password.
+    expect(note).not.toContain("password");
+  });
 
-  it.each(["devto", "hashnode"] as const)(
-    "%s plan exposes a generateLabel path the operator can follow",
-    (platform) => {
-      const plan = resolveConnectIdentityPlan(
-        input({ platform, publishingMode: "api", oauthAvailable: false }),
-      );
-      if (plan.kind !== "personal_api_key")
-        throw new Error("expected personal_api_key");
-      // The label is the breadcrumb path inside the provider's UI.
-      // Must include "Settings" and "API Key"/"Token" so the operator
-      // can find the page without leaving the form.
-      expect(plan.generateLabel).toMatch(/Settings/);
-      expect(plan.generateLabel).toMatch(/API Key|Token/i);
-    },
-  );
+  it("dev.to plan exposes a generateLabel path the operator can follow", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({ platform: "devto", publishingMode: "api", oauthAvailable: false }),
+    );
+    if (plan.kind !== "personal_api_key")
+      throw new Error("expected personal_api_key");
+    // The label is the breadcrumb path inside the provider's UI.
+    // Must include "Settings" and "API Key" so the operator can
+    // find the page without leaving the form.
+    expect(plan.generateLabel).toMatch(/Settings/);
+    expect(plan.generateLabel).toMatch(/API Key/i);
+  });
 
-  it("dev.to and Hashnode buttonLabel reads as account sign-in ('Sign in'), not a developer action", () => {
-    for (const platform of ["devto", "hashnode"] as const) {
-      const plan = resolveConnectIdentityPlan(
-        input({ platform, publishingMode: "api", oauthAvailable: false }),
-      );
-      if (plan.kind !== "personal_api_key")
-        throw new Error("expected personal_api_key");
-      // Account-sign-in language — not "Verify", not "Connect API",
-      // not "Save key".
-      expect(plan.buttonLabel.toLowerCase()).toMatch(/sign in/);
-      expect(plan.buttonLabel.toLowerCase()).not.toMatch(/connect api/);
-      expect(plan.buttonLabel.toLowerCase()).not.toMatch(/save key/);
-    }
+  it("dev.to buttonLabel reads as account sign-in ('Sign in'), not a developer action", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({ platform: "devto", publishingMode: "api", oauthAvailable: false }),
+    );
+    if (plan.kind !== "personal_api_key")
+      throw new Error("expected personal_api_key");
+    // Account-sign-in language — not "Verify", not "Connect API",
+    // not "Save key".
+    expect(plan.buttonLabel.toLowerCase()).toMatch(/sign in/);
+    expect(plan.buttonLabel.toLowerCase()).not.toMatch(/connect api/);
+    expect(plan.buttonLabel.toLowerCase()).not.toMatch(/save key/);
   });
 });
 

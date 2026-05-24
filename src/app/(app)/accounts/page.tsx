@@ -335,9 +335,14 @@ export default async function AccountsPage() {
 
               const manualHint =
                 plan?.kind === "manual" ? (
-                  <p className="text-[11px] text-ink-500 italic">
-                    {plan.hint}
-                  </p>
+                  <div className="space-y-1.5">
+                    <p className="text-[11px] text-ink-700">{plan.hint}</p>
+                    {plan.note ? (
+                      <p className="text-[10px] text-ink-500 italic leading-relaxed">
+                        {plan.note}
+                      </p>
+                    ) : null}
+                  </div>
                 ) : null;
 
               const controlsWhenOpen = (
