@@ -250,7 +250,15 @@ export function GenerateDraftSheet(props: GenerateDraftSheetProps) {
                 type="button"
                 onClick={() => {
                   props.onClose();
-                  startTransition(() => router.push("/weekly-plan"));
+                  // Deep-link to the exact created plan item. The
+                  // weekly-plan page's FocusOnMount handler reads
+                  // ?focus and scrolls + highlights the matching
+                  // card. itemId is always set on a successful
+                  // result.
+                  const target = safe.itemId
+                    ? `/weekly-plan?focus=${encodeURIComponent(safe.itemId)}`
+                    : "/weekly-plan";
+                  startTransition(() => router.push(target));
                 }}
                 className="btn-primary text-sm"
               >

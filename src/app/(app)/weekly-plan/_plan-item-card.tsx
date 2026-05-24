@@ -85,7 +85,15 @@ export function PlanItemCard(props: PlanItemCardProps) {
 
   return (
     <>
-      <article className="rounded-2xl border border-ink-200 bg-white overflow-hidden">
+      <article
+        id={`plan-item-${props.id}`}
+        // The id is the deep-link anchor target. The compose-sheet
+        // "Open in weekly plan" button navigates to
+        // /weekly-plan?focus=<id> and a small client mount-effect
+        // (see _focus-on-mount.tsx) scrolls this element into view
+        // and applies a brief ring highlight.
+        className="rounded-2xl border border-ink-200 bg-white overflow-hidden scroll-mt-20"
+      >
         <div className="grid grid-cols-1 md:grid-cols-[1fr_180px]">
           <div className="p-4 md:p-5 space-y-2 min-w-0">
             {/* Title (clickable) */}

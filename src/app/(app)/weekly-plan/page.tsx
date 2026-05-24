@@ -17,6 +17,7 @@ import { listPlatformConnections } from "@/repositories/platform-connection-repo
 import { isRedditOauthBlocked } from "@/lib/oauth/env";
 import { ApprovePlanForm } from "./_approve-plan-form";
 import { PlanItemCard } from "./_plan-item-card";
+import { FocusOnMount } from "./_focus-on-mount";
 import { ExecutionStateBadge } from "@/components/publishing/execution-state";
 import { readAllowedTestSubreddits } from "@/core/publishing/safe-test-env";
 import { readGenerationProviderStatus } from "@/core/generation/provider-status";
@@ -326,6 +327,13 @@ export default async function WeeklyPlanPage() {
 
   return (
     <>
+      {/*
+        Reads ?focus=<itemId> on mount and scrolls/highlights the
+        matching <article id="plan-item-<itemId>">. Used by the
+        compose-sheet deep link so a freshly generated draft lands
+        in view without the operator hunting for it.
+      */}
+      <FocusOnMount />
       <Topbar
         title="Weekly plan"
         description={
