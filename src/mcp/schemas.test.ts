@@ -2,11 +2,19 @@ import { describe, expect, it } from "vitest";
 import { FOUNDER_PLATFORMS } from "@/core/publishing/platform-guidance";
 import {
   ACCOUNTS_PREPARE_PLATFORMS,
+  MULTIWEEK_MAX_TOTAL_ITEMS,
+  MULTIWEEK_MAX_WEEKS,
   VOICE_PROFILE_MAX_CHARS,
+  WEEKLY_PLAN_MAX_ITEMS,
   parseAccountsPrepare,
+  parseGenerateDraft,
+  parseGenerateMultiweekPlan,
+  parseGenerateWeeklyPlan,
+  parseIdentitiesUpdate,
 } from "./schemas";
 
 const VALID_UUID = "11111111-2222-3333-4444-555555555555";
+const VALID_UUID_2 = "22222222-3333-4444-5555-666666666666";
 
 describe("parseAccountsPrepare — platform allowlist", () => {
   it("matches the founder UI platform list exactly (no drift)", () => {
@@ -151,5 +159,267 @@ describe("parseAccountsPrepare — other fields", () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.errors).toContain("product_id_invalid");
+  });
+});
+
+// =====================================================================
+// parseGenerateDraft
+// =====================================================================
+
+describe("parseGenerateDraft", () => {
+  it("accepts minimum required inputs", () => {
+    const result = parseGenerateDraft({
+      identity_id: VALID_UUID,
+      topic: "Calm test topic.",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.identity_id).toBe(VALID_UUID);
+      expect(result.value.topic).toBe("Calm test topic.");
+      expect(result.value.week_start).toBeNull();
+    }
+  });
+
+  it("rejects missing identity_id or topic", () => {
+    const noIdentity = parseGenerateDraft({ topic: "x" });
+    expect(noIdentity.ok).toBe(false);
+    const noTopic = parseGenerateDraft({ identity_id: VALID_UUID });
+    expect(noTopic.ok).toBe(false);
+  });
+
+  it("rejects malformed week_start", () => {
+    const result = parseGenerateDraft({
+      identity_id: VALID_UUID,
+      topic: "x",
+      week_start: "not-a-date",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors).toContain("week_start_invalid");
+  });
+
+  it("trims and clamps oversized fields", () => {
+    const huge = "x".repeat(2000);
+    const result = parseGenerateDraft({
+      identity_id: VALID_UUID,
+      topic: huge,
+      goal: huge,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.topic.length).toBeLessThanOrEqual(500);
+      expect((result.value.goal as string).length).toBeLessThanOrEqual(1000);
+    }
+  });
+});
+
+// =====================================================================
+// parseGenerateWeeklyPlan
+// =====================================================================
+
+describe("parseGenerateWeeklyPlan", () => {
+  it("accepts a valid plan within the item cap", () => {
+    const result = parseGenerateWeeklyPlan({
+      product_id: VALID_UUID,
+      week_start: "2026-05-25",
+      identity_ids: [VALID_UUID_2],
+      topics: [{ topic: "a" }, { topic: "b" }],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.identity_ids.length).toBe(1);
+      expect(result.value.topics.length).toBe(2);
+      expect(result.value.include_media_briefs).toBe(true);
+    }
+  });
+
+  it("rejects empty identity_ids and empty topics", () => {
+    const noIds = parseGenerateWeeklyPlan({
+      product_id: VALID_UUID,
+      week_start: "2026-05-25",
+      identity_ids: [],
+      topics: [{ topic: "x" }],
+    });
+    expect(noIds.ok).toBe(false);
+    if (!noIds.ok) expect(noIds.errors).toContain("identity_ids_empty");
+
+    const noTopics = parseGenerateWeeklyPlan({
+      product_id: VALID_UUID,
+      week_start: "2026-05-25",
+      identity_ids: [VALID_UUID_2],
+      topics: [],
+    });
+    expect(noTopics.ok).toBe(false);
+    if (!noTopics.ok) expect(noTopics.errors).toContain("topics_empty");
+  });
+
+  it(`enforces ${WEEKLY_PLAN_MAX_ITEMS}-item cap (identities × topics)`, () => {
+    // 4 identities × 4 topics = 16 items > 12 cap
+    const identityIds = Array.from(
+      { length: 4 },
+      (_, i) => `11111111-2222-3333-4444-${String(i).padStart(12, "0")}`,
+    );
+    const topics = Array.from({ length: 4 }, () => ({ topic: "x" }));
+    const result = parseGenerateWeeklyPlan({
+      product_id: VALID_UUID,
+      week_start: "2026-05-25",
+      identity_ids: identityIds,
+      topics,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok)
+      expect(result.errors.some((e) => e.startsWith("cap_exceeded"))).toBe(true);
+  });
+
+  it("rejects invalid week_start ISO date", () => {
+    const result = parseGenerateWeeklyPlan({
+      product_id: VALID_UUID,
+      week_start: "2026/05/25",
+      identity_ids: [VALID_UUID_2],
+      topics: [{ topic: "x" }],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors).toContain("week_start_invalid");
+  });
+});
+
+// =====================================================================
+// parseGenerateMultiweekPlan
+// =====================================================================
+
+describe("parseGenerateMultiweekPlan", () => {
+  it("accepts a valid multi-week plan", () => {
+    const result = parseGenerateMultiweekPlan({
+      product_id: VALID_UUID,
+      start_date: "2026-05-25",
+      number_of_weeks: 2,
+      identity_ids: [VALID_UUID_2],
+      topics_per_week: [{ topic: "a" }],
+      strategic_theme: "Operational publishing",
+      approval_mode: "operator_review_required",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.number_of_weeks).toBe(2);
+      expect(result.value.approval_mode).toBe("operator_review_required");
+    }
+  });
+
+  it("requires approval_mode = operator_review_required (refuses any other value)", () => {
+    const result = parseGenerateMultiweekPlan({
+      product_id: VALID_UUID,
+      start_date: "2026-05-25",
+      number_of_weeks: 1,
+      identity_ids: [VALID_UUID_2],
+      topics_per_week: [{ topic: "x" }],
+      strategic_theme: "x",
+      approval_mode: "auto",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok)
+      expect(result.errors).toContain(
+        "approval_mode_must_be_operator_review_required",
+      );
+  });
+
+  it(`enforces ${MULTIWEEK_MAX_WEEKS}-week cap`, () => {
+    const result = parseGenerateMultiweekPlan({
+      product_id: VALID_UUID,
+      start_date: "2026-05-25",
+      number_of_weeks: MULTIWEEK_MAX_WEEKS + 1,
+      identity_ids: [VALID_UUID_2],
+      topics_per_week: [{ topic: "x" }],
+      strategic_theme: "x",
+      approval_mode: "operator_review_required",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok)
+      expect(result.errors.some((e) => e.startsWith("cap_exceeded"))).toBe(true);
+  });
+
+  it(`enforces ${MULTIWEEK_MAX_TOTAL_ITEMS}-item cap across identities × topics × weeks`, () => {
+    // 4 identities × 4 topics × 4 weeks = 64 items > 40 cap
+    const identityIds = Array.from(
+      { length: 4 },
+      (_, i) => `33333333-4444-5555-6666-${String(i).padStart(12, "0")}`,
+    );
+    const topics = Array.from({ length: 4 }, () => ({ topic: "x" }));
+    const result = parseGenerateMultiweekPlan({
+      product_id: VALID_UUID,
+      start_date: "2026-05-25",
+      number_of_weeks: 4,
+      identity_ids: identityIds,
+      topics_per_week: topics,
+      strategic_theme: "x",
+      approval_mode: "operator_review_required",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok)
+      expect(
+        result.errors.some(
+          (e) => e.includes("cap_exceeded") && e.includes("40_items"),
+        ),
+      ).toBe(true);
+  });
+
+  it("requires strategic_theme", () => {
+    const result = parseGenerateMultiweekPlan({
+      product_id: VALID_UUID,
+      start_date: "2026-05-25",
+      number_of_weeks: 1,
+      identity_ids: [VALID_UUID_2],
+      topics_per_week: [{ topic: "x" }],
+      approval_mode: "operator_review_required",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors).toContain("strategic_theme_required");
+  });
+});
+
+// =====================================================================
+// parseIdentitiesUpdate
+// =====================================================================
+
+describe("parseIdentitiesUpdate", () => {
+  it("requires at least one updatable field", () => {
+    const result = parseIdentitiesUpdate({ identity_id: VALID_UUID });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors).toContain("at_least_one_field_required");
+  });
+
+  it("accepts a single field patch and trims it", () => {
+    const result = parseIdentitiesUpdate({
+      identity_id: VALID_UUID,
+      voice_profile: "  Calmer voice profile.  ",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.voice_profile).toBe("Calmer voice profile.");
+  });
+
+  it("rejects empty display_name", () => {
+    const result = parseIdentitiesUpdate({
+      identity_id: VALID_UUID,
+      display_name: "   ",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok)
+      expect(result.errors).toContain("display_name_must_be_non_empty_string");
+  });
+
+  it("rejects oversized voice_profile", () => {
+    const result = parseIdentitiesUpdate({
+      identity_id: VALID_UUID,
+      voice_profile: "x".repeat(VOICE_PROFILE_MAX_CHARS + 1),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors).toContain("voice_profile_too_long");
+  });
+
+  it("preserves null vs undefined distinction (null means 'clear')", () => {
+    const cleared = parseIdentitiesUpdate({
+      identity_id: VALID_UUID,
+      voice_profile: null,
+    });
+    expect(cleared.ok).toBe(true);
+    if (cleared.ok) expect(cleared.value.voice_profile).toBeNull();
   });
 });
