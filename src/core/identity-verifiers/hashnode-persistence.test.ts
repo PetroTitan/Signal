@@ -319,6 +319,26 @@ describe("buildHashnodeVerifyPlan — error outcomes", () => {
     expect(plan.upsert).toBeNull();
     expect(plan.response.status).toBe(502);
   });
+
+  it("api_unavailable → 503, no upsert, full operator copy reaches the body", () => {
+    const plan = buildHashnodeVerifyPlan({
+      result: {
+        outcome: "error",
+        code: "api_unavailable",
+        message:
+          "Hashnode GraphQL API access is not available for this account. " +
+          "Hashnode now requires API access to be enabled for the publication/account. " +
+          "Use manual publishing for now, or enable the required Hashnode plan and try again.",
+      },
+      workspaceId: WS,
+      identityId: ID,
+      declaredHandle: "webmasterid",
+    });
+    expect(plan.upsert).toBeNull();
+    expect(plan.response.status).toBe(503);
+    expect(plan.response.body.code).toBe("api_unavailable");
+    expect(plan.response.body.message).toContain("manual publishing");
+  });
 });
 
 describe("buildHashnodeVerifyPlan — token storage refusal", () => {

@@ -291,6 +291,16 @@ export function ConnectionControls(props: ConnectionControlsProps) {
       } else if (json.code === "auth_failed") {
         setMessage("Sign-in failed. Check the API key and try again.");
         setCooldownUntil(Date.now() + FAILED_AUTH_COOLDOWN_MS);
+      } else if (json.code === "api_unavailable") {
+        // The provider refused to service the API request itself
+        // (e.g. Hashnode retired free GraphQL access on 2026-05-13).
+        // Surface the route's operator-friendly copy verbatim and
+        // skip the cooldown — there's nothing for the operator to
+        // fix by retrying with a different key.
+        setMessage(
+          json.message ??
+            "This platform's API is not available right now. Try again later or switch to manual publish for this identity.",
+        );
       } else {
         setMessage(json.error ?? json.message ?? "Sign-in failed.");
         setCooldownUntil(Date.now() + FAILED_AUTH_COOLDOWN_MS);

@@ -226,11 +226,10 @@ describe("verifyHashnodeIdentity — input validation", () => {
   });
 
   it("accepts a handle with a leading @ (normalizer strips it before validation)", async () => {
-    const fetchImpl = (async () => ({
-      ok: true,
+    const fetchImpl = makeFetch(() => ({
       status: 200,
-      json: async () => ({ data: { me: { username: "webmasterid", id: "1" } } }),
-    })) as unknown as typeof fetch;
+      body: { data: { me: { username: "webmasterid", id: "1" } } },
+    }));
     const result = await verifyHashnodeIdentity({
       ...BASE,
       declaredHandle: "@webmasterid",
@@ -468,5 +467,184 @@ describe("verifyHashnodeIdentity — idempotency", () => {
     const a = await verifyHashnodeIdentity({ ...BASE, fetchImpl });
     const b = await verifyHashnodeIdentity({ ...BASE, fetchImpl });
     expect(a).toEqual(b);
+  });
+});
+
+// =====================================================================
+// api_unavailable — Hashnode retired free GraphQL access on 2026-05-13
+// Requests to gql.hashnode.com get a 301 redirect to the announcement
+// page BEFORE the auth header is evaluated. The verifier must
+// surface this as `api_unavailable` so operators don't chase a
+// phantom "invalid token" error. See hashnode.ts:API_UNAVAILABLE_MESSAGE.
+// =====================================================================
+
+/**
+ * Build a raw fetch impl that returns the exact Response we hand it,
+ * skipping the JSON wrapper jsonResponse() applies. Required for
+ * testing redirect / HTML / non-JSON cases where the response is
+ * intentionally NOT JSON-shaped.
+ */
+function rawFetch(response: Response): typeof fetch {
+  return (async () => response) as typeof fetch;
+}
+
+describe("verifyHashnodeIdentity — api_unavailable (paywall / retired endpoint)", () => {
+  it.each([301, 302, 307, 308])(
+    "treats HTTP %i redirect as api_unavailable (NOT auth_failed)",
+    async (status) => {
+      const fetchImpl = rawFetch(
+        new Response(null, {
+          status,
+          headers: { location: "https://hashnode.com/announcements/graphql-api" },
+        }),
+      );
+      const result = await verifyHashnodeIdentity({ ...BASE, fetchImpl });
+      expect(result.outcome).toBe("error");
+      if (result.outcome !== "error") return;
+      expect(result.code).toBe("api_unavailable");
+      // Operator copy: must NOT claim the token is bad, since the
+      // token was never inspected at this layer.
+      expect(result.message.toLowerCase()).not.toContain("token");
+      expect(result.message.toLowerCase()).not.toContain("invalid");
+      // Must point operators at the actual blocker.
+      expect(result.message.toLowerCase()).toContain("hashnode");
+      expect(result.message.toLowerCase()).toContain("api");
+      expect(result.message.toLowerCase()).toContain("manual publishing");
+    },
+  );
+
+  it("treats a 200 OK HTML body as api_unavailable (content-type text/html)", async () => {
+    const fetchImpl = rawFetch(
+      new Response(
+        "<!doctype html><html><head><title>GraphQL API is moving to a paid offering</title></head><body>upgrade to pro</body></html>",
+        {
+          status: 200,
+          headers: { "content-type": "text/html; charset=UTF-8" },
+        },
+      ),
+    );
+    const result = await verifyHashnodeIdentity({ ...BASE, fetchImpl });
+    expect(result.outcome).toBe("error");
+    if (result.outcome !== "error") return;
+    expect(result.code).toBe("api_unavailable");
+  });
+
+  it("treats a 200 OK non-JSON body without text/html as api_unavailable", async () => {
+    // Cloudflare 522s and similar opaque bodies — anything we can't
+    // parse as JSON from the GraphQL endpoint indicates the endpoint
+    // isn't actually serving the API.
+    const fetchImpl = rawFetch(
+      new Response("not json text", {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      }),
+    );
+    const result = await verifyHashnodeIdentity({ ...BASE, fetchImpl });
+    expect(result.outcome).toBe("error");
+    if (result.outcome !== "error") return;
+    expect(result.code).toBe("api_unavailable");
+  });
+
+  it("api_unavailable copy matches the spec verbatim", async () => {
+    const fetchImpl = rawFetch(
+      new Response(null, {
+        status: 301,
+        headers: { location: "https://hashnode.com/announcements/graphql-api" },
+      }),
+    );
+    const result = await verifyHashnodeIdentity({ ...BASE, fetchImpl });
+    if (result.outcome !== "error") throw new Error("expected error");
+    // Exact phrasing from fix/hashnode-api-unavailable:
+    expect(result.message).toContain(
+      "Hashnode GraphQL API access is not available for this account.",
+    );
+    expect(result.message).toContain(
+      "Hashnode now requires API access to be enabled for the publication/account.",
+    );
+    expect(result.message).toContain(
+      "Use manual publishing for now, or enable the required Hashnode plan and try again.",
+    );
+  });
+
+  it("does NOT leak the API key in the api_unavailable message", async () => {
+    const fetchImpl = rawFetch(
+      new Response("<html>paywall</html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      }),
+    );
+    const result = await verifyHashnodeIdentity({
+      ...BASE,
+      apiKey: "DO-NOT-LEAK-HASHNODE-KEY-IN-PAYWALL",
+      fetchImpl,
+    });
+    if (result.outcome !== "error") throw new Error("expected error");
+    expect(result.message).not.toContain("DO-NOT-LEAK-HASHNODE-KEY-IN-PAYWALL");
+  });
+
+  it("passes redirect: 'manual' so the verifier observes 301 directly (not the followed HTML page)", async () => {
+    // Defensive: confirm we don't accidentally regress to default
+    // redirect:follow behavior, which would mask the paywall as a
+    // shape error.
+    let observedInit: RequestInit | undefined;
+    const fetchImpl = (async (
+      _url: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      observedInit = init;
+      return new Response(null, {
+        status: 301,
+        headers: { location: "https://hashnode.com/announcements/graphql-api" },
+      });
+    }) as typeof fetch;
+    await verifyHashnodeIdentity({ ...BASE, fetchImpl });
+    expect(observedInit?.redirect).toBe("manual");
+  });
+});
+
+// =====================================================================
+// Regression: auth_failed must still fire when the endpoint really
+// reaches the auth layer (Pro accounts that get a real 401/403).
+// This is the test we need to keep green to avoid lumping every
+// 4xx into api_unavailable.
+// =====================================================================
+
+describe("verifyHashnodeIdentity — auth_failed still distinct from api_unavailable", () => {
+  it("HTTP 401 with JSON body remains auth_failed", async () => {
+    const fetchImpl = rawFetch(
+      new Response(JSON.stringify({ error: "unauthorized" }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const result = await verifyHashnodeIdentity({ ...BASE, fetchImpl });
+    if (result.outcome !== "error") throw new Error("expected error");
+    expect(result.code).toBe("auth_failed");
+  });
+
+  it("HTTP 403 with JSON body remains auth_failed", async () => {
+    const fetchImpl = rawFetch(
+      new Response(JSON.stringify({ error: "forbidden" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const result = await verifyHashnodeIdentity({ ...BASE, fetchImpl });
+    if (result.outcome !== "error") throw new Error("expected error");
+    expect(result.code).toBe("auth_failed");
+  });
+
+  it("GraphQL-level UNAUTHENTICATED (HTTP 200 + errors[]) remains auth_failed", async () => {
+    const fetchImpl = makeFetch(() => ({
+      status: 200,
+      body: {
+        errors: [
+          { message: "Not authenticated", extensions: { code: "UNAUTHENTICATED" } },
+        ],
+      },
+    }));
+    const result = await verifyHashnodeIdentity({ ...BASE, fetchImpl });
+    if (result.outcome !== "error") throw new Error("expected error");
+    expect(result.code).toBe("auth_failed");
   });
 });

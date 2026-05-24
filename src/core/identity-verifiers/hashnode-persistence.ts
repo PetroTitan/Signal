@@ -142,13 +142,19 @@ export function buildHashnodeVerifyPlan(
   }
 
   // result.outcome === "error" — no row written.
+  // api_unavailable maps to 503 Service Unavailable: the request was
+  // valid but the provider is refusing to service it (the API was
+  // retired for non-Pro accounts). 503 is also what we use for
+  // network_error, which is the right neighborhood — neither
+  // outcome is the operator's fault and neither is fixable by
+  // editing the API key.
   const httpStatus =
     result.code === "auth_failed"
       ? 401
       : result.code === "handle_invalid" ||
           result.code === "credentials_missing"
         ? 400
-        : result.code === "network_error"
+        : result.code === "network_error" || result.code === "api_unavailable"
           ? 503
           : 502;
   return {
