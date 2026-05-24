@@ -253,3 +253,140 @@ async function safeJson(res: Response): Promise<Record<string, unknown> | null> 
     return null;
   }
 }
+
+// =====================================================================
+// Session refresh — called by the publishing path when Bluesky
+// returns 401 with the current access JWT.
+// =====================================================================
+
+export interface BlueskyRefreshInput {
+  /**
+   * Plaintext refresh JWT, freshly decrypted by the caller. The
+   * caller MUST discard this value after the call; do NOT pass it
+   * to logs, retain it in module scope, or include it in any return
+   * surface above the refresh function.
+   */
+  refreshJwt: string;
+  /** AT Protocol PDS service URL, e.g. https://bsky.social */
+  service?: string;
+  /** Optional fetch impl for tests. */
+  fetchImpl?: typeof fetch;
+}
+
+export type BlueskyRefreshErrorCode =
+  | "missing_refresh_token"
+  | "refresh_rejected"
+  | "provider_error"
+  | "network_error";
+
+export interface BlueskyRefreshSuccess {
+  outcome: "refreshed";
+  did: string;
+  handle: string;
+  accessJwt: string;
+  refreshJwt: string;
+}
+
+export interface BlueskyRefreshError {
+  outcome: "error";
+  code: BlueskyRefreshErrorCode;
+  message: string;
+}
+
+export type BlueskyRefreshResult = BlueskyRefreshSuccess | BlueskyRefreshError;
+
+const BLUESKY_PDS_DEFAULT = "https://bsky.social";
+
+/**
+ * Calls AT Protocol `com.atproto.server.refreshSession`. The refresh
+ * endpoint uses the REFRESH token as the Bearer (not the access
+ * token), and returns a fresh accessJwt + refreshJwt + did + handle.
+ *
+ * Pure function (modulo the injected fetch). Returns a discriminated
+ * union — the caller decides what to persist. The refresh JWT
+ * plaintext lives only in the caller's stack frame for the duration
+ * of this call.
+ *
+ * Endpoint reference:
+ *   POST /xrpc/com.atproto.server.refreshSession
+ *   Authorization: Bearer <refreshJwt>
+ *   200 → { accessJwt, refreshJwt, did, handle, ... }
+ *   400/401 → refresh rejected (token revoked, expired beyond
+ *             refresh window, or token is malformed)
+ */
+export async function refreshBlueskySession(
+  input: BlueskyRefreshInput,
+): Promise<BlueskyRefreshResult> {
+  if (
+    typeof input.refreshJwt !== "string" ||
+    input.refreshJwt.length === 0
+  ) {
+    return {
+      outcome: "error",
+      code: "missing_refresh_token",
+      message: "No refresh token available for this identity.",
+    };
+  }
+
+  const service = input.service ?? BLUESKY_PDS_DEFAULT;
+  const doFetch = input.fetchImpl ?? fetch;
+
+  let body: Record<string, unknown>;
+  try {
+    const res = await doFetch(`${service}/xrpc/com.atproto.server.refreshSession`, {
+      method: "POST",
+      headers: {
+        // Refresh endpoint authenticates with the refresh JWT as the
+        // bearer. The access JWT is not used here.
+        Authorization: `Bearer ${input.refreshJwt}`,
+      },
+    });
+    if (res.status === 400 || res.status === 401) {
+      // Refresh token rejected — Bluesky considers this session
+      // dead. The caller must mark the connection expired/revoked
+      // and stop publishing.
+      return {
+        outcome: "error",
+        code: "refresh_rejected",
+        message: `Bluesky rejected the refresh token (HTTP ${res.status}).`,
+      };
+    }
+    if (!res.ok) {
+      return {
+        outcome: "error",
+        code: "provider_error",
+        message: `Bluesky refreshSession failed: HTTP ${res.status}.`,
+      };
+    }
+    body = (await safeJson(res)) ?? {};
+  } catch (err) {
+    return {
+      outcome: "error",
+      code: "network_error",
+      message: `Network error reaching Bluesky refreshSession: ${(err as Error).message ?? "unknown"}.`,
+    };
+  }
+
+  const did = typeof body.did === "string" ? body.did : null;
+  const handle = typeof body.handle === "string" ? body.handle : null;
+  const accessJwt =
+    typeof body.accessJwt === "string" ? body.accessJwt : null;
+  const refreshJwt =
+    typeof body.refreshJwt === "string" ? body.refreshJwt : null;
+  if (!did || !did.startsWith("did:") || !handle || !accessJwt || !refreshJwt) {
+    return {
+      outcome: "error",
+      code: "provider_error",
+      message:
+        "Bluesky refreshSession returned an unexpected response shape (missing did/handle/accessJwt/refreshJwt).",
+    };
+  }
+
+  return {
+    outcome: "refreshed",
+    did,
+    handle,
+    accessJwt,
+    refreshJwt,
+  };
+}

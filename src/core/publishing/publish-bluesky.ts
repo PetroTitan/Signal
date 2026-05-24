@@ -37,6 +37,29 @@ export interface PublishBlueskyInput {
   service: string;
 }
 
+/**
+ * Identity-scoped publish input. The caller provides an already-
+ * decrypted access JWT + the DID this session belongs to. The
+ * publisher uses these directly — no createSession round-trip, no
+ * app password handling.
+ *
+ * The caller (the runner) is responsible for refresh-on-401:
+ * `session_expired` is returned as a typed outcome so the runner can
+ * orchestrate refresh + retry exactly once. The publisher itself
+ * never retries.
+ */
+export interface PublishBlueskyAsIdentityInput {
+  request: PublishRequest;
+  /** Decrypted access JWT. Held only in this call's scope. */
+  accessJwt: string;
+  /** The DID that owns the session (= repo for createRecord). */
+  did: string;
+  /** The canonical handle for this identity. Drives the permalink. */
+  handle: string;
+  /** AT Protocol PDS service URL, e.g. https://bsky.social */
+  service: string;
+}
+
 interface BlueskySession {
   accessJwt: string;
   did: string;
@@ -285,6 +308,121 @@ export async function publishToBluesky(
     metadata: {
       thread_length: thread.length,
       root_uri: rootUri,
+    },
+  });
+}
+
+// =====================================================================
+// Identity-scoped publish — the correct model.
+// =====================================================================
+//
+// publishToBlueskyAsIdentity uses the encrypted session already
+// owned by THIS identity (via /api/identity/[id]/bluesky/connect),
+// never the workspace-level BLUESKY_APP_PASSWORD. The runner
+// decrypts the access JWT, calls this function, and on 401 handles
+// refresh + retry orchestration externally.
+//
+// The function is pure (modulo fetch) and identity-scoped:
+//   - repo = input.did      → posts always land on this identity's account
+//   - Authorization Bearer  → uses this identity's session only
+// Two identities passing two different (did, accessJwt) values can
+// NEVER cross-pollinate — the function reads only what was passed in.
+
+/**
+ * Publishes the canonical post under the given identity's session.
+ *
+ * Returns one of three outcomes via the standard PublishOutcome:
+ *   - ok: publish succeeded
+ *   - fail("session_expired", ...): server returned 401. The runner
+ *     should attempt refresh exactly once.
+ *   - other failure codes: rate-limited, network, malformed input
+ */
+export async function publishToBlueskyAsIdentity(
+  input: PublishBlueskyAsIdentityInput,
+): Promise<PublishOutcome> {
+  const { request, accessJwt, did, handle, service } = input;
+
+  if (!accessJwt || !did) {
+    return publishFail(
+      "session_missing",
+      "Bluesky: identity is not signed in.",
+    );
+  }
+  if (!request.body || request.body.trim().length === 0) {
+    return publishFail("missing_body", "Bluesky posts need body text.");
+  }
+
+  // Transform canonical post into a thread of Bluesky posts.
+  const post = canonicalPostFromRequest(request);
+  const thread = transformForBluesky(post);
+  if (thread.length === 0) {
+    return publishFail("missing_body", "Bluesky thread had no content.");
+  }
+
+  const session: BlueskySession = { accessJwt, did };
+  const createdAt = new Date().toISOString();
+  let rootUri: string | null = null;
+  let rootCid: string | null = null;
+  let previousUri: string | null = null;
+  let previousCid: string | null = null;
+
+  for (const part of thread) {
+    const facets = extractFacets(part.text);
+    const record: Record<string, unknown> = {
+      $type: "app.bsky.feed.post",
+      text: part.text,
+      createdAt,
+      langs: ["en"],
+    };
+    if (facets.length > 0) record.facets = facets;
+    if (rootUri && rootCid && previousUri && previousCid) {
+      record.reply = {
+        root: { uri: rootUri, cid: rootCid },
+        parent: { uri: previousUri, cid: previousCid },
+      };
+    }
+    const result = await createPostRecord(service, session, record);
+    if (!result.ok) {
+      // 401 → typed session_expired so the runner can attempt a
+      // refresh exactly once. 403 stays generic — refresh won't
+      // help if the account itself was banned/disabled.
+      const code =
+        result.status === 401
+          ? "session_expired"
+          : result.status === 429
+            ? "platform_rate_limited"
+            : result.status === 403
+              ? "platform_unauthorized"
+              : "platform_api_error";
+      return publishFail(code, `Bluesky: ${result.detail}`, {
+        http_status: result.status,
+        thread_position_failed: thread.indexOf(part) + 1,
+        thread_total: thread.length,
+        // The DID is public information — already in the at-uri of
+        // any of this identity's published posts. Including it in
+        // diagnostic metadata is safe.
+        did,
+      });
+    }
+    if (!rootUri) {
+      rootUri = result.record.uri;
+      rootCid = result.record.cid;
+    }
+    previousUri = result.record.uri;
+    previousCid = result.record.cid;
+  }
+
+  const permalink = rootUri ? atUriToBskyPermalink(rootUri, handle) : null;
+
+  return publishOk({
+    externalId: rootUri,
+    externalUrl: permalink,
+    metadata: {
+      thread_length: thread.length,
+      root_uri: rootUri,
+      // No tokens, no app passwords. DID is public and useful for
+      // operator audit ("which exact account did this post under?").
+      did,
     },
   });
 }

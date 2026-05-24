@@ -81,6 +81,40 @@ export function readBlueskyCredentials(): BlueskyCredentials | null {
   };
 }
 
+/**
+ * Legacy workspace-level Bluesky fallback flag. Opt-in only —
+ * defaults to false. When true AND the identity has no encrypted
+ * session of its own AND BLUESKY_IDENTIFIER / BLUESKY_APP_PASSWORD
+ * are present, publishing falls back to the workspace-level
+ * credentials.
+ *
+ * This is a transitional shim for workspaces that haven't yet
+ * signed in to each Bluesky identity through the per-identity
+ * Manage flow. It's expected to be removed once all live
+ * identities have their own sessions; toggling it off in
+ * production should be the default state and just leave the env
+ * var unset.
+ *
+ * IMPORTANT: even when this flag is on, the fallback is platform-
+ * wide, NOT identity-scoped. Posts will go through the workspace
+ * credential's account — which may or may not be the same account
+ * the identity expects. Use cautiously.
+ */
+export function isBlueskyLegacyFallbackEnabled(): boolean {
+  const raw = safe(process.env.BLUESKY_LEGACY_FALLBACK);
+  if (!raw) return false;
+  return raw === "true" || raw === "1";
+}
+
+/**
+ * Service URL for AT Protocol calls. Same default as
+ * readBlueskyCredentials. Exposed so the identity-scoped publisher
+ * can read it without requiring the workspace credentials to be set.
+ */
+export function readBlueskyServiceUrl(): string {
+  return safe(process.env.BLUESKY_SERVICE) ?? "https://bsky.social";
+}
+
 export function readTelegramCredentials(): TelegramCredentials | null {
   const botToken = safe(process.env.TELEGRAM_BOT_TOKEN);
   if (!botToken) return null;
