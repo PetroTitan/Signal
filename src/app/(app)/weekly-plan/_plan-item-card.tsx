@@ -67,6 +67,10 @@ export interface PlanItemCardProps {
   products: { id: string; name: string }[];
   accounts: { id: string; displayName: string | null; platform: string }[];
   allowedSubreddits: string[];
+  /** True when an active weekly contract exists for the workspace.
+   *  Required only for immediate-schedule per-item approval and bulk
+   *  paths; per-item hold approval works regardless. */
+  hasActiveContract: boolean;
   creative: CreativeCardData | null;
   executionItemId: string | null;
   executionItemStatus: string | null;
@@ -267,6 +271,7 @@ export function PlanItemCard(props: PlanItemCardProps) {
                 <PerItemApproveButtons
                   itemId={props.id}
                   scheduleSet={props.scheduledAt !== null}
+                  hasActiveContract={props.hasActiveContract}
                 />
               ) : null}
               <QuickReschedule
@@ -603,9 +608,11 @@ function postStatusLabel(
 function PerItemApproveButtons({
   itemId,
   scheduleSet,
+  hasActiveContract,
 }: {
   itemId: string;
   scheduleSet: boolean;
+  hasActiveContract: boolean;
 }) {
   const [holdState, holdAction] = useFormState(
     approvePlanItemAndHoldAction,
@@ -618,19 +625,35 @@ function PerItemApproveButtons({
   const holdSafe = holdState ?? approveItemInitial;
   const scheduleSafe = scheduleState ?? approveItemInitial;
 
+  // "Approve post" needs both a schedule AND an active contract
+  // (execution_items.contract_id is NOT NULL). "Approve & hold" is
+  // contract-free.
+  const scheduleCta = !scheduleSet
+    ? { kind: "no_schedule" as const }
+    : !hasActiveContract
+      ? { kind: "no_contract" as const }
+      : { kind: "ready" as const };
+
   return (
     <div className="inline-flex flex-wrap items-center gap-1.5">
-      {scheduleSet ? (
+      {scheduleCta.kind === "ready" ? (
         <form action={scheduleAction} className="inline">
           <input type="hidden" name="item_id" value={itemId} />
           <ApprovePostSubmit />
         </form>
-      ) : (
+      ) : scheduleCta.kind === "no_schedule" ? (
         <span
           className="inline-flex items-center text-[11px] text-ink-500 italic"
           title="No schedule set. Use Approve & hold, then schedule later."
         >
           No schedule — approve & hold first
+        </span>
+      ) : (
+        <span
+          className="inline-flex items-center text-[11px] text-ink-500 italic"
+          title="Scheduling requires an active weekly contract. You can approve & hold now, then activate a contract before scheduling."
+        >
+          No active contract — approve & hold first
         </span>
       )}
       <form action={holdAction} className="inline">

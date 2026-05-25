@@ -29,7 +29,7 @@ export { summarizeReadiness } from "./approval-readiness.shared";
 export interface ApprovalReadinessInput {
   item: WeeklyPlanItem;
   /** Active workspace contract. Null when the operator has none —
-   *  the helper surfaces this as a blocker rather than throwing. */
+   *  treated according to `requireContract`. */
   contract: WeeklyContract | null;
   /** Primary creative attached to the item (the first creative when
    *  multiple exist). Null when the item has no creative. */
@@ -37,6 +37,22 @@ export interface ApprovalReadinessInput {
   /** Whether a schedule is required by the caller's path. Hold
    *  paths pass false; immediate-schedule paths pass true. */
   requireSchedule: boolean;
+  /**
+   * Whether the caller's path needs an active weekly contract.
+   *
+   *   - Per-item HOLD path passes false. Holding doesn't insert into
+   *     execution_items (which has `contract_id NOT NULL`) and
+   *     doesn't enforce contract scope at this layer, so the
+   *     contract is irrelevant.
+   *   - Per-item IMMEDIATE-SCHEDULE path passes true. The
+   *     execution_items row literally cannot be inserted without a
+   *     contract_id.
+   *   - Bulk plan-wide paths pass true (governance: bulk approval
+   *     stays gated by an explicit weekly contract).
+   *
+   * When false, contract + scope checks are skipped entirely.
+   */
+  requireContract: boolean;
 }
 
 export function assessItemApprovalReadiness(
@@ -71,38 +87,47 @@ export function assessItemApprovalReadiness(
     );
   }
 
-  const contractActive = input.contract !== null;
-  if (!contractActive) {
-    blockers.push(
-      "Active weekly contract required. Open /weekly-contracts to activate one.",
-    );
-  }
-
-  // Scope checks only when a contract exists.
+  // Contract handling — gated by requireContract.
+  //
+  // When the caller's path does NOT need a contract (per-item hold),
+  // we report contractActive=true (so the ok-flag tells the UI the
+  // path is unblocked) and skip the scope checks entirely.
+  //
+  // When the path DOES need one, we surface the blocker and run
+  // scope checks against it.
+  let contractActive = true;
   let accountScope = true;
   let productScope = true;
   let platformScope = true;
-  if (input.contract) {
-    if (
-      input.item.accountId &&
-      !input.contract.scope.accountIds.includes(input.item.accountId)
-    ) {
-      accountScope = false;
-      blockers.push("Account is out of the active contract's scope.");
+  if (input.requireContract) {
+    contractActive = input.contract !== null;
+    if (!contractActive) {
+      blockers.push(
+        "Scheduling requires an active weekly contract. You can approve & hold now, then activate a contract before scheduling.",
+      );
     }
-    if (
-      input.item.productId &&
-      !input.contract.scope.productIds.includes(input.item.productId)
-    ) {
-      productScope = false;
-      blockers.push("Product is out of the active contract's scope.");
-    }
-    if (
-      input.item.platform &&
-      !input.contract.scope.platforms.includes(input.item.platform)
-    ) {
-      platformScope = false;
-      blockers.push("Platform is out of the active contract's scope.");
+    if (input.contract) {
+      if (
+        input.item.accountId &&
+        !input.contract.scope.accountIds.includes(input.item.accountId)
+      ) {
+        accountScope = false;
+        blockers.push("Account is out of the active contract's scope.");
+      }
+      if (
+        input.item.productId &&
+        !input.contract.scope.productIds.includes(input.item.productId)
+      ) {
+        productScope = false;
+        blockers.push("Product is out of the active contract's scope.");
+      }
+      if (
+        input.item.platform &&
+        !input.contract.scope.platforms.includes(input.item.platform)
+      ) {
+        platformScope = false;
+        blockers.push("Platform is out of the active contract's scope.");
+      }
     }
   }
 

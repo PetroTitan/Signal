@@ -847,9 +847,6 @@ export async function approvePlanItemAndHoldAction(
   const itemId = String(formData.get("item_id") ?? "").trim();
   if (!itemId) return actionFail("Missing item id.");
 
-  const { getActiveContract } = await import(
-    "@/repositories/weekly-contract-repository"
-  );
   const { updatePlanItemStatus } = await import(
     "@/repositories/weekly-plan-repository"
   );
@@ -863,15 +860,20 @@ export async function approvePlanItemAndHoldAction(
     const workspaceId = membership.workspace.id;
 
     const item = await getPlanItemById(workspaceId, itemId);
-    const contract = await getActiveContract(workspaceId);
+    // INVARIANT: per-item hold does NOT load or require a weekly
+    // contract. Holding only flips status; no execution_item is
+    // created, so the contract_id NOT NULL constraint on
+    // execution_items doesn't apply. Bulk hold and immediate
+    // scheduling still gate on contract.
     const allCreatives = await listCreativesForItems(workspaceId, [itemId]);
     const primaryCreative = allCreatives[0] ?? null;
 
     const readiness = assessItemApprovalReadiness({
       item,
-      contract,
+      contract: null,
       primaryCreative,
       requireSchedule: false,
+      requireContract: false,
     });
     if (!readiness.ready) {
       return actionFail(
@@ -1037,6 +1039,10 @@ export async function approvePlanItemAndScheduleAction(
       contract,
       primaryCreative,
       requireSchedule: true,
+      // execution_items.contract_id is NOT NULL; we MUST have a
+      // contract to create the row. The readiness helper surfaces
+      // the operator-readable blocker copy.
+      requireContract: true,
     });
     if (!readiness.ready) {
       return actionFail(
