@@ -1261,6 +1261,279 @@ export async function approvePlanItemAndScheduleAction(
 }
 
 // =====================================================================
+// scheduleApprovedItemAction — schedule an already-approved item
+// =====================================================================
+//
+// Closes the gap between `approvePlanItemAndHoldAction` (which leaves
+// the item in `approved` without an execution_item) and the
+// scheduler (which only publishes execution_items). Before this
+// action, an operator who chose Approve & Hold and then tried to set
+// a publish time via the modal's Schedule input would only update
+// `weekly_plan_items.scheduled_at` — no execution_item was ever
+// created, and the post never published.
+//
+// This action takes an item that is ALREADY in status=approved,
+// validates the same readiness gates as the per-item schedule path,
+// creates the execution_item, walks it to `scheduled`, and flips the
+// plan_item to `scheduled`. Same transactional re-read + assertion
+// pattern as the other approval actions. Contract-aware: works with
+// or without an active weekly contract (post-migration
+// 20260605000001_contract_free_per_post_publishing.sql).
+//
+// MCP `signal.schedule_publish` already supports both
+// `pending_approval` and `approved` items because it inlines its own
+// logic. This UI-facing action mirrors that behavior.
+
+export async function scheduleApprovedItemAction(
+  _prev: ApprovePlanItemResult,
+  formData: FormData,
+): Promise<ApprovePlanItemResult> {
+  const itemId = String(formData.get("item_id") ?? "").trim();
+  if (!itemId) return actionFail("Missing item id.");
+
+  const { getActiveContract } = await import(
+    "@/repositories/weekly-contract-repository"
+  );
+  const { updatePlanItemStatus } = await import(
+    "@/repositories/weekly-plan-repository"
+  );
+  const { listCreativesForItems } = await import(
+    "@/repositories/weekly-plan-creative-repository"
+  );
+  const {
+    getActiveExecutionQueue,
+    getActiveContractFreeExecutionQueue,
+    createExecutionQueue,
+  } = await import("@/repositories/execution-queue-repository");
+  const {
+    createExecutionItem,
+    listExecutionItemsByPlanItemIds,
+    updateItemStatus,
+  } = await import("@/repositories/execution-item-repository");
+  const { recordLog } = await import(
+    "@/repositories/execution-log-repository"
+  );
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    const item = await getPlanItemById(workspaceId, itemId);
+    const contract = await getActiveContract(workspaceId);
+    const allCreatives = await listCreativesForItems(workspaceId, [itemId]);
+    const primaryCreative = allCreatives[0] ?? null;
+
+    const readiness = assessItemApprovalReadiness({
+      item,
+      contract,
+      primaryCreative,
+      requireSchedule: true,
+      requireContract: contract !== null,
+      // Accept items that are already past the approval gate.
+      allowedStatuses: ["approved"],
+    });
+    if (!readiness.ready) {
+      return actionFail(
+        `Schedule failed: ${readiness.blockers.slice(0, 2).join(" ")}`,
+      );
+    }
+
+    // Duplicate-prevention: refuse if an execution_item already
+    // exists for this plan_item.
+    const existingExec = await listExecutionItemsByPlanItemIds(workspaceId, [
+      itemId,
+    ]);
+    if (existingExec.length > 0) {
+      return actionFail(
+        "Schedule failed: this item already has an execution_item — refusing to create a duplicate.",
+      );
+    }
+
+    // Queue selection — same branching as approvePlanItemAndScheduleAction.
+    let queue;
+    if (contract) {
+      queue = await getActiveExecutionQueue(workspaceId, contract.id);
+      if (!queue) {
+        queue = await createExecutionQueue({
+          workspaceId,
+          contractId: contract.id,
+          title: contract.title,
+          weekStart: contract.weekStart,
+          weekEnd: contract.weekEnd,
+        });
+      }
+    } else {
+      queue = await getActiveContractFreeExecutionQueue(workspaceId);
+      if (!queue) {
+        const todayIso = new Date().toISOString().slice(0, 10);
+        const endIso = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .slice(0, 10);
+        queue = await createExecutionQueue({
+          workspaceId,
+          contractId: null,
+          title: "Contract-free items",
+          weekStart: todayIso,
+          weekEnd: endIso,
+        });
+      }
+    }
+
+    const beforeStatus = item.status;
+    const beforeScheduledAt = item.scheduledAt;
+    emitApprovalTransitionStarted({
+      action: "approve_weekly_plan",
+      workspaceId,
+      planId: item.weeklyPlanId,
+      planItemId: item.id,
+      beforeStatus,
+      beforeScheduledAt,
+    });
+
+    const execItem = await createExecutionItem({
+      workspaceId,
+      queueId: queue.id,
+      contractId: contract ? contract.id : null,
+      actionType:
+        item.contentType === "comment"
+          ? "publish_scheduled_comment"
+          : "publish_scheduled_post",
+      sourceEntityType: "weekly_plan_item",
+      sourceEntityId: item.id,
+      productId: item.productId,
+      accountId: item.accountId,
+      platform: item.platform,
+      title: item.title,
+      body: item.body,
+      linkUrl: item.linkUrl,
+      scheduledAt: item.scheduledAt,
+      riskScore: item.riskScore,
+      riskLevel: item.riskLevel,
+      metadata: {
+        plan_item_id: item.id,
+        plan_id: item.weeklyPlanId,
+        source: "schedule_approved_item",
+        contract_mode: contract ? "contract_attached" : "contract_free_item",
+        approval_mode: "per_item",
+        approved_without_contract: contract === null,
+      },
+    });
+    await updateItemStatus({
+      workspaceId,
+      itemId: execItem.id,
+      to: "authorized",
+    });
+    await updateItemStatus({
+      workspaceId,
+      itemId: execItem.id,
+      to: "scheduled",
+    });
+    await updatePlanItemStatus({
+      workspaceId,
+      itemId: item.id,
+      status: "scheduled",
+    });
+
+    const fresh = await getPlanItemById(workspaceId, item.id);
+    if (fresh.status !== "scheduled") {
+      emitApprovalStateAssertionFailed({
+        action: "approve_weekly_plan",
+        workspaceId,
+        planId: item.weeklyPlanId,
+        planItemId: item.id,
+        beforeStatus,
+        afterStatus: fresh.status,
+        beforeScheduledAt,
+        afterScheduledAt: fresh.scheduledAt,
+        failureReason: `expected_status=scheduled actual=${fresh.status}`,
+      });
+      return actionFail(
+        "Schedule failed: item did not transition to scheduled.",
+      );
+    }
+    if (fresh.scheduledAt !== beforeScheduledAt) {
+      emitApprovalStateAssertionFailed({
+        action: "approve_weekly_plan",
+        workspaceId,
+        planId: item.weeklyPlanId,
+        planItemId: item.id,
+        beforeStatus,
+        afterStatus: fresh.status,
+        beforeScheduledAt,
+        afterScheduledAt: fresh.scheduledAt,
+        failureReason: "scheduled_at mutated during schedule transition",
+      });
+      return actionFail(
+        "Schedule failed: schedule changed unexpectedly during scheduling.",
+      );
+    }
+    emitApprovalSchedulePreserved({
+      action: "approve_weekly_plan",
+      workspaceId,
+      planId: item.weeklyPlanId,
+      planItemId: item.id,
+      beforeScheduledAt,
+      afterScheduledAt: fresh.scheduledAt,
+    });
+    emitApprovalTransitionCommitted({
+      action: "approve_weekly_plan",
+      workspaceId,
+      planId: item.weeklyPlanId,
+      planItemId: item.id,
+      beforeStatus,
+      afterStatus: fresh.status,
+      beforeScheduledAt,
+      afterScheduledAt: fresh.scheduledAt,
+    });
+
+    await recordLog({
+      workspaceId,
+      queueId: queue.id,
+      executionItemId: execItem.id,
+      eventType: "item.scheduled",
+      severity: "info",
+      message: `Approved item scheduled "${item.title ?? "Untitled"}" for ${item.scheduledAt ?? "(immediate)"}`,
+      metadata: { plan_item_id: item.id, plan_id: item.weeklyPlanId },
+    });
+    await logActivityBestEffort({
+      workspaceId,
+      eventType: "weekly_plan_item.scheduled",
+      entityType: "weekly_plan_item",
+      entityId: item.id,
+      title: `Scheduled "${item.title ?? "Untitled"}"`,
+      description: `Scheduled for ${item.scheduledAt ?? "(immediate)"}.`,
+    });
+
+    revalidatePath("/weekly-plan");
+    revalidatePath("/execution");
+    revalidatePath(`/execution/${queue.id}`);
+    revalidatePath("/activity");
+    return actionOk({
+      itemId: item.id,
+      status: "scheduled",
+      scheduledAtIso: fresh.scheduledAt,
+      executionItemId: execItem.id,
+    });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : "Could not schedule this approved item.";
+    console.error("[scheduleApprovedItemAction] failed", error);
+    emitApprovalTransitionFailed({
+      action: "approve_weekly_plan",
+      workspaceId: "",
+      planItemId: itemId,
+      failureReason: message,
+    });
+    return actionFail(message);
+  }
+}
+
+// =====================================================================
 // Phase F1 — updatePlanItemAction (inline edit)
 // =====================================================================
 //

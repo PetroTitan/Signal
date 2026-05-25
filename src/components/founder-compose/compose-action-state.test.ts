@@ -118,14 +118,47 @@ describe("deriveComposeActionState — approved", () => {
     expect(s.variant).not.toBe("send_for_approval");
   });
 
-  it("variant is schedule_or_mcp", () => {
-    const s = deriveComposeActionState(makeInput({ status: "approved" }));
+  it("with no schedule: variant is schedule_or_mcp (hint only)", () => {
+    const s = deriveComposeActionState(
+      makeInput({ status: "approved", scheduleSet: false }),
+    );
     expect(s.variant).toBe("schedule_or_mcp");
   });
 
-  it("paused items use the same variant", () => {
-    const s = deriveComposeActionState(makeInput({ status: "paused" }));
+  it("with schedule set: variant is schedule_approved_item (real button)", () => {
+    const s = deriveComposeActionState(
+      makeInput({ status: "approved", scheduleSet: true }),
+    );
+    expect(s.variant).toBe("schedule_approved_item");
+    expect(s.primaryLabel).toBe("Schedule for publish");
+    expect(s.primaryDisabled).toBe(false);
+  });
+
+  it("paused + schedule set: variant is schedule_approved_item", () => {
+    const s = deriveComposeActionState(
+      makeInput({ status: "paused", scheduleSet: true }),
+    );
+    expect(s.variant).toBe("schedule_approved_item");
+  });
+
+  it("paused + no schedule: variant is schedule_or_mcp", () => {
+    const s = deriveComposeActionState(
+      makeInput({ status: "paused", scheduleSet: false }),
+    );
     expect(s.variant).toBe("schedule_or_mcp");
+  });
+
+  it("approved + schedule + alt text missing: button disabled with blocker", () => {
+    const s = deriveComposeActionState(
+      makeInput({
+        status: "approved",
+        scheduleSet: true,
+        altTextMissing: true,
+      }),
+    );
+    expect(s.variant).toBe("schedule_approved_item");
+    expect(s.primaryDisabled).toBe(true);
+    expect(s.primaryBlocker).toMatch(/alt text/i);
   });
 });
 

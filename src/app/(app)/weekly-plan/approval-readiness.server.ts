@@ -38,6 +38,14 @@ export interface ApprovalReadinessInput {
    *  paths pass false; immediate-schedule paths pass true. */
   requireSchedule: boolean;
   /**
+   * Statuses accepted by the caller's path. Defaults to
+   * `["pending_approval"]` so existing callers are unaffected.
+   *
+   * `scheduleApprovedItemAction` (post-approval schedule) passes
+   * `["approved"]` since the row is already past the approval gate.
+   */
+  allowedStatuses?: ReadonlyArray<string>;
+  /**
    * Whether the caller's path needs an active weekly contract.
    *
    *   - Per-item HOLD path passes false. Holding doesn't insert into
@@ -60,10 +68,11 @@ export function assessItemApprovalReadiness(
 ): ApprovalReadiness {
   const blockers: string[] = [];
 
-  const statusPending = input.item.status === "pending_approval";
+  const allowedStatuses = input.allowedStatuses ?? ["pending_approval"];
+  const statusPending = allowedStatuses.includes(input.item.status);
   if (!statusPending) {
     blockers.push(
-      `Item is in status "${input.item.status}" — only pending_approval items can be approved.`,
+      `Item is in status "${input.item.status}" — allowed: ${allowedStatuses.join(", ")}.`,
     );
   }
 
