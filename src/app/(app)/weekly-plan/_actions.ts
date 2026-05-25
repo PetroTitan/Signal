@@ -33,6 +33,14 @@ import {
   updateCreative,
 } from "@/repositories/weekly-plan-creative-repository";
 import { parseScheduledAtField } from "./parse-scheduled-at-field";
+import {
+  emitScheduleParseInvalid,
+  emitScheduleSaveRejected,
+  emitScheduleSaveSuccess,
+  emitScheduleSourceChange,
+  type ScheduleSource,
+} from "@/core/observability/schedule-events";
+import { scheduleChecksum } from "@/core/scheduling/schedule-checksum";
 
 export type CreateWeeklyPlanResult = ActionResult<{ planId: string }>;
 export type CreatePlanItemResult = ActionResult<{ itemId: string }>;
@@ -48,6 +56,12 @@ export type SendForApprovalResult = ActionResult<{ itemId: string }>;
 export type SaveScheduleResult = ActionResult<{
   itemId: string;
   scheduledAtIso: string | null;
+  /** Server-side checksum of the persisted tuple. Caller can
+   *  compare to its own client-side checksum to detect drift. */
+  serverChecksum?: string;
+  /** The schedule source the server attributed to this write
+   *  (manual / preset / mcp / api / migration / recovery). */
+  source?: string;
 }>;
 
 function isoMonday(date: Date): string {
@@ -1320,6 +1334,29 @@ const SCHEDULE_SAVE_REASONS = new Set([
   "mcp",
 ]);
 
+const SCHEDULE_SOURCES = new Set<ScheduleSource>([
+  "manual",
+  "preset",
+  "mcp",
+  "api",
+  "migration",
+  "recovery",
+]);
+
+function reasonToSourceServer(reason: string): ScheduleSource {
+  switch (reason) {
+    case "preset":
+      return "preset";
+    case "mcp":
+      return "mcp";
+    case "input":
+    case "clear":
+      return "manual";
+    default:
+      return "manual";
+  }
+}
+
 export async function saveScheduleAction(
   _prev: SaveScheduleResult,
   formData: FormData,
@@ -1329,13 +1366,31 @@ export async function saveScheduleAction(
 
   const reason = String(formData.get("reason") ?? "").trim();
   if (!SCHEDULE_SAVE_REASONS.has(reason)) {
+    emitScheduleSaveRejected({
+      itemId,
+      source: null,
+      reason: reason || null,
+      detail: "missing or invalid reason",
+    });
     return actionFail(
       "Schedule writes require an explicit reason (preset, input, clear, or mcp).",
     );
   }
 
+  // Source — defaults from reason when the client doesn't override.
+  const rawSource = String(formData.get("source") ?? "").trim() as ScheduleSource;
+  const source: ScheduleSource = SCHEDULE_SOURCES.has(rawSource)
+    ? rawSource
+    : reasonToSourceServer(reason);
+
   const parsedSchedule = parseScheduledAtField(formData);
   if (parsedSchedule.kind === "error") {
+    emitScheduleParseInvalid({
+      itemId,
+      source,
+      reason,
+      detail: parsedSchedule.message,
+    });
     return actionFail(parsedSchedule.message);
   }
   if (parsedSchedule.kind === "skip") {
@@ -1359,16 +1414,58 @@ export async function saveScheduleAction(
       );
     }
 
+    const serverChecksum = scheduleChecksum({
+      itemId,
+      iso: nextIso,
+      timezone: "UTC", // server always normalizes to UTC
+      source,
+    });
+
     if (existing.scheduledAt === nextIso) {
       // No-op write — don't bother revalidating.
-      return actionOk({ itemId, scheduledAtIso: nextIso });
+      emitScheduleSaveSuccess({
+        itemId,
+        source,
+        reason,
+        checksum: serverChecksum,
+        detail: "noop",
+      });
+      return actionOk({
+        itemId,
+        scheduledAtIso: nextIso,
+        serverChecksum,
+        source,
+      });
     }
+
+    // Persist the source into the row's metadata for audit trail.
+    const prevMeta = (existing.metadata ?? {}) as Record<string, unknown>;
+    const prevSource =
+      typeof prevMeta.schedule_source === "string"
+        ? (prevMeta.schedule_source as string)
+        : null;
+    const nextMeta: Record<string, unknown> = {
+      ...prevMeta,
+      schedule_source: source,
+      schedule_source_at: new Date().toISOString(),
+      schedule_checksum: serverChecksum,
+    };
 
     const updated = await updatePlanItem({
       workspaceId,
       itemId,
-      patch: { scheduled_at: nextIso },
+      patch: { scheduled_at: nextIso, metadata: nextMeta },
     });
+
+    if (prevSource && prevSource !== source) {
+      emitScheduleSourceChange({
+        itemId,
+        source,
+        reason,
+        detail: `${prevSource} → ${source}`,
+        checksum: serverChecksum,
+      });
+    }
 
     await logActivityBestEffort({
       workspaceId,
@@ -1376,11 +1473,23 @@ export async function saveScheduleAction(
       entityType: "weekly_plan_item",
       entityId: itemId,
       title: `Schedule ${nextIso === null ? "cleared" : "updated"}`,
-      description: `Reason: ${reason}.`,
+      description: `Reason: ${reason} · Source: ${source} · Checksum: ${serverChecksum}.`,
+    });
+
+    emitScheduleSaveSuccess({
+      itemId,
+      source,
+      reason,
+      checksum: serverChecksum,
     });
 
     revalidatePath("/weekly-plan");
-    return actionOk({ itemId: updated.id, scheduledAtIso: nextIso });
+    return actionOk({
+      itemId: updated.id,
+      scheduledAtIso: nextIso,
+      serverChecksum,
+      source,
+    });
   } catch (error) {
     const message =
       error instanceof RepositoryError
@@ -1389,6 +1498,12 @@ export async function saveScheduleAction(
           ? error.message
           : "Could not save schedule.";
     console.error("[saveScheduleAction] failed", error);
+    emitScheduleSaveRejected({
+      itemId,
+      source,
+      reason,
+      detail: message,
+    });
     return actionFail(message);
   }
 }

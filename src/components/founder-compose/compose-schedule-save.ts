@@ -23,8 +23,28 @@
  */
 
 import { datetimeLocalToIso } from "@/core/publishing/schedule-presets";
+import {
+  emitAutosaveScheduleMutationAttempt,
+  emitRewriteScheduleMutationAttempt,
+  emitScheduleParseInvalid,
+  emitScheduleSaveRejected,
+  type ScheduleSource,
+} from "@/core/observability/schedule-events";
+import { scheduleChecksum } from "@/core/scheduling/schedule-checksum";
 
 export type ScheduleSaveReason = "preset" | "input" | "clear";
+
+/** Map an operator-supplied reason to the audit-trail `source`. */
+export function reasonToSource(reason: ScheduleSaveReason): ScheduleSource {
+  switch (reason) {
+    case "preset":
+      return "preset";
+    case "input":
+      return "manual";
+    case "clear":
+      return "manual";
+  }
+}
 
 export interface ScheduleState {
   /** Current value in the `<input type="datetime-local">`. */
@@ -93,8 +113,94 @@ export function buildScheduleSavePayload(
   if (state.inputValue.trim().length === 0) {
     return { itemId, isoOrEmpty: "", reason };
   }
-  const iso = datetimeLocalToIso(state.inputValue);
-  return { itemId, isoOrEmpty: iso, reason };
+  try {
+    const iso = datetimeLocalToIso(state.inputValue);
+    return { itemId, isoOrEmpty: iso, reason };
+  } catch (err) {
+    emitScheduleParseInvalid({
+      itemId,
+      source: reasonToSource(reason),
+      reason,
+      detail: err instanceof Error ? err.message : "parse error",
+    });
+    throw err;
+  }
+}
+
+/**
+ * Caller-facing helper. Compute the client-side checksum of a
+ * proposed schedule save. Use for emitting save-success events and
+ * for round-trip drift detection against the server's response.
+ */
+export function clientScheduleChecksum(
+  state: ScheduleState,
+  itemId: string | null,
+  source: ScheduleSource,
+): string {
+  let iso: string | null = null;
+  if (state.inputValue.trim().length > 0) {
+    try {
+      iso = datetimeLocalToIso(state.inputValue);
+    } catch {
+      iso = null;
+    }
+  }
+  return scheduleChecksum({
+    itemId,
+    iso,
+    timezone: localTimezone(),
+    source,
+  });
+}
+
+function localTimezone(): string | null {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Mutation-attempt loggers. Call these from anywhere that should
+ * NEVER touch schedule (body autosave, rewrite, alt-text save) on
+ * the unlikely path where the code accidentally tries to.
+ */
+export function reportAutosaveAttemptedScheduleMutation(args: {
+  itemId: string | null;
+  detail: string;
+}): void {
+  emitAutosaveScheduleMutationAttempt({
+    itemId: args.itemId,
+    source: null,
+    reason: "body_autosave",
+    detail: args.detail,
+  });
+}
+
+export function reportRewriteAttemptedScheduleMutation(args: {
+  itemId: string | null;
+  detail: string;
+}): void {
+  emitRewriteScheduleMutationAttempt({
+    itemId: args.itemId,
+    source: null,
+    reason: "rewrite",
+    detail: args.detail,
+  });
+}
+
+export function reportScheduleSaveRejected(args: {
+  itemId: string | null;
+  reason: ScheduleSaveReason | null;
+  detail: string;
+}): void {
+  emitScheduleSaveRejected({
+    itemId: args.itemId,
+    source: args.reason ? reasonToSource(args.reason) : null,
+    reason: args.reason ?? null,
+    detail: args.detail,
+  });
 }
 
 /**
