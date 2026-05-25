@@ -5,6 +5,9 @@ import {
   MULTIWEEK_MAX_TOTAL_ITEMS,
   MULTIWEEK_MAX_WEEKS,
   SCHEDULE_MIN_LEAD_MS,
+  UPDATE_ITEM_BODY_MAX,
+  UPDATE_ITEM_RISK_NOTES_MAX_COUNT,
+  UPDATE_ITEM_TITLE_MAX,
   VOICE_PROFILE_MAX_CHARS,
   WEEKLY_PLAN_MAX_ITEMS,
   parseAccountsPrepare,
@@ -13,6 +16,7 @@ import {
   parseGenerateWeeklyPlan,
   parseIdentitiesUpdate,
   parseSchedulePublish,
+  parseWeeklyPlanUpdateItem,
 } from "./schemas";
 
 const VALID_UUID = "11111111-2222-3333-4444-555555555555";
@@ -522,5 +526,175 @@ describe("parseSchedulePublish", () => {
     expect(result.ok).toBe(false);
     if (!result.ok)
       expect(result.errors).toContain("confirm_schedule_must_be_true");
+  });
+});
+
+// =====================================================================
+// parseWeeklyPlanUpdateItem
+// =====================================================================
+
+describe("parseWeeklyPlanUpdateItem", () => {
+  it("accepts a body-only update", () => {
+    const result = parseWeeklyPlanUpdateItem({
+      plan_item_id: VALID_UUID,
+      body: "Calm operational body.",
+      confirm_update: true,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.body).toBe("Calm operational body.");
+      expect(result.value.confirm_update).toBe(true);
+    }
+  });
+
+  it("accepts every content field together", () => {
+    const result = parseWeeklyPlanUpdateItem({
+      plan_item_id: VALID_UUID,
+      title: "New title",
+      body: "New body",
+      cta: "Curious how others approach this.",
+      creative_brief: "Operator captures the actual product screen.",
+      risk_notes: ["No fake screenshots.", "No invented metrics."],
+      confirm_update: true,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.title).toBe("New title");
+      expect(result.value.body).toBe("New body");
+      expect(result.value.cta).toBe("Curious how others approach this.");
+      expect(result.value.creative_brief).toContain("actual product screen");
+      expect(result.value.risk_notes).toEqual([
+        "No fake screenshots.",
+        "No invented metrics.",
+      ]);
+    }
+  });
+
+  it("accepts null cta to mean 'clear'", () => {
+    const result = parseWeeklyPlanUpdateItem({
+      plan_item_id: VALID_UUID,
+      cta: null,
+      confirm_update: true,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.cta).toBeNull();
+  });
+
+  it("rejects missing / invalid plan_item_id", () => {
+    expect(
+      parseWeeklyPlanUpdateItem({ body: "x", confirm_update: true }).ok,
+    ).toBe(false);
+    expect(
+      parseWeeklyPlanUpdateItem({
+        plan_item_id: "not-a-uuid",
+        body: "x",
+        confirm_update: true,
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("rejects confirm_update !== true", () => {
+    const noConfirm = parseWeeklyPlanUpdateItem({
+      plan_item_id: VALID_UUID,
+      body: "x",
+    });
+    expect(noConfirm.ok).toBe(false);
+    if (!noConfirm.ok)
+      expect(noConfirm.errors).toContain("confirm_update_must_be_true");
+
+    const wrongConfirm = parseWeeklyPlanUpdateItem({
+      plan_item_id: VALID_UUID,
+      body: "x",
+      confirm_update: false,
+    });
+    expect(wrongConfirm.ok).toBe(false);
+    if (!wrongConfirm.ok)
+      expect(wrongConfirm.errors).toContain("confirm_update_must_be_true");
+  });
+
+  it("requires at least one content field", () => {
+    const result = parseWeeklyPlanUpdateItem({
+      plan_item_id: VALID_UUID,
+      confirm_update: true,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok)
+      expect(result.errors).toContain("at_least_one_content_field_required");
+  });
+
+  it("rejects empty / whitespace-only title and body", () => {
+    expect(
+      parseWeeklyPlanUpdateItem({
+        plan_item_id: VALID_UUID,
+        title: "   ",
+        confirm_update: true,
+      }).ok,
+    ).toBe(false);
+    expect(
+      parseWeeklyPlanUpdateItem({
+        plan_item_id: VALID_UUID,
+        body: "",
+        confirm_update: true,
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("rejects oversized title / body", () => {
+    const longTitle = parseWeeklyPlanUpdateItem({
+      plan_item_id: VALID_UUID,
+      title: "x".repeat(UPDATE_ITEM_TITLE_MAX + 1),
+      confirm_update: true,
+    });
+    expect(longTitle.ok).toBe(false);
+    if (!longTitle.ok) expect(longTitle.errors).toContain("title_too_long");
+
+    const longBody = parseWeeklyPlanUpdateItem({
+      plan_item_id: VALID_UUID,
+      body: "x".repeat(UPDATE_ITEM_BODY_MAX + 1),
+      confirm_update: true,
+    });
+    expect(longBody.ok).toBe(false);
+    if (!longBody.ok) expect(longBody.errors).toContain("body_too_long");
+  });
+
+  it("rejects risk_notes with too many items", () => {
+    const result = parseWeeklyPlanUpdateItem({
+      plan_item_id: VALID_UUID,
+      risk_notes: Array.from(
+        { length: UPDATE_ITEM_RISK_NOTES_MAX_COUNT + 1 },
+        () => "note",
+      ),
+      confirm_update: true,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors).toContain("risk_notes_too_many");
+  });
+
+  it("rejects risk_notes with empty items", () => {
+    const result = parseWeeklyPlanUpdateItem({
+      plan_item_id: VALID_UUID,
+      risk_notes: ["valid", "   "],
+      confirm_update: true,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok)
+      expect(result.errors).toContain(
+        "risk_notes_items_must_be_non_empty_strings",
+      );
+  });
+
+  it("treats creative_brief and media_prompt_or_brief as accepted aliases", () => {
+    // Both supplied — parser preserves both; handler picks creative_brief.
+    const result = parseWeeklyPlanUpdateItem({
+      plan_item_id: VALID_UUID,
+      creative_brief: "primary",
+      media_prompt_or_brief: "alias",
+      confirm_update: true,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.creative_brief).toBe("primary");
+      expect(result.value.media_prompt_or_brief).toBe("alias");
+    }
   });
 });

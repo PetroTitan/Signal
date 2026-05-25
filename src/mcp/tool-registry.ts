@@ -16,6 +16,7 @@ import {
   parseGenerateWeeklyPlan,
   parseIdentitiesUpdate,
   parseSchedulePublish,
+  parseWeeklyPlanUpdateItem,
   parseImportsPrepareMapping,
   parseProductsPrepare,
   parseReportsSubmit,
@@ -48,6 +49,7 @@ import {
   generateMultiweekPlanTool,
   generateWeeklyPlanTool,
   identitiesUpdateTool,
+  weeklyPlanUpdateItemTool,
 } from "./tools/planning-tools";
 import { schedulePublishTool } from "./tools/schedule-tools";
 import {
@@ -397,6 +399,18 @@ export const TOOLS: ToolDefinition[] = [
     touchesProduction: false,
     parseArgs: parseIdentitiesUpdate,
     handler: wrap(identitiesUpdateTool),
+  },
+  {
+    name: "signal.weekly_plan.update_item",
+    description:
+      "Update body / title / CTA / creative brief / risk notes on a pre-approval plan item (status='draft' or 'pending_approval'). Refuses anything past pending_approval. Preserves metadata.platform_native_draft and updates the corresponding envelope fields when body/title/cta change. NEVER approves, schedules, or publishes — operator approval still required after the edit.",
+    requiredScopes: ["weekly_plans:write_pending"],
+    riskLevel: "remote_write",
+    approvalMode: "approval_required",
+    writesDatabase: true,
+    touchesProduction: false,
+    parseArgs: parseWeeklyPlanUpdateItem,
+    handler: wrap(weeklyPlanUpdateItemTool),
   },
   // Operator-facing aliases for product / identity creation. They
   // delegate to the existing prepare-tool handlers; same scopes, same

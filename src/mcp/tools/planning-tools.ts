@@ -22,12 +22,14 @@ import "server-only";
  */
 
 import { generateDraft } from "@/core/generation/generate-draft";
+import { extractHook } from "@/core/generation/assemble-platform-native-result";
 import type {
   GenerateDraftArgs,
   GenerateMultiweekPlanArgs,
   GenerateWeeklyPlanArgs,
   IdentitiesUpdateArgs,
   WeeklyPlanTopic,
+  WeeklyPlanUpdateItemArgs,
 } from "../schemas";
 import { failed, ok, type McpToolResponse } from "../responses";
 import type { ToolContext } from "../tool-context";
@@ -677,5 +679,200 @@ export async function identitiesUpdateTool(
     summary: "Updated identity. No credential or token changes.",
     data: { identity: updated },
     requiresUserApproval: false,
+  });
+}
+
+// =====================================================================
+// Tool 5 — signal.weekly_plan.update_item
+// =====================================================================
+//
+// Edit body / title / CTA / creative brief / risk notes on an
+// existing pre-approval plan item. The tool exists so Claude can
+// correct a seeded placeholder body (no AI provider configured) or
+// polish creative direction without forcing the operator to
+// copy/paste in the UI.
+//
+// Hard refusals: any status past pending_approval. We never let
+// MCP edit a row that has already been approved, scheduled,
+// published, or rejected. That boundary is the operator's job.
+
+const UPDATABLE_STATUSES: ReadonlySet<string> = new Set([
+  "draft",
+  "pending_approval",
+]);
+
+export async function weeklyPlanUpdateItemTool(
+  ctx: ToolContext,
+  args: WeeklyPlanUpdateItemArgs,
+): Promise<McpToolResponse> {
+  const TOOL = "signal.weekly_plan.update_item";
+
+  // 1. Workspace-scoped lookup of the plan_item, including current
+  //    metadata so we can preserve platform_native_draft on update.
+  const { data: existing } = await ctx.db
+    .from("weekly_plan_items")
+    .select("id, workspace_id, status, platform, title, body, metadata")
+    .eq("workspace_id", ctx.workspaceId)
+    .eq("id", args.plan_item_id)
+    .maybeSingle();
+  if (!existing) {
+    return failed({
+      tool: TOOL,
+      summary: "plan_item_not_found_in_workspace",
+    });
+  }
+
+  // 2. Status gate. Anything past pending_approval is refused
+  //    explicitly with the current status echoed back.
+  const status = (existing as { status: string }).status;
+  if (!UPDATABLE_STATUSES.has(status)) {
+    return failed({
+      tool: TOOL,
+      summary: `plan_item_status_not_editable:${status}`,
+    });
+  }
+
+  // 3. Build the column patch + the metadata patch separately.
+  //    column patch: title and body live as their own columns
+  //    metadata patch: deep-merged into metadata.platform_native_draft
+  const columnPatch: Record<string, unknown> = {};
+  const updatedFields: string[] = [];
+
+  if (args.title !== undefined) {
+    columnPatch.title = args.title;
+    updatedFields.push("title");
+  }
+  if (args.body !== undefined) {
+    columnPatch.body = args.body;
+    updatedFields.push("body");
+  }
+
+  // Pick the creative-brief value. `creative_brief` is the primary
+  // name; `media_prompt_or_brief` is accepted as an alias. If both
+  // are set the parser would have kept both — primary wins here.
+  const creativeBriefValue =
+    args.creative_brief ?? args.media_prompt_or_brief ?? undefined;
+  if (creativeBriefValue !== undefined) {
+    updatedFields.push("creative_brief");
+  }
+  if (args.cta !== undefined) {
+    updatedFields.push("cta");
+  }
+  if (args.risk_notes !== undefined) {
+    updatedFields.push("risk_notes");
+  }
+
+  // 4. Preserve and patch metadata.platform_native_draft.
+  //    The envelope's snake_case shape is what `_generate-draft-action`
+  //    persists today (also what generateAndPersistOneDraft writes).
+  //    We spread to keep every existing field, then overlay only the
+  //    fields the caller is updating.
+  const oldMetadata =
+    ((existing as { metadata: Record<string, unknown> | null }).metadata ??
+      {}) as Record<string, unknown>;
+  const oldEnvelope =
+    ((oldMetadata.platform_native_draft as Record<string, unknown>) ??
+      {}) as Record<string, unknown>;
+  const oldCreativeDirection =
+    ((oldEnvelope.creative_direction as Record<string, unknown>) ??
+      {}) as Record<string, unknown>;
+
+  const newEnvelope: Record<string, unknown> = { ...oldEnvelope };
+  let envelopeChanged = false;
+  if (args.title !== undefined) {
+    newEnvelope.title = args.title;
+    envelopeChanged = true;
+  }
+  if (args.body !== undefined) {
+    newEnvelope.body = args.body;
+    newEnvelope.hook = extractHook(args.body);
+    envelopeChanged = true;
+  }
+  if (args.cta !== undefined) {
+    newEnvelope.cta = args.cta;
+    envelopeChanged = true;
+  }
+  if (creativeBriefValue !== undefined || args.risk_notes !== undefined) {
+    const newCreativeDirection: Record<string, unknown> = {
+      ...oldCreativeDirection,
+    };
+    if (creativeBriefValue !== undefined) {
+      newCreativeDirection.media_prompt_or_brief = creativeBriefValue;
+    }
+    if (args.risk_notes !== undefined) {
+      newCreativeDirection.media_risk_notes = args.risk_notes;
+    }
+    newEnvelope.creative_direction = newCreativeDirection;
+    envelopeChanged = true;
+  }
+
+  const newMetadata: Record<string, unknown> = {
+    ...oldMetadata,
+    source: "mcp_operation",
+    updated_by_operator_token_id: ctx.operatorTokenId,
+    mcp_updated_at: new Date().toISOString(),
+  };
+  // Always write the envelope back (even if unchanged) so the
+  // persisted row always carries the canonical envelope shape.
+  // Only the platform_native_draft sub-object is updated; other
+  // metadata keys are preserved by the spread above.
+  if (envelopeChanged || oldEnvelope) {
+    newMetadata.platform_native_draft = newEnvelope;
+  }
+  columnPatch.metadata = newMetadata;
+
+  // 5. Apply the update. Workspace scoping enforced again at the
+  //    write boundary (defense in depth — the SELECT already
+  //    verified workspace).
+  const { data: updated, error } = await ctx.db
+    .from("weekly_plan_items")
+    .update(columnPatch as never)
+    .eq("workspace_id", ctx.workspaceId)
+    .eq("id", args.plan_item_id)
+    .select("id, status, title, body")
+    .single();
+  if (error || !updated) {
+    return failed({
+      tool: TOOL,
+      summary: error?.message ?? "update_failed",
+    });
+  }
+
+  // 6. Activity event.
+  await ctx.db.from("activity_events").insert(
+    {
+      workspace_id: ctx.workspaceId,
+      event_type: "mcp.plan_item_updated",
+      entity_type: "weekly_plan_item",
+      entity_id: args.plan_item_id,
+      title: `MCP updated draft item (${updatedFields.join(", ")})`,
+      description: null,
+      source: "mcp_operation",
+      metadata: {
+        operator_token_id: ctx.operatorTokenId,
+        plan_item_id: args.plan_item_id,
+        updated_fields: updatedFields,
+        previous_status: status,
+      },
+    } as never,
+  );
+
+  // 7. Compose response. No DID, no token, no metadata exposing
+  //    workspace secrets. body_length helps the caller (Claude) verify
+  //    the write happened without us echoing the full body back into
+  //    the conversation transcript.
+  const finalBody = (updated as { body: string | null }).body ?? "";
+  return ok({
+    tool: TOOL,
+    summary: `Updated ${updatedFields.length} field(s) on draft plan item. Operator review still required.`,
+    data: {
+      plan_item_id: args.plan_item_id,
+      status: (updated as { status: string }).status,
+      updated_fields: updatedFields,
+      body_length: finalBody.length,
+      platform_native_draft_updated: envelopeChanged,
+      review_url: `/weekly-plan?focus=${encodeURIComponent(args.plan_item_id)}`,
+    },
+    requiresUserApproval: true,
   });
 }
