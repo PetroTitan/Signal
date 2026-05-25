@@ -1710,6 +1710,26 @@ export async function updatePlanItemAction(
       patch,
     });
 
+    // If the reschedule popover (or any other patch on this action)
+    // changed scheduled_at, mirror it onto the active execution_item
+    // so the scheduler tick picks up the new time. No-op when
+    // scheduled_at was not in the patch.
+    let resyncBlockerMessage: string | null = null;
+    if (patch.scheduled_at !== undefined) {
+      const { resyncActiveExecutionItemSchedule } = await import(
+        "@/core/scheduling/resync-execution-item-schedule.server"
+      );
+      const resyncOutcome = await resyncActiveExecutionItemSchedule({
+        workspaceId: membership.workspace.id,
+        planItemId: itemId,
+        nextScheduledAtIso: patch.scheduled_at as string | null,
+        source: "ui",
+      });
+      if (resyncOutcome.mode === "blocked" && resyncOutcome.message) {
+        resyncBlockerMessage = resyncOutcome.message;
+      }
+    }
+
     await logActivityBestEffort({
       workspaceId: membership.workspace.id,
       eventType: "weekly_plan_item.edited",
@@ -1723,6 +1743,12 @@ export async function updatePlanItemAction(
 
     revalidatePath("/weekly-plan");
     revalidatePath("/activity");
+    if (resyncBlockerMessage) {
+      // Plan-item write succeeded but the active execution_item can't
+      // be moved (running/paused/failed/terminal). Surface the recovery
+      // instruction without rolling back the plan-item edit.
+      return actionFail(resyncBlockerMessage);
+    }
     return actionOk({ itemId: updated.id });
   } catch (error) {
     const message =
@@ -2413,6 +2439,19 @@ export async function saveScheduleAction(
       });
     }
 
+    // Mirror the schedule onto the active execution_item (if any) so
+    // the scheduler tick picks up the operator's new time. Skip on
+    // clear — unschedule flows through removePlanItemAction.
+    const { resyncActiveExecutionItemSchedule } = await import(
+      "@/core/scheduling/resync-execution-item-schedule.server"
+    );
+    const resyncOutcome = await resyncActiveExecutionItemSchedule({
+      workspaceId,
+      planItemId: itemId,
+      nextScheduledAtIso: nextIso,
+      source: reason === "mcp" ? "mcp" : "ui",
+    });
+
     await logActivityBestEffort({
       workspaceId,
       eventType: "weekly_plan_item.schedule_changed",
@@ -2420,6 +2459,7 @@ export async function saveScheduleAction(
       entityId: itemId,
       title: `Schedule ${nextIso === null ? "cleared" : "updated"}`,
       description: `Reason: ${reason} · Source: ${source} · Checksum: ${serverChecksum}.`,
+      metadata: { execution_item_resync_mode: resyncOutcome.mode },
     });
 
     emitScheduleSaveSuccess({
@@ -2428,6 +2468,16 @@ export async function saveScheduleAction(
       reason,
       checksum: serverChecksum,
     });
+
+    // Operator-facing blocker (skip_paused/failed/running/terminal)
+    // is surfaced as an actionFail so the UI can render the calm
+    // recovery copy. The plan_item.scheduled_at write already
+    // succeeded — we just tell the operator that the in-flight /
+    // terminal execution_item won't follow.
+    if (resyncOutcome.mode === "blocked" && resyncOutcome.message) {
+      revalidatePath("/weekly-plan");
+      return actionFail(resyncOutcome.message);
+    }
 
     revalidatePath("/weekly-plan");
     return actionOk({

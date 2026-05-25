@@ -264,3 +264,51 @@ export async function markItemCompleted(
 ): Promise<ExecutionItem> {
   return updateItemStatus({ workspaceId, itemId, to: "completed" });
 }
+
+/**
+ * Mirror weekly_plan_items.scheduled_at onto an active execution_item.
+ *
+ * The orchestrator
+ * (`src/core/scheduling/resync-execution-item-schedule.server.ts`)
+ * has already classified the row as resync-eligible via
+ * `classifyResyncTarget`. This repository call applies the change
+ * and stamps audit fields onto metadata. It refuses defensively if
+ * the row's status has drifted to a non-eligible value between
+ * classification and write — preventing a future caller from
+ * accidentally rewriting a terminal or running row.
+ *
+ * `scheduled_at` is the ONLY column touched besides `metadata`.
+ * `contract_id`, `account_id`, `platform`, `body`, `title`,
+ * `risk_*`, `status`, `attempt_count`, `max_attempts` are preserved
+ * — the resync is a schedule shift, not a re-authorization.
+ */
+export async function applyExecutionItemScheduleResync(input: {
+  workspaceId: string;
+  itemId: string;
+  nextScheduledAt: string;
+  previousScheduledAt: string | null;
+  source: "ui" | "mcp";
+}): Promise<ExecutionItem> {
+  const current = await getExecutionItemById(input.workspaceId, input.itemId);
+  if (
+    current.status !== "pending_authorization" &&
+    current.status !== "authorized" &&
+    current.status !== "scheduled"
+  ) {
+    throw new Error(
+      `Refusing to resync execution_item ${input.itemId}: status=${current.status} is not eligible.`,
+    );
+  }
+  const prevMeta = (current.metadata ?? {}) as Record<string, unknown>;
+  const nextMeta: Record<string, unknown> = {
+    ...prevMeta,
+    schedule_resynced_from_plan_item: true,
+    schedule_resynced_at: new Date().toISOString(),
+    schedule_resynced_source: input.source,
+    schedule_resynced_previous_scheduled_at: input.previousScheduledAt,
+  };
+  return applyItemUpdate(input.workspaceId, input.itemId, {
+    scheduled_at: input.nextScheduledAt,
+    metadata: nextMeta,
+  });
+}
