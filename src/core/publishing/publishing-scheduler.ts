@@ -155,66 +155,64 @@ export async function tickOnce(
     metadata: Record<string, unknown>;
   }>) {
     const platform = (raw.platform ?? "") as PublishPlatform;
-    if (!SCHEDULER_AUTONOMOUS_PLATFORMS.has(platform)) {
-      // Unsupported platform — skip this item.
-      results.push({
-        execution_item_id: raw.id,
-        workspace_id: raw.workspace_id,
-        platform: (raw.platform as PublishPlatform) ?? "reddit",
-        outcome: {
-          status: "skipped",
+
+    // Per-item iteration runs entirely inside this try/catch — any
+    // exception (including from applyOutcome itself, the safe-test
+    // import, markItemReadyForPublish, supabase writes, …) is
+    // captured and converted into a `scheduler_exception` outcome
+    // that's persisted to the DB. The previous PR (#95) wrapped
+    // only publishOne; this widens the guard so the
+    // "silent-scheduled-forever" failure mode has no remaining
+    // escape paths.
+    let outcome: PublishOutcome;
+    try {
+      if (!SCHEDULER_AUTONOMOUS_PLATFORMS.has(platform)) {
+        // Unsupported platform — was previously an in-memory skip
+        // that left status='scheduled' forever. Now goes through
+        // applyOutcome as a "blocked" terminal so the operator can
+        // see the actual rejected platform value via
+        // execution_items.metadata.publish_outcome.reason_detail.
+        outcome = {
+          status: "blocked",
           reasonCode: "platform_not_supported",
           reasonDetail: `Item has unsupported platform "${raw.platform ?? "null"}".`,
           externalId: null,
           externalUrl: null,
           metadata: {},
-        },
-      });
-      continue;
-    }
-
-    // Phase F2.5 — under SAFE_TEST_MODE the scheduler is a courier,
-    // not a publisher. It only walks eligible reddit posts from
-    // 'scheduled' to 'ready'. The operator must visit /execution/[id]
-    // and explicitly confirm to actually publish.
-    const { safeTestModeEnabled } = await import("./safe-test-env");
-    if (safeTestModeEnabled() && platform === "reddit") {
-      await markItemReadyForPublish({
-        supabase,
-        item: raw,
-        nowIso,
-      });
-      results.push({
-        execution_item_id: raw.id,
-        workspace_id: raw.workspace_id,
-        platform,
-        outcome: {
-          status: "skipped",
-          reasonCode: "safe_test_mode_ready_for_publish",
-          reasonDetail:
-            "Item marked ready_for_publish — operator must confirm at /execution.",
-          externalId: null,
-          externalUrl: null,
-          metadata: {},
-        },
-      });
-      continue;
-    }
-
-    // Wrap publishOne in try/catch so a thrown exception cannot
-    // leave the item stuck at `scheduled` forever. The user's
-    // invariant: "every scheduled item picked by scheduler must
-    // result in a status transition." We synthesize a `failed`
-    // outcome with reasonCode `scheduler_exception` and let
-    // applyOutcome persist it.
-    let outcome: PublishOutcome;
-    try {
-      outcome = await publishOne({
-        supabase,
-        nowIso,
-        item: raw,
-        platform,
-      });
+        };
+        await applyOutcome({ supabase, item: raw, outcome });
+      } else {
+        // Phase F2.5 — under SAFE_TEST_MODE the scheduler is a
+        // courier for reddit only. Other platforms go through the
+        // normal publish path.
+        const { safeTestModeEnabled } = await import("./safe-test-env");
+        if (safeTestModeEnabled() && platform === "reddit") {
+          await markItemReadyForPublish({
+            supabase,
+            item: raw,
+            nowIso,
+          });
+          outcome = {
+            status: "skipped",
+            reasonCode: "safe_test_mode_ready_for_publish",
+            reasonDetail:
+              "Item marked ready_for_publish — operator must confirm at /execution.",
+            externalId: null,
+            externalUrl: null,
+            metadata: {},
+          };
+          // markItemReadyForPublish already wrote the DB
+          // transition (status='ready'). Don't double-write via
+          // applyOutcome.
+        } else {
+          outcome = await publishOne({
+            supabase,
+            nowIso,
+            item: raw,
+            platform,
+          });
+        }
+      }
     } catch (err) {
       outcome = {
         status: "failed",
@@ -227,13 +225,24 @@ export async function tickOnce(
         externalUrl: null,
         metadata: {},
       };
-      // Persist via the same outcome path used on the happy path —
-      // guarantees execution_items.status moves out of "scheduled",
-      // execution_logs gets a row, and plan_item.status mirrors to
-      // "paused". No token leakage (reasonDetail comes from
-      // err.message; the publisher functions don't put secrets in
-      // exception messages).
-      await applyOutcome({ supabase, item: raw, outcome });
+      // Persist defensively. If applyOutcome ITSELF throws (DB
+      // write failed, schema mismatch, network blip) the iteration
+      // ends but the batch loop continues — the next tick will
+      // re-select the row and retry. Better than dying for the
+      // whole tick.
+      try {
+        await applyOutcome({ supabase, item: raw, outcome });
+      } catch (applyErr) {
+        // Defensive last resort — log to console only; the row
+        // stays at status='scheduled' but the next tick will
+        // re-attempt. No silent fallthrough beyond this point.
+        // eslint-disable-next-line no-console
+        console.error(
+          "[publishing-scheduler] applyOutcome failed for execution_item",
+          raw.id,
+          applyErr,
+        );
+      }
     }
     results.push({
       execution_item_id: raw.id,
