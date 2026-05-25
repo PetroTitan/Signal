@@ -29,6 +29,11 @@ import { canonicalPostFromRequest } from "./canonical-post";
 import { transformForBluesky } from "./transformers/bluesky";
 import { fetchWithTimeout, isTimeoutError } from "./fetch-with-timeout";
 import { extractFacets } from "./transformers/bluesky-facets";
+import {
+  formatBlueskyReasonDetail,
+  readBlueskyErrorBody,
+  type BlueskyErrorBody,
+} from "./atproto-error-body";
 
 export interface PublishBlueskyInput {
   request: PublishRequest;
@@ -70,11 +75,21 @@ interface CreateRecordResponse {
   cid: string;
 }
 
+interface SessionFailure {
+  ok: false;
+  status: number;
+  detail: string;
+  /** Structured AT Proto error captured from the response body.
+   *  Null when the failure happened before we received a response
+   *  (network / timeout) or when the body was empty. */
+  errorBody: BlueskyErrorBody | null;
+}
+
 async function createSession(
   service: string,
   identifier: string,
   password: string,
-): Promise<{ ok: true; session: BlueskySession } | { ok: false; status: number; detail: string }> {
+): Promise<{ ok: true; session: BlueskySession } | SessionFailure> {
   let resp: Response;
   try {
     resp = await fetchWithTimeout(
@@ -88,26 +103,39 @@ async function createSession(
     );
   } catch (err) {
     if (isTimeoutError(err)) {
-      return { ok: false, status: 0, detail: "Bluesky login timed out (15s)." };
+      return {
+        ok: false,
+        status: 0,
+        detail: "Bluesky login timed out (15s).",
+        errorBody: null,
+      };
     }
     return {
       ok: false,
       status: 0,
       detail: err instanceof Error ? err.message : "network error",
+      errorBody: null,
     };
   }
   if (resp.status === 401) {
+    const errorBody = await readBlueskyErrorBody(resp);
     return {
       ok: false,
       status: 401,
-      detail: "Bluesky rejected the identifier/app-password.",
+      detail:
+        errorBody.atproto_error || errorBody.atproto_message
+          ? formatBlueskyReasonDetail("createSession", 401, errorBody)
+          : "Bluesky rejected the identifier/app-password.",
+      errorBody,
     };
   }
   if (!resp.ok) {
+    const errorBody = await readBlueskyErrorBody(resp);
     return {
       ok: false,
       status: resp.status,
-      detail: `createSession returned ${resp.status}`,
+      detail: formatBlueskyReasonDetail("createSession", resp.status, errorBody),
+      errorBody,
     };
   }
   let json: { accessJwt?: string; did?: string };
@@ -118,6 +146,7 @@ async function createSession(
       ok: false,
       status: resp.status,
       detail: "createSession response was not JSON",
+      errorBody: null,
     };
   }
   if (!json.accessJwt || !json.did) {
@@ -125,16 +154,27 @@ async function createSession(
       ok: false,
       status: resp.status,
       detail: "createSession response missing accessJwt or did",
+      errorBody: null,
     };
   }
   return { ok: true, session: { accessJwt: json.accessJwt, did: json.did } };
+}
+
+interface CreateRecordFailure {
+  ok: false;
+  status: number;
+  detail: string;
+  /** Structured AT Proto error captured from the response body.
+   *  Null when the failure happened before we received a response
+   *  (network / timeout) or when the body was empty / unreadable. */
+  errorBody: BlueskyErrorBody | null;
 }
 
 async function createPostRecord(
   service: string,
   session: BlueskySession,
   record: Record<string, unknown>,
-): Promise<{ ok: true; record: CreateRecordResponse } | { ok: false; status: number; detail: string }> {
+): Promise<{ ok: true; record: CreateRecordResponse } | CreateRecordFailure> {
   let resp: Response;
   try {
     resp = await fetchWithTimeout(
@@ -159,29 +199,47 @@ async function createPostRecord(
         ok: false,
         status: 0,
         detail: "Bluesky didn't respond in time (20s).",
+        errorBody: null,
       };
     }
     return {
       ok: false,
       status: 0,
       detail: err instanceof Error ? err.message : "network error",
+      errorBody: null,
     };
   }
   if (resp.status === 401 || resp.status === 403) {
+    const errorBody = await readBlueskyErrorBody(resp);
     return {
       ok: false,
       status: resp.status,
-      detail: `Bluesky returned ${resp.status} — session may have been revoked.`,
+      detail:
+        errorBody.atproto_error || errorBody.atproto_message
+          ? formatBlueskyReasonDetail("createRecord", resp.status, errorBody)
+          : `Bluesky returned ${resp.status} — session may have been revoked.`,
+      errorBody,
     };
   }
   if (resp.status === 429) {
-    return { ok: false, status: 429, detail: "Bluesky returned 429" };
+    const errorBody = await readBlueskyErrorBody(resp);
+    return {
+      ok: false,
+      status: 429,
+      detail:
+        errorBody.atproto_error || errorBody.atproto_message
+          ? formatBlueskyReasonDetail("createRecord", 429, errorBody)
+          : "Bluesky returned 429",
+      errorBody,
+    };
   }
   if (!resp.ok) {
+    const errorBody = await readBlueskyErrorBody(resp);
     return {
       ok: false,
       status: resp.status,
-      detail: `createRecord returned ${resp.status}`,
+      detail: formatBlueskyReasonDetail("createRecord", resp.status, errorBody),
+      errorBody,
     };
   }
   let json: { uri?: string; cid?: string };
@@ -192,6 +250,7 @@ async function createPostRecord(
       ok: false,
       status: resp.status,
       detail: "createRecord response was not JSON",
+      errorBody: null,
     };
   }
   if (!json.uri || !json.cid) {
@@ -199,6 +258,7 @@ async function createPostRecord(
       ok: false,
       status: resp.status,
       detail: "createRecord response missing uri or cid",
+      errorBody: null,
     };
   }
   return { ok: true, record: { uri: json.uri, cid: json.cid } };
@@ -240,6 +300,8 @@ export async function publishToBluesky(
         : "platform_api_error";
     return publishFail(code, `Bluesky: ${sessionResult.detail}`, {
       http_status: sessionResult.status,
+      endpoint: "createSession",
+      ...errorBodyMetadata(sessionResult.errorBody),
     });
   }
   const { session } = sessionResult;
@@ -285,8 +347,10 @@ export async function publishToBluesky(
             : "platform_api_error";
       return publishFail(code, `Bluesky: ${result.detail}`, {
         http_status: result.status,
+        endpoint: "createRecord",
         thread_position_failed: thread.indexOf(part) + 1,
         thread_total: thread.length,
+        ...errorBodyMetadata(result.errorBody),
       });
     }
     if (!rootUri) {
@@ -396,12 +460,14 @@ export async function publishToBlueskyAsIdentity(
               : "platform_api_error";
       return publishFail(code, `Bluesky: ${result.detail}`, {
         http_status: result.status,
+        endpoint: "createRecord",
         thread_position_failed: thread.indexOf(part) + 1,
         thread_total: thread.length,
         // The DID is public information — already in the at-uri of
         // any of this identity's published posts. Including it in
         // diagnostic metadata is safe.
         did,
+        ...errorBodyMetadata(result.errorBody),
       });
     }
     if (!rootUri) {
@@ -425,4 +491,27 @@ export async function publishToBlueskyAsIdentity(
       did,
     },
   });
+}
+
+/**
+ * Flatten the structured `BlueskyErrorBody` into the keys we want to
+ * land in PublishOutcome.metadata. Returns an empty object when the
+ * body was null (network/timeout) so the spread is a no-op.
+ *
+ * Output keys (all optional):
+ *   - atproto_error
+ *   - atproto_message
+ *   - atproto_response_body_truncated
+ *   - atproto_response_body_was_truncated
+ */
+function errorBodyMetadata(
+  body: BlueskyErrorBody | null,
+): Record<string, unknown> {
+  if (!body) return {};
+  return {
+    atproto_error: body.atproto_error,
+    atproto_message: body.atproto_message,
+    atproto_response_body_truncated: body.atproto_response_body_truncated,
+    atproto_response_body_was_truncated: body.atproto_response_body_was_truncated,
+  };
 }
