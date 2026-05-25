@@ -342,7 +342,12 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     setScheduleSaveError(null);
     try {
       const source = reasonToSource(reason);
-      const payload = buildScheduleSavePayload(snapshot, itemId, reason);
+      const payload = buildScheduleSavePayload(
+        snapshot,
+        itemId,
+        reason,
+        props.defaults.timezoneLabel,
+      );
       if (!payload) {
         setScheduleSaveStatus("idle");
         return;

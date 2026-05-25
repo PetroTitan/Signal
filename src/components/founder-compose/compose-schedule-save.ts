@@ -31,6 +31,7 @@ import {
   type ScheduleSource,
 } from "@/core/observability/schedule-events";
 import { scheduleChecksum } from "@/core/scheduling/schedule-checksum";
+import { parseWorkspaceLocalDateTimeToUtc } from "@/core/scheduling/workspace-time";
 
 export type ScheduleSaveReason = "preset" | "input" | "clear";
 
@@ -106,6 +107,11 @@ export function buildScheduleSavePayload(
   state: ScheduleState,
   itemId: string | null,
   reason: ScheduleSaveReason,
+  /** Workspace timezone (IANA name). When provided, the bare
+   *  datetime-local input is interpreted in this zone — which is what
+   *  the operator sees in the picker. When null/undefined, falls back
+   *  to the browser's local zone for backward compatibility. */
+  workspaceTimezone?: string | null,
 ): ScheduleSaveRequest | null {
   if (!state.touched) return null;
   if (!itemId) return null;
@@ -114,7 +120,10 @@ export function buildScheduleSavePayload(
     return { itemId, isoOrEmpty: "", reason };
   }
   try {
-    const iso = datetimeLocalToIso(state.inputValue);
+    const iso =
+      workspaceTimezone && workspaceTimezone.length > 0
+        ? parseWorkspaceLocalDateTimeToUtc(state.inputValue, workspaceTimezone)
+        : datetimeLocalToIso(state.inputValue);
     return { itemId, isoOrEmpty: iso, reason };
   } catch (err) {
     emitScheduleParseInvalid({

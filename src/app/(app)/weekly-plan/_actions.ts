@@ -70,6 +70,20 @@ export type SaveScheduleResult = ActionResult<{
   /** The schedule source the server attributed to this write
    *  (manual / preset / mcp / api / migration / recovery). */
   source?: string;
+  /** Operator-facing display fields populated when the workspace
+   *  timezone is set and the schedule is non-null. Allows the UI to
+   *  echo the canonical time without re-deriving from the ISO. */
+  scheduledAtLocal?: string | null;
+  scheduledAtUtcDebug?: string | null;
+  timezone?: string | null;
+  dueInSeconds?: number | null;
+  dueLabel?: string | null;
+  /** "execution_item" | "weekly_plan_item" | "none" — see
+   *  src/core/scheduling/effective-publish-schedule.ts. */
+  effectiveSource?: "execution_item" | "weekly_plan_item" | "none";
+  /** Active execution_item id whose scheduled_at is the publish
+   *  trigger. Null when no active execution_item exists. */
+  executionItemId?: string | null;
 }>;
 export type ApprovePlanItemResult = ActionResult<{
   itemId: string;
@@ -2479,12 +2493,59 @@ export async function saveScheduleAction(
       return actionFail(resyncOutcome.message);
     }
 
+    // Canonical display fields — populated for non-null schedules so
+    // the UI can echo the time without re-deriving from the ISO.
+    const { createSupabaseServerClient: makeClient } = await import(
+      "@/lib/supabase"
+    );
+    const supabaseForTz = makeClient();
+    const { data: wsSettingsForTz } = await supabaseForTz
+      .from("workspace_settings")
+      .select("timezone")
+      .eq("workspace_id", workspaceId)
+      .maybeSingle();
+    const workspaceTimezone =
+      (wsSettingsForTz as { timezone?: string | null } | null)?.timezone ??
+      "UTC";
+    let scheduledAtLocal: string | null = null;
+    let scheduledAtUtcDebug: string | null = null;
+    let dueInSeconds: number | null = null;
+    let dueLabel: string | null = null;
+    let effectiveSource: "execution_item" | "weekly_plan_item" | "none" =
+      "none";
+    if (nextIso !== null) {
+      const { formatScheduleDisplay } = await import(
+        "@/core/scheduling/format-schedule-display"
+      );
+      const display = formatScheduleDisplay({
+        planItem: { scheduledAt: nextIso },
+        executionItem:
+          resyncOutcome.mode === "rescheduled_active_execution_item"
+            ? { status: "scheduled", scheduledAt: nextIso }
+            : null,
+        workspaceTimezone,
+        serverNow: new Date(),
+      });
+      scheduledAtLocal = display.local;
+      scheduledAtUtcDebug = display.utc;
+      dueInSeconds = display.dueInSeconds;
+      dueLabel = display.relative;
+      effectiveSource = display.source;
+    }
+
     revalidatePath("/weekly-plan");
     return actionOk({
       itemId: updated.id,
       scheduledAtIso: nextIso,
       serverChecksum,
       source,
+      scheduledAtLocal,
+      scheduledAtUtcDebug,
+      timezone: workspaceTimezone,
+      dueInSeconds,
+      dueLabel,
+      effectiveSource,
+      executionItemId: resyncOutcome.executionItemId,
     });
   } catch (error) {
     const message =

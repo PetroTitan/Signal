@@ -33,6 +33,7 @@ import {
 } from "@/components/founder-compose/founder-compose-sheet";
 import { MiniPreview } from "@/components/platform-preview/MiniPreview";
 import { asPreviewPlatform } from "@/core/platform-preview/preview-renderer";
+import type { ScheduleDisplay } from "@/core/scheduling/format-schedule-display";
 
 const updateInitial: UpdatePlanItemResult = { ok: false, error: "" };
 const duplicateInitial: DuplicatePlanItemResult = { ok: false, error: "" };
@@ -78,6 +79,12 @@ export interface PlanItemCardProps {
   executionItemStatus: string | null;
   /** F4.6.1 — null when the draft is purely manual. */
   aiAssistedKind: "ai_draft" | "ai_assisted" | null;
+  /** Canonical schedule display computed server-side from the
+   *  plan_item + active execution_item + workspace timezone. The card
+   *  renders local/UTC/relative from this prop; `scheduledAt` is kept
+   *  for backwards-compatible branching (popover open default, button
+   *  visibility, etc.). */
+  scheduleDisplay: ScheduleDisplay;
 }
 
 export function PlanItemCard(props: PlanItemCardProps) {
@@ -198,21 +205,68 @@ export function PlanItemCard(props: PlanItemCardProps) {
                   comment draft
                 </span>
               ) : null}
-              {props.scheduledAt ? (
-                <span className="inline-flex items-center rounded-full border border-ink-200 px-2 py-0.5 text-[11px] text-ink-700">
-                  {formatSchedule(props.scheduledAt)}
+              {props.scheduleDisplay.effectiveScheduledAt ? (
+                <span
+                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${
+                    props.scheduleDisplay.dueState === "overdue"
+                      ? "border-amber-300 bg-amber-50 text-amber-800"
+                      : props.scheduleDisplay.dueState === "due"
+                        ? "border-signal-200 bg-signal-50 text-signal-800"
+                        : "border-ink-200 text-ink-700"
+                  }`}
+                  title={`${props.scheduleDisplay.utc ?? ""} · ${props.scheduleDisplay.sourceLabel}`}
+                >
+                  <span>{props.scheduleDisplay.local}</span>
+                  <span className="text-ink-400">·</span>
+                  <span className="text-ink-500">
+                    {props.scheduleDisplay.timezone}
+                  </span>
+                  {props.scheduleDisplay.relative ? (
+                    <>
+                      <span className="text-ink-400">·</span>
+                      <span>{props.scheduleDisplay.relative}</span>
+                    </>
+                  ) : null}
                 </span>
               ) : (
                 <span className="inline-flex items-center rounded-full border border-dashed border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">
                   unscheduled
                 </span>
               )}
+              {props.scheduleDisplay.effectiveScheduledAt &&
+              props.scheduleDisplay.source === "execution_item" ? (
+                <span
+                  className="inline-flex items-center rounded-full border border-signal-200 bg-signal-50 px-2 py-0.5 text-[10px] uppercase tracking-wide text-signal-700"
+                  title="The scheduler reads execution_items.scheduled_at to decide when to publish."
+                >
+                  publish trigger
+                </span>
+              ) : null}
+              {props.scheduleDisplay.divergenceWarning ? (
+                <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-800">
+                  diverged
+                </span>
+              ) : null}
               {accountLabel ? (
                 <span className="text-[11px] text-ink-500">
                   {accountLabel.displayName ?? accountLabel.id}
                 </span>
               ) : null}
             </div>
+
+            {/* Divergence warning — plan_item.scheduled_at and the
+                active execution_item.scheduled_at don't match. This
+                normally clears itself via the schedule-resync helper
+                in saveScheduleAction; surfacing it here is a calm
+                belt-and-braces in case the operator landed in a
+                transient state. */}
+            {props.scheduleDisplay.divergenceWarning ? (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 mt-1">
+                <div className="text-[11px] text-amber-800 leading-relaxed">
+                  {props.scheduleDisplay.divergenceWarning}
+                </div>
+              </div>
+            ) : null}
 
             {/* Warnings — only on posts with real issues */}
             {props.isPost && props.warnings.length > 0 ? (
@@ -495,17 +549,6 @@ function ReschedSubmit({ alreadyScheduled }: { alreadyScheduled: boolean }) {
   );
 }
 
-function formatSchedule(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
 
 // =====================================================================
 // Post + creative status summary — explicit separation so an
