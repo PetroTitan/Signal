@@ -3,13 +3,18 @@
  * before every live API call).
  *
  * Hard rules:
- *   - publish only inside an active weekly contract
  *   - publish only for confirmed account + confirmed product
  *   - publish only with a stored, encrypted OAuth access token
  *   - publish only when workspace_settings.execution_mode = 'live'
  *   - publish only when scheduled_for <= now
  *   - never auto-publish unapproved content
  *   - never publish comments / DMs / votes (Reddit text + link only)
+ *
+ * Contract enforcement: contract enforcement is APPROVAL-time, not
+ * publish-time. Bulk approval flows (approveWeeklyPlanAction /
+ * approveAndHoldAction) still require an active contract. Per-post
+ * approval is contract-free post PR #91. This gate intentionally
+ * does NOT block on contract absence.
  */
 
 import type { PublishOutcome, PublishRequest } from "./publishing-types";
@@ -30,7 +35,6 @@ export const PUBLISHING_POLICY_BLOCKED = [
   "Browser-automation publishing.",
   "Cookie / session-token publishing.",
   "Auto-generating content inside Signal — content comes from approved weekly_plan_items only.",
-  "Publishing without an active weekly contract.",
   "Publishing when the account or product is not review_status='confirmed'.",
   "Publishing when execution_mode is 'dry_run'.",
 ] as const;
@@ -41,6 +45,15 @@ export const PUBLISHING_POLICY_BLOCKED = [
  */
 export interface PolicyContext {
   request: PublishRequest;
+  /**
+   * Informational only — kept for backwards-compat with callers that
+   * already populate it (the scheduler reads `weekly_approval_contracts`
+   * and passes the boolean through). The policy gate NO LONGER
+   * blocks publishing on contract absence: per-post contract-free
+   * publishing is supported end-to-end after the contract-free
+   * migration (PR #91). Bulk approval flows still enforce contract
+   * at APPROVAL time, not publish time.
+   */
   hasActiveContract: boolean;
   accountReviewStatus: string | null;
   productReviewStatus: string | null;
@@ -74,12 +87,12 @@ export function evaluatePublishingPolicy(
       "Live publishing is disabled for this workspace.",
     );
   }
-  if (!ctx.hasActiveContract) {
-    return publishBlocked(
-      "no_active_contract",
-      "No active weekly contract — publishing is refused.",
-    );
-  }
+  // NOTE: contract-free per-post publishing (PR #91) made weekly
+  // contracts optional. The publish-time gate that previously
+  // blocked on `!hasActiveContract` is intentionally removed —
+  // contract enforcement lives at APPROVAL time
+  // (approveWeeklyPlanAction / approveAndHoldAction). Removing this
+  // gate is what unblocked Bluesky items scheduled contract-free.
   if (ctx.accountReviewStatus !== "confirmed") {
     return publishBlocked(
       "account_not_confirmed",
