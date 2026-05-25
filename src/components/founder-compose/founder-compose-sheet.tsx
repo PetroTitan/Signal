@@ -10,9 +10,14 @@ import {
 } from "@/app/(app)/weekly-plan/_actions";
 import {
   SCHEDULE_PRESETS,
+  datetimeLocalToIso,
   toDatetimeLocalString,
 } from "@/core/publishing/schedule-presets";
 import { autosaveLabel, useAutosave } from "./use-autosave";
+import {
+  serializeAutosaveDraft,
+  shouldResetDraft,
+} from "./compose-autosave-helpers";
 import { Markdown } from "./markdown";
 import { RewriteChips } from "./rewrite-chips";
 
@@ -100,6 +105,14 @@ interface DraftState {
   title: string;
   body: string;
   scheduledAt: string; // datetime-local input value
+  /**
+   * True once the operator has touched the schedule picker in this
+   * session (preset click or manual edit). While false, the autosave
+   * omits scheduled_at from both its diff payload and the FormData
+   * sent to the server — so the timestamp seeded from the existing
+   * row can't round-trip through UTC normalization and drift.
+   */
+  scheduledAtTouched: boolean;
   platform: string;
   contentType: string;
   subreddit: string;
@@ -125,6 +138,7 @@ function initialDraft(
       title: existing.title ?? "",
       body: existing.body ?? "",
       scheduledAt: scheduledLocal,
+      scheduledAtTouched: false,
       platform: existing.platform ?? "reddit",
       contentType: existing.contentType ?? "post",
       subreddit: existing.subreddit ?? defaults.defaultSubreddit,
@@ -145,6 +159,10 @@ function initialDraft(
     title: "",
     body: "",
     scheduledAt: toDatetimeLocalString(tomorrow9),
+    // Create mode: the default schedule is operator-meaningful (the
+    // preset they'd pick anyway), so we treat it as touched so the
+    // first save persists it.
+    scheduledAtTouched: true,
     platform: "reddit",
     contentType: "post",
     subreddit: defaults.defaultSubreddit,
@@ -167,14 +185,27 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
   const [showPreview, setShowPreview] = useState(false);
   const [, startTransition] = useTransition();
 
+  // Track the previous `open` value so we only reset on a real
+  // closed → open transition. Parent re-renders that pass fresh
+  // object literals for `defaults`/`existingItem` must NOT overwrite
+  // in-progress edits — that was the root cause of the autosave loop
+  // (server returns canonical ISO → parent refreshes → object
+  // identity changes → reset effect fires → autosave re-saves the
+  // round-tripped value → repeat).
+  const prevOpenRef = useRef(props.open);
   useEffect(() => {
-    // Reset draft when the sheet re-opens.
-    if (props.open) {
+    if (shouldResetDraft(prevOpenRef.current, props.open)) {
       setDraft(initialDraft(props.defaults, props.existingItem));
       setShowAdvanced(false);
       setShowPreview(false);
     }
-  }, [props.open, props.defaults, props.existingItem]);
+    prevOpenRef.current = props.open;
+    // The deps list intentionally excludes `props.defaults` and
+    // `props.existingItem` — they're snapshots captured at open
+    // time, and we don't want their object-identity changes to
+    // trigger a re-reset mid-edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.open]);
 
   // ---- Autosave ----------------------------------------------------
   const upsertRef = useRef<(d: DraftState) => Promise<{ ok: boolean; error?: string }>>(
@@ -189,7 +220,19 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     fd.set("content_type", d.contentType);
     fd.set("account_id", d.accountId);
     fd.set("product_id", d.productId);
-    fd.set("scheduled_at", d.scheduledAt);
+    if (d.scheduledAtTouched) {
+      // Convert to a fully-qualified ISO client-side. The bare
+      // datetime-local string has no timezone, and the server would
+      // otherwise parse it in its own zone (UTC on Vercel) — which
+      // is the operator's UTC offset off from what they actually
+      // picked.
+      try {
+        fd.set("scheduled_at", datetimeLocalToIso(d.scheduledAt));
+      } catch {
+        // Empty value falls through as a clear-to-null signal.
+        fd.set("scheduled_at", "");
+      }
+    }
     fd.set("subreddit", d.subreddit);
     if (d.riskScore.length > 0) fd.set("risk_score", d.riskScore);
     fd.set("notes", d.notes);
@@ -208,20 +251,7 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
   };
 
   const autosave = useAutosave(draft, {
-    serialize: (d) =>
-      JSON.stringify({
-        t: d.title,
-        b: d.body,
-        s: d.scheduledAt,
-        p: d.platform,
-        c: d.contentType,
-        sr: d.subreddit,
-        a: d.accountId,
-        pr: d.productId,
-        r: d.riskScore,
-        n: d.notes,
-        id: d.itemId,
-      }),
+    serialize: (d) => serializeAutosaveDraft(d),
     enabled: (d) =>
       d.title.trim().length > 0 || d.body.trim().length > 0,
     delayMs: 1500,
@@ -249,7 +279,11 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     const preset = SCHEDULE_PRESETS.find((p) => p.id === presetId);
     if (!preset) return;
     const resolved = preset.resolve(new Date());
-    setDraft((d) => ({ ...d, scheduledAt: toDatetimeLocalString(resolved) }));
+    setDraft((d) => ({
+      ...d,
+      scheduledAt: toDatetimeLocalString(resolved),
+      scheduledAtTouched: true,
+    }));
   }
 
   if (!props.open) return null;
@@ -450,7 +484,11 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
               type="datetime-local"
               value={draft.scheduledAt}
               onChange={(e) =>
-                setDraft((d) => ({ ...d, scheduledAt: e.target.value }))
+                setDraft((d) => ({
+                  ...d,
+                  scheduledAt: e.target.value,
+                  scheduledAtTouched: true,
+                }))
               }
               className="input w-full text-sm font-mono"
             />
