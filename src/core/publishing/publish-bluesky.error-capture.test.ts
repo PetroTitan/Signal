@@ -319,3 +319,211 @@ describe("publishToBlueskyAsIdentity — success path", () => {
     expect(outcome.metadata.atproto_response_body_truncated).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------
+// Routing: body-error trumps HTTP status
+// ---------------------------------------------------------------------
+//
+// The orchestrator's refresh-and-retry path runs only when the
+// publisher returns reasonCode === "session_expired". Before this
+// PR, ExpiredToken on HTTP 400 silently became platform_api_error,
+// and the refresh path never fired. These tests pin the routing so
+// the same regression can't reopen.
+
+describe("publishToBlueskyAsIdentity — body-error reasonCode routing", () => {
+  it("ExpiredToken on 400 → session_expired (the prod case — triggers orchestrator refresh)", async () => {
+    enqueue(
+      "https://bsky.social/xrpc/com.atproto.repo.createRecord",
+      jsonResponse(400, {
+        error: "ExpiredToken",
+        message: "Token has expired",
+      }),
+    );
+
+    const outcome = await publishToBlueskyAsIdentity({
+      request: baseRequest(),
+      accessJwt: "test-jwt",
+      did: "did:plc:test",
+      handle: "handle.bsky.social",
+      service: "https://bsky.social",
+    });
+
+    expect(outcome.reasonCode).toBe("session_expired");
+    expect(outcome.metadata.atproto_error).toBe("ExpiredToken");
+    expect(outcome.metadata.http_status).toBe(400);
+  });
+
+  it("InvalidToken on 400 → session_expired", async () => {
+    enqueue(
+      "https://bsky.social/xrpc/com.atproto.repo.createRecord",
+      jsonResponse(400, {
+        error: "InvalidToken",
+        message: "Token is malformed",
+      }),
+    );
+
+    const outcome = await publishToBlueskyAsIdentity({
+      request: baseRequest(),
+      accessJwt: "test-jwt",
+      did: "did:plc:test",
+      handle: "handle.bsky.social",
+      service: "https://bsky.social",
+    });
+
+    expect(outcome.reasonCode).toBe("session_expired");
+  });
+
+  it("AccountTakedown → platform_unauthorized (refresh won't help)", async () => {
+    enqueue(
+      "https://bsky.social/xrpc/com.atproto.repo.createRecord",
+      jsonResponse(400, {
+        error: "AccountTakedown",
+        message: "Account has been taken down",
+      }),
+    );
+
+    const outcome = await publishToBlueskyAsIdentity({
+      request: baseRequest(),
+      accessJwt: "test-jwt",
+      did: "did:plc:test",
+      handle: "handle.bsky.social",
+      service: "https://bsky.social",
+    });
+
+    expect(outcome.reasonCode).toBe("platform_unauthorized");
+  });
+
+  it("AuthFactorTokenRequired → platform_unauthorized (operator must intervene)", async () => {
+    enqueue(
+      "https://bsky.social/xrpc/com.atproto.repo.createRecord",
+      jsonResponse(401, {
+        error: "AuthFactorTokenRequired",
+        message: "MFA required",
+      }),
+    );
+
+    const outcome = await publishToBlueskyAsIdentity({
+      request: baseRequest(),
+      accessJwt: "test-jwt",
+      did: "did:plc:test",
+      handle: "handle.bsky.social",
+      service: "https://bsky.social",
+    });
+
+    expect(outcome.reasonCode).toBe("platform_unauthorized");
+  });
+
+  it("generic InvalidRequest on 400 → platform_api_error (text-too-long, etc. still surface correctly)", async () => {
+    enqueue(
+      "https://bsky.social/xrpc/com.atproto.repo.createRecord",
+      jsonResponse(400, {
+        error: "InvalidRequest",
+        message: "Record/text must not be longer than 300 graphemes",
+      }),
+    );
+
+    const outcome = await publishToBlueskyAsIdentity({
+      request: baseRequest(),
+      accessJwt: "test-jwt",
+      did: "did:plc:test",
+      handle: "handle.bsky.social",
+      service: "https://bsky.social",
+    });
+
+    expect(outcome.reasonCode).toBe("platform_api_error");
+  });
+
+  it("HTTP 401 with no body → session_expired (identity path default)", async () => {
+    enqueue(
+      "https://bsky.social/xrpc/com.atproto.repo.createRecord",
+      new Response("", { status: 401 }),
+    );
+
+    const outcome = await publishToBlueskyAsIdentity({
+      request: baseRequest(),
+      accessJwt: "test-jwt",
+      did: "did:plc:test",
+      handle: "handle.bsky.social",
+      service: "https://bsky.social",
+    });
+
+    expect(outcome.reasonCode).toBe("session_expired");
+  });
+
+  it("HTTP 429 → platform_rate_limited (existing behavior preserved)", async () => {
+    enqueue(
+      "https://bsky.social/xrpc/com.atproto.repo.createRecord",
+      jsonResponse(429, { error: "RateLimitExceeded", message: "Slow down" }),
+    );
+
+    const outcome = await publishToBlueskyAsIdentity({
+      request: baseRequest(),
+      accessJwt: "test-jwt",
+      did: "did:plc:test",
+      handle: "handle.bsky.social",
+      service: "https://bsky.social",
+    });
+
+    expect(outcome.reasonCode).toBe("platform_rate_limited");
+  });
+
+  it("HTTP 403 → platform_unauthorized (existing behavior preserved)", async () => {
+    enqueue(
+      "https://bsky.social/xrpc/com.atproto.repo.createRecord",
+      new Response("", { status: 403 }),
+    );
+
+    const outcome = await publishToBlueskyAsIdentity({
+      request: baseRequest(),
+      accessJwt: "test-jwt",
+      did: "did:plc:test",
+      handle: "handle.bsky.social",
+      service: "https://bsky.social",
+    });
+
+    expect(outcome.reasonCode).toBe("platform_unauthorized");
+  });
+});
+
+describe("publishToBluesky (legacy app-password path) — body-error routing", () => {
+  it("ExpiredToken from createRecord → session_expired (consistent with identity path)", async () => {
+    // createSession succeeds, then createRecord fails with
+    // ExpiredToken — same body-trumps-status rule.
+    enqueue(
+      "https://bsky.social/xrpc/com.atproto.server.createSession",
+      jsonResponse(200, { accessJwt: "tok", did: "did:plc:test" }),
+    );
+    enqueue(
+      "https://bsky.social/xrpc/com.atproto.repo.createRecord",
+      jsonResponse(400, {
+        error: "ExpiredToken",
+        message: "Token has expired",
+      }),
+    );
+
+    const outcome = await publishToBluesky({
+      request: baseRequest(),
+      identifier: "ident.bsky.social",
+      appPassword: "abcd-efgh-ijkl-mnop",
+      service: "https://bsky.social",
+    });
+
+    expect(outcome.reasonCode).toBe("session_expired");
+  });
+
+  it("HTTP 401 from createSession (bad app password) → platform_unauthorized (legacy default401)", async () => {
+    enqueue(
+      "https://bsky.social/xrpc/com.atproto.server.createSession",
+      new Response("", { status: 401 }),
+    );
+
+    const outcome = await publishToBluesky({
+      request: baseRequest(),
+      identifier: "ident.bsky.social",
+      appPassword: "abcd-efgh-ijkl-mnop",
+      service: "https://bsky.social",
+    });
+
+    expect(outcome.reasonCode).toBe("platform_unauthorized");
+  });
+});

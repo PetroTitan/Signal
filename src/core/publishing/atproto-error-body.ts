@@ -151,6 +151,91 @@ export function redactSensitive(input: string): string {
 }
 
 /**
+ * Map an AT Proto XRPC failure to the canonical Signal `reasonCode`.
+ *
+ * Background — the routing bug this fixes
+ * ---------------------------------------
+ * Production audit (2026-05-25): bsky.social returned
+ *   HTTP 400 { "error":"ExpiredToken", "message":"Token has expired" }
+ * on a fresh publish attempt against an identity whose access JWT
+ * had aged out. The publisher's switch was keyed on HTTP status
+ * only — 401 → session_expired, everything else → platform_api_error.
+ * Because the expired token came back on 400 (not 401), it got
+ * mapped to platform_api_error, which made the
+ * bluesky-publish-orchestrator skip the refresh-and-retry path
+ * (that path is gated on reasonCode === "session_expired"). The
+ * encrypted refresh JWT sitting in platform_connections was never
+ * used; the publish hard-failed forever.
+ *
+ * Fix — body error trumps HTTP status
+ * -----------------------------------
+ * Look at AT Proto's structured `error` token first. Only when it's
+ * absent (or non-auth-related) do we fall back to HTTP status. This
+ * matches AT Proto's documented vocabulary — see
+ * https://docs.bsky.app/docs/api/com-atproto-repo-create-record
+ *
+ * Different call sites disagree about the 401-without-body case:
+ *   - identity-scoped path (publishToBlueskyAsIdentity) — 401 means
+ *     the JWT has expired; we want session_expired so the
+ *     orchestrator refreshes.
+ *   - legacy app-password path (publishToBluesky / createSession) —
+ *     401 means the operator's app-password is wrong; no refresh
+ *     story, so platform_unauthorized.
+ * Both paths agree on the body-error mapping. The caller passes
+ * `default401` to disambiguate the no-body case.
+ */
+export type BlueskyMappedReason =
+  | "session_expired"
+  | "platform_unauthorized"
+  | "platform_rate_limited"
+  | "platform_api_error";
+
+/** AT Proto error tokens that indicate a recoverable auth failure —
+ *  refresh-and-retry can clear them. Sourced from AT Proto's XRPC
+ *  error vocabulary; conservative on purpose so we don't accidentally
+ *  trigger refresh on non-auth errors. */
+const SESSION_EXPIRED_ATPROTO_ERRORS: ReadonlySet<string> = new Set([
+  "ExpiredToken",
+  "InvalidToken",
+]);
+
+/** AT Proto error tokens that indicate the operator must intervene
+ *  — refresh won't help (account banned, MFA required, etc.). */
+const UNAUTHORIZED_ATPROTO_ERRORS: ReadonlySet<string> = new Set([
+  "AccountTakedown",
+  "AuthFactorTokenRequired",
+]);
+
+export function mapBlueskyAtprotoErrorToReasonCode(
+  errorBody: BlueskyErrorBody | null,
+  httpStatus: number,
+  /** What the caller wants when there's no body error AND
+   *  `httpStatus === 401`. The identity-scoped publisher passes
+   *  "session_expired" so the orchestrator refresh fires; the
+   *  legacy app-password publisher passes "platform_unauthorized". */
+  default401: Extract<
+    BlueskyMappedReason,
+    "session_expired" | "platform_unauthorized"
+  >,
+): BlueskyMappedReason {
+  // 1. Body error first — AT Proto returns ExpiredToken on HTTP 400
+  // in the wild, so we cannot rely on the HTTP status alone.
+  if (errorBody?.atproto_error) {
+    if (SESSION_EXPIRED_ATPROTO_ERRORS.has(errorBody.atproto_error)) {
+      return "session_expired";
+    }
+    if (UNAUTHORIZED_ATPROTO_ERRORS.has(errorBody.atproto_error)) {
+      return "platform_unauthorized";
+    }
+  }
+  // 2. HTTP status fallback for everything else.
+  if (httpStatus === 429) return "platform_rate_limited";
+  if (httpStatus === 401) return default401;
+  if (httpStatus === 403) return "platform_unauthorized";
+  return "platform_api_error";
+}
+
+/**
  * Build the inner `reasonDetail` fragment from a parsed AT Proto
  * error. The publisher already wraps every failure detail with a
  * leading "Bluesky: " — this fragment must NOT repeat the prefix.

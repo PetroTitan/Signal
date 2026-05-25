@@ -31,6 +31,7 @@ import { fetchWithTimeout, isTimeoutError } from "./fetch-with-timeout";
 import { extractFacets } from "./transformers/bluesky-facets";
 import {
   formatBlueskyReasonDetail,
+  mapBlueskyAtprotoErrorToReasonCode,
   readBlueskyErrorBody,
   type BlueskyErrorBody,
 } from "./atproto-error-body";
@@ -294,10 +295,14 @@ export async function publishToBluesky(
   // 1. Create a session.
   const sessionResult = await createSession(service, identifier, appPassword);
   if (!sessionResult.ok) {
-    const code =
-      sessionResult.status === 401
-        ? "platform_unauthorized"
-        : "platform_api_error";
+    // Body error trumps HTTP status. createSession is the
+    // app-password login; default401 = platform_unauthorized because
+    // there's no refresh story for a failed login.
+    const code = mapBlueskyAtprotoErrorToReasonCode(
+      sessionResult.errorBody,
+      sessionResult.status,
+      "platform_unauthorized",
+    );
     return publishFail(code, `Bluesky: ${sessionResult.detail}`, {
       http_status: sessionResult.status,
       endpoint: "createSession",
@@ -339,12 +344,13 @@ export async function publishToBluesky(
     }
     const result = await createPostRecord(service, session, record);
     if (!result.ok) {
-      const code =
-        result.status === 429
-          ? "platform_rate_limited"
-          : result.status === 401 || result.status === 403
-            ? "platform_unauthorized"
-            : "platform_api_error";
+      // Body error trumps HTTP status. Legacy app-password publisher
+      // has no refresh path; default401 = platform_unauthorized.
+      const code = mapBlueskyAtprotoErrorToReasonCode(
+        result.errorBody,
+        result.status,
+        "platform_unauthorized",
+      );
       return publishFail(code, `Bluesky: ${result.detail}`, {
         http_status: result.status,
         endpoint: "createRecord",
@@ -447,17 +453,18 @@ export async function publishToBlueskyAsIdentity(
     }
     const result = await createPostRecord(service, session, record);
     if (!result.ok) {
-      // 401 → typed session_expired so the runner can attempt a
-      // refresh exactly once. 403 stays generic — refresh won't
-      // help if the account itself was banned/disabled.
-      const code =
-        result.status === 401
-          ? "session_expired"
-          : result.status === 429
-            ? "platform_rate_limited"
-            : result.status === 403
-              ? "platform_unauthorized"
-              : "platform_api_error";
+      // Body error trumps HTTP status. The identity-scoped path
+      // wants 401 (and AT Proto body errors ExpiredToken /
+      // InvalidToken regardless of HTTP status) to surface as
+      // session_expired so the orchestrator's refresh-and-retry
+      // path fires. 403 / AccountTakedown / AuthFactorTokenRequired
+      // mean refresh won't help — they bubble up as
+      // platform_unauthorized so the operator intervenes.
+      const code = mapBlueskyAtprotoErrorToReasonCode(
+        result.errorBody,
+        result.status,
+        "session_expired",
+      );
       return publishFail(code, `Bluesky: ${result.detail}`, {
         http_status: result.status,
         endpoint: "createRecord",

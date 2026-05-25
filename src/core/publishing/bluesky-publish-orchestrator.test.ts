@@ -295,3 +295,164 @@ describe("publishBlueskyForIdentity — outcomes", () => {
     expect(calls.getConnectionForAccount).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------
+// Refresh-and-retry — body-error session_expired must enter this path
+// ---------------------------------------------------------------------
+//
+// The whole point of routing ExpiredToken (HTTP 400 with body
+// `{"error":"ExpiredToken"}`) to reasonCode=session_expired in the
+// publisher is so this gate fires:
+//   if (firstOutcome.reasonCode !== "session_expired") return firstOutcome;
+// These tests pin the contract end-to-end: when publish-bluesky
+// returns session_expired, the orchestrator runs refresh + retry.
+
+import * as publishBlueskyModule from "./publish-bluesky";
+import * as platformOAuthModule from "@/core/platform-oauth";
+import * as platformConnRepoModule from "@/repositories/platform-connection-repository";
+import * as tokenStorageModule from "@/core/platform-oauth/token-storage";
+import * as blueskySessionModule from "@/core/identity-verifiers/bluesky-session";
+
+describe("publishBlueskyForIdentity — session_expired triggers refresh path", () => {
+  beforeEach(() => {
+    accountFixture = {
+      workspaceId: "ws-1",
+      accountId: "acct-1",
+      platform: "bluesky",
+      handle: "handle.bsky.social",
+    };
+    connectionFixture = {
+      id: "conn-1",
+      hasAccessToken: true,
+      connectionStatus: "connected",
+      providerAccountId: "did:plc:test",
+      handle: "handle.bsky.social",
+    };
+    // Encrypted-token envelope present so the orchestrator picks the
+    // identity-session path.
+    vi.mocked(platformConnRepoModule.readEncryptedTokens).mockResolvedValue({
+      accessTokenEncrypted: "ciphertext-access",
+      refreshTokenEncrypted: "ciphertext-refresh",
+      expiresAt: null,
+    });
+    // Decrypt always returns a JWT-shaped string (the test never
+    // sends this to a real PDS — publishToBlueskyAsIdentity is mocked).
+    vi.mocked(platformOAuthModule.decryptForOutboundUse).mockImplementation(
+      (enc) => (enc === "ciphertext-access" ? "fake-jwt-access" : "fake-jwt-refresh"),
+    );
+  });
+
+  it("publisher session_expired → refreshBlueskySession runs → second publish retried", async () => {
+    // First publish call returns session_expired (the prod case after
+    // body-error routing kicks in). Second call returns published.
+    vi.mocked(publishBlueskyModule.publishToBlueskyAsIdentity)
+      .mockResolvedValueOnce({
+        status: "failed",
+        reasonCode: "session_expired",
+        reasonDetail: "Bluesky: createRecord failed: ExpiredToken — Token has expired",
+        externalId: null,
+        externalUrl: null,
+        metadata: { atproto_error: "ExpiredToken", http_status: 400 },
+      })
+      .mockResolvedValueOnce({
+        status: "published",
+        reasonCode: "ok",
+        reasonDetail: null,
+        externalId: "at://did:plc:test/app.bsky.feed.post/abc",
+        externalUrl: "https://bsky.app/profile/handle.bsky.social/post/abc",
+        metadata: {},
+      });
+
+    vi.mocked(blueskySessionModule.refreshBlueskySession).mockResolvedValueOnce({
+      outcome: "refreshed",
+      accessJwt: "new-access",
+      refreshJwt: "new-refresh",
+      did: "did:plc:test",
+      handle: "handle.bsky.social",
+    } as never);
+
+    vi.mocked(tokenStorageModule.encryptTokenResponse).mockReturnValueOnce({
+      ok: true,
+      accessTokenEncrypted: "new-ciphertext-access",
+      refreshTokenEncrypted: "new-ciphertext-refresh",
+      expiresAt: null,
+    } as never);
+
+    const outcome = await publishBlueskyForIdentity({
+      request: baseRequest(),
+      db: FAKE_DB,
+    });
+
+    expect(outcome.status).toBe("published");
+    expect(
+      vi.mocked(publishBlueskyModule.publishToBlueskyAsIdentity),
+    ).toHaveBeenCalledTimes(2);
+    expect(
+      vi.mocked(blueskySessionModule.refreshBlueskySession),
+    ).toHaveBeenCalledTimes(1);
+    // Refreshed token persisted via upsert under service-role db.
+    expect(calls.upsertPlatformConnection).toHaveLength(1);
+    expect(calls.upsertPlatformConnection[0].db).toBe(FAKE_DB);
+  });
+
+  it("publisher session_expired → refresh fails → markIdentityExpired + session_expired outcome", async () => {
+    vi.mocked(publishBlueskyModule.publishToBlueskyAsIdentity).mockResolvedValueOnce({
+      status: "failed",
+      reasonCode: "session_expired",
+      reasonDetail: "Bluesky: createRecord failed: ExpiredToken — Token has expired",
+      externalId: null,
+      externalUrl: null,
+      metadata: { atproto_error: "ExpiredToken", http_status: 400 },
+    });
+
+    vi.mocked(blueskySessionModule.refreshBlueskySession).mockResolvedValueOnce({
+      outcome: "failed",
+      code: "refresh_rejected",
+      message: "Refresh JWT also expired",
+    } as never);
+
+    const outcome = await publishBlueskyForIdentity({
+      request: baseRequest(),
+      db: FAKE_DB,
+    });
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.reasonCode).toBe("session_expired");
+    // Second publish was NOT attempted — refresh failed.
+    expect(
+      vi.mocked(publishBlueskyModule.publishToBlueskyAsIdentity),
+    ).toHaveBeenCalledTimes(1);
+    // Connection marked expired under service-role db.
+    expect(calls.markConnectionStatus).toHaveLength(1);
+    expect(calls.markConnectionStatus[0].db).toBe(FAKE_DB);
+    expect(calls.setAccountConnectionStatus).toHaveLength(1);
+    expect(calls.setAccountConnectionStatus[0].db).toBe(FAKE_DB);
+  });
+
+  it("publisher platform_api_error (non-auth) → NO refresh attempted, outcome bubbles up", async () => {
+    // Regression guard: only session_expired must enter the refresh
+    // path. A grapheme/facet/empty-text 400 must NOT trigger refresh.
+    vi.mocked(publishBlueskyModule.publishToBlueskyAsIdentity).mockResolvedValueOnce({
+      status: "failed",
+      reasonCode: "platform_api_error",
+      reasonDetail:
+        "Bluesky: createRecord failed: InvalidRequest — Record/text must not be longer than 300 graphemes",
+      externalId: null,
+      externalUrl: null,
+      metadata: { atproto_error: "InvalidRequest", http_status: 400 },
+    });
+
+    const outcome = await publishBlueskyForIdentity({
+      request: baseRequest(),
+      db: FAKE_DB,
+    });
+
+    expect(outcome.reasonCode).toBe("platform_api_error");
+    expect(
+      vi.mocked(publishBlueskyModule.publishToBlueskyAsIdentity),
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      vi.mocked(blueskySessionModule.refreshBlueskySession),
+    ).not.toHaveBeenCalled();
+  });
+});
