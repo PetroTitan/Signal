@@ -14,7 +14,7 @@ import {
   type SendForApprovalResult,
   type UpdatePlanItemResult,
 } from "./_actions";
-import { describeCreativeState } from "./approval-readiness";
+import { describeCreativeState } from "./approval-readiness.shared";
 import {
   CreativeCard,
   type CreativeCardData,

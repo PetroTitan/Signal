@@ -33,7 +33,7 @@ import {
   updateCreative,
 } from "@/repositories/weekly-plan-creative-repository";
 import { parseScheduledAtField } from "./parse-scheduled-at-field";
-import { assessItemApprovalReadiness } from "./approval-readiness";
+import { assessItemApprovalReadiness } from "./approval-readiness.server";
 import {
   emitScheduleParseInvalid,
   emitScheduleSaveRejected,

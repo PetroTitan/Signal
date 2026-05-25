@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { assessItemApprovalReadiness } from "./approval-readiness.server";
 import {
-  assessItemApprovalReadiness,
   describeCreativeState,
   summarizeReadiness,
-} from "./approval-readiness";
+} from "./approval-readiness.shared";
 import type { WeeklyPlanItem } from "@/repositories/weekly-plan-repository";
 import type { WeeklyContract } from "@/core/weekly-contract/approval-contract-types";
 
