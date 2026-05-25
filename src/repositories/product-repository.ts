@@ -1,4 +1,5 @@
 import "server-only";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase";
 import type {
   ProductInsert,
@@ -72,8 +73,10 @@ export async function archiveProduct(input: {
 export async function getProductById(
   workspaceId: string,
   productId: string,
+  /** Optional injected client; see getAccountById's doc note. */
+  db?: SupabaseClient,
 ): Promise<Product> {
-  const supabase = createSupabaseServerClient();
+  const supabase = db ?? createSupabaseServerClient();
   const { data, error } = await supabase
     .from("products")
     .select("*")
