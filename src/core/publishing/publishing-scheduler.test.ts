@@ -99,6 +99,18 @@ describe("nextExecutionStatusForOutcome — terminal outcomes", () => {
       ),
     ).toBe("failed");
   });
+
+  it("blocked + platform_not_supported → blocked (was previously a silent in-memory skip)", () => {
+    // Regression guard: before this PR the unsupported-platform
+    // branch was an in-memory result push that left status =
+    // "scheduled" forever. It now goes through applyOutcome with a
+    // "blocked" terminal outcome.
+    expect(
+      nextExecutionStatusForOutcome(
+        outcome({ status: "blocked", reasonCode: "platform_not_supported" }),
+      ),
+    ).toBe("blocked");
+  });
 });
 
 describe("nextExecutionStatusForOutcome — skip discrimination", () => {
