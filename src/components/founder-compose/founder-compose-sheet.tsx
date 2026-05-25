@@ -37,6 +37,7 @@ import {
   type ComposeItemStatus,
 } from "./compose-action-state";
 import { suggestAltTextFor } from "@/core/scheduling/suggested-alt-text";
+import { deriveApproveActionsState } from "@/app/(app)/weekly-plan/approve-actions-ui";
 import {
   emitScheduleRoundtripDelta,
   emitScheduleSaveSuccess,
@@ -108,6 +109,20 @@ export interface FounderComposeSheetExistingItem {
   /** Audit-trail source of the current schedule. Persisted in
    *  metadata.schedule_source by saveScheduleAction. */
   scheduleSource?: string | null;
+  /**
+   * True when the workspace has an active weekly contract.
+   *
+   * Used by the modal footer to gate per-item "Approve post"
+   * (immediate-schedule path requires a contract because
+   * execution_items.contract_id is NOT NULL).
+   *
+   * Per-item "Approve & hold" is contract-free and stays enabled
+   * regardless of this value.
+   *
+   * Optional for backward compat — defaults to false in the footer
+   * so we never surface an enabled button that's guaranteed to fail.
+   */
+  hasActiveContract?: boolean;
   riskScore: number | null;
   notes: string | null;
   creative: {
@@ -454,9 +469,12 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     startTransition(() => router.refresh());
   }
 
-  const [perItemApproveError, setPerItemApproveError] = useState<string | null>(
-    null,
-  );
+  // Separate error scopes — a failed schedule attempt must not poison
+  // the hold path's UI, and vice versa.
+  const [scheduleApproveError, setScheduleApproveError] = useState<
+    string | null
+  >(null);
+  const [holdApproveError, setHoldApproveError] = useState<string | null>(null);
   const [perItemApproveBusy, setPerItemApproveBusy] = useState<
     "hold" | "schedule" | null
   >(null);
@@ -465,7 +483,10 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     await autosave.flushNow();
     if (!draft.itemId) return;
     setPerItemApproveBusy("schedule");
-    setPerItemApproveError(null);
+    setScheduleApproveError(null);
+    // Clear any stale hold-path error so the UI doesn't show two
+    // unrelated banners.
+    setHoldApproveError(null);
     const fd = new FormData();
     fd.set("item_id", draft.itemId);
     const result = await approvePlanItemAndScheduleAction(
@@ -477,7 +498,9 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
       props.onClose();
       startTransition(() => router.refresh());
     } else {
-      setPerItemApproveError(result.error ?? "Approval failed.");
+      setScheduleApproveError(
+        result.error ?? "Could not approve for publishing.",
+      );
     }
   }
 
@@ -485,7 +508,11 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     await autosave.flushNow();
     if (!draft.itemId) return;
     setPerItemApproveBusy("hold");
-    setPerItemApproveError(null);
+    setHoldApproveError(null);
+    // The hold path is the recovery for a failed schedule attempt —
+    // clear the schedule-path error so the operator doesn't see a
+    // stale banner while the hold flow runs (and after success).
+    setScheduleApproveError(null);
     const fd = new FormData();
     fd.set("item_id", draft.itemId);
     const result = await approvePlanItemAndHoldAction(
@@ -497,7 +524,7 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
       props.onClose();
       startTransition(() => router.refresh());
     } else {
-      setPerItemApproveError(result.error ?? "Approval failed.");
+      setHoldApproveError(result.error ?? "Approval failed.");
     }
   }
 
@@ -955,8 +982,10 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
           })}
           autosaveLabel={autosaveLabel(autosave.status)}
           scheduleSet={schedule.inputValue.trim().length > 0}
+          hasActiveContract={props.existingItem?.hasActiveContract ?? false}
           perItemApproveBusy={perItemApproveBusy}
-          perItemApproveError={perItemApproveError}
+          scheduleApproveError={scheduleApproveError}
+          holdApproveError={holdApproveError}
           onSaveAsDraft={handleClose}
           onSendForApproval={handleSendForApproval}
           onApprovePost={handleApprovePost}
@@ -1344,8 +1373,10 @@ function ComposeFooter({
   actionState,
   autosaveLabel: autosaveText,
   scheduleSet,
+  hasActiveContract,
   perItemApproveBusy,
-  perItemApproveError,
+  scheduleApproveError,
+  holdApproveError,
   onSaveAsDraft,
   onSendForApproval,
   onApprovePost,
@@ -1355,14 +1386,23 @@ function ComposeFooter({
   actionState: ReturnType<typeof deriveComposeActionState>;
   autosaveLabel: string;
   scheduleSet: boolean;
+  hasActiveContract: boolean;
   perItemApproveBusy: "hold" | "schedule" | null;
-  perItemApproveError: string | null;
+  scheduleApproveError: string | null;
+  holdApproveError: string | null;
   onSaveAsDraft: () => void;
   onSendForApproval: () => void;
   onApprovePost: () => void;
   onApproveAndHold: () => void;
   onClose: () => void;
 }) {
+  const approveActions = deriveApproveActionsState({
+    scheduleSet,
+    hasActiveContract,
+    otherBlocker: actionState.primaryDisabled
+      ? actionState.primaryBlocker
+      : null,
+  });
   return (
     <div
       className="flex flex-col gap-2 px-4 py-3 border-t border-ink-100 shrink-0 bg-white"
@@ -1397,21 +1437,19 @@ function ComposeFooter({
               {actionState.primaryLabel}
             </button>
           ) : actionState.variant === "awaiting_approval_actions" ? (
-            // Per-item approval — two buttons, no navigation:
-            //   Approve post (requires schedule)
-            //   Approve & hold (no schedule required)
-            <div className="inline-flex items-center gap-2 flex-wrap">
+            // Per-item approval — contract- and schedule-aware. The
+            // schedule slot renders ONLY when both schedule + active
+            // contract exist; otherwise we show a calm hint and
+            // never expose a button that's guaranteed to fail.
+            <div className="inline-flex items-end gap-2 flex-wrap">
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-amber-200 bg-amber-50 text-amber-800 font-medium text-[11px]">
                 Awaiting approval
               </span>
-              {scheduleSet ? (
+              {approveActions.schedulePost.kind === "enabled" ? (
                 <button
                   type="button"
                   onClick={onApprovePost}
-                  disabled={
-                    actionState.primaryDisabled ||
-                    perItemApproveBusy !== null
-                  }
+                  disabled={perItemApproveBusy !== null}
                   className="btn-primary text-xs disabled:opacity-50"
                 >
                   {perItemApproveBusy === "schedule"
@@ -1419,15 +1457,24 @@ function ComposeFooter({
                     : "Approve post"}
                 </button>
               ) : (
-                <span className="text-[11px] text-ink-500 italic">
-                  No schedule — approve & hold first
+                <span
+                  className="text-[11px] text-ink-500 italic max-w-xs"
+                  title={approveActions.schedulePost.hint}
+                >
+                  {approveActions.schedulePost.kind === "disabled_no_schedule"
+                    ? "No schedule — approve & hold first"
+                    : approveActions.schedulePost.kind ===
+                        "disabled_no_contract"
+                      ? "No active contract — approve & hold first"
+                      : "Approve post unavailable"}
                 </span>
               )}
               <button
                 type="button"
                 onClick={onApproveAndHold}
                 disabled={
-                  actionState.primaryDisabled || perItemApproveBusy !== null
+                  approveActions.approveAndHold.kind !== "enabled" ||
+                  perItemApproveBusy !== null
                 }
                 className="btn-secondary text-xs disabled:opacity-50"
               >
@@ -1435,9 +1482,26 @@ function ComposeFooter({
                   ? "Approving…"
                   : "Approve & hold"}
               </button>
-              {perItemApproveError ? (
-                <span className="text-[11px] text-amber-700">
-                  {perItemApproveError}
+              {scheduleApproveError ? (
+                <span
+                  className="text-[11px] text-amber-700 max-w-xs"
+                  data-error-scope="schedule"
+                >
+                  {scheduleApproveError}{" "}
+                  <span className="text-ink-500">
+                    You can still approve &amp; hold this post.
+                  </span>
+                </span>
+              ) : holdApproveError ? (
+                <span
+                  className="text-[11px] text-amber-700 max-w-xs"
+                  data-error-scope="hold"
+                >
+                  {holdApproveError}
+                </span>
+              ) : approveActions.contextHint ? (
+                <span className="text-[11px] text-ink-500 italic max-w-xs">
+                  {approveActions.contextHint}
                 </span>
               ) : null}
             </div>

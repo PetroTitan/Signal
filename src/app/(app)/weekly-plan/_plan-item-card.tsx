@@ -15,6 +15,7 @@ import {
   type UpdatePlanItemResult,
 } from "./_actions";
 import { describeCreativeState } from "./approval-readiness.shared";
+import { deriveApproveActionsState } from "./approve-actions-ui";
 import {
   CreativeCard,
   type CreativeCardData,
@@ -319,6 +320,7 @@ export function PlanItemCard(props: PlanItemCardProps) {
           productId: props.productId,
           scheduledAtIso: props.scheduledAt,
           scheduleSource: props.scheduleSource,
+          hasActiveContract: props.hasActiveContract,
           riskScore: props.riskScore,
           notes: props.notes,
           creative: props.creative
@@ -625,47 +627,56 @@ function PerItemApproveButtons({
   const holdSafe = holdState ?? approveItemInitial;
   const scheduleSafe = scheduleState ?? approveItemInitial;
 
-  // "Approve post" needs both a schedule AND an active contract
-  // (execution_items.contract_id is NOT NULL). "Approve & hold" is
-  // contract-free.
-  const scheduleCta = !scheduleSet
-    ? { kind: "no_schedule" as const }
-    : !hasActiveContract
-      ? { kind: "no_contract" as const }
-      : { kind: "ready" as const };
+  const actions = deriveApproveActionsState({
+    scheduleSet,
+    hasActiveContract,
+    otherBlocker: null,
+  });
+
+  // Error scoping — when the hold path succeeds, suppress the
+  // schedule-path error so the operator doesn't see a stale banner
+  // for a path they no longer care about.
+  const showScheduleError = scheduleSafe.error && !holdSafe.ok;
+  const showHoldError = holdSafe.error && !scheduleSafe.ok;
 
   return (
-    <div className="inline-flex flex-wrap items-center gap-1.5">
-      {scheduleCta.kind === "ready" ? (
+    <div className="inline-flex flex-wrap items-end gap-1.5">
+      {actions.schedulePost.kind === "enabled" ? (
         <form action={scheduleAction} className="inline">
           <input type="hidden" name="item_id" value={itemId} />
           <ApprovePostSubmit />
         </form>
-      ) : scheduleCta.kind === "no_schedule" ? (
-        <span
-          className="inline-flex items-center text-[11px] text-ink-500 italic"
-          title="No schedule set. Use Approve & hold, then schedule later."
-        >
-          No schedule — approve & hold first
-        </span>
       ) : (
         <span
           className="inline-flex items-center text-[11px] text-ink-500 italic"
-          title="Scheduling requires an active weekly contract. You can approve & hold now, then activate a contract before scheduling."
+          title={actions.schedulePost.hint}
         >
-          No active contract — approve & hold first
+          {actions.schedulePost.kind === "disabled_no_schedule"
+            ? "No schedule — approve & hold first"
+            : actions.schedulePost.kind === "disabled_no_contract"
+              ? "No active contract — approve & hold first"
+              : "Approve post unavailable"}
         </span>
       )}
       <form action={holdAction} className="inline">
         <input type="hidden" name="item_id" value={itemId} />
         <ApproveAndHoldSubmit />
       </form>
-      {scheduleSafe.error ? (
-        <span className="text-[11px] text-amber-700 ml-1">
-          {scheduleSafe.error}
+      {showScheduleError ? (
+        <span
+          className="text-[11px] text-amber-700 ml-1 max-w-xs"
+          data-error-scope="schedule"
+        >
+          {scheduleSafe.error}{" "}
+          <span className="text-ink-500">
+            You can still approve &amp; hold this post.
+          </span>
         </span>
-      ) : holdSafe.error ? (
-        <span className="text-[11px] text-amber-700 ml-1">
+      ) : showHoldError ? (
+        <span
+          className="text-[11px] text-amber-700 ml-1 max-w-xs"
+          data-error-scope="hold"
+        >
           {holdSafe.error}
         </span>
       ) : null}
