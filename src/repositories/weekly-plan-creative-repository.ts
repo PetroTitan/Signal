@@ -1,4 +1,5 @@
 import "server-only";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase";
 import type {
   CreativeSourceType,
@@ -107,8 +108,16 @@ export async function createCreative(
 export async function listCreativesForItem(
   workspaceId: string,
   itemId: string,
+  /**
+   * Optional injected client. UI / server-action callers omit it
+   * and use the cookie-aware client. The scheduler tick passes its
+   * service-role client through so the read is not blocked by RLS
+   * in a runtime without an operator cookie. Same additive pattern
+   * as getAccountById / getConnectionForAccount.
+   */
+  db?: SupabaseClient,
 ): Promise<WeeklyPlanItemCreative[]> {
-  const supabase = createSupabaseServerClient();
+  const supabase = db ?? createSupabaseServerClient();
   const { data, error } = await supabase
     .from("weekly_plan_item_creatives")
     .select("*")

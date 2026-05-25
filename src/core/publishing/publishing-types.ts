@@ -69,6 +69,17 @@ export const PUBLISH_REASON_CODES = [
   // execution_item moves out of "scheduled" even on unexpected
   // exceptions.
   "scheduler_exception",
+  // PR 1 — bluesky-publish-approved-creative
+  // An approved creative is attached to the plan_item but the row
+  // is missing the asset URL / source URL / alt text Bluesky
+  // requires. Block (rather than silently downgrade) so the
+  // operator can fix the creative.
+  "creative_missing_asset",
+  "creative_missing_alt_text",
+  // The Bluesky uploadBlob call rejected the image (oversized,
+  // unsupported type, network error). Surfaces as a real publish
+  // failure rather than letting the orchestrator publish text-only.
+  "media_upload_failed",
 ] as const;
 export type PublishReasonCode = (typeof PUBLISH_REASON_CODES)[number];
 
@@ -109,6 +120,49 @@ export interface PublishRequest {
   coverImageUrl?: string | null;
   /** dev.to / Hashnode "series" or "publication" hint. */
   series?: string | null;
+  /**
+   * Approved creative carried alongside the text body.
+   *
+   * - `null` / `undefined` → text-only publish (operator never
+   *   attached an image; existing behavior).
+   * - object → the scheduler verified an approved creative row
+   *   exists and pre-validated that asset / alt text are present.
+   *   Adapters that support media (Bluesky) must attach the image;
+   *   adapters that don't may ignore the field. NEVER silently drop
+   *   the image when this field is set.
+   *
+   * `creative_missing_asset` / `creative_missing_alt_text` reason
+   * codes are produced by the scheduler before this field is built,
+   * so the publisher can assume `creative !== null` is well-formed.
+   */
+  creative?: PublishCreative | null;
+}
+
+/**
+ * Provider-agnostic creative payload. Adapters convert this into
+ * platform-specific embeds (Bluesky: `app.bsky.embed.images`).
+ *
+ * The scheduler is responsible for picking the ONE approved
+ * creative to attach. Multi-image attachments are deferred.
+ */
+export interface PublishCreative {
+  /** weekly_plan_item_creatives.id (for audit / log metadata). */
+  id: string;
+  /** "image" | future: "video", etc. Today only image is wired. */
+  creativeType: "image" | string;
+  /** "uploaded" | "manual_url" | "generated" | ... */
+  sourceType: string;
+  /** Direct fetchable URL (Supabase storage or external CDN).
+   *  Falls back to `sourceUrl` when null. */
+  assetUrl: string | null;
+  /** Optional fallback when assetUrl is null (e.g. manual_url
+   *  creatives). The scheduler resolves to the effective URL
+   *  before validation. */
+  sourceUrl: string | null;
+  /** Alt text. Required for Bluesky; the scheduler blocks the
+   *  publish if missing rather than letting the publisher silently
+   *  upload a no-alt image. */
+  altText: string | null;
 }
 
 export interface PublishOutcome {
