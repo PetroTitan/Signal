@@ -20,6 +20,7 @@ import "server-only";
  * not added here.
  */
 
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAccountById } from "@/repositories/account-repository";
 import { getProductById } from "@/repositories/product-repository";
 import { listRecentPublishes } from "@/repositories/publish-history-repository";
@@ -111,22 +112,38 @@ export async function getPublishingIdentityContext(input: {
   identityId: string;
   /** How many recent successful publishes to include. Default 5. */
   historyLimit?: number;
+  /**
+   * Optional injected Supabase client. The UI / server-action path
+   * omits it so each repo picks up the cookie-aware client.
+   * MCP-driven callers (signal.generate_draft, signal.generate_
+   * weekly_plan, signal.generate_multiweek_plan) pass the service-
+   * role client (ctx.db) so the repo lookups don't depend on a
+   * Supabase session cookie that doesn't exist for bearer-token
+   * MCP requests.
+   */
+  db?: SupabaseClient;
 }): Promise<PublishingIdentityContext | null> {
   let identity;
   try {
-    identity = await getAccountById(input.workspaceId, input.identityId);
+    identity = await getAccountById(input.workspaceId, input.identityId, input.db);
   } catch {
     return null;
   }
 
   const associatedProduct = identity.productId
-    ? await getProductById(input.workspaceId, identity.productId).catch(
-        () => null,
-      )
+    ? await getProductById(
+        input.workspaceId,
+        identity.productId,
+        input.db,
+      ).catch(() => null)
     : null;
 
   const limit = input.historyLimit ?? 5;
-  const allRecent = await listRecentPublishes(input.workspaceId, 30);
+  const allRecent = await listRecentPublishes(
+    input.workspaceId,
+    30,
+    input.db,
+  );
   const publishingHistory = allRecent
     .filter(
       (p) => p.outcome === "published" && p.platform === identity.platform,

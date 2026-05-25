@@ -1,4 +1,5 @@
 import "server-only";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase";
 import type {
   GrowthAccountInsert,
@@ -107,8 +108,16 @@ export async function archiveAccount(input: {
 export async function getAccountById(
   workspaceId: string,
   accountId: string,
+  /**
+   * Optional injected client. UI / server-action callers omit it and
+   * pick up the cookie-aware client by default. The MCP layer passes
+   * its service-role client (ctx.db) so requests outside the cookie
+   * session (operator-token bearer auth on /api/mcp) can still read
+   * workspace rows.
+   */
+  db?: SupabaseClient,
 ): Promise<GrowthAccountRecord> {
-  const supabase = createSupabaseServerClient();
+  const supabase = db ?? createSupabaseServerClient();
   const { data, error } = await supabase
     .from("growth_accounts")
     .select("*")

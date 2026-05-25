@@ -20,6 +20,7 @@ import "server-only";
  * real provider is a localized change.
  */
 
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { getPublishingIdentityContext } from "@/core/publishing/publishing-identity-context";
 import type { PublishingIdentityContext } from "@/core/publishing/publishing-identity-context";
 import {
@@ -67,11 +68,21 @@ const SIMILARITY_MIN_TOPIC_LEN = 12;
 export async function generateDraft(input: {
   workspaceId: string;
   generation: GenerationInput;
+  /**
+   * Optional Supabase client to use when loading the identity
+   * context. UI callers (server actions running inside a cookie
+   * session) leave this unset and get the cookie-aware client. The
+   * MCP planning tools pass `ctx.db` so the identity-context lookup
+   * works without a Supabase cookie session (operator tokens use
+   * bearer auth on /api/mcp; there is no cookie on those requests).
+   */
+  db?: SupabaseClient;
 }): Promise<GenerationResult> {
   const identityContext = await getPublishingIdentityContext({
     workspaceId: input.workspaceId,
     identityId: input.generation.identityId,
     historyLimit: 5,
+    db: input.db,
   });
   if (!identityContext) {
     const fallbackDraft = emptyDraft(input.generation);

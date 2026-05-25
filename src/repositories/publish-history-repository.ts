@@ -1,4 +1,5 @@
 import "server-only";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase";
 import type {
   PublishHistoryInsert,
@@ -163,8 +164,10 @@ export async function findRecentDuplicate(input: {
 export async function listRecentPublishes(
   workspaceId: string,
   limit = 20,
+  /** Optional injected client; see getAccountById's doc note. */
+  db?: SupabaseClient,
 ): Promise<PublishHistoryEntry[]> {
-  const supabase = createSupabaseServerClient();
+  const supabase = db ?? createSupabaseServerClient();
   const { data, error } = await supabase
     .from("publish_history")
     .select("*")

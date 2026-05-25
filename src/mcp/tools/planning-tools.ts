@@ -131,8 +131,15 @@ async function generateAndPersistOneDraft(input: {
   // (PR #75); failure paths still surface a complete envelope so the
   // plan item carries creativeDirection even when generation
   // produced only a seeded body.
+  //
+  // We pass `ctx.db` — the service-role client the MCP dispatcher
+  // hands every tool — so the identity-context lookup inside
+  // generateDraft doesn't fall back to a cookie-aware server client
+  // (which has no session on bearer-token MCP requests and would
+  // return null, dropping us to the fallback envelope).
   const result = await generateDraft({
     workspaceId: ctx.workspaceId,
+    db: ctx.db,
     generation: {
       weeklyPlanId,
       identityId,
