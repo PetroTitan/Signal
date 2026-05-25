@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   ATPROTO_ERROR_BODY_MAX_CHARS,
   formatBlueskyReasonDetail,
+  mapBlueskyAtprotoErrorToReasonCode,
   readBlueskyErrorBody,
   redactSensitive,
+  type BlueskyErrorBody,
 } from "./atproto-error-body";
 
 /**
@@ -277,5 +279,159 @@ describe("formatBlueskyReasonDetail", () => {
     ).toBe(
       "createSession failed: AuthenticationRequired — Invalid identifier or password",
     );
+  });
+});
+
+// ---------------------------------------------------------------------
+// mapBlueskyAtprotoErrorToReasonCode — body error trumps HTTP status
+// ---------------------------------------------------------------------
+//
+// Production audit (2026-05-25): bsky.social returned
+//   HTTP 400 {"error":"ExpiredToken","message":"Token has expired"}
+// against an identity whose access JWT had aged out. The old
+// HTTP-only switch mapped 400 → platform_api_error, so the
+// orchestrator's refresh-and-retry path (gated on
+// reasonCode === "session_expired") never fired. These tests pin the
+// body-trumps-status mapping so the same regression can't reopen.
+
+function body(over: Partial<BlueskyErrorBody> = {}): BlueskyErrorBody {
+  return {
+    atproto_error: null,
+    atproto_message: null,
+    atproto_response_body_truncated: null,
+    atproto_response_body_was_truncated: false,
+    ...over,
+  };
+}
+
+describe("mapBlueskyAtprotoErrorToReasonCode — body error overrides HTTP status", () => {
+  it("ExpiredToken on HTTP 400 → session_expired (the prod case)", () => {
+    expect(
+      mapBlueskyAtprotoErrorToReasonCode(
+        body({ atproto_error: "ExpiredToken" }),
+        400,
+        "session_expired",
+      ),
+    ).toBe("session_expired");
+  });
+
+  it("InvalidToken on HTTP 400 → session_expired", () => {
+    expect(
+      mapBlueskyAtprotoErrorToReasonCode(
+        body({ atproto_error: "InvalidToken" }),
+        400,
+        "session_expired",
+      ),
+    ).toBe("session_expired");
+  });
+
+  it("ExpiredToken on HTTP 200 still → session_expired (defensive)", () => {
+    // Should never happen — but if AT Proto ever ships an oddity
+    // where the status doesn't match the body, the body wins.
+    expect(
+      mapBlueskyAtprotoErrorToReasonCode(
+        body({ atproto_error: "ExpiredToken" }),
+        200,
+        "session_expired",
+      ),
+    ).toBe("session_expired");
+  });
+
+  it("AccountTakedown body → platform_unauthorized regardless of status", () => {
+    expect(
+      mapBlueskyAtprotoErrorToReasonCode(
+        body({ atproto_error: "AccountTakedown" }),
+        400,
+        "session_expired",
+      ),
+    ).toBe("platform_unauthorized");
+    expect(
+      mapBlueskyAtprotoErrorToReasonCode(
+        body({ atproto_error: "AccountTakedown" }),
+        403,
+        "session_expired",
+      ),
+    ).toBe("platform_unauthorized");
+  });
+
+  it("AuthFactorTokenRequired body → platform_unauthorized", () => {
+    expect(
+      mapBlueskyAtprotoErrorToReasonCode(
+        body({ atproto_error: "AuthFactorTokenRequired" }),
+        401,
+        "session_expired",
+      ),
+    ).toBe("platform_unauthorized");
+  });
+
+  it("generic InvalidRequest body → platform_api_error (HTTP-status fallback)", () => {
+    expect(
+      mapBlueskyAtprotoErrorToReasonCode(
+        body({ atproto_error: "InvalidRequest" }),
+        400,
+        "session_expired",
+      ),
+    ).toBe("platform_api_error");
+  });
+
+  it("unknown AT Proto error code on 400 falls through to platform_api_error", () => {
+    expect(
+      mapBlueskyAtprotoErrorToReasonCode(
+        body({ atproto_error: "SomeFutureError" }),
+        400,
+        "session_expired",
+      ),
+    ).toBe("platform_api_error");
+  });
+});
+
+describe("mapBlueskyAtprotoErrorToReasonCode — HTTP-status fallback when no body error", () => {
+  it("HTTP 401 with no body → default401 (identity path → session_expired)", () => {
+    expect(
+      mapBlueskyAtprotoErrorToReasonCode(null, 401, "session_expired"),
+    ).toBe("session_expired");
+  });
+
+  it("HTTP 401 with no body → default401 (legacy path → platform_unauthorized)", () => {
+    expect(
+      mapBlueskyAtprotoErrorToReasonCode(null, 401, "platform_unauthorized"),
+    ).toBe("platform_unauthorized");
+  });
+
+  it("HTTP 401 with body that has no error field → default401 still wins", () => {
+    expect(
+      mapBlueskyAtprotoErrorToReasonCode(
+        body({ atproto_message: "Something" }),
+        401,
+        "session_expired",
+      ),
+    ).toBe("session_expired");
+  });
+
+  it("HTTP 403 → platform_unauthorized", () => {
+    expect(
+      mapBlueskyAtprotoErrorToReasonCode(null, 403, "session_expired"),
+    ).toBe("platform_unauthorized");
+  });
+
+  it("HTTP 429 → platform_rate_limited (regardless of default401)", () => {
+    expect(
+      mapBlueskyAtprotoErrorToReasonCode(null, 429, "session_expired"),
+    ).toBe("platform_rate_limited");
+    expect(
+      mapBlueskyAtprotoErrorToReasonCode(null, 429, "platform_unauthorized"),
+    ).toBe("platform_rate_limited");
+  });
+
+  it("HTTP 500 with no body → platform_api_error", () => {
+    expect(
+      mapBlueskyAtprotoErrorToReasonCode(null, 500, "session_expired"),
+    ).toBe("platform_api_error");
+  });
+
+  it("null errorBody behaves like a body with no error/message", () => {
+    expect(
+      mapBlueskyAtprotoErrorToReasonCode(null, 400, "session_expired"),
+    ).toBe("platform_api_error");
   });
 });
