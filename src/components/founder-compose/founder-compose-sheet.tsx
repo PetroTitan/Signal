@@ -45,6 +45,12 @@ import {
 } from "@/core/scheduling/schedule-checksum";
 import { Markdown } from "./markdown";
 import { RewriteChips } from "./rewrite-chips";
+import {
+  PreviewCard,
+  PreviewTabsHeader,
+  type ComposeTab,
+} from "@/components/platform-preview/PreviewTabs";
+import { asPreviewPlatform } from "@/core/platform-preview/preview-renderer";
 
 /**
  * Founder compose sheet — the "I had an idea" surface.
@@ -227,7 +233,7 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     props.existingItem?.scheduleSource ?? null,
   );
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [showPreview, setShowPreview] = useState(false);
+  const [composeTab, setComposeTab] = useState<ComposeTab>("editor");
   const [, startTransition] = useTransition();
 
   // Track the previous `open` value so we only reset on a real
@@ -248,7 +254,7 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
       setScheduleSaveError(null);
       setScheduleSource(props.existingItem?.scheduleSource ?? null);
       setShowAdvanced(false);
-      setShowPreview(false);
+      setComposeTab("editor");
     }
     prevOpenRef.current = props.open;
     // The deps list intentionally excludes `props.defaults` and
@@ -523,44 +529,110 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
             />
           </label>
 
-          {/* Body — write / preview toggle, with markdown preview */}
+          {/* Editor / Platform preview / Metadata tabs */}
           <div className="block">
             <div className="flex items-baseline justify-between">
               <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
                 Body
               </span>
-              <div className="flex items-center gap-2">
-                <CharCounter value={draft.body} limit={10000} softAt={9000} />
-                <button
-                  type="button"
-                  onClick={() => setShowPreview((v) => !v)}
-                  className="text-[11px] text-ink-500 underline hover:text-ink-800"
-                >
-                  {showPreview ? "Write" : "Preview"}
-                </button>
-              </div>
+              <CharCounter value={draft.body} limit={10000} softAt={9000} />
             </div>
-            {showPreview ? (
-              <div className="mt-1 rounded-md border border-ink-200 bg-ink-50/40 px-3 py-2 min-h-[140px]">
-                <Markdown source={draft.body} />
+            <PreviewTabsHeader
+              active={composeTab}
+              onChange={setComposeTab}
+              previewAvailable={asPreviewPlatform(draft.platform) !== null}
+            />
+            {composeTab === "editor" ? (
+              <>
+                <textarea
+                  value={draft.body}
+                  onChange={(e) =>
+                    setDraft((d) => ({ ...d, body: e.target.value }))
+                  }
+                  placeholder="The post itself. Markdown supported."
+                  className="input w-full text-sm leading-relaxed mt-2 font-mono min-h-[140px] md:min-h-[200px]"
+                />
+                <p className="mt-1 text-[10px] text-ink-400 hidden md:block">
+                  Markdown supported:{" "}
+                  <span className="font-mono"># heading</span> ·{" "}
+                  <span className="font-mono">**bold**</span> ·{" "}
+                  <span className="font-mono">*italic*</span> ·{" "}
+                  <span className="font-mono">[text](url)</span> · lists ·{" "}
+                  <span className="font-mono">```code```</span>
+                </p>
+                <details className="mt-2 text-[11px] text-ink-500">
+                  <summary className="cursor-pointer hover:text-ink-800">
+                    Show rendered markdown
+                  </summary>
+                  <div className="mt-1 rounded-md border border-ink-200 bg-ink-50/40 px-3 py-2 min-h-[80px]">
+                    <Markdown source={draft.body} />
+                  </div>
+                </details>
+              </>
+            ) : composeTab === "preview" ? (
+              <div className="mt-2">
+                {(() => {
+                  const platform = asPreviewPlatform(draft.platform);
+                  if (!platform) {
+                    return (
+                      <p className="text-[11px] text-ink-500 leading-relaxed">
+                        Platform-native preview isn&apos;t available for{" "}
+                        <span className="font-mono">{draft.platform}</span>{" "}
+                        yet. Bluesky, X, and LinkedIn are supported in v1.
+                      </p>
+                    );
+                  }
+                  return (
+                    <PreviewCard
+                      platform={platform}
+                      input={{
+                        platform,
+                        title: draft.title,
+                        body: draft.body,
+                        identity: {
+                          displayName:
+                            props.defaults.accounts.find(
+                              (a) => a.id === draft.accountId,
+                            )?.displayName ?? null,
+                          handle: null,
+                          avatarUrl: null,
+                        },
+                        creative: draft.creativeAssetUrl
+                          ? {
+                              assetUrl: draft.creativeAssetUrl,
+                              altText: draft.creativeAltText,
+                              sourceType:
+                                props.existingItem?.creative?.sourceType ??
+                                null,
+                            }
+                          : null,
+                      }}
+                    />
+                  );
+                })()}
               </div>
             ) : (
-              <textarea
-                value={draft.body}
-                onChange={(e) =>
-                  setDraft((d) => ({ ...d, body: e.target.value }))
-                }
-                placeholder="The post itself. Markdown supported."
-                className="input w-full text-sm leading-relaxed mt-1 font-mono min-h-[140px] md:min-h-[200px]"
-              />
+              <div className="mt-2 rounded-md border border-ink-200 bg-ink-50/40 p-3 text-[11px] text-ink-700 font-mono leading-relaxed space-y-1">
+                <div>itemId: {draft.itemId ?? "(none yet)"}</div>
+                <div>platform: {draft.platform}</div>
+                <div>contentType: {draft.contentType}</div>
+                <div>
+                  subreddit:{" "}
+                  {draft.platform === "reddit" ? draft.subreddit : "—"}
+                </div>
+                <div>accountId: {draft.accountId || "—"}</div>
+                <div>productId: {draft.productId || "—"}</div>
+                <div>riskScore: {draft.riskScore || "—"}</div>
+                <div>scheduleSource: {scheduleSource ?? "—"}</div>
+                <div>scheduleTouched: {String(schedule.touched)}</div>
+                <div>creativeId: {draft.creativeId ?? "—"}</div>
+                <div>
+                  creativeAssetUrl:{" "}
+                  {draft.creativeAssetUrl ? "(present)" : "—"}
+                </div>
+                <div>altTextLen: {draft.creativeAltText.trim().length}</div>
+              </div>
             )}
-            <p className="mt-1 text-[10px] text-ink-400 hidden md:block">
-              Markdown supported: <span className="font-mono"># heading</span>{" "}
-              · <span className="font-mono">**bold**</span> ·{" "}
-              <span className="font-mono">*italic*</span> ·{" "}
-              <span className="font-mono">[text](url)</span> · lists ·{" "}
-              <span className="font-mono">```code```</span>
-            </p>
           </div>
 
           {/* Editorial rewrite chips (F4.6 + F4.6.1 undo) */}
