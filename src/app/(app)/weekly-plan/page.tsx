@@ -298,6 +298,7 @@ export default async function WeeklyPlanPage() {
       missing: missingParts.join(", "),
       existing: {
         itemId: it.id,
+        status: it.status,
         title: it.title,
         body: it.body,
         platform: it.platform,
