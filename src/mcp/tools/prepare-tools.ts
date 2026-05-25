@@ -241,8 +241,8 @@ export async function weeklyPlanPrepareItem(
     planId = (plan as { id: string }).id;
   }
 
-  // Default is `pending_approval` so MCP-created items land in the
-  // operator's /approval-queue. Callers that want a private holding
+  // Default is `pending_approval` so MCP-created items appear in the
+  // approval panel on /weekly-plan. Callers that want a private holding
   // pen can pass `save_as_draft: true`.
   const targetStatus = args.save_as_draft ? "draft" : "pending_approval";
   const itemMetadata: Record<string, unknown> = {
@@ -344,8 +344,8 @@ export async function weeklyPlanPrepareItem(
     tool: "signal.weekly_plan.prepare_item",
     summary:
       targetStatus === "pending_approval"
-        ? "Created weekly_plan_item as pending_approval (visible in /approval-queue)."
-        : "Created weekly_plan_item as draft (not in approval queue).",
+        ? "Created weekly_plan_item as pending_approval (visible in the /weekly-plan approval panel)."
+        : "Created weekly_plan_item as draft (not yet visible in the approval panel).",
     data: { item: data, creative: creativeRow },
     requiresUserApproval: targetStatus === "pending_approval",
   });

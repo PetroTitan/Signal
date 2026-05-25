@@ -175,9 +175,9 @@ export interface WeeklyPlanPrepareItemArgs {
   timezone?: string | null;
   risk_score?: number | null;
   /**
-   * Default false → item lands as `pending_approval` and shows up in
-   * /approval-queue. Pass `true` to keep it as `draft` (private holding
-   * pen that doesn't appear in the approval queue).
+   * Default false → item lands as `pending_approval` and appears in
+   * the approval panel on /weekly-plan. Pass `true` to keep it as
+   * `draft` (private holding pen that doesn't appear in the panel).
    */
   save_as_draft?: boolean;
   // Phase F1 — creative plan attached to the item on creation.
