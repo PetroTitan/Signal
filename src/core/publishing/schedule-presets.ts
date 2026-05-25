@@ -119,3 +119,44 @@ export function toDatetimeLocalString(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+
+/**
+ * Convert an `<input type="datetime-local">` value (`YYYY-MM-DDTHH:MM`,
+ * no timezone suffix) to an ISO-8601 UTC string, interpreting the
+ * input in the *current* timezone of the caller.
+ *
+ * Why this exists: a bare `datetime-local` string has no tz suffix.
+ * `new Date(localValue).toISOString()` parses it in the runtime's
+ * local zone — which is the operator's browser on the client, but
+ * UTC on Vercel. Round-tripping through a server action that runs
+ * `new Date(localValue).toISOString()` therefore shifts the timestamp
+ * by the operator's UTC offset each time the value lands back in the
+ * input via `toDatetimeLocalString`. We do the conversion explicitly
+ * client-side so the server only ever sees a fully-qualified ISO
+ * string.
+ *
+ * Idempotent: if the caller passes a string that already contains a
+ * timezone designator (`Z` or `±HH:MM`), it's returned as a normalized
+ * ISO without a second TZ application.
+ */
+export function datetimeLocalToIso(localValue: string): string {
+  const trimmed = localValue.trim();
+  if (trimmed.length === 0) {
+    throw new Error("datetimeLocalToIso: empty value");
+  }
+  // Already TZ-qualified — normalize via Date round-trip.
+  if (/Z$|[+-]\d{2}:?\d{2}$/.test(trimmed)) {
+    const d = new Date(trimmed);
+    if (Number.isNaN(d.getTime())) {
+      throw new Error(`datetimeLocalToIso: invalid value "${localValue}"`);
+    }
+    return d.toISOString();
+  }
+  // Bare datetime-local — `new Date` interprets in local zone, which
+  // is the desired behavior client-side.
+  const d = new Date(trimmed);
+  if (Number.isNaN(d.getTime())) {
+    throw new Error(`datetimeLocalToIso: invalid value "${localValue}"`);
+  }
+  return d.toISOString();
+}

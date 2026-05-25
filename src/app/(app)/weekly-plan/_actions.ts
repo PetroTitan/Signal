@@ -32,6 +32,7 @@ import {
   getCreativeById,
   updateCreative,
 } from "@/repositories/weekly-plan-creative-repository";
+import { parseScheduledAtField } from "./parse-scheduled-at-field";
 
 export type CreateWeeklyPlanResult = ActionResult<{ planId: string }>;
 export type CreatePlanItemResult = ActionResult<{ itemId: string }>;
@@ -1154,7 +1155,6 @@ export async function composeUpsertDraftAction(
     String(formData.get("account_id") ?? "").trim() || null;
   const productId =
     String(formData.get("product_id") ?? "").trim() || null;
-  const scheduledAtRaw = String(formData.get("scheduled_at") ?? "").trim();
   const subreddit =
     String(formData.get("subreddit") ?? "").trim() || null;
   const riskScoreRaw = String(formData.get("risk_score") ?? "").trim();
@@ -1167,18 +1167,27 @@ export async function composeUpsertDraftAction(
     return actionFail("Add a title or body before saving.");
   }
 
-  let scheduledAtIso: string | null | undefined = undefined;
-  if (formData.has("scheduled_at")) {
-    if (scheduledAtRaw.length === 0) {
-      scheduledAtIso = null;
-    } else {
-      const d = new Date(scheduledAtRaw);
-      if (Number.isNaN(d.getTime())) {
-        return actionFail("Could not parse the scheduled time.");
-      }
-      scheduledAtIso = d.toISOString();
-    }
+  // Schedule handling — three-state field. The client gates this
+  // behind a `scheduledAtTouched` flag, so:
+  //
+  //   field absent       → don't touch scheduled_at on the row.
+  //   field empty string → clear scheduled_at to null.
+  //   field non-empty    → must already be a fully-qualified ISO
+  //                        timestamp (the client uses
+  //                        `datetimeLocalToIso` before sending).
+  //
+  // We deliberately reject bare `YYYY-MM-DDTHH:MM` strings here even
+  // though `new Date()` accepts them: it parses them in the server's
+  // local zone (UTC on Vercel), which is the operator's UTC offset
+  // off from the value they actually picked. Letting that through
+  // was the root cause of the autosave drift loop.
+  const parsedSchedule = parseScheduledAtField(formData);
+  if (parsedSchedule.kind === "error") {
+    return actionFail(parsedSchedule.message);
   }
+  let scheduledAtIso: string | null | undefined = undefined;
+  if (parsedSchedule.kind === "clear") scheduledAtIso = null;
+  if (parsedSchedule.kind === "set") scheduledAtIso = parsedSchedule.iso;
 
   let riskScore: number | null | undefined = undefined;
   if (formData.has("risk_score")) {
