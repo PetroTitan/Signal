@@ -505,16 +505,23 @@ describe("schedulePublishTool — risk + scope gate", () => {
     expect(result.summary).toBe("plan_item_risk_level_blocked");
   });
 
-  it("refuses when no active contract exists", async () => {
+  it("schedules contract-free when no active contract exists", async () => {
     const store = emptyStore();
     const planItemId = seedPlanItem(store);
     seedConnection(store);
-    // No contract seeded.
+    // No contract seeded — per-post scheduling now runs contract-free.
 
     const result = await schedulePublishTool(ctxWith(store), validArgs(planItemId));
 
-    expect(result.ok).toBe(false);
-    expect(result.summary).toBe("no_active_weekly_contract");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const data = result.data as {
+        contract_mode: string;
+        contract_id: string | null;
+      };
+      expect(data.contract_mode).toBe("contract_free_item");
+      expect(data.contract_id).toBe(null);
+    }
   });
 
   it("refuses when plan_item's account is out of contract scope", async () => {

@@ -18,7 +18,11 @@
 export type ApproveActionsInput = {
   /** True when item has a scheduled_at set. */
   scheduleSet: boolean;
-  /** True when the workspace has an active weekly contract. */
+  /** True when the workspace has an active weekly contract. As of
+   *  the contract-free per-post publishing migration, this no
+   *  longer gates the schedule button — the action runs contract-
+   *  free when false. Kept on the input for backwards compat and
+   *  for future copy ("Contract-attached" vs "Contract-free"). */
   hasActiveContract: boolean;
   /** Any other readiness blocker (alt text missing, creative not
    *  ready, etc.). When non-null, BOTH buttons are disabled. */
@@ -51,8 +55,8 @@ export interface ApproveActionsState {
 }
 
 const NO_SCHEDULE_HINT = "Add a schedule time before approving for publish.";
-const NO_CONTRACT_HINT =
-  "Scheduling requires an active weekly contract. You can approve & hold now, then activate a contract before scheduling.";
+const CONTRACT_FREE_NOTE =
+  "Contract-free item schedule. Bulk approval can use weekly contracts; individual posts don't require one.";
 
 export function deriveApproveActionsState(
   input: ApproveActionsInput,
@@ -62,16 +66,6 @@ export function deriveApproveActionsState(
       schedulePost: { kind: "disabled_other", hint: input.otherBlocker },
       approveAndHold: { kind: "disabled_other", hint: input.otherBlocker },
       contextHint: null,
-    };
-  }
-  if (!input.hasActiveContract) {
-    return {
-      schedulePost: {
-        kind: "disabled_no_contract",
-        hint: NO_CONTRACT_HINT,
-      },
-      approveAndHold: { kind: "enabled" },
-      contextHint: NO_CONTRACT_HINT,
     };
   }
   if (!input.scheduleSet) {
@@ -84,9 +78,12 @@ export function deriveApproveActionsState(
       contextHint: NO_SCHEDULE_HINT,
     };
   }
+  // Schedule set + no other blocker: BOTH buttons enabled. Active
+  // contract is no longer required for the schedule path (per-post
+  // publishing is contract-free post-migration).
   return {
     schedulePost: { kind: "enabled" },
     approveAndHold: { kind: "enabled" },
-    contextHint: null,
+    contextHint: input.hasActiveContract ? null : CONTRACT_FREE_NOTE,
   };
 }

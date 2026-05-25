@@ -13,28 +13,15 @@ describe("deriveApproveActionsState — happy path", () => {
   });
 });
 
-describe("deriveApproveActionsState — no active contract", () => {
-  it("schedule disabled, hold enabled, context hint explains contract", () => {
+describe("deriveApproveActionsState — no active contract (contract-free per-post)", () => {
+  it("schedule + no contract → both enabled, context note explains contract-free", () => {
     const s = deriveApproveActionsState({
       scheduleSet: true,
       hasActiveContract: false,
     });
-    expect(s.schedulePost.kind).toBe("disabled_no_contract");
+    expect(s.schedulePost.kind).toBe("enabled");
     expect(s.approveAndHold.kind).toBe("enabled");
-    expect(s.contextHint).toMatch(/active weekly contract/i);
-    expect(s.contextHint).toMatch(/approve & hold/i);
-  });
-
-  it("schedule slot carries the contract hint text on the disabled state", () => {
-    const s = deriveApproveActionsState({
-      scheduleSet: true,
-      hasActiveContract: false,
-    });
-    if (s.schedulePost.kind === "disabled_no_contract") {
-      expect(s.schedulePost.hint).toMatch(/contract/i);
-    } else {
-      throw new Error("expected disabled_no_contract");
-    }
+    expect(s.contextHint).toMatch(/contract-free/i);
   });
 
   it("hold path stays enabled even when schedule is also missing", () => {
@@ -43,6 +30,15 @@ describe("deriveApproveActionsState — no active contract", () => {
       hasActiveContract: false,
     });
     expect(s.approveAndHold.kind).toBe("enabled");
+  });
+
+  it("no schedule + no contract → schedule disabled with no-schedule hint", () => {
+    const s = deriveApproveActionsState({
+      scheduleSet: false,
+      hasActiveContract: false,
+    });
+    expect(s.schedulePost.kind).toBe("disabled_no_schedule");
+    expect(s.contextHint).toMatch(/schedule/i);
   });
 });
 
@@ -88,13 +84,13 @@ describe("deriveApproveActionsState — other blocker present", () => {
 });
 
 describe("deriveApproveActionsState — invariants", () => {
-  it("Approve post is NEVER enabled without an active contract", () => {
-    for (const scheduleSet of [true, false]) {
+  it("Approve post is enabled when schedule is set, regardless of contract", () => {
+    for (const hasActiveContract of [true, false]) {
       const s = deriveApproveActionsState({
-        scheduleSet,
-        hasActiveContract: false,
+        scheduleSet: true,
+        hasActiveContract,
       });
-      expect(s.schedulePost.kind).not.toBe("enabled");
+      expect(s.schedulePost.kind).toBe("enabled");
     }
   });
 
@@ -118,5 +114,13 @@ describe("deriveApproveActionsState — invariants", () => {
         expect(s.approveAndHold.kind).toBe("enabled");
       }
     }
+  });
+
+  it("contract-free state emits an audit-trail context hint", () => {
+    const s = deriveApproveActionsState({
+      scheduleSet: true,
+      hasActiveContract: false,
+    });
+    expect(s.contextHint).toMatch(/contract-free/i);
   });
 });

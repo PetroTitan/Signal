@@ -59,8 +59,13 @@ export default async function ExecutionQueueDetailPage({ params }: PageProps) {
     throw err;
   }
 
+  // Contract-free queues (per-post path) have queue.contractId === null.
+  // Skip the contract lookup in that case; the UI renders a small
+  // "contract-free" badge below.
   const [contract, items, logs] = await Promise.all([
-    getWeeklyContractById(workspaceId, queue.contractId),
+    queue.contractId
+      ? getWeeklyContractById(workspaceId, queue.contractId)
+      : Promise.resolve(null),
     listItemsForQueue(workspaceId, queue.id),
     listLogsForQueue(workspaceId, queue.id, 100),
   ]);
@@ -104,17 +109,25 @@ export default async function ExecutionQueueDetailPage({ params }: PageProps) {
             <div className="text-sm font-semibold text-ink-900">
               Status: {EXECUTION_QUEUE_STATUS_LABELS[queue.status]}
             </div>
-            <div className="text-xs text-ink-500">
-              Contract:{" "}
-              <Link
-                href={`/weekly-contracts/${contract.id}`}
-                className="text-signal-700 hover:underline"
-              >
-                {contract.title}
-              </Link>
-            </div>
+            {contract ? (
+              <div className="text-xs text-ink-500">
+                Contract:{" "}
+                <Link
+                  href={`/weekly-contracts/${contract.id}`}
+                  className="text-signal-700 hover:underline"
+                >
+                  {contract.title}
+                </Link>
+              </div>
+            ) : (
+              <div className="text-xs text-ink-500">
+                <span className="inline-flex items-center px-1.5 py-0.5 rounded border border-ink-200 bg-ink-50 font-mono text-[10px] text-ink-600">
+                  contract-free queue
+                </span>
+              </div>
+            )}
           </div>
-          {contract.status !== "active" ? (
+          {contract && contract.status !== "active" ? (
             <p className="text-xs text-red-700 mt-2">
               Contract is currently &ldquo;{contract.status}&rdquo;. Activate
               it before queueing or dry-running.
@@ -125,7 +138,8 @@ export default async function ExecutionQueueDetailPage({ params }: PageProps) {
         <QueueLifecycleControls
           queueId={queue.id}
           status={queue.status}
-          contractActive={contract.status === "active"}
+          // Contract-free queues don't require an active contract to run.
+          contractActive={!contract || contract.status === "active"}
           live={isQueueLive(queue.status)}
         />
 
