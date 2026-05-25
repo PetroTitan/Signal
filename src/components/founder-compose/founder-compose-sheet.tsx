@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   approvePlanItemAndHoldAction,
   approvePlanItemAndScheduleAction,
+  scheduleApprovedItemAction,
   composeUpsertDraftAction,
   saveScheduleAction,
   sendForApprovalAction,
@@ -504,6 +505,33 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     }
   }
 
+  const [scheduleApprovedBusy, setScheduleApprovedBusy] = useState(false);
+  const [scheduleApprovedError, setScheduleApprovedError] = useState<
+    string | null
+  >(null);
+
+  async function handleScheduleApprovedItem() {
+    await autosave.flushNow();
+    if (!draft.itemId) return;
+    setScheduleApprovedBusy(true);
+    setScheduleApprovedError(null);
+    const fd = new FormData();
+    fd.set("item_id", draft.itemId);
+    const result = await scheduleApprovedItemAction(
+      { ok: false, error: "" },
+      fd,
+    );
+    setScheduleApprovedBusy(false);
+    if (result.ok) {
+      props.onClose();
+      startTransition(() => router.refresh());
+    } else {
+      setScheduleApprovedError(
+        result.error ?? "Could not schedule for publishing.",
+      );
+    }
+  }
+
   async function handleApproveAndHold() {
     await autosave.flushNow();
     if (!draft.itemId) return;
@@ -979,6 +1007,7 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
               draft.creativeId !== null &&
               draft.creativeAltText.trim().length === 0,
             autosaveInFlight: autosave.status === "saving",
+            scheduleSet: schedule.inputValue.trim().length > 0,
           })}
           autosaveLabel={autosaveLabel(autosave.status)}
           scheduleSet={schedule.inputValue.trim().length > 0}
@@ -986,10 +1015,13 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
           perItemApproveBusy={perItemApproveBusy}
           scheduleApproveError={scheduleApproveError}
           holdApproveError={holdApproveError}
+          scheduleApprovedBusy={scheduleApprovedBusy}
+          scheduleApprovedError={scheduleApprovedError}
           onSaveAsDraft={handleClose}
           onSendForApproval={handleSendForApproval}
           onApprovePost={handleApprovePost}
           onApproveAndHold={handleApproveAndHold}
+          onScheduleApprovedItem={handleScheduleApprovedItem}
           onClose={handleClose}
         />
       </div>
@@ -1377,10 +1409,13 @@ function ComposeFooter({
   perItemApproveBusy,
   scheduleApproveError,
   holdApproveError,
+  scheduleApprovedBusy,
+  scheduleApprovedError,
   onSaveAsDraft,
   onSendForApproval,
   onApprovePost,
   onApproveAndHold,
+  onScheduleApprovedItem,
   onClose,
 }: {
   actionState: ReturnType<typeof deriveComposeActionState>;
@@ -1390,10 +1425,13 @@ function ComposeFooter({
   perItemApproveBusy: "hold" | "schedule" | null;
   scheduleApproveError: string | null;
   holdApproveError: string | null;
+  scheduleApprovedBusy: boolean;
+  scheduleApprovedError: string | null;
   onSaveAsDraft: () => void;
   onSendForApproval: () => void;
   onApprovePost: () => void;
   onApproveAndHold: () => void;
+  onScheduleApprovedItem: () => void;
   onClose: () => void;
 }) {
   const approveActions = deriveApproveActionsState({
@@ -1502,9 +1540,34 @@ function ComposeFooter({
                 </span>
               ) : null}
             </div>
+          ) : actionState.variant === "schedule_approved_item" ? (
+            // Approved + schedule set → real button. Creates the
+            // execution_item so the scheduler can actually publish.
+            <div className="inline-flex items-center gap-2 flex-wrap">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-800 font-medium text-[11px]">
+                Approved
+              </span>
+              <button
+                type="button"
+                onClick={onScheduleApprovedItem}
+                disabled={
+                  actionState.primaryDisabled || scheduleApprovedBusy
+                }
+                className="btn-primary text-xs disabled:opacity-50"
+              >
+                {scheduleApprovedBusy
+                  ? "Scheduling…"
+                  : actionState.primaryLabel}
+              </button>
+              {scheduleApprovedError ? (
+                <span className="text-[11px] text-amber-700 max-w-xs">
+                  {scheduleApprovedError}
+                </span>
+              ) : null}
+            </div>
           ) : actionState.variant === "schedule_or_mcp" ? (
             <span className="text-[11px] text-ink-600">
-              Use the schedule field above, or call{" "}
+              Set a schedule time above first, or call{" "}
               <code className="font-mono text-[10px]">signal.schedule_publish</code>{" "}
               via MCP.
             </span>

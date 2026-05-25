@@ -33,11 +33,20 @@ export interface ComposeActionStateInput {
   altTextMissing: boolean;
   /** True when body autosave is mid-flight. */
   autosaveInFlight: boolean;
+  /** True when scheduled_at is set on the item. Used to choose
+   *  between the "schedule for publish" CTA (item has time) vs.
+   *  the "set a schedule first" hint. Defaults to false. */
+  scheduleSet?: boolean;
 }
 
 export type ComposeActionVariant =
   | "send_for_approval"
   | "awaiting_approval_actions"
+  /** Approved item with a schedule set — operator can promote it
+   *  to `scheduled` (creates the execution_item). */
+  | "schedule_approved_item"
+  /** Approved item without a schedule — operator must set one
+   *  before they can schedule for publish. */
   | "schedule_or_mcp"
   | "reschedule_or_unschedule"
   | "read_only";
@@ -112,6 +121,31 @@ export function deriveComposeActionState(
   }
 
   if (status === "approved" || status === "paused") {
+    // Approved items: branch on whether a schedule is set.
+    //   schedule set    → render a real "Schedule for publish"
+    //                     button (calls scheduleApprovedItemAction
+    //                     which creates the execution_item).
+    //   no schedule     → render the existing hint ("Set a schedule
+    //                     time above first, or call MCP").
+    //
+    // Before this branch existed, the modal told operators to "Use
+    // the schedule field above" — but the schedule field only saved
+    // the timestamp on weekly_plan_items and never created the
+    // execution_item the scheduler needs. Posts sat in `approved`
+    // status forever.
+    if (input.scheduleSet) {
+      const blocker = input.altTextMissing
+        ? "Alt text required before approval and publishing."
+        : null;
+      return {
+        variant: "schedule_approved_item",
+        primaryLabel: "Schedule for publish",
+        primaryDisabled: blocker !== null,
+        primaryBlocker: blocker,
+        showSaveAsDraft: false,
+        readOnly: false,
+      };
+    }
     return {
       variant: "schedule_or_mcp",
       primaryLabel: "Schedule",

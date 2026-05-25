@@ -274,6 +274,44 @@ describe("schedule path (schedule required + contract required)", () => {
   });
 });
 
+describe("allowedStatuses (schedule-an-approved-item path)", () => {
+  it("rejects status='draft' on default (pending_approval-only) allowedStatuses", () => {
+    const r = assessItemApprovalReadiness({
+      item: makeItem({ status: "draft" }),
+      contract: null,
+      primaryCreative: readyCreative,
+      requireSchedule: false,
+      requireContract: false,
+    });
+    expect(r.ready).toBe(false);
+  });
+
+  it("accepts status='approved' when caller passes allowedStatuses=['approved']", () => {
+    const r = assessItemApprovalReadiness({
+      item: makeItem({ status: "approved" }),
+      contract: null,
+      primaryCreative: readyCreative,
+      requireSchedule: true,
+      requireContract: false,
+      allowedStatuses: ["approved"],
+    });
+    expect(r.ready).toBe(true);
+  });
+
+  it("rejects status='pending_approval' when caller specifies allowedStatuses=['approved']", () => {
+    const r = assessItemApprovalReadiness({
+      item: makeItem({ status: "pending_approval" }),
+      contract: null,
+      primaryCreative: readyCreative,
+      requireSchedule: true,
+      requireContract: false,
+      allowedStatuses: ["approved"],
+    });
+    expect(r.ready).toBe(false);
+    expect(r.blockers.join(" ")).toMatch(/allowed/);
+  });
+});
+
 describe("summarizeReadiness", () => {
   it("returns ready copy when ready", () => {
     expect(

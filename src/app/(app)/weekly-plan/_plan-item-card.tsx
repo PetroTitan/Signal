@@ -7,6 +7,7 @@ import {
   approvePlanItemAndHoldAction,
   approvePlanItemAndScheduleAction,
   duplicatePlanItemAction,
+  scheduleApprovedItemAction,
   sendForApprovalAction,
   updatePlanItemAction,
   type ApprovePlanItemResult,
@@ -274,6 +275,11 @@ export function PlanItemCard(props: PlanItemCardProps) {
                   scheduleSet={props.scheduledAt !== null}
                   hasActiveContract={props.hasActiveContract}
                 />
+              ) : null}
+              {(props.status === "approved" || props.status === "paused") &&
+              props.isPost &&
+              props.scheduledAt !== null ? (
+                <ScheduleApprovedItemButton itemId={props.id} />
               ) : null}
               <QuickReschedule
                 itemId={props.id}
@@ -704,6 +710,46 @@ function ApproveAndHoldSubmit() {
       className="btn-secondary text-xs disabled:opacity-60"
     >
       {pending ? "Approving…" : "Approve & hold"}
+    </button>
+  );
+}
+
+// =====================================================================
+// Schedule-an-already-approved-item button.
+// Renders next to Reschedule on cards where status is "approved" (or
+// "paused") AND scheduled_at is set. Calls scheduleApprovedItemAction
+// — which creates the execution_item the scheduler needs. Without
+// this, an approved item with scheduled_at would never publish:
+// saveScheduleAction only updates weekly_plan_items.scheduled_at, but
+// the scheduler reads execution_items.
+// =====================================================================
+
+function ScheduleApprovedItemButton({ itemId }: { itemId: string }) {
+  const [state, action] = useFormState(
+    scheduleApprovedItemAction,
+    approveItemInitial,
+  );
+  const safe = state ?? approveItemInitial;
+  return (
+    <form action={action} className="inline">
+      <input type="hidden" name="item_id" value={itemId} />
+      <ScheduleForPublishSubmit />
+      {safe.error ? (
+        <span className="ml-1 text-[11px] text-amber-700">{safe.error}</span>
+      ) : null}
+    </form>
+  );
+}
+
+function ScheduleForPublishSubmit() {
+  const { pending } = useFormStatus();
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      className="btn-primary text-xs disabled:opacity-60"
+    >
+      {pending ? "Scheduling…" : "Schedule for publish"}
     </button>
   );
 }
