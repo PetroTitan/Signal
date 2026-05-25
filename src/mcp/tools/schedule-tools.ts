@@ -86,14 +86,57 @@ export async function schedulePublishTool(
     });
   }
 
-  // ── 2. Status gate — approved only ────────────────────────────────
+  // ── 2. Status gate — approved or paused ───────────────────────────
+  //
+  // `approved` is the canonical post-approval status.
+  // `paused` is what the scheduler mirrors back to a plan_item when
+  // an earlier execution_item ended in blocked/failed — it means
+  // "approved but the prior execution attempt didn't succeed".
+  // Re-scheduling is the intended recovery path; the readiness check
+  // (creative + alt + schedule + identity) still runs.
   const status = (planItem as { status: string }).status;
-  if (status !== "approved") {
+  if (status !== "approved" && status !== "paused") {
     return failed({
       tool: TOOL,
-      summary: `plan_item_status_must_be_approved_got_${status}`,
+      summary: `plan_item_status_must_be_approved_or_paused_got_${status}`,
     });
   }
+
+  // ── 2b. Duplicate-prevention — refuse only when an ACTIVE execution
+  //        item already exists for this plan_item. Terminal rows
+  //        (blocked, failed, completed, cancelled, backlogged) are
+  //        history and must not block a retry.
+  const { data: existingExec } = await ctx.db
+    .from("execution_items")
+    .select("id, status")
+    .eq("workspace_id", ctx.workspaceId)
+    .eq("source_entity_id", args.plan_item_id)
+    .in("status", [
+      "pending_authorization",
+      "authorized",
+      "scheduled",
+      "ready",
+      "running",
+    ]);
+  if (existingExec && existingExec.length > 0) {
+    return failed({
+      tool: TOOL,
+      summary: "plan_item_has_active_execution_item",
+    });
+  }
+  // Also fetch all rows (including terminal) so we can record the
+  // previous execution_item id for the retry audit trail.
+  const { data: allExec } = await ctx.db
+    .from("execution_items")
+    .select("id, status")
+    .eq("workspace_id", ctx.workspaceId)
+    .eq("source_entity_id", args.plan_item_id)
+    .order("created_at", { ascending: false })
+    .limit(1);
+  const previousExec =
+    allExec && allExec.length > 0
+      ? (allExec[0] as { id: string; status: string })
+      : null;
 
   // ── 3. Platform allow-list ────────────────────────────────────────
   const platform = (planItem as { platform: string | null }).platform as
@@ -320,6 +363,12 @@ export async function schedulePublishTool(
           contract_mode: contractMode,
           approval_mode: "per_item",
           approved_without_contract: contract === null,
+          // Retry audit trail — populated when MCP is scheduling a
+          // plan_item that was previously paused after a failed/
+          // blocked execution attempt.
+          rescheduled_from_status: status !== "approved" ? status : undefined,
+          previous_execution_item_id: previousExec?.id ?? undefined,
+          previous_execution_item_status: previousExec?.status ?? undefined,
         },
       } as never,
     )

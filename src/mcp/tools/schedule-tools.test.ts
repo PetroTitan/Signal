@@ -57,6 +57,18 @@ function makeFakeClient(store: FakeStore): SupabaseClient {
         filters.push((r) => r[field] === value);
         return api;
       },
+      in(field: string, values: ReadonlyArray<unknown>) {
+        filters.push((r) => values.includes(r[field]));
+        return api;
+      },
+      order(_field: string, _opts?: { ascending?: boolean }) {
+        // Fake store is in-insertion-order; we don't need stable
+        // ordering for the tests that touch this code path.
+        return api;
+      },
+      limit(_n: number) {
+        return api;
+      },
       async maybeSingle() {
         const rows = (store[table] as Record<string, unknown>[]).filter((r) =>
           filters.every((f) => f(r)),
@@ -345,11 +357,29 @@ describe("schedulePublishTool — status gate", () => {
       const result = await schedulePublishTool(ctxWith(store), validArgs(planItemId));
 
       expect(result.ok).toBe(false);
-      expect(result.summary).toContain(`plan_item_status_must_be_approved_got_${status}`);
+      expect(result.summary).toContain(
+        `plan_item_status_must_be_approved_or_paused_got_${status}`,
+      );
       expect(store.execution_items).toEqual([]);
       expect(store.weekly_plan_items[0].status).toBe(status); // unchanged
     },
   );
+
+  it("accepts status=paused (retry recovery)", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store, { status: "paused" });
+    seedConnection(store);
+    seedContract(store);
+    seedQueue(store);
+
+    const result = await schedulePublishTool(
+      ctxWith(store),
+      validArgs(planItemId),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(store.execution_items.length).toBe(1);
+  });
 
   it("refuses cross-workspace plan items", async () => {
     const store = emptyStore();

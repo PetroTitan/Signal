@@ -279,7 +279,10 @@ export function PlanItemCard(props: PlanItemCardProps) {
               {(props.status === "approved" || props.status === "paused") &&
               props.isPost &&
               props.scheduledAt !== null ? (
-                <ScheduleApprovedItemButton itemId={props.id} />
+                <ScheduleApprovedItemButton
+                  itemId={props.id}
+                  isRetry={props.status === "paused"}
+                />
               ) : null}
               <QuickReschedule
                 itemId={props.id}
@@ -724,7 +727,17 @@ function ApproveAndHoldSubmit() {
 // the scheduler reads execution_items.
 // =====================================================================
 
-function ScheduleApprovedItemButton({ itemId }: { itemId: string }) {
+function ScheduleApprovedItemButton({
+  itemId,
+  isRetry,
+}: {
+  itemId: string;
+  /** Plan-item is in status="paused" (recovery from a failed/
+   *  blocked execution attempt). Changes the button label so the
+   *  operator understands they're retrying rather than scheduling
+   *  for the first time. */
+  isRetry: boolean;
+}) {
   const [state, action] = useFormState(
     scheduleApprovedItemAction,
     approveItemInitial,
@@ -733,7 +746,7 @@ function ScheduleApprovedItemButton({ itemId }: { itemId: string }) {
   return (
     <form action={action} className="inline">
       <input type="hidden" name="item_id" value={itemId} />
-      <ScheduleForPublishSubmit />
+      <ScheduleForPublishSubmit isRetry={isRetry} />
       {safe.error ? (
         <span className="ml-1 text-[11px] text-amber-700">{safe.error}</span>
       ) : null}
@@ -741,7 +754,7 @@ function ScheduleApprovedItemButton({ itemId }: { itemId: string }) {
   );
 }
 
-function ScheduleForPublishSubmit() {
+function ScheduleForPublishSubmit({ isRetry }: { isRetry: boolean }) {
   const { pending } = useFormStatus();
   return (
     <button
@@ -749,7 +762,11 @@ function ScheduleForPublishSubmit() {
       disabled={pending}
       className="btn-primary text-xs disabled:opacity-60"
     >
-      {pending ? "Scheduling…" : "Schedule for publish"}
+      {pending
+        ? "Scheduling…"
+        : isRetry
+          ? "Schedule retry"
+          : "Schedule for publish"}
     </button>
   );
 }

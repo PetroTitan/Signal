@@ -1330,8 +1330,12 @@ export async function scheduleApprovedItemAction(
       primaryCreative,
       requireSchedule: true,
       requireContract: contract !== null,
-      // Accept items that are already past the approval gate.
-      allowedStatuses: ["approved"],
+      // Accept items past the approval gate: `approved` (never
+      // scheduled before) and `paused` (the scheduler mirrors
+      // execution_item.blocked/failed back to plan_item.paused;
+      // those items are recoverable — creative + alt + schedule
+      // are intact).
+      allowedStatuses: ["approved", "paused"],
     });
     if (!readiness.ready) {
       return actionFail(
@@ -1339,16 +1343,31 @@ export async function scheduleApprovedItemAction(
       );
     }
 
-    // Duplicate-prevention: refuse if an execution_item already
-    // exists for this plan_item.
-    const existingExec = await listExecutionItemsByPlanItemIds(workspaceId, [
+    // Duplicate-prevention: refuse only when an ACTIVE execution_item
+    // exists for this plan_item. Terminal rows (blocked, failed,
+    // completed, cancelled, backlogged) are history and must not
+    // block a retry. This is what enables the paused→scheduled
+    // recovery path.
+    const ACTIVE_EXECUTION_STATUSES = new Set([
+      "pending_authorization",
+      "authorized",
+      "scheduled",
+      "ready",
+      "running",
+    ]);
+    const allExec = await listExecutionItemsByPlanItemIds(workspaceId, [
       itemId,
     ]);
-    if (existingExec.length > 0) {
+    const activeExec = allExec.filter((e) =>
+      ACTIVE_EXECUTION_STATUSES.has(e.status),
+    );
+    if (activeExec.length > 0) {
       return actionFail(
-        "Schedule failed: this item already has an execution_item — refusing to create a duplicate.",
+        "Schedule failed: this item already has an active execution_item — refusing to create a duplicate.",
       );
     }
+    const previousExec =
+      allExec.length > 0 ? allExec[allExec.length - 1] : null;
 
     // Queue selection — same branching as approvePlanItemAndScheduleAction.
     let queue;
@@ -1417,6 +1436,14 @@ export async function scheduleApprovedItemAction(
         contract_mode: contract ? "contract_attached" : "contract_free_item",
         approval_mode: "per_item",
         approved_without_contract: contract === null,
+        // Retry audit trail — when the plan_item came in as "paused"
+        // (or another non-approved-but-allowed status), record what
+        // we recovered from and the prior execution_item id so the
+        // history is traceable.
+        rescheduled_from_status:
+          item.status !== "approved" ? item.status : undefined,
+        previous_execution_item_id: previousExec?.id ?? undefined,
+        previous_execution_item_status: previousExec?.status ?? undefined,
       },
     });
     await updateItemStatus({

@@ -134,11 +134,24 @@ describe("deriveComposeActionState — approved", () => {
     expect(s.primaryDisabled).toBe(false);
   });
 
-  it("paused + schedule set: variant is schedule_approved_item", () => {
+  it("paused + schedule set: variant is schedule_approved_item with retry label", () => {
     const s = deriveComposeActionState(
       makeInput({ status: "paused", scheduleSet: true }),
     );
     expect(s.variant).toBe("schedule_approved_item");
+    expect(s.primaryLabel).toBe("Schedule retry");
+    expect(s.primaryDisabled).toBe(false);
+    expect(s.primaryBlocker).toMatch(/Paused after a failed or blocked/i);
+  });
+
+  it("approved + schedule set: variant is schedule_approved_item with publish label", () => {
+    const s = deriveComposeActionState(
+      makeInput({ status: "approved", scheduleSet: true }),
+    );
+    expect(s.variant).toBe("schedule_approved_item");
+    expect(s.primaryLabel).toBe("Schedule for publish");
+    // No retry-specific hint when item was never previously executed.
+    expect(s.primaryBlocker).toBe(null);
   });
 
   it("paused + no schedule: variant is schedule_or_mcp", () => {
