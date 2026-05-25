@@ -48,6 +48,8 @@ export interface PlanItemCardProps {
   productId: string | null;
   accountId: string | null;
   scheduledAt: string | null;
+  /** Persisted in metadata.schedule_source by saveScheduleAction. */
+  scheduleSource: string | null;
   status: import("@/lib/supabase/types").WeeklyPlanItemStatus;
   riskScore: number | null;
   notes: string | null;
@@ -244,6 +246,7 @@ export function PlanItemCard(props: PlanItemCardProps) {
           accountId: props.accountId,
           productId: props.productId,
           scheduledAtIso: props.scheduledAt,
+          scheduleSource: props.scheduleSource,
           riskScore: props.riskScore,
           notes: props.notes,
           creative: props.creative

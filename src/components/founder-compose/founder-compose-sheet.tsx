@@ -20,13 +20,24 @@ import {
 } from "./compose-autosave-helpers";
 import {
   buildScheduleSavePayload,
+  clientScheduleChecksum,
   initialScheduleState,
+  reasonToSource,
+  reportScheduleSaveRejected,
   touchByClear,
   touchByInput,
   touchByPreset,
   type ScheduleSaveReason,
   type ScheduleState,
 } from "./compose-schedule-save";
+import {
+  emitScheduleRoundtripDelta,
+  emitScheduleSaveSuccess,
+} from "@/core/observability/schedule-events";
+import {
+  compareScheduleChecksums,
+  detectIsoDrift,
+} from "@/core/scheduling/schedule-checksum";
 import { Markdown } from "./markdown";
 import { RewriteChips } from "./rewrite-chips";
 
@@ -79,6 +90,9 @@ export interface FounderComposeSheetExistingItem {
   accountId: string | null;
   productId: string | null;
   scheduledAtIso: string | null;
+  /** Audit-trail source of the current schedule. Persisted in
+   *  metadata.schedule_source by saveScheduleAction. */
+  scheduleSource?: string | null;
   riskScore: number | null;
   notes: string | null;
   creative: {
@@ -198,6 +212,13 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
   const [scheduleSaveError, setScheduleSaveError] = useState<string | null>(
     null,
   );
+  // Audit-trail source — initially whatever the row's metadata
+  // carried (could be null for legacy rows). Updated locally after
+  // every successful saveScheduleAction so the dev badge always
+  // reflects the current state without waiting for a hydration.
+  const [scheduleSource, setScheduleSource] = useState<string | null>(
+    props.existingItem?.scheduleSource ?? null,
+  );
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [, startTransition] = useTransition();
@@ -218,6 +239,7 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
       setSchedule(initialScheduleForOpen(props.existingItem));
       setScheduleSaveStatus("idle");
       setScheduleSaveError(null);
+      setScheduleSource(props.existingItem?.scheduleSource ?? null);
       setShowAdvanced(false);
       setShowPreview(false);
     }
@@ -286,19 +308,25 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     setScheduleSaveStatus("saving");
     setScheduleSaveError(null);
     try {
+      const source = reasonToSource(reason);
       const payload = buildScheduleSavePayload(snapshot, itemId, reason);
       if (!payload) {
         setScheduleSaveStatus("idle");
         return;
       }
+      const clientChecksum = clientScheduleChecksum(snapshot, itemId, source);
       const fd = new FormData();
       fd.set("item_id", payload.itemId);
       fd.set("scheduled_at", payload.isoOrEmpty);
       fd.set("reason", payload.reason);
+      fd.set("source", source);
+      fd.set("client_checksum", clientChecksum);
       if (process.env.NODE_ENV !== "production") {
         console.debug("[compose] saveScheduleAction", {
           reason,
+          source,
           isoOrEmpty: payload.isoOrEmpty,
+          clientChecksum,
         });
       }
       const result = await saveScheduleAction(
@@ -308,15 +336,69 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
       if (result.ok) {
         lastSavedScheduleRef.current = result.scheduledAtIso;
         setScheduleSaveStatus("saved");
+        if (result.source) setScheduleSource(result.source);
+        // Round-trip delta — if the server stored a different ISO
+        // than we sent, surface a calm warning. With the strict TZ
+        // parser this should always be 0 (or trivial sub-second).
+        if (payload.isoOrEmpty && result.scheduledAtIso) {
+          const drift = detectIsoDrift(payload.isoOrEmpty, result.scheduledAtIso);
+          if (drift > 0) {
+            emitScheduleRoundtripDelta({
+              itemId,
+              source,
+              reason,
+              driftMs: drift,
+              checksum: clientChecksum,
+              detail:
+                drift > 1000
+                  ? "non-trivial roundtrip delta"
+                  : "sub-second roundtrip delta",
+            });
+          }
+        }
+        // Checksum comparison: server checksum is computed off the
+        // normalized ISO it just stored. If we trust the server's
+        // returned ISO matches what we sent, drift is detected via
+        // detectIsoDrift above; checksum compare here is a stable
+        // identity check.
+        if (result.serverChecksum) {
+          const match = compareScheduleChecksums(
+            clientChecksum,
+            result.serverChecksum,
+          );
+          if (process.env.NODE_ENV !== "production") {
+            console.debug("[compose] schedule checksum", {
+              client: clientChecksum,
+              server: result.serverChecksum,
+              match,
+            });
+          }
+        }
+        emitScheduleSaveSuccess({
+          itemId,
+          source,
+          reason,
+          checksum: clientChecksum,
+        });
       } else {
         setScheduleSaveStatus("error");
         setScheduleSaveError(result.error ?? "Could not save schedule.");
+        reportScheduleSaveRejected({
+          itemId,
+          reason,
+          detail: result.error ?? "unknown",
+        });
       }
     } catch (err) {
       setScheduleSaveStatus("error");
       setScheduleSaveError(
         err instanceof Error ? err.message : "Could not save schedule.",
       );
+      reportScheduleSaveRejected({
+        itemId: itemId ?? null,
+        reason,
+        detail: err instanceof Error ? err.message : "thrown",
+      });
     }
   }
 
@@ -583,15 +665,25 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
               onChange={(e) => handleScheduleInputChange(e.target.value)}
               className="input w-full text-sm font-mono"
             />
-            <div className="text-[11px] text-ink-500 flex items-center justify-between gap-2">
+            <div className="text-[11px] text-ink-500 flex items-center justify-between gap-2 flex-wrap">
               <span>
                 {props.defaults.timezoneLabel
                   ? `Times shown in ${props.defaults.timezoneLabel}.`
                   : "Times shown in your browser timezone."}
               </span>
-              <span className="tabular-nums">
-                {scheduleSaveStatusLabel(scheduleSaveStatus)}
-                {scheduleSaveError ? ` — ${scheduleSaveError}` : ""}
+              <span className="tabular-nums flex items-center gap-2">
+                {process.env.NODE_ENV !== "production" && scheduleSource ? (
+                  <span
+                    className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-ink-50 border border-ink-200 text-ink-600"
+                    title="Audit-trail source (dev only)"
+                  >
+                    Schedule source: {scheduleSource}
+                  </span>
+                ) : null}
+                <span>
+                  {scheduleSaveStatusLabel(scheduleSaveStatus)}
+                  {scheduleSaveError ? ` — ${scheduleSaveError}` : ""}
+                </span>
               </span>
             </div>
           </div>

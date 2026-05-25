@@ -440,6 +440,10 @@ export default async function WeeklyPlanPage() {
                         typeof it.metadata?.operator_notes === "string"
                           ? (it.metadata.operator_notes as string)
                           : null;
+                      const scheduleSource =
+                        typeof it.metadata?.schedule_source === "string"
+                          ? (it.metadata.schedule_source as string)
+                          : null;
                       return (
                         <PlanItemCard
                           key={it.id}
@@ -451,6 +455,7 @@ export default async function WeeklyPlanPage() {
                           productId={it.productId}
                           accountId={it.accountId}
                           scheduledAt={it.scheduledAt}
+                          scheduleSource={scheduleSource}
                           status={it.status}
                           riskScore={it.riskScore}
                           notes={notes}
