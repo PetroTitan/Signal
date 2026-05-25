@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
+  approvePlanItemAndHoldAction,
+  approvePlanItemAndScheduleAction,
   composeUpsertDraftAction,
   saveScheduleAction,
   sendForApprovalAction,
@@ -450,6 +452,53 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     await sendForApprovalAction({ ok: false, error: "" }, fd);
     props.onClose();
     startTransition(() => router.refresh());
+  }
+
+  const [perItemApproveError, setPerItemApproveError] = useState<string | null>(
+    null,
+  );
+  const [perItemApproveBusy, setPerItemApproveBusy] = useState<
+    "hold" | "schedule" | null
+  >(null);
+
+  async function handleApprovePost() {
+    await autosave.flushNow();
+    if (!draft.itemId) return;
+    setPerItemApproveBusy("schedule");
+    setPerItemApproveError(null);
+    const fd = new FormData();
+    fd.set("item_id", draft.itemId);
+    const result = await approvePlanItemAndScheduleAction(
+      { ok: false, error: "" },
+      fd,
+    );
+    setPerItemApproveBusy(null);
+    if (result.ok) {
+      props.onClose();
+      startTransition(() => router.refresh());
+    } else {
+      setPerItemApproveError(result.error ?? "Approval failed.");
+    }
+  }
+
+  async function handleApproveAndHold() {
+    await autosave.flushNow();
+    if (!draft.itemId) return;
+    setPerItemApproveBusy("hold");
+    setPerItemApproveError(null);
+    const fd = new FormData();
+    fd.set("item_id", draft.itemId);
+    const result = await approvePlanItemAndHoldAction(
+      { ok: false, error: "" },
+      fd,
+    );
+    setPerItemApproveBusy(null);
+    if (result.ok) {
+      props.onClose();
+      startTransition(() => router.refresh());
+    } else {
+      setPerItemApproveError(result.error ?? "Approval failed.");
+    }
   }
 
   function applyPreset(presetId: string) {
@@ -905,8 +954,13 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
             autosaveInFlight: autosave.status === "saving",
           })}
           autosaveLabel={autosaveLabel(autosave.status)}
+          scheduleSet={schedule.inputValue.trim().length > 0}
+          perItemApproveBusy={perItemApproveBusy}
+          perItemApproveError={perItemApproveError}
           onSaveAsDraft={handleClose}
           onSendForApproval={handleSendForApproval}
+          onApprovePost={handleApprovePost}
+          onApproveAndHold={handleApproveAndHold}
           onClose={handleClose}
         />
       </div>
@@ -1289,14 +1343,24 @@ function AltTextEditor({
 function ComposeFooter({
   actionState,
   autosaveLabel: autosaveText,
+  scheduleSet,
+  perItemApproveBusy,
+  perItemApproveError,
   onSaveAsDraft,
   onSendForApproval,
+  onApprovePost,
+  onApproveAndHold,
   onClose,
 }: {
   actionState: ReturnType<typeof deriveComposeActionState>;
   autosaveLabel: string;
+  scheduleSet: boolean;
+  perItemApproveBusy: "hold" | "schedule" | null;
+  perItemApproveError: string | null;
   onSaveAsDraft: () => void;
   onSendForApproval: () => void;
+  onApprovePost: () => void;
+  onApproveAndHold: () => void;
   onClose: () => void;
 }) {
   return (
@@ -1332,17 +1396,51 @@ function ComposeFooter({
             >
               {actionState.primaryLabel}
             </button>
-          ) : actionState.variant === "awaiting_approval_info" ? (
-            // Pending approval items: surface the state as an inline
-            // info badge. NO navigation — /approval-queue does not
-            // exist and the per-plan approve form lives on the same
-            // /weekly-plan page already.
-            <span className="text-[11px] text-ink-600 inline-flex items-center gap-2">
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-amber-200 bg-amber-50 text-amber-800 font-medium">
+          ) : actionState.variant === "awaiting_approval_actions" ? (
+            // Per-item approval — two buttons, no navigation:
+            //   Approve post (requires schedule)
+            //   Approve & hold (no schedule required)
+            <div className="inline-flex items-center gap-2 flex-wrap">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-amber-200 bg-amber-50 text-amber-800 font-medium text-[11px]">
                 Awaiting approval
               </span>
-              <span>Approve via the panel on /weekly-plan.</span>
-            </span>
+              {scheduleSet ? (
+                <button
+                  type="button"
+                  onClick={onApprovePost}
+                  disabled={
+                    actionState.primaryDisabled ||
+                    perItemApproveBusy !== null
+                  }
+                  className="btn-primary text-xs disabled:opacity-50"
+                >
+                  {perItemApproveBusy === "schedule"
+                    ? "Approving…"
+                    : "Approve post"}
+                </button>
+              ) : (
+                <span className="text-[11px] text-ink-500 italic">
+                  No schedule — approve & hold first
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={onApproveAndHold}
+                disabled={
+                  actionState.primaryDisabled || perItemApproveBusy !== null
+                }
+                className="btn-secondary text-xs disabled:opacity-50"
+              >
+                {perItemApproveBusy === "hold"
+                  ? "Approving…"
+                  : "Approve & hold"}
+              </button>
+              {perItemApproveError ? (
+                <span className="text-[11px] text-amber-700">
+                  {perItemApproveError}
+                </span>
+              ) : null}
+            </div>
           ) : actionState.variant === "schedule_or_mcp" ? (
             <span className="text-[11px] text-ink-600">
               Use the schedule field above, or call{" "}

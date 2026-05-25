@@ -31,11 +31,12 @@ export function ApprovePlanForm({ planId, pendingCount }: ApprovePlanFormProps) 
   return (
     <section className="card p-5">
       <h2 className="text-sm font-semibold text-ink-900">
-        Approve this week
+        Bulk approve pending posts
       </h2>
       <p className="text-xs text-ink-600 mt-1 leading-relaxed">
-        Two ways to approve {pendingCount} pending post
-        {pendingCount === 1 ? "" : "s"}:
+        Two bulk ways to approve {pendingCount} pending post
+        {pendingCount === 1 ? "" : "s"} at once. You can also approve
+        individual posts from each card below.
       </p>
       <ul className="text-xs text-ink-600 leading-relaxed mt-2 space-y-1 list-disc pl-4">
         <li>

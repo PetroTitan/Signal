@@ -33,6 +33,7 @@ import {
   updateCreative,
 } from "@/repositories/weekly-plan-creative-repository";
 import { parseScheduledAtField } from "./parse-scheduled-at-field";
+import { assessItemApprovalReadiness } from "./approval-readiness.server";
 import {
   emitScheduleParseInvalid,
   emitScheduleSaveRejected,
@@ -69,6 +70,18 @@ export type SaveScheduleResult = ActionResult<{
   /** The schedule source the server attributed to this write
    *  (manual / preset / mcp / api / migration / recovery). */
   source?: string;
+}>;
+export type ApprovePlanItemResult = ActionResult<{
+  itemId: string;
+  /** Verified status after re-read. "approved" for hold path,
+   *  "scheduled" for immediate-schedule path. */
+  status: "approved" | "scheduled";
+  /** Schedule timestamp after the transaction. Must equal the
+   *  pre-mutation value (asserted on the server). */
+  scheduledAtIso: string | null;
+  /** Execution item id when the immediate-schedule path created one;
+   *  null for the hold path. */
+  executionItemId: string | null;
 }>;
 
 function isoMonday(date: Date): string {
@@ -814,6 +827,396 @@ export async function approveAndHoldAction(
           ? error.message
           : "Could not approve and hold plan.";
     console.error("[approveAndHoldAction] failed", error);
+    return actionFail(message);
+  }
+}
+
+// =====================================================================
+// Per-item approval — approvePlanItemAndHoldAction
+// =====================================================================
+//
+// Approves ONE plan item without scheduling. Reuses the shared
+// readiness helper (assessItemApprovalReadiness) so blockers stay in
+// lock-step with the bulk paths and the UI. Transactional pattern:
+// snapshot → mutate → re-read → assert → observability.
+
+export async function approvePlanItemAndHoldAction(
+  _prev: ApprovePlanItemResult,
+  formData: FormData,
+): Promise<ApprovePlanItemResult> {
+  const itemId = String(formData.get("item_id") ?? "").trim();
+  if (!itemId) return actionFail("Missing item id.");
+
+  const { getActiveContract } = await import(
+    "@/repositories/weekly-contract-repository"
+  );
+  const { updatePlanItemStatus } = await import(
+    "@/repositories/weekly-plan-repository"
+  );
+  const { listCreativesForItems } = await import(
+    "@/repositories/weekly-plan-creative-repository"
+  );
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    const item = await getPlanItemById(workspaceId, itemId);
+    const contract = await getActiveContract(workspaceId);
+    const allCreatives = await listCreativesForItems(workspaceId, [itemId]);
+    const primaryCreative = allCreatives[0] ?? null;
+
+    const readiness = assessItemApprovalReadiness({
+      item,
+      contract,
+      primaryCreative,
+      requireSchedule: false,
+    });
+    if (!readiness.ready) {
+      return actionFail(
+        `Approval failed: ${readiness.blockers.slice(0, 2).join(" ")}`,
+      );
+    }
+
+    const beforeStatus = item.status;
+    const beforeScheduledAt = item.scheduledAt;
+    emitApprovalTransitionStarted({
+      action: "approve_and_hold",
+      workspaceId,
+      planId: item.weeklyPlanId,
+      planItemId: item.id,
+      beforeStatus,
+      beforeScheduledAt,
+    });
+
+    await updatePlanItemStatus({
+      workspaceId,
+      itemId: item.id,
+      status: "approved",
+    });
+
+    const fresh = await getPlanItemById(workspaceId, item.id);
+    if (fresh.status !== "approved") {
+      emitApprovalStateAssertionFailed({
+        action: "approve_and_hold",
+        workspaceId,
+        planId: item.weeklyPlanId,
+        planItemId: item.id,
+        beforeStatus,
+        afterStatus: fresh.status,
+        beforeScheduledAt,
+        afterScheduledAt: fresh.scheduledAt,
+        failureReason: `expected_status=approved actual=${fresh.status}`,
+      });
+      return actionFail(
+        "Approval failed: item remained in its previous status.",
+      );
+    }
+    if (fresh.scheduledAt !== beforeScheduledAt) {
+      emitApprovalStateAssertionFailed({
+        action: "approve_and_hold",
+        workspaceId,
+        planId: item.weeklyPlanId,
+        planItemId: item.id,
+        beforeStatus,
+        afterStatus: fresh.status,
+        beforeScheduledAt,
+        afterScheduledAt: fresh.scheduledAt,
+        failureReason: "scheduled_at mutated during approve-and-hold",
+      });
+      return actionFail(
+        "Approval failed: schedule changed unexpectedly during approval.",
+      );
+    }
+    emitApprovalSchedulePreserved({
+      action: "approve_and_hold",
+      workspaceId,
+      planId: item.weeklyPlanId,
+      planItemId: item.id,
+      beforeScheduledAt,
+      afterScheduledAt: fresh.scheduledAt,
+    });
+    emitApprovalTransitionCommitted({
+      action: "approve_and_hold",
+      workspaceId,
+      planId: item.weeklyPlanId,
+      planItemId: item.id,
+      beforeStatus,
+      afterStatus: fresh.status,
+      beforeScheduledAt,
+      afterScheduledAt: fresh.scheduledAt,
+    });
+
+    await logActivityBestEffort({
+      workspaceId,
+      eventType: "weekly_plan_item.approved_and_held",
+      entityType: "weekly_plan_item",
+      entityId: item.id,
+      title: `Approved (held) "${item.title ?? "Untitled"}"`,
+      description: "Item approved without scheduling.",
+    });
+
+    revalidatePath("/weekly-plan");
+    revalidatePath("/activity");
+    return actionOk({
+      itemId: item.id,
+      status: "approved",
+      scheduledAtIso: fresh.scheduledAt,
+      executionItemId: null,
+    });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : "Could not approve this item.";
+    console.error("[approvePlanItemAndHoldAction] failed", error);
+    emitApprovalTransitionFailed({
+      action: "approve_and_hold",
+      workspaceId: "",
+      planItemId: itemId,
+      failureReason: message,
+    });
+    return actionFail(message);
+  }
+}
+
+// =====================================================================
+// Per-item approval — approvePlanItemAndScheduleAction
+// =====================================================================
+//
+// Approves ONE plan item AND schedules it immediately using its
+// existing scheduled_at. Creates exactly one execution_item (refuses
+// if one already exists for this plan_item), walks it through
+// pending_authorization → authorized → scheduled, then bumps the
+// plan_item to "scheduled".
+
+export async function approvePlanItemAndScheduleAction(
+  _prev: ApprovePlanItemResult,
+  formData: FormData,
+): Promise<ApprovePlanItemResult> {
+  const itemId = String(formData.get("item_id") ?? "").trim();
+  if (!itemId) return actionFail("Missing item id.");
+
+  const { getActiveContract } = await import(
+    "@/repositories/weekly-contract-repository"
+  );
+  const { updatePlanItemStatus } = await import(
+    "@/repositories/weekly-plan-repository"
+  );
+  const { listCreativesForItems } = await import(
+    "@/repositories/weekly-plan-creative-repository"
+  );
+  const {
+    getActiveExecutionQueue,
+    createExecutionQueue,
+  } = await import("@/repositories/execution-queue-repository");
+  const {
+    createExecutionItem,
+    listExecutionItemsByPlanItemIds,
+    updateItemStatus,
+  } = await import("@/repositories/execution-item-repository");
+  const { recordLog } = await import(
+    "@/repositories/execution-log-repository"
+  );
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    const item = await getPlanItemById(workspaceId, itemId);
+    const contract = await getActiveContract(workspaceId);
+    const allCreatives = await listCreativesForItems(workspaceId, [itemId]);
+    const primaryCreative = allCreatives[0] ?? null;
+
+    const readiness = assessItemApprovalReadiness({
+      item,
+      contract,
+      primaryCreative,
+      requireSchedule: true,
+    });
+    if (!readiness.ready) {
+      return actionFail(
+        `Approval failed: ${readiness.blockers.slice(0, 2).join(" ")}`,
+      );
+    }
+    if (!contract) {
+      // Defensive — readiness already covers this, but the rest of
+      // the function dereferences contract.
+      return actionFail("Active weekly contract required.");
+    }
+
+    // Duplicate-prevention: refuse if an execution_item already
+    // points at this plan_item.
+    const existingExec = await listExecutionItemsByPlanItemIds(workspaceId, [
+      itemId,
+    ]);
+    if (existingExec.length > 0) {
+      return actionFail(
+        "Approval failed: this item already has an execution_item — refusing to create a duplicate.",
+      );
+    }
+
+    let queue = await getActiveExecutionQueue(workspaceId, contract.id);
+    if (!queue) {
+      queue = await createExecutionQueue({
+        workspaceId,
+        contractId: contract.id,
+        title: contract.title,
+        weekStart: contract.weekStart,
+        weekEnd: contract.weekEnd,
+      });
+    }
+
+    const beforeStatus = item.status;
+    const beforeScheduledAt = item.scheduledAt;
+    emitApprovalTransitionStarted({
+      action: "approve_weekly_plan",
+      workspaceId,
+      planId: item.weeklyPlanId,
+      planItemId: item.id,
+      beforeStatus,
+      beforeScheduledAt,
+    });
+
+    const execItem = await createExecutionItem({
+      workspaceId,
+      queueId: queue.id,
+      contractId: contract.id,
+      actionType:
+        item.contentType === "comment"
+          ? "publish_scheduled_comment"
+          : "publish_scheduled_post",
+      sourceEntityType: "weekly_plan_item",
+      sourceEntityId: item.id,
+      productId: item.productId,
+      accountId: item.accountId,
+      platform: item.platform,
+      title: item.title,
+      body: item.body,
+      linkUrl: item.linkUrl,
+      scheduledAt: item.scheduledAt,
+      riskScore: item.riskScore,
+      riskLevel: item.riskLevel,
+      metadata: {
+        plan_item_id: item.id,
+        plan_id: item.weeklyPlanId,
+        source: "approve_plan_item_and_schedule",
+      },
+    });
+    await updateItemStatus({
+      workspaceId,
+      itemId: execItem.id,
+      to: "authorized",
+    });
+    await updateItemStatus({
+      workspaceId,
+      itemId: execItem.id,
+      to: "scheduled",
+    });
+    await updatePlanItemStatus({
+      workspaceId,
+      itemId: item.id,
+      status: "scheduled",
+    });
+
+    const fresh = await getPlanItemById(workspaceId, item.id);
+    if (fresh.status !== "scheduled") {
+      emitApprovalStateAssertionFailed({
+        action: "approve_weekly_plan",
+        workspaceId,
+        planId: item.weeklyPlanId,
+        planItemId: item.id,
+        beforeStatus,
+        afterStatus: fresh.status,
+        beforeScheduledAt,
+        afterScheduledAt: fresh.scheduledAt,
+        failureReason: `expected_status=scheduled actual=${fresh.status}`,
+      });
+      return actionFail(
+        "Approval failed: item did not transition to scheduled.",
+      );
+    }
+    if (fresh.scheduledAt !== beforeScheduledAt) {
+      emitApprovalStateAssertionFailed({
+        action: "approve_weekly_plan",
+        workspaceId,
+        planId: item.weeklyPlanId,
+        planItemId: item.id,
+        beforeStatus,
+        afterStatus: fresh.status,
+        beforeScheduledAt,
+        afterScheduledAt: fresh.scheduledAt,
+        failureReason: "scheduled_at mutated during immediate approval",
+      });
+      return actionFail(
+        "Approval failed: schedule changed unexpectedly during approval.",
+      );
+    }
+    emitApprovalSchedulePreserved({
+      action: "approve_weekly_plan",
+      workspaceId,
+      planId: item.weeklyPlanId,
+      planItemId: item.id,
+      beforeScheduledAt,
+      afterScheduledAt: fresh.scheduledAt,
+    });
+    emitApprovalTransitionCommitted({
+      action: "approve_weekly_plan",
+      workspaceId,
+      planId: item.weeklyPlanId,
+      planItemId: item.id,
+      beforeStatus,
+      afterStatus: fresh.status,
+      beforeScheduledAt,
+      afterScheduledAt: fresh.scheduledAt,
+    });
+
+    await recordLog({
+      workspaceId,
+      queueId: queue.id,
+      executionItemId: execItem.id,
+      eventType: "item.scheduled",
+      severity: "info",
+      message: `Per-item approval scheduled "${item.title ?? "Untitled"}" for ${item.scheduledAt ?? "(immediate)"}`,
+      metadata: { plan_item_id: item.id, plan_id: item.weeklyPlanId },
+    });
+    await logActivityBestEffort({
+      workspaceId,
+      eventType: "weekly_plan_item.approved_and_scheduled",
+      entityType: "weekly_plan_item",
+      entityId: item.id,
+      title: `Approved + scheduled "${item.title ?? "Untitled"}"`,
+      description: `Scheduled for ${item.scheduledAt ?? "(immediate)"}.`,
+    });
+
+    revalidatePath("/weekly-plan");
+    revalidatePath("/execution");
+    revalidatePath(`/execution/${queue.id}`);
+    revalidatePath("/activity");
+    return actionOk({
+      itemId: item.id,
+      status: "scheduled",
+      scheduledAtIso: fresh.scheduledAt,
+      executionItemId: execItem.id,
+    });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : "Could not approve and schedule this item.";
+    console.error("[approvePlanItemAndScheduleAction] failed", error);
+    emitApprovalTransitionFailed({
+      action: "approve_weekly_plan",
+      workspaceId: "",
+      planItemId: itemId,
+      failureReason: message,
+    });
     return actionFail(message);
   }
 }
