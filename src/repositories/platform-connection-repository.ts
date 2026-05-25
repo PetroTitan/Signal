@@ -1,4 +1,5 @@
 import "server-only";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase";
 import type {
   OAuthStateTokenInsert,
@@ -66,8 +67,16 @@ export async function listPlatformConnections(
 export async function getPlatformConnectionById(
   workspaceId: string,
   connectionId: string,
+  /**
+   * Optional injected client. UI / server-action callers omit it and
+   * use the cookie-aware client. The Bluesky orchestrator passes its
+   * service-role client through under cron-triggered ticks so the
+   * read-back after upsert / markConnectionStatus is not blocked by
+   * RLS. Same additive pattern as getAccountById.
+   */
+  db?: SupabaseClient,
 ): Promise<PlatformConnection> {
-  const supabase = createSupabaseServerClient();
+  const supabase = db ?? createSupabaseServerClient();
   const { data, error } = await supabase
     .from("platform_connections")
     .select(
@@ -85,8 +94,16 @@ export async function getConnectionForAccount(
   workspaceId: string,
   accountId: string,
   platform: OAuthPlatform,
+  /**
+   * Optional injected client. UI / server-action callers omit it and
+   * pick up the cookie-aware client by default. The scheduler tick
+   * passes its service-role client so the read is not blocked by RLS
+   * in a runtime without an operator cookie. Same additive pattern
+   * as getAccountById.
+   */
+  db?: SupabaseClient,
 ): Promise<PlatformConnection | null> {
-  const supabase = createSupabaseServerClient();
+  const supabase = db ?? createSupabaseServerClient();
   const { data, error } = await supabase
     .from("platform_connections")
     .select(
@@ -130,8 +147,16 @@ export interface UpsertConnectionInput {
 
 export async function upsertPlatformConnection(
   input: UpsertConnectionInput,
+  /**
+   * Optional injected client. UI / OAuth-callback callers omit it
+   * and use the cookie-aware client. The Bluesky orchestrator passes
+   * its service-role client through when the refresh path runs under
+   * a cron-triggered tick (no operator cookie). Same additive pattern
+   * as getAccountById.
+   */
+  db?: SupabaseClient,
 ): Promise<PlatformConnection> {
-  const supabase = createSupabaseServerClient();
+  const supabase = db ?? createSupabaseServerClient();
   const nowIso = new Date().toISOString();
 
   // Find existing row keyed by (workspace, account, platform) or
@@ -188,7 +213,7 @@ export async function upsertPlatformConnection(
       .eq("workspace_id", input.workspaceId)
       .eq("id", existingId);
     if (error) throw fromPostgres(error, "Failed to update platform connection.");
-    return getPlatformConnectionById(input.workspaceId, existingId);
+    return getPlatformConnectionById(input.workspaceId, existingId, db);
   }
 
   const insert: PlatformConnectionInsert = {
@@ -230,12 +255,20 @@ export async function upsertPlatformConnection(
 export async function readEncryptedTokens(
   workspaceId: string,
   connectionId: string,
+  /**
+   * Optional injected client. UI / server-action callers omit it
+   * and use the cookie-aware client. The Bluesky orchestrator passes
+   * its service-role client through under cron-triggered ticks so
+   * the encrypted-token read isn't hidden by RLS. Same additive
+   * pattern as getAccountById.
+   */
+  db?: SupabaseClient,
 ): Promise<{
   accessTokenEncrypted: string | null;
   refreshTokenEncrypted: string | null;
   expiresAt: string | null;
 } | null> {
-  const supabase = createSupabaseServerClient();
+  const supabase = db ?? createSupabaseServerClient();
   const { data, error } = await supabase
     .from("platform_connections")
     .select("access_token_encrypted, refresh_token_encrypted, expires_at")
@@ -289,26 +322,36 @@ export async function rotateAccessToken(input: {
   return getPlatformConnectionById(input.workspaceId, input.connectionId);
 }
 
-export async function markConnectionStatus(input: {
-  workspaceId: string;
-  connectionId: string;
-  status: PlatformConnectionConnectionStatus;
-  healthStatus?: PlatformConnection["healthStatus"];
-  message?: string;
+export async function markConnectionStatus(
+  input: {
+    workspaceId: string;
+    connectionId: string;
+    status: PlatformConnectionConnectionStatus;
+    healthStatus?: PlatformConnection["healthStatus"];
+    message?: string;
+    /**
+     * Metadata keys to explicitly remove from the connection. Used by
+     * the disconnect path to drop `handle_mismatch` so an identity
+     * doesn't stay stuck in 'mismatched' after the operator has
+     * explicitly disconnected it.
+     *
+     * Triggers a read-modify-write so the rest of the metadata
+     * (e.g. token_storage diagnostics) is preserved. When omitted, the
+     * function keeps its original wholesale-replace behaviour for
+     * backwards compatibility with the health-check callers.
+     */
+    clearMetadataKeys?: ReadonlyArray<string>;
+  },
   /**
-   * Metadata keys to explicitly remove from the connection. Used by
-   * the disconnect path to drop `handle_mismatch` so an identity
-   * doesn't stay stuck in 'mismatched' after the operator has
-   * explicitly disconnected it.
-   *
-   * Triggers a read-modify-write so the rest of the metadata
-   * (e.g. token_storage diagnostics) is preserved. When omitted, the
-   * function keeps its original wholesale-replace behaviour for
-   * backwards compatibility with the health-check callers.
+   * Optional injected client. Health-check / disconnect UI callers
+   * omit it and use the cookie-aware client. The Bluesky orchestrator
+   * passes its service-role client through when marking an expired /
+   * mismatched session under a cron-triggered tick. Same additive
+   * pattern as getAccountById.
    */
-  clearMetadataKeys?: ReadonlyArray<string>;
-}): Promise<PlatformConnection> {
-  const supabase = createSupabaseServerClient();
+  db?: SupabaseClient,
+): Promise<PlatformConnection> {
+  const supabase = db ?? createSupabaseServerClient();
   const nowIso = new Date().toISOString();
   const patch: PlatformConnectionUpdate = {
     connection_status: input.status,
@@ -323,6 +366,7 @@ export async function markConnectionStatus(input: {
     const existing = await getPlatformConnectionById(
       input.workspaceId,
       input.connectionId,
+      db,
     );
     const merged: Record<string, unknown> = { ...existing.metadata };
     for (const key of input.clearMetadataKeys) {
@@ -347,7 +391,7 @@ export async function markConnectionStatus(input: {
     .eq("workspace_id", input.workspaceId)
     .eq("id", input.connectionId);
   if (error) throw fromPostgres(error, "Failed to update connection status.");
-  return getPlatformConnectionById(input.workspaceId, input.connectionId);
+  return getPlatformConnectionById(input.workspaceId, input.connectionId, db);
 }
 
 // =====================================================================

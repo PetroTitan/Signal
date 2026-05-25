@@ -207,18 +207,28 @@ export async function updateAccount(input: {
  * growth_accounts. Called by the OAuth callback / disconnect routes
  * so the /accounts list reflects the live connection state.
  */
-export async function setAccountConnectionStatus(input: {
-  workspaceId: string;
-  accountId: string;
-  connectionStatus:
-    | "not_connected"
-    | "connected"
-    | "expired"
-    | "revoked"
-    | "reauthorization_required"
-    | "error";
-}): Promise<GrowthAccountRecord> {
-  const supabase = createSupabaseServerClient();
+export async function setAccountConnectionStatus(
+  input: {
+    workspaceId: string;
+    accountId: string;
+    connectionStatus:
+      | "not_connected"
+      | "connected"
+      | "expired"
+      | "revoked"
+      | "reauthorization_required"
+      | "error";
+  },
+  /**
+   * Optional injected client. UI / server-action callers omit it and
+   * pick up the cookie-aware client by default. The cron-triggered
+   * scheduler tick passes its service-role client through so the
+   * write is not blocked by RLS in a runtime without an operator
+   * cookie. Same additive pattern as getAccountById.
+   */
+  db?: SupabaseClient,
+): Promise<GrowthAccountRecord> {
+  const supabase = db ?? createSupabaseServerClient();
   const { data, error } = await supabase
     .from("growth_accounts")
     .update({ connection_status: input.connectionStatus } as never)
