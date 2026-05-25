@@ -15,6 +15,7 @@ interface FakeStore {
   weekly_contracts: Array<Record<string, unknown>>;
   execution_queues: Array<Record<string, unknown>>;
   execution_items: Array<Record<string, unknown>>;
+  execution_logs: Array<Record<string, unknown>>;
   activity_events: Array<Record<string, unknown>>;
 }
 
@@ -25,6 +26,7 @@ function emptyStore(): FakeStore {
     weekly_contracts: [],
     execution_queues: [],
     execution_items: [],
+    execution_logs: [],
     activity_events: [],
   };
 }
@@ -86,7 +88,14 @@ function makeFakeClient(store: FakeStore): SupabaseClient {
         );
         return { data: rows[0] ?? null, error: null };
       },
-      then(resolve: (value: { data: null; error: null }) => void) {
+      then(
+        resolve: (
+          value: {
+            data: null | Record<string, unknown>[];
+            error: null;
+          },
+        ) => void,
+      ) {
         // Terminal for update/insert without .select() — needed when
         // the handler updates execution_items without selecting back.
         if (updatePatch !== null) {
@@ -103,7 +112,13 @@ function makeFakeClient(store: FakeStore): SupabaseClient {
           resolve({ data: null, error: null });
           return;
         }
-        resolve({ data: null, error: null });
+        // SELECT-only chain awaited directly (no .single / .maybeSingle).
+        // Real Supabase JS resolves to `{ data: Row[], error }`. Mirror
+        // that so handlers using `.in()` filters work in tests.
+        const rows = (store[table] as Record<string, unknown>[]).filter((r) =>
+          filters.every((f) => f(r)),
+        );
+        resolve({ data: rows, error: null });
       },
       insert(row: Record<string, unknown>) {
         // The terminal (await / .single / .then) is responsible for
@@ -345,7 +360,7 @@ describe("schedulePublishTool — success", () => {
 // =====================================================================
 
 describe("schedulePublishTool — status gate", () => {
-  it.each(["draft", "pending_approval", "scheduled", "published", "rejected"])(
+  it.each(["draft", "pending_approval", "published", "rejected"])(
     "refuses status=%s",
     async (status) => {
       const store = emptyStore();
@@ -358,7 +373,7 @@ describe("schedulePublishTool — status gate", () => {
 
       expect(result.ok).toBe(false);
       expect(result.summary).toContain(
-        `plan_item_status_must_be_approved_or_paused_got_${status}`,
+        `plan_item_status_must_be_approved_paused_or_scheduled_got_${status}`,
       );
       expect(store.execution_items).toEqual([]);
       expect(store.weekly_plan_items[0].status).toBe(status); // unchanged
@@ -368,6 +383,25 @@ describe("schedulePublishTool — status gate", () => {
   it("accepts status=paused (retry recovery)", async () => {
     const store = emptyStore();
     const planItemId = seedPlanItem(store, { status: "paused" });
+    seedConnection(store);
+    seedContract(store);
+    seedQueue(store);
+
+    const result = await schedulePublishTool(
+      ctxWith(store),
+      validArgs(planItemId),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(store.execution_items.length).toBe(1);
+  });
+
+  it("accepts status=scheduled WHEN no active execution_item exists (rescheduling a stale row)", async () => {
+    // Edge case: plan_item.status drifted to "scheduled" but the
+    // execution_item history is all terminal. Treat the call as a
+    // fresh schedule.
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store, { status: "scheduled" });
     seedConnection(store);
     seedContract(store);
     seedQueue(store);
@@ -588,5 +622,185 @@ describe("schedulePublishTool — response safety", () => {
     expect(serialized).not.toContain("api_key");
     expect(serialized).not.toContain("leak-probe-did");
     expect(serialized).not.toMatch(/\beyj[a-z0-9_-]+/);
+  });
+});
+
+// =====================================================================
+// Resync — reschedule active execution_item instead of duplicating
+// =====================================================================
+//
+// Pre-fix the tool refused with `plan_item_has_active_execution_item`
+// whenever an active execution_item existed for the plan_item. That
+// meant operators couldn't shift a scheduled publish via MCP without
+// first cancelling the row. These tests pin the resync behavior so
+// the duplicate-prevention guard can never silently regress.
+
+function seedExecutionItem(
+  store: FakeStore,
+  args: {
+    plan_item_id: string;
+    status?: string;
+    scheduled_at?: string | null;
+    queue_id?: string;
+  },
+): string {
+  const id = fakeUuid("ei");
+  store.execution_items.push({
+    id,
+    workspace_id: WS,
+    queue_id: args.queue_id ?? QUEUE_ID,
+    contract_id: CONTRACT_ID,
+    source_entity_type: "weekly_plan_item",
+    source_entity_id: args.plan_item_id,
+    platform: "bluesky",
+    status: args.status ?? "scheduled",
+    scheduled_at: args.scheduled_at ?? futureIso(60 * 60 * 1000),
+    metadata: { plan_item_id: args.plan_item_id },
+  });
+  return id;
+}
+
+describe("schedulePublishTool — resync active execution_item", () => {
+  it("scheduled execution_item → reschedules to new scheduled_at instead of duplicating", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store, { status: "scheduled" });
+    seedConnection(store);
+    seedContract(store);
+    seedQueue(store);
+    const originalIso = futureIso(60 * 60 * 1000);
+    const eiId = seedExecutionItem(store, {
+      plan_item_id: planItemId,
+      status: "scheduled",
+      scheduled_at: originalIso,
+    });
+    const newIso = futureIso(5 * 60 * 1000);
+
+    const result = await schedulePublishTool(ctxWith(store), {
+      plan_item_id: planItemId,
+      scheduled_at: newIso,
+      confirm_schedule: true,
+    });
+
+    expect(result.ok).toBe(true);
+    // exactly one execution_item — no duplicate row
+    expect(store.execution_items.length).toBe(1);
+    const ei = store.execution_items[0];
+    expect(ei.id).toBe(eiId);
+    expect(ei.scheduled_at).toBe(newIso);
+    const eiMeta = ei.metadata as Record<string, unknown>;
+    expect(eiMeta.schedule_resynced_from_plan_item).toBe(true);
+    expect(eiMeta.schedule_resynced_source).toBe("mcp");
+    expect(eiMeta.schedule_resynced_previous_scheduled_at).toBe(originalIso);
+    // plan_item.scheduled_at mirrors
+    expect(store.weekly_plan_items[0].scheduled_at).toBe(newIso);
+    // response mode advertised
+    if (result.ok) {
+      const data = result.data as { mode: string; execution_item_id: string };
+      expect(data.mode).toBe("rescheduled_active_execution_item");
+      expect(data.execution_item_id).toBe(eiId);
+    }
+    // activity row written under the reschedule event type
+    expect(
+      store.activity_events.some(
+        (a) => a.event_type === "mcp.publish_rescheduled",
+      ),
+    ).toBe(true);
+    // execution_log row written with the schedule_resynced reason_code
+    const logRow = store.execution_logs.find(
+      (l) => l.event_type === "item.schedule_resynced",
+    );
+    expect(logRow).toBeDefined();
+    const logMeta = logRow?.metadata as Record<string, unknown>;
+    expect(logMeta.reason_code).toBe("schedule_resynced");
+    expect(logMeta.source).toBe("mcp");
+    expect(logMeta.previous_scheduled_at).toBe(originalIso);
+    expect(logMeta.next_scheduled_at).toBe(newIso);
+  });
+
+  it("authorized execution_item → reschedules (still in operator-controllable window)", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store, { status: "approved" });
+    seedConnection(store);
+    seedContract(store);
+    seedQueue(store);
+    const eiId = seedExecutionItem(store, {
+      plan_item_id: planItemId,
+      status: "authorized",
+    });
+    const newIso = futureIso(10 * 60 * 1000);
+
+    const result = await schedulePublishTool(ctxWith(store), {
+      plan_item_id: planItemId,
+      scheduled_at: newIso,
+      confirm_schedule: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(store.execution_items.length).toBe(1);
+    expect(store.execution_items[0].id).toBe(eiId);
+    expect(store.execution_items[0].scheduled_at).toBe(newIso);
+  });
+
+  it("running execution_item → refuses (would race the publisher)", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store, { status: "scheduled" });
+    seedConnection(store);
+    seedContract(store);
+    seedQueue(store);
+    const eiId = seedExecutionItem(store, {
+      plan_item_id: planItemId,
+      status: "running",
+    });
+    const newIso = futureIso(5 * 60 * 1000);
+    const originalRow = { ...store.execution_items[0] };
+
+    const result = await schedulePublishTool(ctxWith(store), {
+      plan_item_id: planItemId,
+      scheduled_at: newIso,
+      confirm_schedule: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain(
+      "execution_item_status_running_cannot_be_resynced",
+    );
+    // execution_item untouched
+    expect(store.execution_items.length).toBe(1);
+    expect(store.execution_items[0].id).toBe(eiId);
+    expect(store.execution_items[0].scheduled_at).toBe(originalRow.scheduled_at);
+  });
+
+  it("terminal-only execution_items → creates a fresh row (history preserved)", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store, { status: "paused" });
+    seedConnection(store);
+    seedContract(store);
+    seedQueue(store);
+    seedExecutionItem(store, { plan_item_id: planItemId, status: "blocked" });
+    seedExecutionItem(store, { plan_item_id: planItemId, status: "failed" });
+    const newIso = futureIso(5 * 60 * 1000);
+
+    const result = await schedulePublishTool(ctxWith(store), {
+      plan_item_id: planItemId,
+      scheduled_at: newIso,
+      confirm_schedule: true,
+    });
+
+    expect(result.ok).toBe(true);
+    // two terminal rows preserved + one fresh row inserted
+    expect(store.execution_items.length).toBe(3);
+    // none of the terminal rows were mutated
+    expect(
+      store.execution_items.filter((r) => r.status === "blocked").length,
+    ).toBe(1);
+    expect(
+      store.execution_items.filter((r) => r.status === "failed").length,
+    ).toBe(1);
+    // a new row was created with the requested scheduled_at
+    expect(
+      store.execution_items.some(
+        (r) => r.status === "scheduled" && r.scheduled_at === newIso,
+      ),
+    ).toBe(true);
   });
 });

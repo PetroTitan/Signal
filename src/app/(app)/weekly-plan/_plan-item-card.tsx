@@ -472,7 +472,7 @@ function ReschedulePopover({
         defaultValueIso={defaultIso}
         timezoneLabel={timezoneLabel}
       />
-      <ReschedSubmit />
+      <ReschedSubmit alreadyScheduled={defaultIso !== null} />
       {safe.error ? (
         <span className="block text-[11px] text-amber-700">{safe.error}</span>
       ) : null}
@@ -480,15 +480,17 @@ function ReschedulePopover({
   );
 }
 
-function ReschedSubmit() {
+function ReschedSubmit({ alreadyScheduled }: { alreadyScheduled: boolean }) {
   const { pending } = useFormStatus();
+  const idleLabel = alreadyScheduled ? "Update publish time" : "Save schedule";
+  const pendingLabel = alreadyScheduled ? "Updating…" : "Saving…";
   return (
     <button
       type="submit"
       disabled={pending}
       className="btn-primary text-xs disabled:opacity-60"
     >
-      {pending ? "Saving…" : "Save schedule"}
+      {pending ? pendingLabel : idleLabel}
     </button>
   );
 }

@@ -860,7 +860,11 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
                 }
                 className="btn-primary text-xs disabled:opacity-50"
               >
-                {scheduleSaveStatus === "saving" ? "Saving…" : "Save schedule"}
+                {scheduleSaveStatus === "saving"
+                  ? "Saving…"
+                  : props.existingItem?.status === "scheduled"
+                    ? "Update publish time"
+                    : "Save schedule"}
               </button>
             </div>
             <div className="text-[11px] text-ink-500 flex items-center justify-between gap-2 flex-wrap">
@@ -882,6 +886,7 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
                   {scheduleSaveStatusLabel(
                     scheduleSaveStatus,
                     schedule.touched,
+                    props.existingItem?.status === "scheduled",
                   )}
                   {scheduleSaveError ? ` — ${scheduleSaveError}` : ""}
                 </span>
@@ -1573,8 +1578,8 @@ function ComposeFooter({
             </span>
           ) : actionState.variant === "reschedule_or_unschedule" ? (
             <span className="text-[11px] text-ink-600">
-              Already scheduled — use Save schedule to update, or clear
-              to unschedule.
+              Already scheduled — use <em>Update publish time</em> above
+              to reschedule, or clear to unschedule.
             </span>
           ) : (
             <button
@@ -1598,15 +1603,16 @@ function ComposeFooter({
 function scheduleSaveStatusLabel(
   status: "idle" | "saving" | "saved" | "error",
   touched: boolean,
+  alreadyScheduled = false,
 ): string {
   if (touched && status !== "saving") return "Schedule has unsaved changes";
   switch (status) {
     case "idle":
       return "Schedule unchanged";
     case "saving":
-      return "Saving schedule…";
+      return alreadyScheduled ? "Updating publish time…" : "Saving schedule…";
     case "saved":
-      return "Schedule saved";
+      return alreadyScheduled ? "Publish time updated." : "Schedule saved";
     case "error":
       return "Schedule not saved";
   }

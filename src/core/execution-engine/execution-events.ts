@@ -32,6 +32,7 @@ export const EXECUTION_LOG_EVENTS = [
   "item.failed",
   "item.cancelled",
   "item.retry_scheduled",
+  "item.schedule_resynced",
 ] as const;
 export type ExecutionLogEvent = (typeof EXECUTION_LOG_EVENTS)[number];
 

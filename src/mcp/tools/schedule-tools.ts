@@ -86,43 +86,200 @@ export async function schedulePublishTool(
     });
   }
 
-  // ── 2. Status gate — approved or paused ───────────────────────────
+  // ── 2. Status gate — approved, paused, or already scheduled ───────
   //
   // `approved` is the canonical post-approval status.
   // `paused` is what the scheduler mirrors back to a plan_item when
   // an earlier execution_item ended in blocked/failed — it means
   // "approved but the prior execution attempt didn't succeed".
+  // `scheduled` is permitted because re-invocation of this tool with
+  // a new `scheduled_at` reschedules the existing execution_item
+  // instead of duplicating it.
   // Re-scheduling is the intended recovery path; the readiness check
   // (creative + alt + schedule + identity) still runs.
   const status = (planItem as { status: string }).status;
-  if (status !== "approved" && status !== "paused") {
+  if (
+    status !== "approved" &&
+    status !== "paused" &&
+    status !== "scheduled"
+  ) {
     return failed({
       tool: TOOL,
-      summary: `plan_item_status_must_be_approved_or_paused_got_${status}`,
+      summary: `plan_item_status_must_be_approved_paused_or_scheduled_got_${status}`,
     });
   }
 
-  // ── 2b. Duplicate-prevention — refuse only when an ACTIVE execution
-  //        item already exists for this plan_item. Terminal rows
+  // ── 2b. Duplicate-prevention — if an ACTIVE execution_item already
+  //        exists for this plan_item, RESYNC it to args.scheduled_at
+  //        instead of inserting a duplicate row. Terminal rows
   //        (blocked, failed, completed, cancelled, backlogged) are
-  //        history and must not block a retry.
+  //        history and must not block a retry — those continue to the
+  //        insert path below.
+  const RESYNC_ELIGIBLE_STATUSES = [
+    "pending_authorization",
+    "authorized",
+    "scheduled",
+  ] as const;
+  const RUNNER_CLAIMED_STATUSES = ["ready", "running"] as const;
   const { data: existingExec } = await ctx.db
     .from("execution_items")
-    .select("id, status")
+    .select("id, status, scheduled_at")
     .eq("workspace_id", ctx.workspaceId)
     .eq("source_entity_id", args.plan_item_id)
-    .in("status", [
-      "pending_authorization",
-      "authorized",
-      "scheduled",
-      "ready",
-      "running",
-    ]);
+    .in("status", [...RESYNC_ELIGIBLE_STATUSES, ...RUNNER_CLAIMED_STATUSES]);
   if (existingExec && existingExec.length > 0) {
-    return failed({
-      tool: TOOL,
-      summary: "plan_item_has_active_execution_item",
-    });
+    const blocking = (
+      existingExec as Array<{ id: string; status: string; scheduled_at: string | null }>
+    ).find((row) =>
+      (RUNNER_CLAIMED_STATUSES as ReadonlyArray<string>).includes(row.status),
+    );
+    if (blocking) {
+      return failed({
+        tool: TOOL,
+        summary: `execution_item_status_${blocking.status}_cannot_be_resynced`,
+      });
+    }
+    const target = (
+      existingExec as Array<{ id: string; status: string; scheduled_at: string | null }>
+    ).find((row) =>
+      (RESYNC_ELIGIBLE_STATUSES as ReadonlyArray<string>).includes(row.status),
+    );
+    if (target) {
+      // Mirror weekly_plan_items.scheduled_at write FIRST so the two
+      // rows are in sync at the end of the call, then update the
+      // execution_item to the same ISO.
+      const planItemMetadataForResync =
+        (planItem as { metadata: Record<string, unknown> | null }).metadata ?? {};
+      const newPlanMetadataForResync: Record<string, unknown> = {
+        ...planItemMetadataForResync,
+        source: "mcp_operation",
+        scheduled_by_operator_token_id: ctx.operatorTokenId,
+        mcp_scheduled_at: new Date().toISOString(),
+      };
+      const { error: planUpdateErr } = await ctx.db
+        .from("weekly_plan_items")
+        .update(
+          {
+            status: "scheduled",
+            scheduled_at: args.scheduled_at,
+            metadata: newPlanMetadataForResync,
+          } as never,
+        )
+        .eq("workspace_id", ctx.workspaceId)
+        .eq("id", args.plan_item_id);
+      if (planUpdateErr) {
+        return failed({
+          tool: TOOL,
+          summary: `plan_item_resync_failed:${planUpdateErr.message}`,
+        });
+      }
+
+      const previousScheduledAt = target.scheduled_at;
+      const { data: targetRow } = await ctx.db
+        .from("execution_items")
+        .select("metadata")
+        .eq("workspace_id", ctx.workspaceId)
+        .eq("id", target.id)
+        .maybeSingle();
+      const prevMeta =
+        ((targetRow as { metadata: Record<string, unknown> | null } | null)
+          ?.metadata ?? {}) as Record<string, unknown>;
+      const resyncMeta: Record<string, unknown> = {
+        ...prevMeta,
+        schedule_resynced_from_plan_item: true,
+        schedule_resynced_at: new Date().toISOString(),
+        schedule_resynced_source: "mcp",
+        schedule_resynced_previous_scheduled_at: previousScheduledAt,
+      };
+      const { error: resyncErr } = await ctx.db
+        .from("execution_items")
+        .update(
+          {
+            scheduled_at: args.scheduled_at,
+            metadata: resyncMeta,
+          } as never,
+        )
+        .eq("workspace_id", ctx.workspaceId)
+        .eq("id", target.id);
+      if (resyncErr) {
+        return failed({
+          tool: TOOL,
+          summary: `execution_item_resync_failed:${resyncErr.message}`,
+        });
+      }
+
+      // Best-effort execution_log row. Failure here is logged but does
+      // not roll back — the schedule mutations are the load-bearing
+      // side effect.
+      try {
+        const { data: queueLookup } = await ctx.db
+          .from("execution_items")
+          .select("queue_id")
+          .eq("workspace_id", ctx.workspaceId)
+          .eq("id", target.id)
+          .maybeSingle();
+        const queueId =
+          (queueLookup as { queue_id: string } | null)?.queue_id ?? null;
+        if (queueId) {
+          await ctx.db.from("execution_logs").insert(
+            {
+              workspace_id: ctx.workspaceId,
+              queue_id: queueId,
+              execution_item_id: target.id,
+              event_type: "item.schedule_resynced",
+              severity: "info",
+              message: `[scheduling] resynced execution_item.scheduled_at to ${args.scheduled_at} from MCP signal.schedule_publish`,
+              metadata: {
+                reason_code: "schedule_resynced",
+                previous_scheduled_at: previousScheduledAt,
+                next_scheduled_at: args.scheduled_at,
+                source: "mcp",
+                plan_item_id: args.plan_item_id,
+              },
+            } as never,
+          );
+        }
+      } catch (err) {
+        console.error(
+          "[signal.schedule_publish] execution_log write failed",
+          err,
+        );
+      }
+
+      await ctx.db.from("activity_events").insert(
+        {
+          workspace_id: ctx.workspaceId,
+          event_type: "mcp.publish_rescheduled",
+          entity_type: "weekly_plan_item",
+          entity_id: args.plan_item_id,
+          title: `MCP rescheduled active publish to ${args.scheduled_at}`,
+          description: null,
+          source: "mcp_operation",
+          metadata: {
+            operator_token_id: ctx.operatorTokenId,
+            plan_item_id: args.plan_item_id,
+            execution_item_id: target.id,
+            previous_scheduled_at: previousScheduledAt,
+            next_scheduled_at: args.scheduled_at,
+          },
+        } as never,
+      );
+
+      return ok({
+        tool: TOOL,
+        summary: `Rescheduled active execution_item ${target.id} to ${args.scheduled_at}. Scheduler will run runPublish at that time.`,
+        data: {
+          plan_item_id: args.plan_item_id,
+          execution_item_id: target.id,
+          status: "scheduled",
+          scheduled_at: args.scheduled_at,
+          mode: "rescheduled_active_execution_item",
+          previous_scheduled_at: previousScheduledAt,
+          review_url: `/weekly-plan?focus=${encodeURIComponent(args.plan_item_id)}`,
+        },
+        requiresUserApproval: true,
+      });
+    }
   }
   // Also fetch all rows (including terminal) so we can record the
   // previous execution_item id for the retry audit trail.
