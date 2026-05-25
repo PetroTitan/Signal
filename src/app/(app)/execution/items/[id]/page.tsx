@@ -7,6 +7,11 @@ import { getExecutionItemById } from "@/repositories/execution-item-repository";
 import { getPublishHistoryForItem } from "@/repositories/publish-history-repository";
 import { RepositoryError } from "@/repositories/errors";
 import {
+  formatUtcForOperatorDebug,
+  formatUtcForWorkspace,
+  getRelativeDueLabel,
+} from "@/core/scheduling/workspace-time";
+import {
   evaluateSafeTestPolicy,
   type SafeTestPolicyVerdict,
 } from "@/core/publishing/safe-test-policy";
@@ -82,6 +87,15 @@ export default async function ExecutionItemPage({ params }: PageProps) {
   }
 
   const workspaceId = membership.workspace.id;
+  const supabaseForTz = createSupabaseServerClient();
+  const { data: wsSettingsForTz } = await supabaseForTz
+    .from("workspace_settings")
+    .select("timezone")
+    .eq("workspace_id", workspaceId)
+    .maybeSingle();
+  const workspaceTimezone =
+    (wsSettingsForTz as { timezone?: string | null } | null)?.timezone ??
+    "UTC";
   let item;
   try {
     item = await getExecutionItemById(workspaceId, params.id);
@@ -224,13 +238,11 @@ export default async function ExecutionItemPage({ params }: PageProps) {
         title={item.title ?? "Untitled post"}
         description={
           item.scheduledAt
-            ? `Scheduled for ${new Date(item.scheduledAt).toLocaleString(undefined, {
-                weekday: "short",
-                month: "short",
-                day: "numeric",
-                hour: "numeric",
-                minute: "2-digit",
-              })}`
+            ? `Scheduled for ${
+                formatUtcForWorkspace(item.scheduledAt, workspaceTimezone).local
+              } (${workspaceTimezone}) · ${formatUtcForOperatorDebug(item.scheduledAt)} · ${
+                getRelativeDueLabel(item.scheduledAt, new Date()).relative
+              }`
             : "Not scheduled"
         }
         actions={
@@ -297,13 +309,9 @@ export default async function ExecutionItemPage({ params }: PageProps) {
               </p>
             )}
             <p className="text-[11px] text-ink-500">
-              {new Date(history.finishedAt).toLocaleString(undefined, {
-                weekday: "short",
-                month: "short",
-                day: "numeric",
-                hour: "numeric",
-                minute: "2-digit",
-              })}
+              {formatUtcForWorkspace(history.finishedAt, workspaceTimezone).local} ·{" "}
+              {workspaceTimezone} ·{" "}
+              {formatUtcForOperatorDebug(history.finishedAt)}
             </p>
           </section>
         ) : null}
@@ -491,16 +499,24 @@ export default async function ExecutionItemPage({ params }: PageProps) {
                     <div>
                       <dt className="text-ink-500">Scheduled</dt>
                       <dd className="text-ink-800">
-                        {verdict.preview.scheduledAt
-                          ? new Date(
-                              verdict.preview.scheduledAt,
-                            ).toLocaleString(undefined, {
-                              month: "short",
-                              day: "numeric",
-                              hour: "numeric",
-                              minute: "2-digit",
-                            })
-                          : "—"}
+                        {verdict.preview.scheduledAt ? (
+                          <>
+                            {
+                              formatUtcForWorkspace(
+                                verdict.preview.scheduledAt,
+                                workspaceTimezone,
+                              ).local
+                            }{" "}
+                            <span className="text-ink-500">
+                              · {workspaceTimezone} ·{" "}
+                              {formatUtcForOperatorDebug(
+                                verdict.preview.scheduledAt,
+                              )}
+                            </span>
+                          </>
+                        ) : (
+                          "—"
+                        )}
                       </dd>
                     </div>
                     <div className="sm:col-span-2">

@@ -24,6 +24,10 @@ import {
   type NeedsAttentionEntry,
 } from "@/components/publishing/needs-attention-strip";
 import { NewPostButton } from "@/components/founder-compose/new-post-button";
+import {
+  formatUtcForOperatorDebug,
+  formatUtcForWorkspace,
+} from "@/core/scheduling/workspace-time";
 
 export const dynamic = "force-dynamic";
 
@@ -378,10 +382,25 @@ export default async function DashboardPage() {
               Open weekly plan →
             </Link>
           </div>
-          <WeekBlock label="Today" posts={todayPosts} emptyHint="Nothing scheduled for today." />
-          <WeekBlock label="Tomorrow" posts={tomorrowPosts} emptyHint="Nothing scheduled for tomorrow." />
+          <WeekBlock
+            label="Today"
+            posts={todayPosts}
+            emptyHint="Nothing scheduled for today."
+            timezone={timezoneLabel ?? "UTC"}
+          />
+          <WeekBlock
+            label="Tomorrow"
+            posts={tomorrowPosts}
+            emptyHint="Nothing scheduled for tomorrow."
+            timezone={timezoneLabel ?? "UTC"}
+          />
           {upcomingPosts.length > 0 ? (
-            <WeekBlock label="Upcoming" posts={upcomingPosts} emptyHint={null} />
+            <WeekBlock
+              label="Upcoming"
+              posts={upcomingPosts}
+              emptyHint={null}
+              timezone={timezoneLabel ?? "UTC"}
+            />
           ) : null}
         </section>
 
@@ -429,13 +448,14 @@ export default async function DashboardPage() {
                     {d.scheduledAt ? (
                       <div className="text-[11px] text-ink-500 mt-1">
                         Scheduled for{" "}
-                        {new Date(d.scheduledAt).toLocaleString(undefined, {
-                          weekday: "short",
-                          month: "short",
-                          day: "numeric",
-                          hour: "numeric",
-                          minute: "2-digit",
-                        })}
+                        {
+                          formatUtcForWorkspace(
+                            d.scheduledAt as string,
+                            timezoneLabel ?? "UTC",
+                          ).local
+                        }{" "}
+                        ({timezoneLabel ?? "UTC"}) ·{" "}
+                        {formatUtcForOperatorDebug(d.scheduledAt as string)}
                       </div>
                     ) : null}
                   </Link>
@@ -453,10 +473,12 @@ function WeekBlock({
   label,
   posts,
   emptyHint,
+  timezone,
 }: {
   label: string;
   posts: Awaited<ReturnType<typeof listPlanItems>>;
   emptyHint: string | null;
+  timezone: string;
 }) {
   return (
     <div>
@@ -480,13 +502,16 @@ function WeekBlock({
               >
                 {p.title?.trim() || "Untitled post"}
               </Link>
-              <span className="text-[11px] text-ink-500 shrink-0">
+              <span
+                className="text-[11px] text-ink-500 shrink-0"
+                title={
+                  p.scheduledAt
+                    ? `${formatUtcForOperatorDebug(p.scheduledAt as string)} · ${timezone}`
+                    : undefined
+                }
+              >
                 {p.scheduledAt
-                  ? new Date(p.scheduledAt).toLocaleString(undefined, {
-                      weekday: label === "Upcoming" ? "short" : undefined,
-                      hour: "numeric",
-                      minute: "2-digit",
-                    })
+                  ? formatUtcForWorkspace(p.scheduledAt as string, timezone).local
                   : ""}
               </span>
             </li>

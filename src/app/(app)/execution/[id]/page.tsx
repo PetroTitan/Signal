@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Topbar } from "@/components/topbar";
-import { isSupabaseConfigured } from "@/lib/supabase";
+import { isSupabaseConfigured, createSupabaseServerClient } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { getExecutionQueueById } from "@/repositories/execution-queue-repository";
 import { listItemsForQueue } from "@/repositories/execution-item-repository";
@@ -10,6 +10,7 @@ import { ExecutionLogLine } from "@/components/publishing/execution-log-line";
 import { listAttemptsForItem } from "@/repositories/execution-attempt-repository";
 import { getWeeklyContractById } from "@/repositories/weekly-contract-repository";
 import { RepositoryError } from "@/repositories/errors";
+import { formatUtcForWorkspace } from "@/core/scheduling/workspace-time";
 import {
   EXECUTION_ITEM_STATUS_LABELS,
   EXECUTION_QUEUE_STATUS_LABELS,
@@ -49,6 +50,15 @@ export default async function ExecutionQueueDetailPage({ params }: PageProps) {
   }
 
   const workspaceId = membership.workspace.id;
+  const supabaseForTz = createSupabaseServerClient();
+  const { data: wsSettingsForTz } = await supabaseForTz
+    .from("workspace_settings")
+    .select("timezone")
+    .eq("workspace_id", workspaceId)
+    .maybeSingle();
+  const workspaceTimezone =
+    (wsSettingsForTz as { timezone?: string | null } | null)?.timezone ??
+    "UTC";
   let queue;
   try {
     queue = await getExecutionQueueById(workspaceId, params.id);
@@ -173,7 +183,7 @@ export default async function ExecutionQueueDetailPage({ params }: PageProps) {
                           {it.actionType}
                           {it.platform ? ` · ${it.platform}` : ""}
                           {it.scheduledAt
-                            ? ` · ${new Date(it.scheduledAt).toLocaleString()}`
+                            ? ` · ${formatUtcForWorkspace(it.scheduledAt, workspaceTimezone).local} (${workspaceTimezone})`
                             : ""}
                         </div>
                         <div className="text-[11px] text-ink-400 mt-0.5">

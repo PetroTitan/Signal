@@ -36,6 +36,11 @@ import {
   type NeedsAttentionEntry,
 } from "@/components/publishing/needs-attention-strip";
 import { deriveAiAssistedKind } from "@/components/publishing/ai-assisted-chip";
+import { ACTIVE_EXECUTION_STATUSES } from "@/core/scheduling/effective-publish-schedule";
+import {
+  formatScheduleDisplay,
+  type ScheduleDisplay,
+} from "@/core/scheduling/format-schedule-display";
 
 export const dynamic = "force-dynamic";
 
@@ -133,6 +138,57 @@ export default async function WeeklyPlanPage() {
     }
   }
 
+  // Active execution_item per plan_item — separate from the chrome
+  // rank above. This map only contains pending_authorization /
+  // authorized / scheduled rows, i.e. those whose scheduled_at the
+  // scheduler will actually fire on. The canonical schedule helper
+  // uses this map; terminal / runner-claimed / retry rows fall back
+  // to the editorial time on the plan_item.
+  const activeExecByPlanItem = new Map<
+    string,
+    { id: string; status: string; scheduledAt: string | null }
+  >();
+  for (const ei of execItems) {
+    if (!ei.sourceEntityId) continue;
+    if (!ACTIVE_EXECUTION_STATUSES.has(ei.status)) continue;
+    const prev = activeExecByPlanItem.get(ei.sourceEntityId);
+    // Prefer the most-recently-scheduled active row (ties: keep first).
+    if (
+      !prev ||
+      (ei.scheduledAt &&
+        prev.scheduledAt &&
+        new Date(ei.scheduledAt).getTime() >
+          new Date(prev.scheduledAt).getTime())
+    ) {
+      activeExecByPlanItem.set(ei.sourceEntityId, {
+        id: ei.id,
+        status: ei.status,
+        scheduledAt: ei.scheduledAt ?? null,
+      });
+    }
+  }
+
+  // Canonical schedule display per plan_item, computed once with the
+  // workspace timezone so every card and every "today / tomorrow"
+  // bucket sees the same wall clock.
+  const workspaceTimezone = timezoneLabel ?? "UTC";
+  const serverNow = new Date();
+  const scheduleDisplayByItem = new Map<string, ScheduleDisplay>();
+  for (const it of items) {
+    const exec = activeExecByPlanItem.get(it.id) ?? null;
+    scheduleDisplayByItem.set(
+      it.id,
+      formatScheduleDisplay({
+        planItem: { scheduledAt: it.scheduledAt },
+        executionItem: exec
+          ? { status: exec.status, scheduledAt: exec.scheduledAt }
+          : null,
+        workspaceTimezone,
+        serverNow,
+      }),
+    );
+  }
+
   const pendingCount = items.filter((i) => i.status === "pending_approval")
     .length;
   const counts = items.reduce<Record<string, number>>((acc, it) => {
@@ -172,7 +228,7 @@ export default async function WeeklyPlanPage() {
   };
 
   // ---- Day grouping ----
-  const groups = groupByDay(items);
+  const groups = groupByDay(items, scheduleDisplayByItem, workspaceTimezone);
 
   // ---- Recently published (last 5 successful) ----
   const subredditByItem = new Map<string, string | null>();
@@ -459,6 +515,14 @@ export default async function WeeklyPlanPage() {
                           productId={it.productId}
                           accountId={it.accountId}
                           scheduledAt={it.scheduledAt}
+                          scheduleDisplay={
+                            scheduleDisplayByItem.get(it.id) ??
+                            formatScheduleDisplay({
+                              planItem: { scheduledAt: it.scheduledAt },
+                              workspaceTimezone,
+                              serverNow,
+                            })
+                          }
                           scheduleSource={scheduleSource}
                           status={it.status}
                           riskScore={it.riskScore}
@@ -535,29 +599,69 @@ const BUCKET_ORDER: Record<BucketId, number> = {
   unscheduled: 5,
 };
 
-function bucketize(scheduledAt: string | null, now: Date): BucketId {
+/**
+ * Workspace-zone-aware Y/M/D for an instant. Returns the integer day
+ * stamp (YYYY * 10000 + MM * 100 + DD) so deltas between two instants
+ * collapse to a single integer comparison without re-parsing dates.
+ */
+function workspaceDayStamp(utcIso: string, timezone: string): number {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(utcIso));
+  const get = (type: string): number => {
+    const p = parts.find((x) => x.type === type);
+    return p ? Number(p.value) : 0;
+  };
+  return get("year") * 10000 + get("month") * 100 + get("day");
+}
+
+function bucketize(
+  scheduledAt: string | null,
+  now: Date,
+  timezone: string,
+): BucketId {
   if (!scheduledAt) return "unscheduled";
   const d = new Date(scheduledAt);
   if (Number.isNaN(d.getTime())) return "unscheduled";
-  const startOfToday = new Date(now);
-  startOfToday.setHours(0, 0, 0, 0);
-  const dayMs = 24 * 60 * 60 * 1000;
-  const dayDelta = Math.floor(
-    (d.getTime() - startOfToday.getTime()) / dayMs,
+  const itemStamp = workspaceDayStamp(scheduledAt, timezone);
+  const nowStamp = workspaceDayStamp(now.toISOString(), timezone);
+  if (itemStamp <= nowStamp) return "today";
+  // Tomorrow: derive by walking forward one local day at noon UTC (a
+  // representative instant far from any DST transition window), then
+  // taking the stamp in the workspace zone.
+  const oneDayMs = 24 * 60 * 60 * 1000;
+  const tomorrowStamp = workspaceDayStamp(
+    new Date(now.getTime() + oneDayMs).toISOString(),
+    timezone,
   );
-  if (dayDelta <= 0) return "today";
-  if (dayDelta === 1) return "tomorrow";
-  // Days to next Monday (the start of next week).
-  const todayDow = startOfToday.getDay(); // 0=Sun..6=Sat
-  const daysUntilNextMonday = ((1 + 7 - todayDow) % 7) || 7;
+  if (itemStamp === tomorrowStamp) return "tomorrow";
+  // For "this week" / "next week" we count workspace-local days
+  // between the item and now. With small offsets and DST jumps a 1ms
+  // imprecision is irrelevant — we're only deciding which 7-day
+  // bucket the item lands in.
+  const approxDayDelta = Math.round(
+    (d.getTime() - now.getTime()) / oneDayMs,
+  );
+  // Days to next workspace-local Monday from now.
+  const nowDow = new Date(
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone })
+      .format(now)
+      .toString(),
+  ).getDay();
+  const daysUntilNextMonday = ((1 + 7 - nowDow) % 7) || 7;
   const daysUntilWeekAfter = daysUntilNextMonday + 7;
-  if (dayDelta < daysUntilNextMonday) return "this_week";
-  if (dayDelta < daysUntilWeekAfter) return "next_week";
+  if (approxDayDelta < daysUntilNextMonday) return "this_week";
+  if (approxDayDelta < daysUntilWeekAfter) return "next_week";
   return "later";
 }
 
 function groupByDay(
   items: Awaited<ReturnType<typeof listPlanItems>>,
+  scheduleDisplayByItem: Map<string, ScheduleDisplay>,
+  timezone: string,
 ): DayGroup[] {
   const now = new Date();
   const groups: Record<BucketId, DayGroup> = {
@@ -568,14 +672,21 @@ function groupByDay(
     later: makeGroup("later", "Later", null),
     unscheduled: makeGroup("unscheduled", "Unscheduled", null),
   };
-  for (const it of items) {
-    groups[bucketize(it.scheduledAt, now)].items.push(it);
+  function effectiveOf(itemId: string, fallback: string | null): string | null {
+    const sd = scheduleDisplayByItem.get(itemId);
+    return sd?.effectiveScheduledAt ?? fallback;
   }
-  // Sort items inside each bucket by scheduled time.
+  for (const it of items) {
+    const effective = effectiveOf(it.id, it.scheduledAt);
+    groups[bucketize(effective, now, timezone)].items.push(it);
+  }
+  // Sort items inside each bucket by EFFECTIVE scheduled time.
   for (const g of Object.values(groups)) {
     g.items.sort((a, b) => {
-      const ta = a.scheduledAt ? new Date(a.scheduledAt).getTime() : Infinity;
-      const tb = b.scheduledAt ? new Date(b.scheduledAt).getTime() : Infinity;
+      const ea = effectiveOf(a.id, a.scheduledAt);
+      const eb = effectiveOf(b.id, b.scheduledAt);
+      const ta = ea ? new Date(ea).getTime() : Infinity;
+      const tb = eb ? new Date(eb).getTime() : Infinity;
       return ta - tb;
     });
   }
