@@ -1,4 +1,5 @@
 import "server-only";
+import type { SupabaseClient } from "@supabase/supabase-js";
 /**
  * Bluesky identity-session publish orchestrator.
  *
@@ -68,6 +69,19 @@ import type { PublishOutcome, PublishRequest } from "./publishing-types";
 
 export interface OrchestratorInput {
   request: PublishRequest;
+  /**
+   * Optional Supabase client. Forwarded to every repository call the
+   * orchestrator makes so the cron-triggered scheduler tick (no
+   * operator cookie) can read growth_accounts / platform_connections
+   * under service-role auth. Manual / UI callers omit this and fall
+   * back to the cookie-aware client, which RLS allows for the
+   * operator's own workspace rows.
+   *
+   * The orchestrator itself never directly issues SQL — it threads
+   * this through to the repos and to the helper functions
+   * (markIdentityExpired / markIdentityMismatched).
+   */
+  db?: SupabaseClient;
 }
 
 /**
@@ -87,7 +101,7 @@ export interface OrchestratorInput {
 export async function publishBlueskyForIdentity(
   input: OrchestratorInput,
 ): Promise<PublishOutcome> {
-  const { request } = input;
+  const { request, db } = input;
 
   if (!request.accountId) {
     return publishFail(
@@ -99,7 +113,7 @@ export async function publishBlueskyForIdentity(
   // 1. Identity row.
   let identity;
   try {
-    identity = await getAccountById(request.workspaceId, request.accountId);
+    identity = await getAccountById(request.workspaceId, request.accountId, db);
   } catch {
     return publishFail("missing_account", "Identity not found in workspace.");
   }
@@ -117,6 +131,7 @@ export async function publishBlueskyForIdentity(
     request.workspaceId,
     request.accountId,
     "bluesky" as never,
+    db,
   );
 
   // The identity-session path requires: a row exists, the row has
@@ -163,7 +178,7 @@ export async function publishBlueskyForIdentity(
   const { readEncryptedTokens } = await import(
     "@/repositories/platform-connection-repository"
   );
-  const enc = await readEncryptedTokens(request.workspaceId, conn!.id);
+  const enc = await readEncryptedTokens(request.workspaceId, conn!.id, db);
   if (!enc) {
     return publishFail(
       "session_missing",
@@ -213,6 +228,7 @@ export async function publishBlueskyForIdentity(
       request.accountId,
       conn!.id,
       "Access JWT expired; no refresh token available.",
+      db,
     );
     return publishFail(
       "session_expired",
@@ -227,6 +243,7 @@ export async function publishBlueskyForIdentity(
       request.accountId,
       conn!.id,
       `Refresh failed: ${refreshResult.message}`,
+      db,
     );
     return publishFail(
       "session_expired",
@@ -250,6 +267,7 @@ export async function publishBlueskyForIdentity(
         declared: identity.handle,
         authenticated: refreshResult.handle,
       },
+      db,
     );
     return publishFail(
       "handle_mismatch",
@@ -274,6 +292,7 @@ export async function publishBlueskyForIdentity(
       request.accountId,
       conn!.id,
       `Refreshed but encryption refused: ${encrypted.reason}`,
+      db,
     );
     return publishFail(
       "session_expired",
@@ -286,23 +305,26 @@ export async function publishBlueskyForIdentity(
   // wholesale; this is acceptable here because we're following a
   // successful refresh, not a sign-in flow, and the success-path
   // metadata carries no secrets.
-  await upsertPlatformConnection({
-    workspaceId: request.workspaceId,
-    accountId: request.accountId,
-    platform: "bluesky",
-    providerAccountId: refreshResult.did,
-    handle: refreshResult.handle,
-    displayName: refreshResult.handle,
-    scopes: [],
-    accessTokenEncrypted: encrypted.accessTokenEncrypted,
-    refreshTokenEncrypted: encrypted.refreshTokenEncrypted,
-    expiresAt: encrypted.expiresAt,
-    connectionStatus: "connected",
-    metadata: {
-      verification_method: "atproto.server.refreshSession",
-      last_message: `Session refreshed for ${refreshResult.handle}.`,
+  await upsertPlatformConnection(
+    {
+      workspaceId: request.workspaceId,
+      accountId: request.accountId,
+      platform: "bluesky",
+      providerAccountId: refreshResult.did,
+      handle: refreshResult.handle,
+      displayName: refreshResult.handle,
+      scopes: [],
+      accessTokenEncrypted: encrypted.accessTokenEncrypted,
+      refreshTokenEncrypted: encrypted.refreshTokenEncrypted,
+      expiresAt: encrypted.expiresAt,
+      connectionStatus: "connected",
+      metadata: {
+        verification_method: "atproto.server.refreshSession",
+        last_message: `Session refreshed for ${refreshResult.handle}.`,
+      },
     },
-  });
+    db,
+  );
 
   // 7. Retry publish exactly once with the fresh access JWT. The
   // pure publisher receives the new accessJwt; no recursion, no
@@ -325,27 +347,34 @@ async function markIdentityExpired(
   accountId: string,
   connectionId: string,
   message: string,
+  db: SupabaseClient | undefined,
 ): Promise<void> {
   try {
-    await markConnectionStatus({
-      workspaceId,
-      connectionId,
-      status: "expired",
-      healthStatus: "expired",
-      message,
-      // Failed refresh is a "session-dead" signal; drop any prior
-      // handle_mismatch payload that no longer reflects reality.
-      clearMetadataKeys: ["handle_mismatch"],
-    });
+    await markConnectionStatus(
+      {
+        workspaceId,
+        connectionId,
+        status: "expired",
+        healthStatus: "expired",
+        message,
+        // Failed refresh is a "session-dead" signal; drop any prior
+        // handle_mismatch payload that no longer reflects reality.
+        clearMetadataKeys: ["handle_mismatch"],
+      },
+      db,
+    );
   } catch (err) {
     console.error("[bluesky-orch] markConnectionStatus expired failed", err);
   }
   try {
-    await setAccountConnectionStatus({
-      workspaceId,
-      accountId,
-      connectionStatus: "expired",
-    });
+    await setAccountConnectionStatus(
+      {
+        workspaceId,
+        accountId,
+        connectionStatus: "expired",
+      },
+      db,
+    );
   } catch (err) {
     console.error(
       "[bluesky-orch] growth_accounts mirror expired failed",
@@ -359,6 +388,7 @@ async function markIdentityMismatched(
   accountId: string,
   connectionId: string,
   mismatch: { declared: string | null; authenticated: string },
+  db: SupabaseClient | undefined,
 ): Promise<void> {
   try {
     // markConnectionStatus's metadata model is wholesale-replace
@@ -369,40 +399,46 @@ async function markIdentityMismatched(
     const { readEncryptedTokens } = await import(
       "@/repositories/platform-connection-repository"
     );
-    const enc = await readEncryptedTokens(workspaceId, connectionId);
-    await upsertPlatformConnection({
-      workspaceId,
-      accountId,
-      platform: "bluesky",
-      providerAccountId: null,
-      handle: mismatch.authenticated,
-      displayName: mismatch.authenticated,
-      scopes: [],
-      // Persist nothing for tokens — we won't publish under the
-      // wrong account.
-      accessTokenEncrypted: null,
-      refreshTokenEncrypted: enc?.refreshTokenEncrypted ?? null,
-      expiresAt: null,
-      connectionStatus: "error",
-      metadata: {
-        verification_method: "atproto.server.refreshSession",
-        last_message: `Refreshed session belongs to ${mismatch.authenticated}, but identity expected ${mismatch.declared ?? "(unknown)"}.`,
-        handle_mismatch: {
-          declared: mismatch.declared,
-          authenticated: mismatch.authenticated,
-          observedAt: new Date().toISOString(),
+    const enc = await readEncryptedTokens(workspaceId, connectionId, db);
+    await upsertPlatformConnection(
+      {
+        workspaceId,
+        accountId,
+        platform: "bluesky",
+        providerAccountId: null,
+        handle: mismatch.authenticated,
+        displayName: mismatch.authenticated,
+        scopes: [],
+        // Persist nothing for tokens — we won't publish under the
+        // wrong account.
+        accessTokenEncrypted: null,
+        refreshTokenEncrypted: enc?.refreshTokenEncrypted ?? null,
+        expiresAt: null,
+        connectionStatus: "error",
+        metadata: {
+          verification_method: "atproto.server.refreshSession",
+          last_message: `Refreshed session belongs to ${mismatch.authenticated}, but identity expected ${mismatch.declared ?? "(unknown)"}.`,
+          handle_mismatch: {
+            declared: mismatch.declared,
+            authenticated: mismatch.authenticated,
+            observedAt: new Date().toISOString(),
+          },
         },
       },
-    });
+      db,
+    );
   } catch (err) {
     console.error("[bluesky-orch] mark mismatched failed", err);
   }
   try {
-    await setAccountConnectionStatus({
-      workspaceId,
-      accountId,
-      connectionStatus: "error",
-    });
+    await setAccountConnectionStatus(
+      {
+        workspaceId,
+        accountId,
+        connectionStatus: "error",
+      },
+      db,
+    );
   } catch (err) {
     console.error(
       "[bluesky-orch] growth_accounts mirror error failed",

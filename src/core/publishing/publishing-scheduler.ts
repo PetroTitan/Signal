@@ -436,6 +436,12 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
     },
     accessToken,
     target,
+    // Thread the service-role client down so the Bluesky orchestrator
+    // can re-read growth_accounts / platform_connections under cron
+    // runtime (no operator cookie). Other adapters ignore `db` — they
+    // publish via env credentials or HTTP fetch. See PR commit message
+    // for the RLS root cause.
+    db: supabase as never,
   });
 
   await applyOutcome({

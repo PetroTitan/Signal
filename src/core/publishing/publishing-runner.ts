@@ -12,6 +12,7 @@ import "server-only";
  * to discard it after the call.
  */
 
+import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   evaluatePublishingPolicy,
   type PolicyContext,
@@ -40,6 +41,19 @@ export interface RunnerInput {
   accessToken: string | null;
   /** Target on the platform (e.g. subreddit). */
   target: string | null;
+  /**
+   * Optional Supabase client to thread down to platform adapters that
+   * need to re-read identity / connection rows during the publish call
+   * (currently only Bluesky). The scheduler tick runs without an
+   * operator cookie, so RLS would otherwise hide growth_accounts from
+   * the orchestrator's identity lookup. Manual publish callers leave
+   * this undefined — the orchestrator falls back to the cookie-aware
+   * client and RLS allows the operator's own workspace rows.
+   *
+   * Other platform cases ignore this field — they publish via env
+   * credentials or HTTP fetch without further Supabase reads.
+   */
+  db?: SupabaseClient;
 }
 
 export async function runPublish(input: RunnerInput): Promise<PublishOutcome> {
@@ -91,7 +105,10 @@ export async function runPublish(input: RunnerInput): Promise<PublishOutcome> {
       // session AND (b) BLUESKY_LEGACY_FALLBACK is explicitly
       // enabled. Default behaviour is fail-safe with
       // session_missing.
-      return publishBlueskyForIdentity({ request: input.request });
+      return publishBlueskyForIdentity({
+        request: input.request,
+        db: input.db,
+      });
     }
     case "telegram": {
       const creds = readTelegramCredentials();
