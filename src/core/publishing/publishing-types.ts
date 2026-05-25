@@ -64,6 +64,11 @@ export const PUBLISH_REASON_CODES = [
   "handle_mismatch",
   "missing_account",
   "platform_mismatch",
+  // Synthesized by the scheduler when publishOne throws before
+  // applyOutcome can persist a real outcome. Guarantees the
+  // execution_item moves out of "scheduled" even on unexpected
+  // exceptions.
+  "scheduler_exception",
 ] as const;
 export type PublishReasonCode = (typeof PUBLISH_REASON_CODES)[number];
 
