@@ -29,6 +29,39 @@ import type {
 } from "./publishing-types";
 
 /**
+ * Map a publish outcome to the next `execution_items.status`.
+ *
+ * Two classes of skip:
+ *
+ *   - TRANSIENT (e.g. `scheduled_in_future`): the gate is time-based
+ *     and will clear on its own. Leave the row in `"scheduled"` so
+ *     the next tick re-fetches it.
+ *
+ *   - STRUCTURAL (e.g. `execution_mode_dry_run`): the gate is a
+ *     workspace configuration the operator must change. Transition
+ *     the row to `"blocked"` so the UI surfaces the situation and
+ *     the operator can act. Leaving these stuck on `"scheduled"`
+ *     forever is the silent-skip failure mode the user reported.
+ *
+ * Pure. No I/O. Exported so the scheduler test can pin behavior
+ * exhaustively.
+ */
+export function nextExecutionStatusForOutcome(
+  outcome: PublishOutcome,
+): "completed" | "scheduled" | "blocked" | "failed" {
+  if (outcome.status === "published") return "completed";
+  if (outcome.status === "blocked") return "blocked";
+  if (outcome.status === "failed") return "failed";
+  if (outcome.status === "skipped") {
+    if (outcome.reasonCode === "scheduled_in_future") return "scheduled";
+    return "blocked";
+  }
+  // outcome.status === "not_implemented" or any future addition →
+  // treat as failed so the row exits "scheduled".
+  return "failed";
+}
+
+/**
  * Platforms the scheduler tick can fully drive end-to-end (auth +
  * publish + history write).
  *
@@ -168,12 +201,40 @@ export async function tickOnce(
       continue;
     }
 
-    const outcome = await publishOne({
-      supabase,
-      nowIso,
-      item: raw,
-      platform,
-    });
+    // Wrap publishOne in try/catch so a thrown exception cannot
+    // leave the item stuck at `scheduled` forever. The user's
+    // invariant: "every scheduled item picked by scheduler must
+    // result in a status transition." We synthesize a `failed`
+    // outcome with reasonCode `scheduler_exception` and let
+    // applyOutcome persist it.
+    let outcome: PublishOutcome;
+    try {
+      outcome = await publishOne({
+        supabase,
+        nowIso,
+        item: raw,
+        platform,
+      });
+    } catch (err) {
+      outcome = {
+        status: "failed",
+        reasonCode: "scheduler_exception",
+        reasonDetail:
+          err instanceof Error
+            ? `Scheduler threw before publish completed: ${err.message}`
+            : "Scheduler threw before publish completed.",
+        externalId: null,
+        externalUrl: null,
+        metadata: {},
+      };
+      // Persist via the same outcome path used on the happy path —
+      // guarantees execution_items.status moves out of "scheduled",
+      // execution_logs gets a row, and plan_item.status mirrors to
+      // "paused". No token leakage (reasonDetail comes from
+      // err.message; the publisher functions don't put secrets in
+      // exception messages).
+      await applyOutcome({ supabase, item: raw, outcome });
+    }
     results.push({
       execution_item_id: raw.id,
       workspace_id: raw.workspace_id,
@@ -350,14 +411,7 @@ interface ApplyOutcomeInput {
 
 async function applyOutcome(input: ApplyOutcomeInput): Promise<void> {
   const { supabase, item, outcome } = input;
-  const nextStatus =
-    outcome.status === "published"
-      ? "completed"
-      : outcome.status === "skipped"
-      ? "scheduled" // remain scheduled; the scheduler will retry next tick
-      : outcome.status === "blocked"
-      ? "blocked"
-      : "failed";
+  const nextStatus = nextExecutionStatusForOutcome(outcome);
   await supabase
     .from("execution_items")
     .update({
@@ -377,17 +431,22 @@ async function applyOutcome(input: ApplyOutcomeInput): Promise<void> {
     .eq("id", item.id);
 
   // Mirror status to the source plan item if known.
+  //
+  // Mirror lookup is driven by the execution_item's resolved
+  // next-status (nextStatus, above) rather than the raw outcome:
+  // a structural skip becomes execution_item.status='blocked' and
+  // its plan_item moves to 'paused' to match. A transient skip
+  // (e.g. scheduled_in_future) leaves the plan_item alone — the
+  // execution_item remains 'scheduled' and the next tick retries.
   const planItemId =
     (item.metadata as { plan_item_id?: string }).plan_item_id ?? null;
   if (planItemId) {
     const planStatus =
-      outcome.status === "published"
+      nextStatus === "completed"
         ? "published"
-        : outcome.status === "blocked"
-        ? "paused"
-        : outcome.status === "failed"
-        ? "paused"
-        : null; // skipped → leave unchanged
+        : nextStatus === "blocked" || nextStatus === "failed"
+          ? "paused"
+          : null; // "scheduled" → no plan_item change
     if (planStatus) {
       await supabase
         .from("weekly_plan_items")
