@@ -4,6 +4,7 @@ import {
   ACCOUNTS_PREPARE_PLATFORMS,
   MULTIWEEK_MAX_TOTAL_ITEMS,
   MULTIWEEK_MAX_WEEKS,
+  SCHEDULE_MIN_LEAD_MS,
   VOICE_PROFILE_MAX_CHARS,
   WEEKLY_PLAN_MAX_ITEMS,
   parseAccountsPrepare,
@@ -11,6 +12,7 @@ import {
   parseGenerateMultiweekPlan,
   parseGenerateWeeklyPlan,
   parseIdentitiesUpdate,
+  parseSchedulePublish,
 } from "./schemas";
 
 const VALID_UUID = "11111111-2222-3333-4444-555555555555";
@@ -421,5 +423,104 @@ describe("parseIdentitiesUpdate", () => {
     });
     expect(cleared.ok).toBe(true);
     if (cleared.ok) expect(cleared.value.voice_profile).toBeNull();
+  });
+});
+
+// =====================================================================
+// parseSchedulePublish
+// =====================================================================
+
+describe("parseSchedulePublish", () => {
+  const future = () =>
+    new Date(Date.now() + SCHEDULE_MIN_LEAD_MS + 60_000).toISOString();
+
+  it("accepts a valid request", () => {
+    const result = parseSchedulePublish({
+      plan_item_id: VALID_UUID,
+      scheduled_at: future(),
+      confirm_schedule: true,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.plan_item_id).toBe(VALID_UUID);
+      expect(result.value.confirm_schedule).toBe(true);
+      expect(typeof result.value.scheduled_at).toBe("string");
+    }
+  });
+
+  it("rejects missing / invalid plan_item_id", () => {
+    expect(
+      parseSchedulePublish({ scheduled_at: future(), confirm_schedule: true })
+        .ok,
+    ).toBe(false);
+    expect(
+      parseSchedulePublish({
+        plan_item_id: "not-a-uuid",
+        scheduled_at: future(),
+        confirm_schedule: true,
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("rejects missing scheduled_at", () => {
+    const result = parseSchedulePublish({
+      plan_item_id: VALID_UUID,
+      confirm_schedule: true,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors).toContain("scheduled_at_required");
+  });
+
+  it("rejects malformed scheduled_at", () => {
+    const result = parseSchedulePublish({
+      plan_item_id: VALID_UUID,
+      scheduled_at: "not-a-date",
+      confirm_schedule: true,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors).toContain("scheduled_at_invalid");
+  });
+
+  it("rejects scheduled_at in the past", () => {
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const result = parseSchedulePublish({
+      plan_item_id: VALID_UUID,
+      scheduled_at: past,
+      confirm_schedule: true,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors).toContain("scheduled_at_too_soon");
+  });
+
+  it("rejects scheduled_at less than the 2-minute lead time", () => {
+    const tooSoon = new Date(Date.now() + 30_000).toISOString();
+    const result = parseSchedulePublish({
+      plan_item_id: VALID_UUID,
+      scheduled_at: tooSoon,
+      confirm_schedule: true,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors).toContain("scheduled_at_too_soon");
+  });
+
+  it("rejects confirm_schedule = false", () => {
+    const result = parseSchedulePublish({
+      plan_item_id: VALID_UUID,
+      scheduled_at: future(),
+      confirm_schedule: false,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok)
+      expect(result.errors).toContain("confirm_schedule_must_be_true");
+  });
+
+  it("rejects confirm_schedule missing entirely", () => {
+    const result = parseSchedulePublish({
+      plan_item_id: VALID_UUID,
+      scheduled_at: future(),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok)
+      expect(result.errors).toContain("confirm_schedule_must_be_true");
   });
 });

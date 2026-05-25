@@ -897,6 +897,50 @@ export function parseGenerateMultiweekPlan(
   };
 }
 
+// ── signal.schedule_publish ───────────────────────────────────────
+//
+// Minimum lead time between the API call and the requested
+// publish time. The Vercel cron tick interval is 5 minutes; a
+// 2-minute floor gives the scheduler enough headroom that the
+// scheduled timestamp is always in the past by the next tick.
+
+export const SCHEDULE_MIN_LEAD_MS = 2 * 60 * 1000;
+
+export interface SchedulePublishArgs {
+  plan_item_id: string;
+  scheduled_at: string;
+  confirm_schedule: true;
+}
+
+export function parseSchedulePublish(
+  input: unknown,
+): Parse<SchedulePublishArgs> {
+  if (!isObject(input)) return { ok: false, errors: ["expected_object"] };
+  const errors: string[] = [];
+  if (!str(input.plan_item_id) || !isUuidLike(input.plan_item_id))
+    errors.push("plan_item_id_invalid");
+  if (!str(input.scheduled_at)) {
+    errors.push("scheduled_at_required");
+  } else {
+    const t = Date.parse(input.scheduled_at);
+    if (Number.isNaN(t)) errors.push("scheduled_at_invalid");
+    else if (t - Date.now() < SCHEDULE_MIN_LEAD_MS)
+      errors.push("scheduled_at_too_soon");
+  }
+  if (input.confirm_schedule !== true) {
+    errors.push("confirm_schedule_must_be_true");
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  return {
+    ok: true,
+    value: {
+      plan_item_id: input.plan_item_id as string,
+      scheduled_at: new Date(input.scheduled_at as string).toISOString(),
+      confirm_schedule: true,
+    },
+  };
+}
+
 // ── signal.identities.update ──────────────────────────────────────
 
 export interface IdentitiesUpdateArgs {

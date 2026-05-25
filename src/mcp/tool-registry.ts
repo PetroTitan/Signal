@@ -15,6 +15,7 @@ import {
   parseGenerateMultiweekPlan,
   parseGenerateWeeklyPlan,
   parseIdentitiesUpdate,
+  parseSchedulePublish,
   parseImportsPrepareMapping,
   parseProductsPrepare,
   parseReportsSubmit,
@@ -48,6 +49,7 @@ import {
   generateWeeklyPlanTool,
   identitiesUpdateTool,
 } from "./tools/planning-tools";
+import { schedulePublishTool } from "./tools/schedule-tools";
 import {
   executionAuthorizeItem,
   executionDryRun,
@@ -422,6 +424,26 @@ export const TOOLS: ToolDefinition[] = [
     touchesProduction: false,
     parseArgs: parseAccountsPrepare,
     handler: wrap(accountsPrepare),
+  },
+  // Scheduling --------------------------------------------------------
+  //
+  // Schedules an already-approved plan item for future publishing. The
+  // existing Signal scheduler (/api/scheduler/tick, gated by
+  // SCHEDULER_TICK_TOKEN; cron'd via vercel.json every 5 min) reads
+  // execution_items in status='scheduled' with scheduled_at <= now
+  // and runs runPublish. This tool only writes that row; it does NOT
+  // call any platform publish API.
+  {
+    name: "signal.schedule_publish",
+    description:
+      "Schedule an already-approved plan item for future publishing. Refuses anything not in status='approved'. Bluesky only for now — dev.to / Telegram / Reddit / Hashnode are blocked until their publish paths are verified. The scheduled item is picked up by the existing /api/scheduler/tick cron; this tool does NOT call any platform API itself.",
+    requiredScopes: ["weekly_plans:write_pending", "execution:schedule"],
+    riskLevel: "remote_write",
+    approvalMode: "approval_required",
+    writesDatabase: true,
+    touchesProduction: false,
+    parseArgs: parseSchedulePublish,
+    handler: wrap(schedulePublishTool),
   },
 ];
 

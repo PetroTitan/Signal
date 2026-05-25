@@ -2,11 +2,14 @@
 
 import { useFormState, useFormStatus } from "react-dom";
 import {
+  approveAndHoldAction,
   approveWeeklyPlanAction,
+  type ApproveAndHoldResult,
   type ApproveWeeklyPlanResult,
 } from "./_actions";
 
-const initial: ApproveWeeklyPlanResult = { ok: false, error: "" };
+const initialApprove: ApproveWeeklyPlanResult = { ok: false, error: "" };
+const initialHold: ApproveAndHoldResult = { ok: false, error: "" };
 
 interface ApprovePlanFormProps {
   planId: string;
@@ -14,8 +17,16 @@ interface ApprovePlanFormProps {
 }
 
 export function ApprovePlanForm({ planId, pendingCount }: ApprovePlanFormProps) {
-  const [state, formAction] = useFormState(approveWeeklyPlanAction, initial);
-  const safe = state ?? initial;
+  const [approveState, approveAction] = useFormState(
+    approveWeeklyPlanAction,
+    initialApprove,
+  );
+  const [holdState, holdActionFn] = useFormState(
+    approveAndHoldAction,
+    initialHold,
+  );
+  const safeApprove = approveState ?? initialApprove;
+  const safeHold = holdState ?? initialHold;
 
   return (
     <section className="card p-5">
@@ -23,56 +34,113 @@ export function ApprovePlanForm({ planId, pendingCount }: ApprovePlanFormProps) 
         Approve this week
       </h2>
       <p className="text-xs text-ink-600 mt-1 leading-relaxed">
-        Approves all {pendingCount} pending post
-        {pendingCount === 1 ? "" : "s"} for this week. Each post goes out at
-        the time you scheduled it — Signal won&apos;t publish anything before
-        then, and never outside the active publishing scope.
+        Two ways to approve {pendingCount} pending post
+        {pendingCount === 1 ? "" : "s"}:
       </p>
-      <form action={formAction} className="mt-4 space-y-3">
-        <input type="hidden" name="plan_id" value={planId} />
-        <SubmitButton />
+      <ul className="text-xs text-ink-600 leading-relaxed mt-2 space-y-1 list-disc pl-4">
+        <li>
+          <strong>Approve weekly plan</strong> — Signal schedules every post
+          at the time you picked. The scheduler publishes them later.
+        </li>
+        <li>
+          <strong>Approve &amp; hold</strong> — items are marked approved but
+          NOT scheduled. Useful when Claude (via Signal MCP) will pick the
+          publish time after the approval.
+        </li>
+      </ul>
 
-        {safe.ok ? (
-          <div
-            role="status"
-            className="text-xs leading-relaxed rounded-md px-3 py-2 bg-emerald-50 text-emerald-800 space-y-1"
-          >
-            <div>
-              Approved {safe.itemsApproved} post
-              {safe.itemsApproved === 1 ? "" : "s"}. {safe.executionItemsCreated}{" "}
-              {safe.executionItemsCreated === 1 ? "is" : "are"} queued for
-              publishing.
+      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+        <form action={approveAction} className="space-y-2">
+          <input type="hidden" name="plan_id" value={planId} />
+          <ApproveButton />
+          {safeApprove.ok ? (
+            <div
+              role="status"
+              className="text-xs leading-relaxed rounded-md px-3 py-2 bg-emerald-50 text-emerald-800 space-y-1"
+            >
+              <div>
+                Approved {safeApprove.itemsApproved} post
+                {safeApprove.itemsApproved === 1 ? "" : "s"}.{" "}
+                {safeApprove.executionItemsCreated}{" "}
+                {safeApprove.executionItemsCreated === 1 ? "is" : "are"} queued
+                for publishing.
+              </div>
+              {safeApprove.warnings.length > 0 ? (
+                <ul className="list-disc list-inside text-amber-800 mt-1">
+                  {safeApprove.warnings.map((w: string, i: number) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
+              ) : null}
             </div>
-            {safe.warnings.length > 0 ? (
-              <ul className="list-disc list-inside text-amber-800 mt-1">
-                {safe.warnings.map((w: string, i: number) => (
-                  <li key={i}>{w}</li>
-                ))}
-              </ul>
-            ) : null}
-          </div>
-        ) : safe.error ? (
-          <div
-            role="alert"
-            className="text-xs leading-relaxed rounded-md px-3 py-2 bg-amber-50 text-amber-800"
-          >
-            {safe.error}
-          </div>
-        ) : null}
-      </form>
+          ) : safeApprove.error ? (
+            <div
+              role="alert"
+              className="text-xs leading-relaxed rounded-md px-3 py-2 bg-amber-50 text-amber-800"
+            >
+              {safeApprove.error}
+            </div>
+          ) : null}
+        </form>
+
+        <form action={holdActionFn} className="space-y-2">
+          <input type="hidden" name="plan_id" value={planId} />
+          <HoldButton />
+          {safeHold.ok ? (
+            <div
+              role="status"
+              data-testid="approve-and-hold-result"
+              className="text-xs leading-relaxed rounded-md px-3 py-2 bg-signal-50 text-signal-800 space-y-1"
+            >
+              <div>
+                Approved. Waiting for scheduling. {safeHold.itemsApproved} item
+                {safeHold.itemsApproved === 1 ? "" : "s"} held for an operator
+                or MCP scheduler to set a publish time.
+              </div>
+              {safeHold.warnings.length > 0 ? (
+                <ul className="list-disc list-inside text-amber-800 mt-1">
+                  {safeHold.warnings.map((w: string, i: number) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : safeHold.error ? (
+            <div
+              role="alert"
+              className="text-xs leading-relaxed rounded-md px-3 py-2 bg-amber-50 text-amber-800"
+            >
+              {safeHold.error}
+            </div>
+          ) : null}
+        </form>
+      </div>
     </section>
   );
 }
 
-function SubmitButton() {
+function ApproveButton() {
   const { pending } = useFormStatus();
   return (
     <button
       type="submit"
       disabled={pending}
-      className="btn-primary disabled:opacity-60"
+      className="btn-primary disabled:opacity-60 w-full"
     >
       {pending ? "Approving…" : "Approve weekly plan"}
+    </button>
+  );
+}
+
+function HoldButton() {
+  const { pending } = useFormStatus();
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      className="btn-secondary disabled:opacity-60 w-full"
+    >
+      {pending ? "Approving…" : "Approve & hold for scheduling"}
     </button>
   );
 }

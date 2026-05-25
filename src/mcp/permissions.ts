@@ -28,6 +28,7 @@ export const ALLOWED_SCOPES = [
   "contracts:read",
   "execution:read",
   "execution:dry_run",
+  "execution:schedule",
   "verification:run",
   "imports:prepare",
   "reports:write",
@@ -54,6 +55,8 @@ export const SCOPE_LABELS: Record<AllowedScope, string> = {
   "contracts:read": "Read active weekly contract",
   "execution:read": "Read execution queues + logs",
   "execution:dry_run": "Run execution dry-run (no external calls)",
+  "execution:schedule":
+    "Schedule operator-approved plan items for future publishing (no publish call)",
   "verification:run": "Run verification checks",
   "imports:prepare": "Submit import mapping requests",
   "reports:write": "Submit operator-side reports",
