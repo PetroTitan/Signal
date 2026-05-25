@@ -11,6 +11,7 @@ import {
   creativeReadinessReason,
   listCreativesForItems,
 } from "@/repositories/weekly-plan-creative-repository";
+import { getActiveContract } from "@/repositories/weekly-contract-repository";
 import { listExecutionItemsByPlanItemIds } from "@/repositories/execution-item-repository";
 import { listRecentPublishes } from "@/repositories/publish-history-repository";
 import { listPlatformConnections } from "@/repositories/platform-connection-repository";
@@ -78,15 +79,17 @@ export default async function WeeklyPlanPage() {
   const timezoneLabel =
     (wsSettings as { timezone?: string | null } | null)?.timezone ?? null;
 
-  const [plan, products, accounts, recentPublishes, connections] =
+  const [plan, products, accounts, recentPublishes, connections, activeContract] =
     await Promise.all([
       getCurrentWeeklyPlan(workspaceId),
       listProducts(workspaceId),
       listAccounts(workspaceId),
       listRecentPublishes(workspaceId, 30),
       listPlatformConnections(workspaceId),
+      getActiveContract(workspaceId),
     ]);
   const redditBlocked = isRedditOauthBlocked();
+  const hasActiveContract = activeContract !== null;
 
   const items = plan ? await listPlanItems(workspaceId, plan.id) : [];
 
@@ -467,6 +470,7 @@ export default async function WeeklyPlanPage() {
                           products={productOptions}
                           accounts={accountOptions}
                           allowedSubreddits={allowedSubreddits}
+                          hasActiveContract={hasActiveContract}
                           executionItemId={exec?.id ?? null}
                           executionItemStatus={exec?.status ?? null}
                           aiAssistedKind={deriveAiAssistedKind(

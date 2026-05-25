@@ -35,8 +35,9 @@ export function ApprovePlanForm({ planId, pendingCount }: ApprovePlanFormProps) 
       </h2>
       <p className="text-xs text-ink-600 mt-1 leading-relaxed">
         Two bulk ways to approve {pendingCount} pending post
-        {pendingCount === 1 ? "" : "s"} at once. You can also approve
-        individual posts from each card below.
+        {pendingCount === 1 ? "" : "s"} at once. Bulk approval requires
+        an active weekly contract. Individual posts can still be
+        approved &amp; held without one — use the buttons on each card.
       </p>
       <ul className="text-xs text-ink-600 leading-relaxed mt-2 space-y-1 list-disc pl-4">
         <li>

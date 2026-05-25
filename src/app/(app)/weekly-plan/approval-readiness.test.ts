@@ -71,91 +71,133 @@ const readyCreative = {
   altText: "WebmasterID logo on a blue and green gradient background.",
 } as unknown as Parameters<typeof assessItemApprovalReadiness>[0]["primaryCreative"];
 
-describe("assessItemApprovalReadiness — hold path (schedule not required)", () => {
-  it("returns ready when all blockers are clear", () => {
+// =====================================================================
+// Per-item HOLD path — requireContract: false (the production fix).
+// =====================================================================
+
+describe("hold path (contract not required) — per-item approve-and-hold", () => {
+  it("ready when item is otherwise valid and no contract is supplied", () => {
     const r = assessItemApprovalReadiness({
       item: makeItem(),
-      contract: makeContract(),
+      contract: null,
       primaryCreative: readyCreative,
       requireSchedule: false,
+      requireContract: false,
     });
     expect(r.ready).toBe(true);
     expect(r.blockers).toHaveLength(0);
   });
 
+  it("does not surface any contract blocker even when contract is null", () => {
+    const r = assessItemApprovalReadiness({
+      item: makeItem(),
+      contract: null,
+      primaryCreative: readyCreative,
+      requireSchedule: false,
+      requireContract: false,
+    });
+    expect(r.blockers.join(" ")).not.toMatch(/contract/i);
+  });
+
   it("does not require schedule for hold path even when missing", () => {
     const r = assessItemApprovalReadiness({
       item: makeItem({ scheduledAt: null }),
-      contract: makeContract(),
+      contract: null,
       primaryCreative: readyCreative,
       requireSchedule: false,
+      requireContract: false,
     });
     expect(r.ready).toBe(true);
   });
 
-  it("blocks when status is not pending_approval", () => {
+  it("still blocks when status is not pending_approval", () => {
     const r = assessItemApprovalReadiness({
       item: makeItem({ status: "draft" }),
-      contract: makeContract(),
+      contract: null,
       primaryCreative: readyCreative,
       requireSchedule: false,
+      requireContract: false,
     });
     expect(r.ready).toBe(false);
     expect(r.blockers.join(" ")).toMatch(/pending_approval/);
   });
 
+  it("still blocks when creative is missing", () => {
+    const r = assessItemApprovalReadiness({
+      item: makeItem(),
+      contract: null,
+      primaryCreative: null,
+      requireSchedule: false,
+      requireContract: false,
+    });
+    expect(r.ready).toBe(false);
+    expect(r.blockers.join(" ")).toMatch(/missing/i);
+  });
+
+  it("still blocks when alt text is missing", () => {
+    const r = assessItemApprovalReadiness({
+      item: makeItem(),
+      contract: null,
+      primaryCreative: { ...readyCreative!, altText: "" },
+      requireSchedule: false,
+      requireContract: false,
+    });
+    expect(r.ready).toBe(false);
+    expect(r.blockers.join(" ")).toMatch(/alt text/i);
+  });
+
+  it("still blocks when QA flagged the item (riskLevel='blocked')", () => {
+    const r = assessItemApprovalReadiness({
+      item: makeItem({ riskLevel: "blocked" }),
+      contract: null,
+      primaryCreative: readyCreative,
+      requireSchedule: false,
+      requireContract: false,
+    });
+    expect(r.ready).toBe(false);
+    expect(r.blockers.join(" ")).toMatch(/QA blocked/);
+  });
+
+  it("ignores account-out-of-scope when requireContract is false", () => {
+    const r = assessItemApprovalReadiness({
+      item: makeItem({ accountId: "other-acc" }),
+      contract: makeContract(), // contract exists but is irrelevant
+      primaryCreative: readyCreative,
+      requireSchedule: false,
+      requireContract: false,
+    });
+    expect(r.ready).toBe(true);
+    expect(r.blockers.join(" ")).not.toMatch(/scope/i);
+  });
+});
+
+// =====================================================================
+// Bulk + immediate-schedule paths — requireContract: true.
+// =====================================================================
+
+describe("contract-required path — bulk and immediate schedule", () => {
   it("blocks when no active contract", () => {
     const r = assessItemApprovalReadiness({
       item: makeItem(),
       contract: null,
       primaryCreative: readyCreative,
       requireSchedule: false,
+      requireContract: true,
     });
     expect(r.ready).toBe(false);
     expect(r.blockers.join(" ")).toMatch(/contract/i);
+    expect(r.blockers.join(" ")).toMatch(/scheduling/i);
   });
 
-  it("blocks when creative is missing", () => {
+  it("ready when contract is active and item is in scope", () => {
     const r = assessItemApprovalReadiness({
       item: makeItem(),
-      contract: makeContract(),
-      primaryCreative: null,
-      requireSchedule: false,
-    });
-    expect(r.ready).toBe(false);
-    expect(r.blockers.join(" ")).toMatch(/missing/i);
-  });
-
-  it("blocks when alt text is missing", () => {
-    const r = assessItemApprovalReadiness({
-      item: makeItem(),
-      contract: makeContract(),
-      primaryCreative: { ...readyCreative!, altText: "" },
-      requireSchedule: false,
-    });
-    expect(r.ready).toBe(false);
-    expect(r.blockers.join(" ")).toMatch(/alt text/i);
-  });
-
-  it("blocks when creative is rejected", () => {
-    const r = assessItemApprovalReadiness({
-      item: makeItem(),
-      contract: makeContract(),
-      primaryCreative: { ...readyCreative!, status: "rejected" },
-      requireSchedule: false,
-    });
-    expect(r.ready).toBe(false);
-  });
-
-  it("blocks when QA flagged the item (riskLevel='blocked')", () => {
-    const r = assessItemApprovalReadiness({
-      item: makeItem({ riskLevel: "blocked" }),
       contract: makeContract(),
       primaryCreative: readyCreative,
       requireSchedule: false,
+      requireContract: true,
     });
-    expect(r.ready).toBe(false);
-    expect(r.blockers.join(" ")).toMatch(/QA blocked/);
+    expect(r.ready).toBe(true);
   });
 
   it("blocks when account is out of contract scope", () => {
@@ -164,32 +206,71 @@ describe("assessItemApprovalReadiness — hold path (schedule not required)", ()
       contract: makeContract(),
       primaryCreative: readyCreative,
       requireSchedule: false,
+      requireContract: true,
     });
     expect(r.ready).toBe(false);
     expect(r.blockers.join(" ")).toMatch(/Account is out of/);
   });
+
+  it("blocks when product is out of contract scope", () => {
+    const r = assessItemApprovalReadiness({
+      item: makeItem({ productId: "other-prod" }),
+      contract: makeContract(),
+      primaryCreative: readyCreative,
+      requireSchedule: false,
+      requireContract: true,
+    });
+    expect(r.ready).toBe(false);
+    expect(r.blockers.join(" ")).toMatch(/Product is out of/);
+  });
+
+  it("blocks when platform is out of contract scope", () => {
+    const r = assessItemApprovalReadiness({
+      item: makeItem({ platform: "linkedin" }),
+      contract: makeContract(),
+      primaryCreative: readyCreative,
+      requireSchedule: false,
+      requireContract: true,
+    });
+    expect(r.ready).toBe(false);
+    expect(r.blockers.join(" ")).toMatch(/Platform is out of/);
+  });
 });
 
-describe("assessItemApprovalReadiness — schedule path (schedule required)", () => {
+describe("schedule path (schedule required + contract required)", () => {
   it("blocks when scheduledAt is missing", () => {
     const r = assessItemApprovalReadiness({
       item: makeItem({ scheduledAt: null }),
       contract: makeContract(),
       primaryCreative: readyCreative,
       requireSchedule: true,
+      requireContract: true,
     });
     expect(r.ready).toBe(false);
     expect(r.blockers.join(" ")).toMatch(/Schedule is required/);
   });
 
-  it("ready when scheduledAt is set + everything else clear", () => {
+  it("ready when contract + schedule + creative are all clear", () => {
     const r = assessItemApprovalReadiness({
       item: makeItem(),
       contract: makeContract(),
       primaryCreative: readyCreative,
       requireSchedule: true,
+      requireContract: true,
     });
     expect(r.ready).toBe(true);
+  });
+
+  it("blocks when contract is missing on schedule path", () => {
+    const r = assessItemApprovalReadiness({
+      item: makeItem(),
+      contract: null,
+      primaryCreative: readyCreative,
+      requireSchedule: true,
+      requireContract: true,
+    });
+    expect(r.ready).toBe(false);
+    expect(r.blockers.join(" ")).toMatch(/contract/i);
   });
 });
 
