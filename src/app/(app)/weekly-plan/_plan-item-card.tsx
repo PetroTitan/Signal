@@ -25,6 +25,8 @@ import {
   FounderComposeSheet,
   type FounderComposeSheetDefaults,
 } from "@/components/founder-compose/founder-compose-sheet";
+import { MiniPreview } from "@/components/platform-preview/MiniPreview";
+import { asPreviewPlatform } from "@/core/platform-preview/preview-renderer";
 
 const updateInitial: UpdatePlanItemResult = { ok: false, error: "" };
 const duplicateInitial: DuplicatePlanItemResult = { ok: false, error: "" };
@@ -109,21 +111,63 @@ export function PlanItemCard(props: PlanItemCardProps) {
               </h3>
             </button>
 
-            {/* Body preview (also clickable) */}
+            {/* Body preview (also clickable) — platform-native mini when
+                we have a renderer for this platform and the item is past
+                draft state; otherwise raw line-clamped body. */}
             <button
               type="button"
               onClick={() => setComposeOpen(true)}
               className="block text-left w-full"
             >
-              {props.body ? (
-                <p className="text-xs text-ink-700 leading-relaxed line-clamp-3">
-                  {props.body}
-                </p>
-              ) : (
-                <p className="text-xs text-ink-400 italic">
-                  No body yet — click to continue writing.
-                </p>
-              )}
+              {(() => {
+                const previewPlatform = props.platform
+                  ? asPreviewPlatform(props.platform)
+                  : null;
+                const showMini =
+                  previewPlatform !== null &&
+                  props.body &&
+                  props.body.trim().length > 0 &&
+                  (props.status === "pending_approval" ||
+                    props.status === "approved" ||
+                    props.status === "scheduled");
+                if (showMini && previewPlatform) {
+                  return (
+                    <MiniPreview
+                      platform={previewPlatform}
+                      input={{
+                        title: props.title,
+                        body: props.body!,
+                        identity: {
+                          displayName:
+                            props.accounts.find((a) => a.id === props.accountId)
+                              ?.displayName ?? null,
+                          handle: null,
+                          avatarUrl: null,
+                        },
+                        creative: props.creative
+                          ? {
+                              assetUrl: props.creative.assetUrl,
+                              altText: props.creative.altText,
+                              sourceType: props.creative.sourceType,
+                            }
+                          : null,
+                      }}
+                    />
+                  );
+                }
+                if (props.body) {
+                  return (
+                    <p className="text-xs text-ink-700 leading-relaxed line-clamp-3">
+                      {props.body}
+                    </p>
+                  );
+                }
+                return (
+                  <p className="text-xs text-ink-400 italic">
+                    No body yet — click to continue writing.
+                  </p>
+                );
+              })()}
             </button>
 
             {/* Status / target / schedule / account chips */}
