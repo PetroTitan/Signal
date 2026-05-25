@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   SCHEDULER_AUTONOMOUS_PLATFORMS,
   nextExecutionStatusForOutcome,
+  resolvePublishMode,
 } from "./publishing-scheduler";
 import type { PublishOutcome } from "./publishing-types";
 
@@ -208,5 +209,63 @@ describe("nextExecutionStatusForOutcome — silent-scheduled-forever invariant",
         outcome({ status: "failed", reasonCode: "scheduler_exception" }),
       ),
     ).toBe("failed");
+  });
+});
+
+// =====================================================================
+// resolvePublishMode — workspace publish-mode resolution.
+// =====================================================================
+//
+// Production audit (2026-05-25): the live `workspace_settings` schema
+// has NO `execution_mode` column. The pre-fix scheduler treated the
+// resulting `undefined` as "not live" and defaulted to dry-run mode,
+// so every scheduler-tick publish silently skipped with
+// `execution_mode_dry_run`. These tests pin the inverted default so
+// the regression can't return.
+
+describe("resolvePublishMode — default is live", () => {
+  it("null settings row → live (workspace_settings row missing)", () => {
+    expect(resolvePublishMode(null)).toBe("live");
+  });
+
+  it("undefined settings → live", () => {
+    expect(resolvePublishMode(undefined)).toBe("live");
+  });
+
+  it("settings without execution_mode column/field → live (the production case)", () => {
+    expect(resolvePublishMode({})).toBe("live");
+  });
+
+  it("execution_mode === undefined → live", () => {
+    expect(resolvePublishMode({ execution_mode: undefined })).toBe("live");
+  });
+
+  it("execution_mode === null → live", () => {
+    expect(resolvePublishMode({ execution_mode: null })).toBe("live");
+  });
+});
+
+describe("resolvePublishMode — explicit dry_run opt-in", () => {
+  it("execution_mode === 'dry_run' → dry_run", () => {
+    expect(resolvePublishMode({ execution_mode: "dry_run" })).toBe(
+      "dry_run",
+    );
+  });
+});
+
+describe("resolvePublishMode — only exact 'dry_run' yields dry_run", () => {
+  it.each([
+    "live",
+    "DRY_RUN",
+    "Dry-Run",
+    "test",
+    "preview",
+    "demo",
+    "off",
+    "",
+    " dry_run",
+    "dry_run ",
+  ])("execution_mode = %j → live (anything other than exact 'dry_run')", (value) => {
+    expect(resolvePublishMode({ execution_mode: value })).toBe("live");
   });
 });
