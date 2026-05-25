@@ -33,6 +33,7 @@ import {
   REWRITE_ACTION_LABELS,
   type RewriteAction,
 } from "@/core/generation/rewrite-types";
+import { deterministicRewrite } from "@/core/generation/deterministic-rewrite";
 import {
   friendlyGenerationFailure,
   type GenerationFailureReason,
@@ -60,6 +61,13 @@ export type RewriteDraftActionResult = ActionResult<{
   newBody: string | null;
   /** Whether an undo snapshot was persisted for this rewrite. */
   undoAvailable: boolean;
+  /** "ai" when an AI provider produced the rewrite; "deterministic"
+   *  when the platform-native engine produced it. */
+  mode: "ai" | "deterministic";
+  /** Operator-readable summary of what changed. Always present in
+   *  deterministic mode; null in AI mode (we don't expose the
+   *  prompt). */
+  receipt: string | null;
 }>;
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -99,50 +107,85 @@ export async function rewriteDraftAction(
       return actionFail(`${friendly.title} ${friendly.advice}`);
     }
 
-    // Identity is required for voice context. If the item has no
-    // account_id, we can still rewrite, but we use a fallback. The
-    // rewriteDraft entry point handles this by returning
-    // provider_unavailable when context lookup fails.
-    if (!existing.accountId) {
-      return actionFail(
-        "This post has no publishing identity attached. Set one in the compose sheet before rewriting.",
-      );
+    // Try the AI path FIRST when there's an attached identity and
+    // when usage is under quota. Any failure that means "AI isn't
+    // available right now" (no provider configured, transient
+    // provider error) falls through to the deterministic engine
+    // rather than dead-buttoning the operator.
+    let aiResult: Awaited<ReturnType<typeof rewriteDraft>> | null = null;
+    if (existing.accountId) {
+      const usage = await checkWorkspaceAiUsage(workspaceId);
+      if (usage.exceeded) {
+        // Quota exhausted: be explicit, don't silently fall through.
+        return actionFail(usageLimitMessage(usage));
+      }
+      aiResult = await rewriteDraft({
+        workspaceId,
+        identityId: existing.accountId,
+        itemId: existing.id,
+        currentTitle: existing.title,
+        currentBody: existing.body,
+        platform: existing.platform ?? "reddit",
+        action,
+      });
     }
 
-    // F4.6.1 — workspace-level rolling 24h limit. Checked BEFORE
-    // calling the provider so we don't burn API quota on a request
-    // we'd refuse anyway. Counts both successful and failed AI
-    // actions in the window; undo isn't counted.
-    const usage = await checkWorkspaceAiUsage(workspaceId);
-    if (usage.exceeded) {
-      return actionFail(usageLimitMessage(usage));
-    }
+    // Decide the final rewrite shape.
+    let newTitle: string | null = null;
+    let newBody: string | null = null;
+    let mode: "ai" | "deterministic" = "ai";
+    let providerLabel = "";
+    let durationMs = 0;
+    let truncated = false;
+    let receipt: string | null = null;
 
-    const result = await rewriteDraft({
-      workspaceId,
-      identityId: existing.accountId,
-      itemId: existing.id,
-      currentTitle: existing.title,
-      currentBody: existing.body,
-      platform: existing.platform ?? "reddit",
-      action,
-    });
-
-    if (!result.ok) {
+    if (aiResult && aiResult.ok) {
+      newTitle = aiResult.newTitle;
+      newBody = aiResult.newBody;
+      mode = "ai";
+      providerLabel =
+        PROVIDER_LABELS[aiResult.providerName] ?? aiResult.providerName;
+      durationMs = aiResult.durationMs;
+      truncated = aiResult.truncated;
+      receipt = null;
+    } else if (
+      !aiResult ||
+      aiResult.reason === "no_provider_configured" ||
+      aiResult.reason === "provider_unavailable" ||
+      aiResult.reason === "empty_response"
+    ) {
+      // Deterministic fallback — never refuses, always either applies
+      // or returns "no_change" with a calm message.
+      const fallback = deterministicRewrite({
+        action,
+        currentTitle: existing.title,
+        currentBody: existing.body,
+        platform: existing.platform ?? "reddit",
+      });
+      if (!fallback.ok) {
+        return actionFail(
+          fallback.reason === "no_change"
+            ? `${fallback.detail} (Advanced AI rewrite unavailable; deterministic adapter found nothing to change.)`
+            : fallback.detail,
+        );
+      }
+      newTitle = fallback.newTitle;
+      newBody = fallback.newBody;
+      mode = "deterministic";
+      providerLabel = "Platform-native rules";
+      receipt = fallback.receipt;
+    } else {
+      // Provider safety refusal or another non-fallback failure — surface
+      // as before.
       const friendly = friendlyGenerationFailure(
-        result.reason as GenerationFailureReason,
+        aiResult.reason as GenerationFailureReason,
       );
       return actionFail(`${friendly.title} ${friendly.advice}`);
     }
 
-    // Apply the rewrite. Metadata-only: bump rewrite count + record
-    // which action ran, which provider answered, and how long it
-    // took. NO prompt body, NO raw response, NO tokens.
-    //
-    // F4.6.1 — snapshot the previous title + body so the founder
-    // can Undo the latest rewrite. Only one level of undo is
-    // supported; the previous_* slot is overwritten on every new
-    // rewrite. Cleared by undoRewriteAction.
+    // Apply. Metadata-only: bump rewrite count + record which action
+    // ran, which mode (ai/deterministic) produced it, and how long
+    // it took. NO prompt body, NO raw response, NO tokens.
     const prevMeta = existing.metadata as Record<string, unknown>;
     const prevRewriteCount =
       typeof prevMeta?.rewrite_count === "number"
@@ -152,31 +195,35 @@ export async function rewriteDraftAction(
       ...prevMeta,
       rewrite_count: prevRewriteCount + 1,
       last_rewrite_action: action,
-      last_rewrite_provider: result.providerName,
-      last_rewrite_duration_ms: result.durationMs,
+      last_rewrite_mode: mode,
+      last_rewrite_provider:
+        mode === "ai" && aiResult && aiResult.ok
+          ? aiResult.providerName
+          : "deterministic",
+      last_rewrite_duration_ms: durationMs,
       last_rewrite_at: new Date().toISOString(),
-      last_rewrite_truncated: result.truncated,
+      last_rewrite_truncated: truncated,
       previous_title_before_rewrite: existing.title,
       previous_body_before_rewrite: existing.body,
       previous_rewrite_action: action,
       previous_rewrite_timestamp: new Date().toISOString(),
     };
 
-    if (result.newTitle) {
+    if (newTitle) {
       await updatePlanItem({
         workspaceId,
         itemId: existing.id,
         patch: {
-          title: result.newTitle,
+          title: newTitle,
           metadata: nextMeta,
         },
       });
-    } else if (result.newBody) {
+    } else if (newBody) {
       await updatePlanItem({
         workspaceId,
         itemId: existing.id,
         patch: {
-          body: result.newBody,
+          body: newBody,
           metadata: nextMeta,
         },
       });
@@ -189,12 +236,16 @@ export async function rewriteDraftAction(
         entityType: "weekly_plan_item",
         entityId: existing.id,
         title: `Draft rewritten — ${REWRITE_ACTION_LABELS[action]}`,
-        description: `${PROVIDER_LABELS[result.providerName] ?? result.providerName} · ${result.durationMs}ms`,
+        description:
+          mode === "ai"
+            ? `${providerLabel} · ${durationMs}ms`
+            : `Deterministic adapter · ${receipt ?? ""}`,
         metadata: {
           action,
-          provider: result.providerName,
-          duration_ms: result.durationMs,
-          truncated: result.truncated,
+          mode,
+          provider: mode === "ai" ? providerLabel : "deterministic",
+          duration_ms: durationMs,
+          truncated,
         },
       });
     } catch (err) {
@@ -206,11 +257,13 @@ export async function rewriteDraftAction(
       itemId: existing.id,
       action,
       providerLabel:
-        PROVIDER_LABELS[result.providerName] ?? result.providerName,
-      durationMs: result.durationMs,
-      truncated: result.truncated,
-      newTitle: result.newTitle,
-      newBody: result.newBody,
+        providerLabel.length > 0 ? providerLabel : "Platform-native rules",
+      durationMs,
+      truncated,
+      newTitle,
+      newBody,
+      mode,
+      receipt,
       undoAvailable: true,
     });
   } catch (error) {

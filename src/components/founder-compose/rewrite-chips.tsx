@@ -35,6 +35,8 @@ interface LastReceipt {
   providerLabel: string;
   truncated: boolean;
   undoAvailable: boolean;
+  mode: "ai" | "deterministic";
+  detail: string | null;
 }
 
 /**
@@ -61,13 +63,20 @@ export function RewriteChips(props: RewriteChipsProps) {
   const [receipt, setReceipt] = useState<LastReceipt | null>(null);
   const [undoneMessage, setUndoneMessage] = useState<string | null>(null);
 
+  // The deterministic adapter is always available — it runs server-side
+  // off the platform-native style profiles and forbidden-patterns
+  // engine. We only disable when the operator has nothing to rewrite:
+  // no item, no body. AI provider is opportunistically used by the
+  // server; the chip-level UI no longer needs to know whether keys
+  // are configured.
   const disabledReason = !props.itemId
     ? "Save the draft first (wait a second for autosave) before rewriting."
     : !props.hasBody
       ? "Write something first."
-      : !props.providerAvailable
-        ? "AI rewrites aren't connected yet — set ANTHROPIC_API_KEY or OPENAI_API_KEY."
-        : null;
+      : null;
+  const providerHint = props.providerAvailable
+    ? null
+    : "AI provider unavailable — using Signal's platform-native rules.";
 
   async function fire(action: RewriteAction) {
     if (!props.itemId) return;
@@ -92,6 +101,8 @@ export function RewriteChips(props: RewriteChipsProps) {
         providerLabel: result.providerLabel,
         truncated: result.truncated,
         undoAvailable: result.undoAvailable,
+        mode: result.mode,
+        detail: result.receipt,
       });
     } else {
       setError(result.error || "Couldn't finish the rewrite.");
@@ -122,12 +133,14 @@ export function RewriteChips(props: RewriteChipsProps) {
 
   return (
     <div className="space-y-1.5">
-      <div className="flex items-baseline justify-between">
+      <div className="flex items-baseline justify-between gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
           Editorial rewrites
         </span>
         {disabledReason ? (
           <span className="text-[10px] text-ink-400">{disabledReason}</span>
+        ) : providerHint ? (
+          <span className="text-[10px] text-ink-400">{providerHint}</span>
         ) : null}
       </div>
       <div className="flex flex-wrap gap-1.5">
@@ -155,8 +168,10 @@ export function RewriteChips(props: RewriteChipsProps) {
       {receipt ? (
         <p className="text-[10px] text-emerald-700 leading-relaxed flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
           <span>
-            {REWRITE_ACTION_LABELS[receipt.action]} · Generated with{" "}
-            {receipt.providerLabel}
+            {REWRITE_ACTION_LABELS[receipt.action]} ·{" "}
+            {receipt.mode === "ai"
+              ? `Generated with ${receipt.providerLabel}`
+              : `Deterministic adaptation applied${receipt.detail ? ` (${receipt.detail})` : ""}`}
             {receipt.truncated ? " (response was truncated)" : ""}
           </span>
           {receipt.undoAvailable ? (

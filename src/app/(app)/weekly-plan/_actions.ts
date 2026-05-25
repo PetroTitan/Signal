@@ -45,6 +45,10 @@ export type UploadCreativeAssetResult = ActionResult<{
 export type DuplicatePlanItemResult = ActionResult<{ itemId: string }>;
 export type ComposeUpsertDraftResult = ActionResult<{ itemId: string }>;
 export type SendForApprovalResult = ActionResult<{ itemId: string }>;
+export type SaveScheduleResult = ActionResult<{
+  itemId: string;
+  scheduledAtIso: string | null;
+}>;
 
 function isoMonday(date: Date): string {
   const d = new Date(
@@ -627,12 +631,16 @@ function parseRiskScore(raw: string | null): number | null | undefined {
 }
 
 function parseScheduledAt(raw: string | null): string | null | undefined {
+  // Used by updatePlanItemAction (quick reschedule popover) and other
+  // legacy callers. Requires a fully-qualified ISO timestamp so we never
+  // re-interpret a bare datetime-local string in the server's local
+  // zone. The client always converts to ISO via datetimeLocalToIso
+  // before submitting.
   if (raw === null) return undefined;
   const trimmed = raw.trim();
   if (trimmed === "") return null;
-  // datetime-local input gives "YYYY-MM-DDTHH:MM" — treat as workspace tz
-  // by stamping it as an ISO string with the current local offset. The
-  // scheduler compares this to now() in UTC, which is fine.
+  const hasTz = /Z$|[+-]\d{2}:?\d{2}$/.test(trimmed);
+  if (!hasTz) return undefined;
   const d = new Date(trimmed);
   if (Number.isNaN(d.getTime())) return undefined;
   return d.toISOString();
@@ -1167,27 +1175,11 @@ export async function composeUpsertDraftAction(
     return actionFail("Add a title or body before saving.");
   }
 
-  // Schedule handling — three-state field. The client gates this
-  // behind a `scheduledAtTouched` flag, so:
-  //
-  //   field absent       → don't touch scheduled_at on the row.
-  //   field empty string → clear scheduled_at to null.
-  //   field non-empty    → must already be a fully-qualified ISO
-  //                        timestamp (the client uses
-  //                        `datetimeLocalToIso` before sending).
-  //
-  // We deliberately reject bare `YYYY-MM-DDTHH:MM` strings here even
-  // though `new Date()` accepts them: it parses them in the server's
-  // local zone (UTC on Vercel), which is the operator's UTC offset
-  // off from the value they actually picked. Letting that through
-  // was the root cause of the autosave drift loop.
-  const parsedSchedule = parseScheduledAtField(formData);
-  if (parsedSchedule.kind === "error") {
-    return actionFail(parsedSchedule.message);
-  }
-  let scheduledAtIso: string | null | undefined = undefined;
-  if (parsedSchedule.kind === "clear") scheduledAtIso = null;
-  if (parsedSchedule.kind === "set") scheduledAtIso = parsedSchedule.iso;
+  // Schedule handling has been moved to a dedicated server action
+  // (saveScheduleAction). This action MUST NOT touch scheduled_at —
+  // body/title/platform/creative autosaves cannot drift the schedule.
+  // If the field is present in FormData it's silently ignored.
+  const scheduledAtIso: string | null | undefined = undefined;
 
   let riskScore: number | null | undefined = undefined;
   if (formData.has("risk_score")) {
@@ -1297,6 +1289,106 @@ export async function composeUpsertDraftAction(
           ? error.message
           : "Could not save draft.";
     console.error("[composeUpsertDraftAction] failed", error);
+    return actionFail(message);
+  }
+}
+
+// =====================================================================
+// saveScheduleAction — schedule-only write path
+// =====================================================================
+//
+// The compose sheet calls this when the operator touches the schedule
+// picker. It is INTENTIONALLY decoupled from composeUpsertDraftAction
+// so the body/title autosave can never accidentally rewrite the
+// scheduled timestamp.
+//
+// Required form fields:
+//   item_id   — non-empty
+//   reason    — "preset" | "input" | "clear" — written to activity
+//               metadata. Missing or unrecognized → reject.
+//   scheduled_at — must either be an empty string (clear) or a
+//               fully-qualified ISO timestamp with timezone designator.
+//               Bare datetime-local strings are rejected so the
+//               server can't reinterpret them in UTC.
+//
+// Refuses items that are already published/rejected/backlog.
+
+const SCHEDULE_SAVE_REASONS = new Set([
+  "preset",
+  "input",
+  "clear",
+  "mcp",
+]);
+
+export async function saveScheduleAction(
+  _prev: SaveScheduleResult,
+  formData: FormData,
+): Promise<SaveScheduleResult> {
+  const itemId = String(formData.get("item_id") ?? "").trim();
+  if (!itemId) return actionFail("Missing item id.");
+
+  const reason = String(formData.get("reason") ?? "").trim();
+  if (!SCHEDULE_SAVE_REASONS.has(reason)) {
+    return actionFail(
+      "Schedule writes require an explicit reason (preset, input, clear, or mcp).",
+    );
+  }
+
+  const parsedSchedule = parseScheduledAtField(formData);
+  if (parsedSchedule.kind === "error") {
+    return actionFail(parsedSchedule.message);
+  }
+  if (parsedSchedule.kind === "skip") {
+    return actionFail("Missing scheduled_at field.");
+  }
+  const nextIso = parsedSchedule.kind === "clear" ? null : parsedSchedule.iso;
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    const existing = await getPlanItemById(workspaceId, itemId);
+    if (
+      existing.status === "published" ||
+      existing.status === "rejected" ||
+      existing.status === "backlog"
+    ) {
+      return actionFail(
+        "This post's schedule can't be changed in its current state.",
+      );
+    }
+
+    if (existing.scheduledAt === nextIso) {
+      // No-op write — don't bother revalidating.
+      return actionOk({ itemId, scheduledAtIso: nextIso });
+    }
+
+    const updated = await updatePlanItem({
+      workspaceId,
+      itemId,
+      patch: { scheduled_at: nextIso },
+    });
+
+    await logActivityBestEffort({
+      workspaceId,
+      eventType: "weekly_plan_item.schedule_changed",
+      entityType: "weekly_plan_item",
+      entityId: itemId,
+      title: `Schedule ${nextIso === null ? "cleared" : "updated"}`,
+      description: `Reason: ${reason}.`,
+    });
+
+    revalidatePath("/weekly-plan");
+    return actionOk({ itemId: updated.id, scheduledAtIso: nextIso });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : "Could not save schedule.";
+    console.error("[saveScheduleAction] failed", error);
     return actionFail(message);
   }
 }
