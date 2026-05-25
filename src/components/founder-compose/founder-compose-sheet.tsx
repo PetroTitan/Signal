@@ -31,6 +31,11 @@ import {
   type ScheduleState,
 } from "./compose-schedule-save";
 import {
+  deriveComposeActionState,
+  type ComposeItemStatus,
+} from "./compose-action-state";
+import { suggestAltTextFor } from "@/core/scheduling/suggested-alt-text";
+import {
   emitScheduleRoundtripDelta,
   emitScheduleSaveSuccess,
 } from "@/core/observability/schedule-events";
@@ -82,6 +87,8 @@ export interface FounderComposeSheetDefaults {
  */
 export interface FounderComposeSheetExistingItem {
   itemId: string;
+  /** Plan-item status. Drives the modal footer's action variant. */
+  status: import("@/lib/supabase/types").WeeklyPlanItemStatus;
   title: string | null;
   body: string | null;
   platform: string | null;
@@ -290,14 +297,16 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     save: (d) => upsertRef.current(d),
   });
 
-  // ---- Schedule save (operator-only, debounced) --------------------
+  // ---- Schedule save (operator-only, EXPLICIT BUTTON) -------------
   //
-  // Fires only when `schedule.touched` is true. The reason is encoded
-  // in `pendingScheduleReasonRef` and set by the operator-event
-  // helpers (touchByInput / touchByPreset / touchByClear). Server
-  // rejects writes without a recognized reason.
+  // The schedule field updates LOCAL state on every preset click /
+  // input change. It does NOT persist until the operator clicks
+  // "Save schedule". Closing the modal with unsaved schedule changes
+  // surfaces an inline notice and does NOT silently persist.
+  //
+  // The reason for the next save is set when the operator interacts
+  // (preset / input / clear) and consumed when they click "Save".
   const pendingScheduleReasonRef = useRef<ScheduleSaveReason | null>(null);
-  const scheduleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSavedScheduleRef = useRef<string | null>(schedule.initialIso);
 
   async function runScheduleSave(
@@ -402,24 +411,23 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     }
   }
 
-  useEffect(() => {
+  async function handleExplicitScheduleSave() {
     if (!schedule.touched) return;
-    const reason = pendingScheduleReasonRef.current;
-    if (!reason) return;
-    // Need an item id before we can write. If the body autosave is
-    // still creating the row, defer.
-    if (!draft.itemId) return;
-    const snapshot = schedule;
-    if (scheduleTimerRef.current) clearTimeout(scheduleTimerRef.current);
-    scheduleTimerRef.current = setTimeout(() => {
-      void runScheduleSave(snapshot, reason, draft.itemId as string);
-      pendingScheduleReasonRef.current = null;
-    }, 600);
-    return () => {
-      if (scheduleTimerRef.current) clearTimeout(scheduleTimerRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [schedule.inputValue, schedule.touched, draft.itemId]);
+    const reason = pendingScheduleReasonRef.current ?? "input";
+    if (!draft.itemId) {
+      setScheduleSaveStatus("error");
+      setScheduleSaveError(
+        "Wait for autosave to assign a draft id before saving the schedule.",
+      );
+      return;
+    }
+    await runScheduleSave(schedule, reason, draft.itemId);
+    pendingScheduleReasonRef.current = null;
+    // After a successful save the snapshot becomes the new baseline:
+    // the value is no longer "unsaved". `touched=false` is the
+    // unsaved-change indicator; clearing it is correct here.
+    setSchedule((s) => ({ ...s, touched: false }));
+  }
 
   // ---- Actions -----------------------------------------------------
   async function handleClose() {
@@ -659,12 +667,26 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
                 </button>
               ) : null}
             </div>
-            <input
-              type="datetime-local"
-              value={schedule.inputValue}
-              onChange={(e) => handleScheduleInputChange(e.target.value)}
-              className="input w-full text-sm font-mono"
-            />
+            <div className="flex items-center gap-2">
+              <input
+                type="datetime-local"
+                value={schedule.inputValue}
+                onChange={(e) => handleScheduleInputChange(e.target.value)}
+                className="input flex-1 text-sm font-mono"
+              />
+              <button
+                type="button"
+                onClick={handleExplicitScheduleSave}
+                disabled={
+                  !schedule.touched ||
+                  !draft.itemId ||
+                  scheduleSaveStatus === "saving"
+                }
+                className="btn-primary text-xs disabled:opacity-50"
+              >
+                {scheduleSaveStatus === "saving" ? "Saving…" : "Save schedule"}
+              </button>
+            </div>
             <div className="text-[11px] text-ink-500 flex items-center justify-between gap-2 flex-wrap">
               <span>
                 {props.defaults.timezoneLabel
@@ -681,11 +703,20 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
                   </span>
                 ) : null}
                 <span>
-                  {scheduleSaveStatusLabel(scheduleSaveStatus)}
+                  {scheduleSaveStatusLabel(
+                    scheduleSaveStatus,
+                    schedule.touched,
+                  )}
                   {scheduleSaveError ? ` — ${scheduleSaveError}` : ""}
                 </span>
               </span>
             </div>
+            {schedule.touched ? (
+              <p className="text-[10px] text-amber-700 leading-relaxed">
+                Schedule has unsaved changes. Click <em>Save schedule</em> to
+                persist. Closing the modal will discard the change.
+              </p>
+            ) : null}
           </div>
 
           {/* Creative */}
@@ -697,6 +728,8 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
               await autosave.flushNow();
               return draft.itemId;
             }}
+            products={props.defaults.products}
+            existingItem={props.existingItem}
           />
 
           {/* Advanced */}
@@ -788,38 +821,22 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
           </details>
         </div>
 
-        {/* Footer actions */}
-        <div
-          className="flex items-center justify-between gap-2 px-4 py-3 border-t border-ink-100 shrink-0 bg-white"
-          style={{
-            paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))",
-          }}
-        >
-          <div className="text-[11px] text-ink-500">
-            {autosaveLabel(autosave.status)}
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleClose}
-              className="btn-ghost text-xs"
-            >
-              Save as draft
-            </button>
-            <button
-              type="button"
-              onClick={handleSendForApproval}
-              disabled={
-                !draft.itemId ||
-                draft.title.trim().length === 0 ||
-                autosave.status === "saving"
-              }
-              className="btn-primary text-xs disabled:opacity-50"
-            >
-              Send for approval
-            </button>
-          </div>
-        </div>
+        {/* Footer actions — status-aware */}
+        <ComposeFooter
+          actionState={deriveComposeActionState({
+            status: (props.existingItem?.status ?? null) as ComposeItemStatus | null,
+            hasItemId: Boolean(draft.itemId),
+            hasTitle: draft.title.trim().length > 0,
+            altTextMissing:
+              draft.creativeId !== null &&
+              draft.creativeAltText.trim().length === 0,
+            autosaveInFlight: autosave.status === "saving",
+          })}
+          autosaveLabel={autosaveLabel(autosave.status)}
+          onSaveAsDraft={handleClose}
+          onSendForApproval={handleSendForApproval}
+          onClose={handleClose}
+        />
       </div>
     </div>
   );
@@ -833,10 +850,14 @@ function CreativeRow({
   draft,
   setDraft,
   ensureItemId,
+  products,
+  existingItem,
 }: {
   draft: DraftState;
   setDraft: React.Dispatch<React.SetStateAction<DraftState>>;
   ensureItemId: () => Promise<string | null>;
+  products: { id: string; name: string }[];
+  existingItem?: FounderComposeSheetExistingItem;
 }) {
   const [busy, setBusy] = useState<null | "upload" | "generate" | "url">(null);
   const [pasteUrl, setPasteUrl] = useState("");
@@ -1035,6 +1056,12 @@ function CreativeRow({
           itemId={draft.itemId}
           creativeId={draft.creativeId}
           altText={draft.creativeAltText}
+          suggestion={suggestAltTextFor({
+            title: draft.title.trim().length > 0 ? draft.title : null,
+            productName: productNameById(draft.productId, products),
+            sourceType: deriveCreativeSourceType(draft, existingItem),
+            prompt: null,
+          })}
           onAltTextChange={(text) =>
             setDraft((d) => ({ ...d, creativeAltText: text }))
           }
@@ -1042,6 +1069,25 @@ function CreativeRow({
       ) : null}
     </div>
   );
+}
+
+function productNameById(
+  id: string,
+  products: { id: string; name: string }[],
+): string | null {
+  if (!id) return null;
+  const p = products.find((p) => p.id === id);
+  return p?.name ?? null;
+}
+
+function deriveCreativeSourceType(
+  draft: DraftState,
+  existing?: FounderComposeSheetExistingItem,
+): string | null {
+  if (existing?.creative?.sourceType) return existing.creative.sourceType;
+  // Operator just uploaded? Operator just attached a URL?
+  if (draft.creativeAssetUrl && !existing?.creative) return "uploaded";
+  return null;
 }
 
 // =====================================================================
@@ -1056,11 +1102,15 @@ function AltTextEditor({
   itemId,
   creativeId,
   altText,
+  suggestion,
   onAltTextChange,
 }: {
   itemId: string | null;
   creativeId: string | null;
   altText: string;
+  /** Optional deterministic suggestion. Surfaced as a "Use suggested
+   *  alt text" button. NEVER auto-applied. */
+  suggestion?: string | null;
   onAltTextChange: (text: string) => void;
 }) {
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">(
@@ -1069,11 +1119,11 @@ function AltTextEditor({
   const [error, setError] = useState<string | null>(null);
   const lastSavedRef = useRef<string>(altText);
 
-  async function commit() {
+  async function commit(textOverride?: string) {
     if (!itemId || !creativeId) return;
-    const trimmed = altText.trim();
-    if (trimmed === lastSavedRef.current.trim()) return;
-    if (trimmed.length === 0) return;
+    const value = (textOverride ?? altText).trim();
+    if (value === lastSavedRef.current.trim()) return;
+    if (value.length === 0) return;
     setStatus("saving");
     setError(null);
     const fd = new FormData();
@@ -1081,10 +1131,10 @@ function AltTextEditor({
     fd.set("creative_id", creativeId);
     fd.set("creative_type", "image");
     fd.set("source_type", "uploaded");
-    fd.set("alt_text", trimmed);
+    fd.set("alt_text", value);
     const result = await attachCreativeAction({ ok: false, error: "" }, fd);
     if (result.ok) {
-      lastSavedRef.current = trimmed;
+      lastSavedRef.current = value;
       setStatus("saved");
     } else {
       setStatus("error");
@@ -1092,11 +1142,27 @@ function AltTextEditor({
     }
   }
 
+  function applySuggestion() {
+    if (!suggestion) return;
+    onAltTextChange(suggestion);
+    // Commit immediately so the blocker disappears without a second
+    // operator gesture. Pass the value explicitly because React's
+    // state update from `onAltTextChange` won't be visible to the
+    // synchronous `commit` call.
+    void commit(suggestion);
+  }
+
+  const isBlocking = altText.trim().length === 0;
+
   return (
     <div className="space-y-1">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-[10px] text-ink-500">
-          Alt text {altText.trim().length === 0 ? "(required before publish)" : ""}
+        <span
+          className={`text-[10px] ${
+            isBlocking ? "text-amber-700" : "text-ink-500"
+          }`}
+        >
+          Alt text {isBlocking ? "required before approval and publishing." : ""}
         </span>
         <span className="text-[10px] tabular-nums text-ink-400">
           {status === "saving"
@@ -1124,6 +1190,117 @@ function AltTextEditor({
         }}
         className="input w-full text-xs mt-0.5"
       />
+      {suggestion && isBlocking ? (
+        <div className="text-[10px] text-ink-500 leading-relaxed">
+          <button
+            type="button"
+            onClick={applySuggestion}
+            className="text-signal-700 underline hover:text-signal-900"
+          >
+            Use suggested alt text
+          </button>
+          <span className="ml-1.5 italic">&ldquo;{suggestion}&rdquo;</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// =====================================================================
+// Status-aware modal footer
+// =====================================================================
+//
+// One source of truth for what the modal's primary action is. Renders
+// off the pure `deriveComposeActionState` helper so the action label,
+// disabled state, and blocker copy are testable without rendering.
+
+function ComposeFooter({
+  actionState,
+  autosaveLabel: autosaveText,
+  onSaveAsDraft,
+  onSendForApproval,
+  onClose,
+}: {
+  actionState: ReturnType<typeof deriveComposeActionState>;
+  autosaveLabel: string;
+  onSaveAsDraft: () => void;
+  onSendForApproval: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="flex flex-col gap-2 px-4 py-3 border-t border-ink-100 shrink-0 bg-white"
+      style={{
+        paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))",
+      }}
+    >
+      {actionState.primaryBlocker ? (
+        <p className="text-[11px] text-amber-700 leading-relaxed">
+          {actionState.primaryBlocker}
+        </p>
+      ) : null}
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] text-ink-500">{autosaveText}</div>
+        <div className="flex items-center gap-2">
+          {actionState.showSaveAsDraft ? (
+            <button
+              type="button"
+              onClick={onSaveAsDraft}
+              className="btn-ghost text-xs"
+            >
+              Save as draft
+            </button>
+          ) : null}
+          {actionState.variant === "send_for_approval" ? (
+            <button
+              type="button"
+              onClick={onSendForApproval}
+              disabled={actionState.primaryDisabled}
+              className="btn-primary text-xs disabled:opacity-50"
+            >
+              {actionState.primaryLabel}
+            </button>
+          ) : actionState.variant === "open_approval_queue" ? (
+            <>
+              {actionState.primaryDisabled ? (
+                <button
+                  type="button"
+                  disabled
+                  className="btn-primary text-xs opacity-50 cursor-not-allowed"
+                >
+                  {actionState.primaryLabel}
+                </button>
+              ) : (
+                <a
+                  href="/approval-queue"
+                  className="btn-primary text-xs inline-flex items-center"
+                >
+                  {actionState.primaryLabel} →
+                </a>
+              )}
+            </>
+          ) : actionState.variant === "schedule_or_mcp" ? (
+            <span className="text-[11px] text-ink-600">
+              Use the schedule field above, or call{" "}
+              <code className="font-mono text-[10px]">signal.schedule_publish</code>{" "}
+              via MCP.
+            </span>
+          ) : actionState.variant === "reschedule_or_unschedule" ? (
+            <span className="text-[11px] text-ink-600">
+              Already scheduled — use Save schedule to update, or clear
+              to unschedule.
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={onClose}
+              className="btn-ghost text-xs"
+            >
+              Close
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1134,7 +1311,9 @@ function AltTextEditor({
 
 function scheduleSaveStatusLabel(
   status: "idle" | "saving" | "saved" | "error",
+  touched: boolean,
 ): string {
+  if (touched && status !== "saving") return "Schedule has unsaved changes";
   switch (status) {
     case "idle":
       return "Schedule unchanged";

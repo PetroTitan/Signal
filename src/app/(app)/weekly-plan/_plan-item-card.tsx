@@ -238,6 +238,7 @@ export function PlanItemCard(props: PlanItemCardProps) {
         defaults={composeDefaults}
         existingItem={{
           itemId: props.id,
+          status: props.status,
           title: props.title,
           body: props.body,
           platform: props.platform,
