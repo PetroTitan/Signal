@@ -28,6 +28,24 @@ import type {
   PublishPlatform,
 } from "./publishing-types";
 
+/**
+ * Platforms the scheduler tick can fully drive end-to-end (auth +
+ * publish + history write).
+ *
+ * Other platforms (devto / hashnode / telegram / youtube / threads /
+ * instagram) are published via the manual confirmation path on
+ * `/execution/items/[id]` — the scheduler skips them silently to
+ * avoid surprises.
+ *
+ * Bluesky was missing from this list pre-fix, which caused approved
+ * + scheduled Bluesky items to be selected every tick but skipped
+ * with `platform_not_supported` and never published. The runner
+ * itself (`runPublish` → `publishBlueskyForIdentity`) was fine —
+ * the scheduler just never routed Bluesky items to it.
+ */
+export const SCHEDULER_AUTONOMOUS_PLATFORMS: ReadonlySet<PublishPlatform> =
+  new Set(["reddit", "x", "linkedin", "bluesky"]);
+
 export interface SchedulerTickInput {
   /** Soft cap on items processed per tick. Default 10. */
   maxItems?: number;
@@ -104,7 +122,7 @@ export async function tickOnce(
     metadata: Record<string, unknown>;
   }>) {
     const platform = (raw.platform ?? "") as PublishPlatform;
-    if (platform !== "reddit" && platform !== "x" && platform !== "linkedin") {
+    if (!SCHEDULER_AUTONOMOUS_PLATFORMS.has(platform)) {
       // Unsupported platform — skip this item.
       results.push({
         execution_item_id: raw.id,
