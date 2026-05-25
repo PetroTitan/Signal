@@ -1332,25 +1332,17 @@ function ComposeFooter({
             >
               {actionState.primaryLabel}
             </button>
-          ) : actionState.variant === "open_approval_queue" ? (
-            <>
-              {actionState.primaryDisabled ? (
-                <button
-                  type="button"
-                  disabled
-                  className="btn-primary text-xs opacity-50 cursor-not-allowed"
-                >
-                  {actionState.primaryLabel}
-                </button>
-              ) : (
-                <a
-                  href="/approval-queue"
-                  className="btn-primary text-xs inline-flex items-center"
-                >
-                  {actionState.primaryLabel} →
-                </a>
-              )}
-            </>
+          ) : actionState.variant === "awaiting_approval_info" ? (
+            // Pending approval items: surface the state as an inline
+            // info badge. NO navigation — /approval-queue does not
+            // exist and the per-plan approve form lives on the same
+            // /weekly-plan page already.
+            <span className="text-[11px] text-ink-600 inline-flex items-center gap-2">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-amber-200 bg-amber-50 text-amber-800 font-medium">
+                Awaiting approval
+              </span>
+              <span>Approve via the panel on /weekly-plan.</span>
+            </span>
           ) : actionState.variant === "schedule_or_mcp" ? (
             <span className="text-[11px] text-ink-600">
               Use the schedule field above, or call{" "}

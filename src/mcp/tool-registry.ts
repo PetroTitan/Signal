@@ -221,7 +221,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: "signal.weekly_plan.attach_creative",
     description:
-      "Attach (or update) a creative on an existing weekly_plan_item. Source types: generated, uploaded, wikimedia, official_source, manual_url, planned. External sources require source_url; generated requires prompt. Approve via /approval-queue or /weekly-plan UI.",
+      "Attach (or update) a creative on an existing weekly_plan_item. Source types: generated, uploaded, wikimedia, official_source, manual_url, planned. External sources require source_url; generated requires prompt. Approve via the /weekly-plan approval panel.",
     requiredScopes: ["weekly_plans:write_pending"],
     riskLevel: "remote_write",
     approvalMode: "no_approval_needed",

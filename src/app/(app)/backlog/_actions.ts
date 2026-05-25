@@ -80,7 +80,6 @@ export async function restoreBacklogItemAction(
 
     revalidatePath("/backlog");
     revalidatePath("/weekly-plan");
-    revalidatePath("/approval-queue");
     revalidatePath("/activity");
     return { ok: true, error: null };
   } catch (error) {

@@ -6,8 +6,8 @@
  * into the UI. This module maps those onto founder-readable labels
  * + descriptions + a small tone (color/icon) for the badge.
  *
- * Used by /weekly-plan, /approval-queue, /execution, and the
- * /execution/items/<id> detail page.
+ * Used by /weekly-plan, /execution, and the /execution/items/<id>
+ * detail page.
  */
 
 import type {

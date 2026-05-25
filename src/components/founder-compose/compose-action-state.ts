@@ -37,7 +37,7 @@ export interface ComposeActionStateInput {
 
 export type ComposeActionVariant =
   | "send_for_approval"
-  | "open_approval_queue"
+  | "awaiting_approval_info"
   | "schedule_or_mcp"
   | "reschedule_or_unschedule"
   | "read_only";
@@ -89,18 +89,25 @@ export function deriveComposeActionState(
 
   if (status === "pending_approval") {
     // Alt text is the only common blocker surfaced here. Other
-    // contract/creative blockers are surfaced on the approval queue
-    // page (where the operator actually approves).
+    // contract/creative blockers are surfaced on the weekly-plan
+    // page (where the per-plan approval form lives).
+    //
+    // IMPORTANT: this variant must NOT render a navigation link.
+    // The /approval-queue route does not exist and we don't create
+    // it in this PR. Operators approve via the "Approve this week"
+    // form already rendered on /weekly-plan.
     const blocker = input.altTextMissing
       ? "Alt text required before approval and publishing."
       : null;
     return {
-      variant: "open_approval_queue",
+      variant: "awaiting_approval_info",
       primaryLabel: blocker
         ? "Add alt text to unblock approval"
-        : "Open approval queue",
-      primaryDisabled: blocker !== null,
-      primaryBlocker: blocker,
+        : "Awaiting approval",
+      primaryDisabled: true,
+      primaryBlocker:
+        blocker ??
+        "Use the Approve this week panel on /weekly-plan to approve or hold this item.",
       // The operator is no longer in draft-land; "Save as draft"
       // would be misleading — the row isn't a draft anymore.
       showSaveAsDraft: false,

@@ -40,6 +40,13 @@ import {
   emitScheduleSourceChange,
   type ScheduleSource,
 } from "@/core/observability/schedule-events";
+import {
+  emitApprovalSchedulePreserved,
+  emitApprovalStateAssertionFailed,
+  emitApprovalTransitionCommitted,
+  emitApprovalTransitionFailed,
+  emitApprovalTransitionStarted,
+} from "@/core/observability/approval-events";
 import { scheduleChecksum } from "@/core/scheduling/schedule-checksum";
 
 export type CreateWeeklyPlanResult = ActionResult<{ planId: string }>;
@@ -176,7 +183,6 @@ export async function createPlanItemAction(
     });
 
     revalidatePath("/weekly-plan");
-    revalidatePath("/approval-queue");
     revalidatePath("/activity");
     return actionOk({ itemId: item.id });
   } catch (error) {
@@ -334,66 +340,170 @@ export async function approveWeeklyPlanAction(
       });
     }
 
+    // Transactional immediate-approval loop.
+    //
+    // Per item:
+    //   1. Snapshot pre-mutation status + scheduled_at.
+    //   2. Create execution_item (idempotency hint: source_entity_id
+    //      is the plan_item_id; createExecutionItem is the canonical
+    //      insert path).
+    //   3. Walk it pending_authorization → authorized → scheduled.
+    //   4. Update plan_item to 'scheduled'.
+    //   5. Re-read the plan_item; assert status === 'scheduled' and
+    //      scheduled_at unchanged.
+    //   6. Emit observability for every step.
     let itemsApproved = 0;
     let executionItemsCreated = 0;
+    const assertionFailures: string[] = [];
     for (const it of validItems) {
-      const execItem = await createExecutionItem({
+      const beforeStatus = it.status;
+      const beforeScheduledAt = it.scheduledAt;
+      emitApprovalTransitionStarted({
+        action: "approve_weekly_plan",
         workspaceId,
-        queueId: queue.id,
-        contractId: contract.id,
-        actionType:
-          it.contentType === "comment"
-            ? "publish_scheduled_comment"
-            : "publish_scheduled_post",
-        sourceEntityType: "weekly_plan_item",
-        sourceEntityId: it.id,
-        productId: it.productId,
-        accountId: it.accountId,
-        platform: it.platform,
-        title: it.title,
-        body: it.body,
-        linkUrl: it.linkUrl,
-        scheduledAt: it.scheduledAt,
-        riskScore: it.riskScore,
-        riskLevel: it.riskLevel,
-        metadata: {
-          plan_item_id: it.id,
-          plan_id: planId,
-          source: "approve_weekly_plan",
-        },
+        planId,
+        planItemId: it.id,
+        beforeStatus,
+        beforeScheduledAt,
       });
-      executionItemsCreated += 1;
-      // Walk execution_item to 'scheduled' so the scheduler picks it up.
-      // Transition path: pending_authorization → authorized → scheduled.
-      await updateItemStatus({
-        workspaceId,
-        itemId: execItem.id,
-        to: "authorized",
-      });
-      await updateItemStatus({
-        workspaceId,
-        itemId: execItem.id,
-        to: "scheduled",
-      });
+      try {
+        const execItem = await createExecutionItem({
+          workspaceId,
+          queueId: queue.id,
+          contractId: contract.id,
+          actionType:
+            it.contentType === "comment"
+              ? "publish_scheduled_comment"
+              : "publish_scheduled_post",
+          sourceEntityType: "weekly_plan_item",
+          sourceEntityId: it.id,
+          productId: it.productId,
+          accountId: it.accountId,
+          platform: it.platform,
+          title: it.title,
+          body: it.body,
+          linkUrl: it.linkUrl,
+          scheduledAt: it.scheduledAt,
+          riskScore: it.riskScore,
+          riskLevel: it.riskLevel,
+          metadata: {
+            plan_item_id: it.id,
+            plan_id: planId,
+            source: "approve_weekly_plan",
+          },
+        });
+        executionItemsCreated += 1;
+        // Walk execution_item to 'scheduled' so the scheduler picks it up.
+        // Transition path: pending_authorization → authorized → scheduled.
+        await updateItemStatus({
+          workspaceId,
+          itemId: execItem.id,
+          to: "authorized",
+        });
+        await updateItemStatus({
+          workspaceId,
+          itemId: execItem.id,
+          to: "scheduled",
+        });
 
-      // Bump the plan_item to 'scheduled' so the operator sees it move
-      // out of the approval queue.
-      await updatePlanItemStatus({
-        workspaceId,
-        itemId: it.id,
-        status: "scheduled",
-      });
-      itemsApproved += 1;
-      await recordLog({
-        workspaceId,
-        queueId: queue.id,
-        executionItemId: execItem.id,
-        eventType: "item.scheduled",
-        severity: "info",
-        message: `Weekly plan approval scheduled "${it.title ?? "Untitled"}" for ${it.scheduledAt ?? "(immediate)"}`,
-        metadata: { plan_item_id: it.id, plan_id: planId },
-      });
+        // Bump the plan_item to 'scheduled'.
+        await updatePlanItemStatus({
+          workspaceId,
+          itemId: it.id,
+          status: "scheduled",
+        });
+
+        // Verified DB re-read.
+        const fresh = await getPlanItemById(workspaceId, it.id);
+        const afterStatus = fresh.status;
+        const afterScheduledAt = fresh.scheduledAt;
+        if (afterStatus !== "scheduled") {
+          assertionFailures.push(
+            `"${it.title ?? it.id}" did not transition to scheduled (status=${afterStatus}).`,
+          );
+          emitApprovalStateAssertionFailed({
+            action: "approve_weekly_plan",
+            workspaceId,
+            planId,
+            planItemId: it.id,
+            beforeStatus,
+            afterStatus,
+            beforeScheduledAt,
+            afterScheduledAt,
+            failureReason: `expected_status=scheduled actual=${afterStatus}`,
+          });
+          continue;
+        }
+        if (afterScheduledAt !== beforeScheduledAt) {
+          assertionFailures.push(
+            `"${it.title ?? it.id}" had its schedule mutated during immediate approval.`,
+          );
+          emitApprovalStateAssertionFailed({
+            action: "approve_weekly_plan",
+            workspaceId,
+            planId,
+            planItemId: it.id,
+            beforeStatus,
+            afterStatus,
+            beforeScheduledAt,
+            afterScheduledAt,
+            failureReason: "scheduled_at mutated during immediate approval",
+          });
+          continue;
+        }
+        emitApprovalSchedulePreserved({
+          action: "approve_weekly_plan",
+          workspaceId,
+          planId,
+          planItemId: it.id,
+          beforeScheduledAt,
+          afterScheduledAt,
+        });
+        emitApprovalTransitionCommitted({
+          action: "approve_weekly_plan",
+          workspaceId,
+          planId,
+          planItemId: it.id,
+          beforeStatus,
+          afterStatus,
+          beforeScheduledAt,
+          afterScheduledAt,
+        });
+        itemsApproved += 1;
+        await recordLog({
+          workspaceId,
+          queueId: queue.id,
+          executionItemId: execItem.id,
+          eventType: "item.scheduled",
+          severity: "info",
+          message: `Weekly plan approval scheduled "${it.title ?? "Untitled"}" for ${it.scheduledAt ?? "(immediate)"}`,
+          metadata: { plan_item_id: it.id, plan_id: planId },
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "update_failed";
+        assertionFailures.push(
+          `"${it.title ?? it.id}" failed to approve (${message}).`,
+        );
+        emitApprovalTransitionFailed({
+          action: "approve_weekly_plan",
+          workspaceId,
+          planId,
+          planItemId: it.id,
+          beforeStatus,
+          beforeScheduledAt,
+          failureReason: message,
+        });
+      }
     }
+
+    // If NO item made it through cleanly, surface a hard failure so
+    // the UI doesn't render a false-success banner.
+    if (itemsApproved === 0 && assertionFailures.length > 0) {
+      return actionFail(
+        `Approval failed: ${assertionFailures.slice(0, 3).join(" ")}`,
+      );
+    }
+    for (const f of assertionFailures) warnings.push(f);
 
     try {
       await recordActivity({
@@ -418,7 +528,6 @@ export async function approveWeeklyPlanAction(
     }
 
     revalidatePath("/weekly-plan");
-    revalidatePath("/approval-queue");
     revalidatePath("/execution");
     revalidatePath(`/execution/${queue.id}`);
     revalidatePath("/activity");
@@ -560,17 +669,117 @@ export async function approveAndHoldAction(
       );
     }
 
+    // Transactional approve-and-hold loop.
+    //
+    // For each valid item:
+    //   1. Snapshot the original status + scheduled_at.
+    //   2. Update status pending_approval → approved.
+    //   3. Re-read the row from the DB.
+    //   4. Assert the resulting status === 'approved' and the
+    //      scheduled_at is byte-identical to the snapshot.
+    //   5. On assertion failure, emit observability + push warning;
+    //      surface as a failure when no item makes it through cleanly.
     let itemsApproved = 0;
+    const assertionFailures: string[] = [];
     for (const it of validItems) {
-      // The single critical move: pending_approval → approved.
-      // No execution_queue, no execution_item, no scheduled_at.
-      await updatePlanItemStatus({
+      const beforeStatus = it.status;
+      const beforeScheduledAt = it.scheduledAt;
+      emitApprovalTransitionStarted({
+        action: "approve_and_hold",
         workspaceId,
-        itemId: it.id,
-        status: "approved",
+        planId,
+        planItemId: it.id,
+        beforeStatus,
+        beforeScheduledAt,
       });
-      itemsApproved += 1;
+      try {
+        await updatePlanItemStatus({
+          workspaceId,
+          itemId: it.id,
+          status: "approved",
+        });
+        // Verified DB re-read — never trust the update call alone.
+        const fresh = await getPlanItemById(workspaceId, it.id);
+        const afterStatus = fresh.status;
+        const afterScheduledAt = fresh.scheduledAt;
+        if (afterStatus !== "approved") {
+          assertionFailures.push(
+            `"${it.title ?? it.id}" did not transition (status=${afterStatus}).`,
+          );
+          emitApprovalStateAssertionFailed({
+            action: "approve_and_hold",
+            workspaceId,
+            planId,
+            planItemId: it.id,
+            beforeStatus,
+            afterStatus,
+            beforeScheduledAt,
+            afterScheduledAt,
+            failureReason: `expected_status=approved actual=${afterStatus}`,
+          });
+          continue;
+        }
+        if (afterScheduledAt !== beforeScheduledAt) {
+          assertionFailures.push(
+            `"${it.title ?? it.id}" had its schedule mutated during approve-and-hold.`,
+          );
+          emitApprovalStateAssertionFailed({
+            action: "approve_and_hold",
+            workspaceId,
+            planId,
+            planItemId: it.id,
+            beforeStatus,
+            afterStatus,
+            beforeScheduledAt,
+            afterScheduledAt,
+            failureReason: "scheduled_at mutated during approve-and-hold",
+          });
+          continue;
+        }
+        emitApprovalSchedulePreserved({
+          action: "approve_and_hold",
+          workspaceId,
+          planId,
+          planItemId: it.id,
+          beforeScheduledAt,
+          afterScheduledAt,
+        });
+        emitApprovalTransitionCommitted({
+          action: "approve_and_hold",
+          workspaceId,
+          planId,
+          planItemId: it.id,
+          beforeStatus,
+          afterStatus,
+          beforeScheduledAt,
+          afterScheduledAt,
+        });
+        itemsApproved += 1;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "update_failed";
+        assertionFailures.push(
+          `"${it.title ?? it.id}" failed to approve (${message}).`,
+        );
+        emitApprovalTransitionFailed({
+          action: "approve_and_hold",
+          workspaceId,
+          planId,
+          planItemId: it.id,
+          beforeStatus,
+          beforeScheduledAt,
+          failureReason: message,
+        });
+      }
     }
+
+    // If NO item made it through cleanly, surface a hard failure.
+    // If some succeeded and some failed, return success with warnings.
+    if (itemsApproved === 0 && assertionFailures.length > 0) {
+      return actionFail(
+        `Approval failed: ${assertionFailures.slice(0, 3).join(" ")}`,
+      );
+    }
+    for (const f of assertionFailures) warnings.push(f);
 
     try {
       const { recordActivity } = await import(
@@ -595,7 +804,6 @@ export async function approveAndHoldAction(
     }
 
     revalidatePath("/weekly-plan");
-    revalidatePath("/approval-queue");
     revalidatePath("/activity");
     return actionOk({ planId, itemsApproved, warnings });
   } catch (error) {
@@ -772,7 +980,6 @@ export async function updatePlanItemAction(
     });
 
     revalidatePath("/weekly-plan");
-    revalidatePath("/approval-queue");
     revalidatePath("/activity");
     return actionOk({ itemId: updated.id });
   } catch (error) {
@@ -893,7 +1100,6 @@ export async function attachCreativeAction(
         title: `Creative updated (${updated.creativeType} · ${updated.sourceType})`,
       });
       revalidatePath("/weekly-plan");
-      revalidatePath("/approval-queue");
       return actionOk({ creativeId: updated.id });
     }
 
@@ -924,7 +1130,6 @@ export async function attachCreativeAction(
       title: `Creative attached (${created.creativeType} · ${created.sourceType})`,
     });
     revalidatePath("/weekly-plan");
-    revalidatePath("/approval-queue");
     return actionOk({ creativeId: created.id });
   } catch (error) {
     const message =
@@ -1069,7 +1274,6 @@ export async function uploadCreativeAssetAction(
       title: `Creative uploaded (${mime}, ${(file.size / 1024).toFixed(0)} KB)`,
     });
     revalidatePath("/weekly-plan");
-    revalidatePath("/approval-queue");
     return actionOk({ creativeId: creative.id, assetUrl });
   } catch (error) {
     const message =
@@ -1556,7 +1760,6 @@ export async function sendForApprovalAction(
     });
 
     revalidatePath("/weekly-plan");
-    revalidatePath("/approval-queue");
     return actionOk({ itemId });
   } catch (error) {
     const message =
