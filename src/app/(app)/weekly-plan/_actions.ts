@@ -422,6 +422,176 @@ export async function approveWeeklyPlanAction(
 }
 
 // =====================================================================
+// approveAndHoldAction
+// =====================================================================
+//
+// Companion to approveWeeklyPlanAction. Walks every pending_approval
+// plan item to status='approved' WITHOUT creating an execution_item
+// and WITHOUT requiring scheduled_at. Used when the operator wants
+// to defer the scheduling decision — typically because Claude will
+// schedule the item via signal.schedule_publish (MCP) after the
+// approval.
+//
+// Contract:
+//   - existing approve flow (approveWeeklyPlanAction) unchanged
+//   - no execution_queue / execution_item touch
+//   - no scheduled_at writes
+//   - items without scheduled_at are still accepted (it can be set
+//     later by the scheduler tool)
+//   - creative readiness still enforced (an approved item without
+//     creative would be a bad handoff)
+//   - contract scope still enforced (no cross-scope approvals)
+
+export type ApproveAndHoldResult = ActionResult<{
+  planId: string;
+  itemsApproved: number;
+  warnings: string[];
+}>;
+
+export async function approveAndHoldAction(
+  _prev: ApproveAndHoldResult,
+  formData: FormData,
+): Promise<ApproveAndHoldResult> {
+  const planId = String(formData.get("plan_id") ?? "").trim();
+  if (!planId) return actionFail("Missing plan id.");
+
+  const { getActiveContract } = await import(
+    "@/repositories/weekly-contract-repository"
+  );
+  const { listPlanItems, updatePlanItemStatus } = await import(
+    "@/repositories/weekly-plan-repository"
+  );
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    const contract = await getActiveContract(workspaceId);
+    if (!contract) {
+      return actionFail(
+        "No active weekly contract. Activate a contract at /weekly-contracts before approving the plan.",
+      );
+    }
+
+    const allItems = await listPlanItems(workspaceId, planId);
+    const pendingItems = allItems.filter(
+      (i) => i.status === "pending_approval",
+    );
+    if (pendingItems.length === 0) {
+      return actionFail("No items in pending_approval. Nothing to approve.");
+    }
+
+    const { listCreativesForItems, creativeReadinessReason } = await import(
+      "@/repositories/weekly-plan-creative-repository"
+    );
+    const allCreatives = await listCreativesForItems(
+      workspaceId,
+      pendingItems.map((i) => i.id),
+    );
+    const creativesByItem = new Map<string, typeof allCreatives>();
+    for (const c of allCreatives) {
+      const arr = creativesByItem.get(c.weeklyPlanItemId) ?? [];
+      arr.push(c);
+      creativesByItem.set(c.weeklyPlanItemId, arr);
+    }
+
+    const warnings: string[] = [];
+    const validItems = pendingItems.filter((it) => {
+      const label = it.title ?? "Untitled";
+      if (it.riskLevel === "blocked") {
+        warnings.push(`Skipped "${label}" — risk level blocked.`);
+        return false;
+      }
+      if (it.contentType !== "post") {
+        warnings.push(
+          `Skipped "${label}" — content_type='${it.contentType ?? "(none)"}' is not 'post'.`,
+        );
+        return false;
+      }
+      const itemCreatives = creativesByItem.get(it.id) ?? [];
+      const primaryCreative = itemCreatives[0] ?? null;
+      const reason = creativeReadinessReason(primaryCreative);
+      if (reason) {
+        warnings.push(
+          `Skipped "${label}" — creative not ready (${reason}).`,
+        );
+        return false;
+      }
+      if (it.accountId && !contract.scope.accountIds.includes(it.accountId)) {
+        warnings.push(`Skipped "${label}" — account out of contract scope.`);
+        return false;
+      }
+      if (it.productId && !contract.scope.productIds.includes(it.productId)) {
+        warnings.push(`Skipped "${label}" — product out of contract scope.`);
+        return false;
+      }
+      if (it.platform && !contract.scope.platforms.includes(it.platform)) {
+        warnings.push(`Skipped "${label}" — platform out of contract scope.`);
+        return false;
+      }
+      return true;
+    });
+
+    if (validItems.length === 0) {
+      return actionFail(
+        `All ${pendingItems.length} pending item(s) failed contract-scope checks. ${warnings
+          .slice(0, 3)
+          .join(" ")}`,
+      );
+    }
+
+    let itemsApproved = 0;
+    for (const it of validItems) {
+      // The single critical move: pending_approval → approved.
+      // No execution_queue, no execution_item, no scheduled_at.
+      await updatePlanItemStatus({
+        workspaceId,
+        itemId: it.id,
+        status: "approved",
+      });
+      itemsApproved += 1;
+    }
+
+    try {
+      const { recordActivity } = await import(
+        "@/repositories/activity-repository"
+      );
+      await recordActivity({
+        workspaceId,
+        eventType: "plan.approved_and_held",
+        entityType: "weekly_plan",
+        entityId: planId,
+        title: `Approved ${itemsApproved} item${
+          itemsApproved === 1 ? "" : "s"
+        } — held for scheduling`,
+        description:
+          warnings.length > 0
+            ? `${warnings.length} item(s) skipped — see warnings.`
+            : "Items approved without scheduling. Schedule via signal.schedule_publish (MCP) or the existing approve flow.",
+        metadata: { plan_id: planId, items_approved: itemsApproved },
+      });
+    } catch (err) {
+      console.error("[approveAndHoldAction] activity log failed", err);
+    }
+
+    revalidatePath("/weekly-plan");
+    revalidatePath("/approval-queue");
+    revalidatePath("/activity");
+    return actionOk({ planId, itemsApproved, warnings });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : "Could not approve and hold plan.";
+    console.error("[approveAndHoldAction] failed", error);
+    return actionFail(message);
+  }
+}
+
+// =====================================================================
 // Phase F1 — updatePlanItemAction (inline edit)
 // =====================================================================
 //
