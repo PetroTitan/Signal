@@ -310,6 +310,42 @@ describe("allowedStatuses (schedule-an-approved-item path)", () => {
     expect(r.ready).toBe(false);
     expect(r.blockers.join(" ")).toMatch(/allowed/);
   });
+
+  it("accepts status='paused' when caller passes allowedStatuses=['approved','paused'] (retry path)", () => {
+    const r = assessItemApprovalReadiness({
+      item: makeItem({ status: "paused" }),
+      contract: null,
+      primaryCreative: readyCreative,
+      requireSchedule: true,
+      requireContract: false,
+      allowedStatuses: ["approved", "paused"],
+    });
+    expect(r.ready).toBe(true);
+  });
+
+  it("rejects status='published' (terminal) even when paused is allowed", () => {
+    const r = assessItemApprovalReadiness({
+      item: makeItem({ status: "published" }),
+      contract: null,
+      primaryCreative: readyCreative,
+      requireSchedule: true,
+      requireContract: false,
+      allowedStatuses: ["approved", "paused"],
+    });
+    expect(r.ready).toBe(false);
+  });
+
+  it("rejects status='draft' even when paused is allowed", () => {
+    const r = assessItemApprovalReadiness({
+      item: makeItem({ status: "draft" }),
+      contract: null,
+      primaryCreative: readyCreative,
+      requireSchedule: true,
+      requireContract: false,
+      allowedStatuses: ["approved", "paused"],
+    });
+    expect(r.ready).toBe(false);
+  });
 });
 
 describe("summarizeReadiness", () => {

@@ -137,11 +137,20 @@ export function deriveComposeActionState(
       const blocker = input.altTextMissing
         ? "Alt text required before approval and publishing."
         : null;
+      // `paused` means a prior execution attempt
+      // (blocked / failed) — this is a retry. Use clearer copy so
+      // the operator understands they're recovering, not scheduling
+      // for the first time.
+      const isRetry = status === "paused";
       return {
         variant: "schedule_approved_item",
-        primaryLabel: "Schedule for publish",
+        primaryLabel: isRetry ? "Schedule retry" : "Schedule for publish",
         primaryDisabled: blocker !== null,
-        primaryBlocker: blocker,
+        primaryBlocker:
+          blocker ??
+          (isRetry
+            ? "Paused after a failed or blocked attempt. Schedule again to retry."
+            : null),
         showSaveAsDraft: false,
         readOnly: false,
       };
