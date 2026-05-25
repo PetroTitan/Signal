@@ -68,4 +68,13 @@ describe("datetimeLocalToIso", () => {
   it("throws on invalid input", () => {
     expect(() => datetimeLocalToIso("not-a-date")).toThrow();
   });
+
+  it("year is preserved across multiple round trips (no year drift)", () => {
+    let v = "2026-05-20T16:01";
+    for (let i = 0; i < 20; i++) {
+      const iso = datetimeLocalToIso(v);
+      v = toDatetimeLocalString(new Date(iso));
+    }
+    expect(v.startsWith("2026-")).toBe(true);
+  });
 });

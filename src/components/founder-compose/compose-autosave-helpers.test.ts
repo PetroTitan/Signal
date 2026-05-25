@@ -13,7 +13,6 @@ function makeDraft(
     itemId: null,
     title: "",
     body: "",
-    scheduledAt: "2026-05-20T16:01",
     platform: "reddit",
     contentType: "post",
     subreddit: "test",
@@ -21,7 +20,6 @@ function makeDraft(
     productId: "",
     riskScore: "25",
     notes: "",
-    scheduledAtTouched: false,
     ...overrides,
   };
 }
@@ -45,38 +43,47 @@ describe("shouldResetDraft", () => {
 });
 
 describe("composeAutosavePayload", () => {
-  it("omits the schedule field when scheduledAtTouched is false", () => {
-    const payload = composeAutosavePayload(
-      makeDraft({ scheduledAtTouched: false, title: "hi" }),
-    );
+  it("never includes schedule fields", () => {
+    const payload = composeAutosavePayload(makeDraft({ title: "hi" }));
     expect(payload).not.toHaveProperty("s");
+    expect(payload).not.toHaveProperty("scheduledAt");
     expect(payload.t).toBe("hi");
   });
 
-  it("includes the schedule field when scheduledAtTouched is true", () => {
+  it("includes all body/title/platform/etc fields", () => {
     const payload = composeAutosavePayload(
-      makeDraft({ scheduledAtTouched: true, title: "hi" }),
+      makeDraft({
+        itemId: "abc",
+        title: "T",
+        body: "B",
+        platform: "bluesky",
+        contentType: "post",
+        subreddit: "test",
+        accountId: "a",
+        productId: "p",
+        riskScore: "30",
+        notes: "n",
+      }),
     );
-    expect(payload.s).toBe("2026-05-20T16:01");
+    expect(payload).toEqual({
+      id: "abc",
+      t: "T",
+      b: "B",
+      p: "bluesky",
+      c: "post",
+      sr: "test",
+      a: "a",
+      pr: "p",
+      r: "30",
+      n: "n",
+    });
   });
 });
 
 describe("serializeAutosaveDraft", () => {
-  it("produces the same string for two drafts that differ only in scheduledAt while untouched", () => {
-    const a = serializeAutosaveDraft(
-      makeDraft({
-        scheduledAt: "2026-05-20T16:01",
-        scheduledAtTouched: false,
-      }),
-    );
-    const b = serializeAutosaveDraft(
-      makeDraft({
-        scheduledAt: "2026-05-20T12:01",
-        scheduledAtTouched: false,
-      }),
-    );
-    // Same payload — the schedule diff is invisible to the autosave
-    // loop until the operator actually touches the picker.
+  it("produces stable identical strings for identical drafts", () => {
+    const a = serializeAutosaveDraft(makeDraft({ title: "x" }));
+    const b = serializeAutosaveDraft(makeDraft({ title: "x" }));
     expect(a).toEqual(b);
   });
 
@@ -86,30 +93,11 @@ describe("serializeAutosaveDraft", () => {
     expect(a).not.toEqual(b);
   });
 
-  it("produces different strings when scheduledAt changes after touching", () => {
-    const a = serializeAutosaveDraft(
-      makeDraft({
-        scheduledAt: "2026-05-20T16:01",
-        scheduledAtTouched: true,
-      }),
-    );
-    const b = serializeAutosaveDraft(
-      makeDraft({
-        scheduledAt: "2026-05-20T17:01",
-        scheduledAtTouched: true,
-      }),
-    );
-    expect(a).not.toEqual(b);
-  });
-
-  it("body edits do not change the schedule payload visibility", () => {
-    const before = serializeAutosaveDraft(
-      makeDraft({ body: "draft", scheduledAtTouched: false }),
-    );
+  it("body edits do not change schedule visibility (schedule never present)", () => {
+    const before = serializeAutosaveDraft(makeDraft({ body: "draft" }));
     const after = serializeAutosaveDraft(
-      makeDraft({ body: "draft updated", scheduledAtTouched: false }),
+      makeDraft({ body: "draft updated" }),
     );
-    // body changed, but s is absent from both payloads
     expect(JSON.parse(before)).not.toHaveProperty("s");
     expect(JSON.parse(after)).not.toHaveProperty("s");
     expect(before).not.toEqual(after);

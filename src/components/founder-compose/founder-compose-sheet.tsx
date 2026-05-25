@@ -4,13 +4,13 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   composeUpsertDraftAction,
+  saveScheduleAction,
   sendForApprovalAction,
   uploadCreativeAssetAction,
   attachCreativeAction,
 } from "@/app/(app)/weekly-plan/_actions";
 import {
   SCHEDULE_PRESETS,
-  datetimeLocalToIso,
   toDatetimeLocalString,
 } from "@/core/publishing/schedule-presets";
 import { autosaveLabel, useAutosave } from "./use-autosave";
@@ -18,6 +18,15 @@ import {
   serializeAutosaveDraft,
   shouldResetDraft,
 } from "./compose-autosave-helpers";
+import {
+  buildScheduleSavePayload,
+  initialScheduleState,
+  touchByClear,
+  touchByInput,
+  touchByPreset,
+  type ScheduleSaveReason,
+  type ScheduleState,
+} from "./compose-schedule-save";
 import { Markdown } from "./markdown";
 import { RewriteChips } from "./rewrite-chips";
 
@@ -104,15 +113,6 @@ interface DraftState {
   itemId: string | null;
   title: string;
   body: string;
-  scheduledAt: string; // datetime-local input value
-  /**
-   * True once the operator has touched the schedule picker in this
-   * session (preset click or manual edit). While false, the autosave
-   * omits scheduled_at from both its diff payload and the FormData
-   * sent to the server — so the timestamp seeded from the existing
-   * row can't round-trip through UTC normalization and drift.
-   */
-  scheduledAtTouched: boolean;
   platform: string;
   contentType: string;
   subreddit: string;
@@ -123,6 +123,8 @@ interface DraftState {
   creativeId: string | null;
   creativeAssetUrl: string | null;
   creativeAltText: string;
+  // NOTE: schedule lives in its own state (ScheduleState). Body
+  // autosaves cannot touch it; only the dedicated save path can.
 }
 
 function initialDraft(
@@ -130,15 +132,10 @@ function initialDraft(
   existing?: FounderComposeSheetExistingItem,
 ): DraftState {
   if (existing) {
-    const scheduledLocal = existing.scheduledAtIso
-      ? toDatetimeLocalString(new Date(existing.scheduledAtIso))
-      : "";
     return {
       itemId: existing.itemId,
       title: existing.title ?? "",
       body: existing.body ?? "",
-      scheduledAt: scheduledLocal,
-      scheduledAtTouched: false,
       platform: existing.platform ?? "reddit",
       contentType: existing.contentType ?? "post",
       subreddit: existing.subreddit ?? defaults.defaultSubreddit,
@@ -151,18 +148,10 @@ function initialDraft(
       creativeAltText: existing.creative?.altText ?? "",
     };
   }
-  const tomorrow9 = SCHEDULE_PRESETS.find(
-    (p) => p.id === "tomorrow_morning",
-  )!.resolve(new Date());
   return {
     itemId: null,
     title: "",
     body: "",
-    scheduledAt: toDatetimeLocalString(tomorrow9),
-    // Create mode: the default schedule is operator-meaningful (the
-    // preset they'd pick anyway), so we treat it as touched so the
-    // first save persists it.
-    scheduledAtTouched: true,
     platform: "reddit",
     contentType: "post",
     subreddit: defaults.defaultSubreddit,
@@ -176,10 +165,38 @@ function initialDraft(
   };
 }
 
+/**
+ * Compute the initial schedule snapshot for a modal opening.
+ *
+ * Edit mode: snapshot whatever the row has now (or empty). Touched=false.
+ * Create mode: seed the operator-meaningful preset (tomorrow morning),
+ * marked as touched so the explicit "Save schedule" fires once the
+ * first draft save completes.
+ */
+function initialScheduleForOpen(
+  existing?: FounderComposeSheetExistingItem,
+): ScheduleState {
+  if (existing) return initialScheduleState(existing.scheduledAtIso);
+  const tomorrow9 = SCHEDULE_PRESETS.find(
+    (p) => p.id === "tomorrow_morning",
+  )!.resolve(new Date());
+  const inputValue = toDatetimeLocalString(tomorrow9);
+  return { inputValue, initialIso: null, touched: true };
+}
+
 export function FounderComposeSheet(props: FounderComposeSheetProps) {
   const router = useRouter();
   const [draft, setDraft] = useState<DraftState>(() =>
     initialDraft(props.defaults, props.existingItem),
+  );
+  const [schedule, setSchedule] = useState<ScheduleState>(() =>
+    initialScheduleForOpen(props.existingItem),
+  );
+  const [scheduleSaveStatus, setScheduleSaveStatus] = useState<
+    "idle" | "saving" | "saved" | "error"
+  >("idle");
+  const [scheduleSaveError, setScheduleSaveError] = useState<string | null>(
+    null,
   );
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
@@ -188,26 +205,31 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
   // Track the previous `open` value so we only reset on a real
   // closed → open transition. Parent re-renders that pass fresh
   // object literals for `defaults`/`existingItem` must NOT overwrite
-  // in-progress edits — that was the root cause of the autosave loop
-  // (server returns canonical ISO → parent refreshes → object
-  // identity changes → reset effect fires → autosave re-saves the
-  // round-tripped value → repeat).
+  // in-progress edits.
+  //
+  // The schedule snapshot is FROZEN once the modal opens. Subsequent
+  // parent refreshes (router.refresh, revalidatePath) cannot leak the
+  // server-side stored ISO back into the input — only operator events
+  // can touch it.
   const prevOpenRef = useRef(props.open);
   useEffect(() => {
     if (shouldResetDraft(prevOpenRef.current, props.open)) {
       setDraft(initialDraft(props.defaults, props.existingItem));
+      setSchedule(initialScheduleForOpen(props.existingItem));
+      setScheduleSaveStatus("idle");
+      setScheduleSaveError(null);
       setShowAdvanced(false);
       setShowPreview(false);
     }
     prevOpenRef.current = props.open;
     // The deps list intentionally excludes `props.defaults` and
     // `props.existingItem` — they're snapshots captured at open
-    // time, and we don't want their object-identity changes to
-    // trigger a re-reset mid-edit.
+    // time. Object-identity changes to those props must NOT trigger
+    // a re-reset mid-edit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.open]);
 
-  // ---- Autosave ----------------------------------------------------
+  // ---- Body autosave (NEVER touches scheduled_at) ------------------
   const upsertRef = useRef<(d: DraftState) => Promise<{ ok: boolean; error?: string }>>(
     async () => ({ ok: false, error: "not_ready" }),
   );
@@ -220,19 +242,8 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     fd.set("content_type", d.contentType);
     fd.set("account_id", d.accountId);
     fd.set("product_id", d.productId);
-    if (d.scheduledAtTouched) {
-      // Convert to a fully-qualified ISO client-side. The bare
-      // datetime-local string has no timezone, and the server would
-      // otherwise parse it in its own zone (UTC on Vercel) — which
-      // is the operator's UTC offset off from what they actually
-      // picked.
-      try {
-        fd.set("scheduled_at", datetimeLocalToIso(d.scheduledAt));
-      } catch {
-        // Empty value falls through as a clear-to-null signal.
-        fd.set("scheduled_at", "");
-      }
-    }
+    // INVARIANT: do NOT set "scheduled_at" here. Schedule writes have
+    // a separate, explicit, operator-only path (saveScheduleAction).
     fd.set("subreddit", d.subreddit);
     if (d.riskScore.length > 0) fd.set("risk_score", d.riskScore);
     fd.set("notes", d.notes);
@@ -241,7 +252,6 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
       fd,
     );
     if (result.ok) {
-      // First successful save (or any save) returns the canonical id.
       if (!d.itemId && result.itemId) {
         setDraft((cur) => ({ ...cur, itemId: result.itemId }));
       }
@@ -257,6 +267,77 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     delayMs: 1500,
     save: (d) => upsertRef.current(d),
   });
+
+  // ---- Schedule save (operator-only, debounced) --------------------
+  //
+  // Fires only when `schedule.touched` is true. The reason is encoded
+  // in `pendingScheduleReasonRef` and set by the operator-event
+  // helpers (touchByInput / touchByPreset / touchByClear). Server
+  // rejects writes without a recognized reason.
+  const pendingScheduleReasonRef = useRef<ScheduleSaveReason | null>(null);
+  const scheduleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSavedScheduleRef = useRef<string | null>(schedule.initialIso);
+
+  async function runScheduleSave(
+    snapshot: ScheduleState,
+    reason: ScheduleSaveReason,
+    itemId: string,
+  ) {
+    setScheduleSaveStatus("saving");
+    setScheduleSaveError(null);
+    try {
+      const payload = buildScheduleSavePayload(snapshot, itemId, reason);
+      if (!payload) {
+        setScheduleSaveStatus("idle");
+        return;
+      }
+      const fd = new FormData();
+      fd.set("item_id", payload.itemId);
+      fd.set("scheduled_at", payload.isoOrEmpty);
+      fd.set("reason", payload.reason);
+      if (process.env.NODE_ENV !== "production") {
+        console.debug("[compose] saveScheduleAction", {
+          reason,
+          isoOrEmpty: payload.isoOrEmpty,
+        });
+      }
+      const result = await saveScheduleAction(
+        { ok: false, error: "" },
+        fd,
+      );
+      if (result.ok) {
+        lastSavedScheduleRef.current = result.scheduledAtIso;
+        setScheduleSaveStatus("saved");
+      } else {
+        setScheduleSaveStatus("error");
+        setScheduleSaveError(result.error ?? "Could not save schedule.");
+      }
+    } catch (err) {
+      setScheduleSaveStatus("error");
+      setScheduleSaveError(
+        err instanceof Error ? err.message : "Could not save schedule.",
+      );
+    }
+  }
+
+  useEffect(() => {
+    if (!schedule.touched) return;
+    const reason = pendingScheduleReasonRef.current;
+    if (!reason) return;
+    // Need an item id before we can write. If the body autosave is
+    // still creating the row, defer.
+    if (!draft.itemId) return;
+    const snapshot = schedule;
+    if (scheduleTimerRef.current) clearTimeout(scheduleTimerRef.current);
+    scheduleTimerRef.current = setTimeout(() => {
+      void runScheduleSave(snapshot, reason, draft.itemId as string);
+      pendingScheduleReasonRef.current = null;
+    }, 600);
+    return () => {
+      if (scheduleTimerRef.current) clearTimeout(scheduleTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schedule.inputValue, schedule.touched, draft.itemId]);
 
   // ---- Actions -----------------------------------------------------
   async function handleClose() {
@@ -275,15 +356,22 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     startTransition(() => router.refresh());
   }
 
-  async function applyPreset(presetId: string) {
+  function applyPreset(presetId: string) {
     const preset = SCHEDULE_PRESETS.find((p) => p.id === presetId);
     if (!preset) return;
     const resolved = preset.resolve(new Date());
-    setDraft((d) => ({
-      ...d,
-      scheduledAt: toDatetimeLocalString(resolved),
-      scheduledAtTouched: true,
-    }));
+    pendingScheduleReasonRef.current = "preset";
+    setSchedule((s) => touchByPreset(s, toDatetimeLocalString(resolved)));
+  }
+
+  function handleScheduleInputChange(value: string) {
+    pendingScheduleReasonRef.current = "input";
+    setSchedule((s) => touchByInput(s, value));
+  }
+
+  function handleScheduleClear() {
+    pendingScheduleReasonRef.current = "clear";
+    setSchedule((s) => touchByClear(s));
   }
 
   if (!props.open) return null;
@@ -457,10 +545,10 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
             <div className="flex flex-wrap gap-1.5">
               {SCHEDULE_PRESETS.map((p) => {
                 const matches = (() => {
-                  if (!draft.scheduledAt) return false;
+                  if (!schedule.inputValue) return false;
                   const resolved = p.resolve(new Date());
                   return (
-                    toDatetimeLocalString(resolved) === draft.scheduledAt
+                    toDatetimeLocalString(resolved) === schedule.inputValue
                   );
                 })();
                 return (
@@ -479,23 +567,32 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
                   </button>
                 );
               })}
+              {schedule.inputValue.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={handleScheduleClear}
+                  className="text-[11px] px-2.5 py-1 rounded-full border bg-white border-ink-200 text-ink-500 hover:text-ink-800 hover:bg-ink-50"
+                >
+                  Clear
+                </button>
+              ) : null}
             </div>
             <input
               type="datetime-local"
-              value={draft.scheduledAt}
-              onChange={(e) =>
-                setDraft((d) => ({
-                  ...d,
-                  scheduledAt: e.target.value,
-                  scheduledAtTouched: true,
-                }))
-              }
+              value={schedule.inputValue}
+              onChange={(e) => handleScheduleInputChange(e.target.value)}
               className="input w-full text-sm font-mono"
             />
-            <div className="text-[11px] text-ink-500">
-              {props.defaults.timezoneLabel
-                ? `Times shown in ${props.defaults.timezoneLabel}.`
-                : "Times shown in your browser timezone."}
+            <div className="text-[11px] text-ink-500 flex items-center justify-between gap-2">
+              <span>
+                {props.defaults.timezoneLabel
+                  ? `Times shown in ${props.defaults.timezoneLabel}.`
+                  : "Times shown in your browser timezone."}
+              </span>
+              <span className="tabular-nums">
+                {scheduleSaveStatusLabel(scheduleSaveStatus)}
+                {scheduleSaveError ? ` — ${scheduleSaveError}` : ""}
+              </span>
             </div>
           </div>
 
@@ -842,33 +939,120 @@ function CreativeRow({
       ) : null}
 
       {hasCreative ? (
-        <label className="block">
-          <span className="text-[10px] text-ink-500">
-            Alt text (required before publish)
-          </span>
-          <input
-            type="text"
-            value={draft.creativeAltText}
-            onChange={(e) =>
-              setDraft((d) => ({ ...d, creativeAltText: e.target.value }))
-            }
-            placeholder="Describe the image for accessibility."
-            onBlur={async () => {
-              if (!draft.creativeId || !draft.creativeAltText.trim()) return;
-              const fd = new FormData();
-              fd.set("item_id", draft.itemId ?? "");
-              fd.set("creative_id", draft.creativeId);
-              fd.set("creative_type", "image");
-              fd.set("source_type", "uploaded");
-              fd.set("alt_text", draft.creativeAltText);
-              await attachCreativeAction({ ok: false, error: "" }, fd);
-            }}
-            className="input w-full text-xs mt-0.5"
-          />
-        </label>
+        <AltTextEditor
+          itemId={draft.itemId}
+          creativeId={draft.creativeId}
+          altText={draft.creativeAltText}
+          onAltTextChange={(text) =>
+            setDraft((d) => ({ ...d, creativeAltText: text }))
+          }
+        />
       ) : null}
     </div>
   );
+}
+
+// =====================================================================
+// Alt text editor — explicit save status, clears blocker on save
+// =====================================================================
+//
+// Saves on blur and on Cmd/Ctrl+Enter. Shows status next to the
+// label so the operator can tell the save succeeded. Schedule state
+// is never touched here.
+
+function AltTextEditor({
+  itemId,
+  creativeId,
+  altText,
+  onAltTextChange,
+}: {
+  itemId: string | null;
+  creativeId: string | null;
+  altText: string;
+  onAltTextChange: (text: string) => void;
+}) {
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">(
+    "idle",
+  );
+  const [error, setError] = useState<string | null>(null);
+  const lastSavedRef = useRef<string>(altText);
+
+  async function commit() {
+    if (!itemId || !creativeId) return;
+    const trimmed = altText.trim();
+    if (trimmed === lastSavedRef.current.trim()) return;
+    if (trimmed.length === 0) return;
+    setStatus("saving");
+    setError(null);
+    const fd = new FormData();
+    fd.set("item_id", itemId);
+    fd.set("creative_id", creativeId);
+    fd.set("creative_type", "image");
+    fd.set("source_type", "uploaded");
+    fd.set("alt_text", trimmed);
+    const result = await attachCreativeAction({ ok: false, error: "" }, fd);
+    if (result.ok) {
+      lastSavedRef.current = trimmed;
+      setStatus("saved");
+    } else {
+      setStatus("error");
+      setError(result.error ?? "Could not save alt text.");
+    }
+  }
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[10px] text-ink-500">
+          Alt text {altText.trim().length === 0 ? "(required before publish)" : ""}
+        </span>
+        <span className="text-[10px] tabular-nums text-ink-400">
+          {status === "saving"
+            ? "Saving alt text…"
+            : status === "saved"
+              ? "Alt text saved"
+              : status === "error"
+                ? `Alt text not saved — ${error ?? ""}`
+                : altText.trim().length > 0
+                  ? "Unsaved changes"
+                  : ""}
+        </span>
+      </div>
+      <input
+        type="text"
+        value={altText}
+        onChange={(e) => onAltTextChange(e.target.value)}
+        placeholder="Describe the image for accessibility."
+        onBlur={() => void commit()}
+        onKeyDown={(e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+            e.preventDefault();
+            void commit();
+          }
+        }}
+        className="input w-full text-xs mt-0.5"
+      />
+    </div>
+  );
+}
+
+// =====================================================================
+// Schedule save status label
+// =====================================================================
+
+function scheduleSaveStatusLabel(
+  status: "idle" | "saving" | "saved" | "error",
+): string {
+  switch (status) {
+    case "idle":
+      return "Schedule unchanged";
+    case "saving":
+      return "Saving schedule…";
+    case "saved":
+      return "Schedule saved";
+    case "error":
+      return "Schedule not saved";
+  }
 }
 
 // =====================================================================

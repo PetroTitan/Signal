@@ -1,26 +1,18 @@
 /**
- * Pure helpers extracted from FounderComposeSheet so the autosave
- * round-trip behavior is unit-testable without rendering the whole
- * modal.
+ * Pure helpers for the FounderComposeSheet's body autosave path.
  *
- * Two concerns live here:
- *
- *  - shouldResetDraft: should the modal reset its draft state on this
- *    render? Only on a closed → open transition.
- *
- *  - composeAutosavePayload: what gets serialized for the autosave
- *    diff. The schedule field is *deliberately* omitted until the
- *    operator has actually touched the picker — otherwise the
- *    server's UTC normalization round-trips through
- *    `toDatetimeLocalString` and shifts the value by the operator's
- *    UTC offset on every save, producing the schedule-drift loop.
+ * NOTE: Schedule is intentionally NOT part of this payload. The
+ * schedule has its own dedicated save path
+ * (`compose-schedule-save.ts`) so body/title/creative/platform
+ * autosaves can never drift the scheduled timestamp. If you find
+ * yourself reaching for a `scheduledAt` field here — stop. The
+ * regression you're about to cause already happened once.
  */
 
 export interface ComposeAutosaveDraft {
   itemId: string | null;
   title: string;
   body: string;
-  scheduledAt: string;
   platform: string;
   contentType: string;
   subreddit: string;
@@ -28,7 +20,6 @@ export interface ComposeAutosaveDraft {
   productId: string;
   riskScore: string;
   notes: string;
-  scheduledAtTouched: boolean;
 }
 
 export function shouldResetDraft(prevOpen: boolean, nextOpen: boolean): boolean {
@@ -46,14 +37,12 @@ export interface AutosavePayload {
   r: string;
   n: string;
   id: string | null;
-  /** Present only when the operator has touched the schedule picker. */
-  s?: string;
 }
 
 export function composeAutosavePayload(
   draft: ComposeAutosaveDraft,
 ): AutosavePayload {
-  const payload: AutosavePayload = {
+  return {
     t: draft.title,
     b: draft.body,
     p: draft.platform,
@@ -65,10 +54,6 @@ export function composeAutosavePayload(
     n: draft.notes,
     id: draft.itemId,
   };
-  if (draft.scheduledAtTouched) {
-    payload.s = draft.scheduledAt;
-  }
-  return payload;
 }
 
 export function serializeAutosaveDraft(draft: ComposeAutosaveDraft): string {

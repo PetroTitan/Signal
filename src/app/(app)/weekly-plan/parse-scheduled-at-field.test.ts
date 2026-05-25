@@ -63,4 +63,21 @@ describe("parseScheduledAtField", () => {
     const second = parseScheduledAtField(fd);
     expect(first).toEqual(second);
   });
+
+  it("does not interpret bare datetime-local strings as UTC", () => {
+    // The bug-prone path. We require the client to call
+    // datetimeLocalToIso first. Bare values must be rejected.
+    const fd = makeForm({ scheduled_at: "2026-05-20T16:01" });
+    const result = parseScheduledAtField(fd);
+    expect(result.kind).toBe("error");
+  });
+
+  it("normalizes a +HH:MM offset value to ISO Z", () => {
+    const fd = makeForm({ scheduled_at: "2026-05-20T16:01:00-04:00" });
+    const result = parseScheduledAtField(fd);
+    expect(result).toEqual({
+      kind: "set",
+      iso: "2026-05-20T20:01:00.000Z",
+    });
+  });
 });
