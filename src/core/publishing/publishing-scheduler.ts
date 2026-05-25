@@ -29,6 +29,25 @@ import type {
 } from "./publishing-types";
 
 /**
+ * Resolve the workspace's publish mode from its settings row.
+ *
+ * IMPORTANT: default is `"live"`. `"dry_run"` is an EXPLICIT opt-in.
+ * The pre-fix default was `"dry_run"` unless `execution_mode === "live"`,
+ * but `workspace_settings` has no `execution_mode` column on the
+ * live schema, so the field was always undefined and every workspace
+ * silently published in dry-run mode (every scheduler tick fired
+ * `publishSkip("execution_mode_dry_run")` and after PR #95 those
+ * items transitioned to `blocked`).
+ *
+ * Exported for testing. Pure — no I/O.
+ */
+export function resolvePublishMode(
+  settings: { execution_mode?: string | null } | null | undefined,
+): PublishMode {
+  return settings?.execution_mode === "dry_run" ? "dry_run" : "live";
+}
+
+/**
  * Map a publish outcome to the next `execution_items.status`.
  *
  * Two classes of skip:
@@ -291,16 +310,32 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
   const { supabase, nowIso, item, platform } = input;
 
   // Workspace publishing mode (dry_run | live).
+  //
+  // Default is `live` — dry_run is an EXPLICIT opt-in via
+  // `workspace_settings.execution_mode = "dry_run"`. Prior to this
+  // change the default was "dry_run" unless the row had
+  // `execution_mode === "live"`, but the column doesn't exist on
+  // `workspace_settings` (verified against the live schema), so the
+  // value was always undefined at runtime and every workspace
+  // silently published in dry-run mode. No scheduler-tick publish
+  // ever reached the platform API.
+  //
+  // Other publish-time safety gates (account confirmed, oauth
+  // connected, token stored, risk-not-blocked, scheduled_at <= now)
+  // remain intact and run AFTER this mode resolution. Operators who
+  // need dry-run for testing can set the column explicitly (a future
+  // migration can add the column with default "live").
+  //
+  // The SAFE_TEST_MODE env var still gates Reddit in courier mode
+  // upstream of this check — it's a process-level safety, separate.
   const { data: settings } = await supabase
     .from("workspace_settings")
     .select("*")
     .eq("workspace_id", item.workspace_id)
     .maybeSingle();
-  const mode: PublishMode =
-    ((settings as { execution_mode?: string } | null)?.execution_mode ===
-      "live"
-      ? "live"
-      : "dry_run");
+  const mode: PublishMode = resolvePublishMode(
+    settings as { execution_mode?: string | null } | null,
+  );
 
   // Active contract for this workspace?
   const { data: contractRow } = await supabase
