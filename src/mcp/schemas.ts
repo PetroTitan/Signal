@@ -941,6 +941,155 @@ export function parseSchedulePublish(
   };
 }
 
+// ── signal.weekly_plan.update_item ────────────────────────────────
+//
+// Edit an existing draft / pending_approval plan_item before the
+// operator approves it. The tool exists so Claude can correct a
+// seeded body (no AI provider configured) or polish creative
+// direction without forcing the operator to copy/paste in the UI.
+//
+// Forbidden: any status flip toward approval / scheduling /
+// publishing. The handler refuses items already past
+// pending_approval.
+
+export const UPDATE_ITEM_BODY_MAX = 20_000;
+export const UPDATE_ITEM_TITLE_MAX = 500;
+export const UPDATE_ITEM_FREEFORM_MAX = 4_000;
+export const UPDATE_ITEM_RISK_NOTE_MAX = 500;
+export const UPDATE_ITEM_RISK_NOTES_MAX_COUNT = 10;
+
+export interface WeeklyPlanUpdateItemArgs {
+  plan_item_id: string;
+  title?: string;
+  body?: string;
+  /** Pass `null` to clear an existing CTA. Pass a string to set it. */
+  cta?: string | null;
+  /**
+   * Operator-facing creative brief (paired with the platform-native
+   * envelope's mediaPromptOrBrief). `creative_brief` and
+   * `media_prompt_or_brief` are accepted as aliases — handler
+   * normalizes.
+   */
+  creative_brief?: string;
+  media_prompt_or_brief?: string;
+  risk_notes?: ReadonlyArray<string>;
+  confirm_update: true;
+}
+
+export function parseWeeklyPlanUpdateItem(
+  input: unknown,
+): Parse<WeeklyPlanUpdateItemArgs> {
+  if (!isObject(input)) return { ok: false, errors: ["expected_object"] };
+  const errors: string[] = [];
+
+  if (!str(input.plan_item_id) || !isUuidLike(input.plan_item_id))
+    errors.push("plan_item_id_invalid");
+
+  if (input.confirm_update !== true) {
+    errors.push("confirm_update_must_be_true");
+  }
+
+  // Optional content fields. Each must be valid IF provided, AND at
+  // least one must be provided so the handler doesn't write a
+  // no-op patch.
+  const updatableKeys = [
+    "title",
+    "body",
+    "cta",
+    "creative_brief",
+    "media_prompt_or_brief",
+    "risk_notes",
+  ];
+  const presentKeys = updatableKeys.filter((k) => input[k] !== undefined);
+  if (presentKeys.length === 0) {
+    errors.push("at_least_one_content_field_required");
+  }
+
+  if (input.title !== undefined) {
+    if (!str(input.title) || input.title.trim().length === 0) {
+      errors.push("title_must_be_non_empty_string");
+    } else if (input.title.length > UPDATE_ITEM_TITLE_MAX) {
+      errors.push("title_too_long");
+    }
+  }
+  if (input.body !== undefined) {
+    if (!str(input.body) || input.body.trim().length === 0) {
+      errors.push("body_must_be_non_empty_string");
+    } else if (input.body.length > UPDATE_ITEM_BODY_MAX) {
+      errors.push("body_too_long");
+    }
+  }
+  if (input.cta !== undefined && input.cta !== null) {
+    if (!str(input.cta)) {
+      errors.push("cta_must_be_string_or_null");
+    } else if (input.cta.length > UPDATE_ITEM_FREEFORM_MAX) {
+      errors.push("cta_too_long");
+    }
+  }
+  if (input.creative_brief !== undefined) {
+    if (!str(input.creative_brief) || input.creative_brief.trim().length === 0) {
+      errors.push("creative_brief_must_be_non_empty_string");
+    } else if (input.creative_brief.length > UPDATE_ITEM_FREEFORM_MAX) {
+      errors.push("creative_brief_too_long");
+    }
+  }
+  if (input.media_prompt_or_brief !== undefined) {
+    if (
+      !str(input.media_prompt_or_brief) ||
+      input.media_prompt_or_brief.trim().length === 0
+    ) {
+      errors.push("media_prompt_or_brief_must_be_non_empty_string");
+    } else if (input.media_prompt_or_brief.length > UPDATE_ITEM_FREEFORM_MAX) {
+      errors.push("media_prompt_or_brief_too_long");
+    }
+  }
+  if (input.risk_notes !== undefined) {
+    if (!Array.isArray(input.risk_notes)) {
+      errors.push("risk_notes_must_be_array");
+    } else {
+      if (input.risk_notes.length > UPDATE_ITEM_RISK_NOTES_MAX_COUNT) {
+        errors.push("risk_notes_too_many");
+      }
+      for (const n of input.risk_notes) {
+        if (!str(n) || n.trim().length === 0) {
+          errors.push("risk_notes_items_must_be_non_empty_strings");
+          break;
+        }
+        if (n.length > UPDATE_ITEM_RISK_NOTE_MAX) {
+          errors.push("risk_notes_item_too_long");
+          break;
+        }
+      }
+    }
+  }
+
+  if (errors.length > 0) return { ok: false, errors };
+
+  const value: WeeklyPlanUpdateItemArgs = {
+    plan_item_id: input.plan_item_id as string,
+    confirm_update: true,
+  };
+  if (input.title !== undefined) value.title = (input.title as string).trim();
+  if (input.body !== undefined) value.body = (input.body as string).trimEnd();
+  if (input.cta !== undefined) {
+    value.cta = input.cta === null ? null : (input.cta as string).trim();
+  }
+  // Normalize the two creative-brief aliases. If both supplied,
+  // creative_brief wins (it's the primary spelling per the brief).
+  if (input.creative_brief !== undefined) {
+    value.creative_brief = (input.creative_brief as string).trim();
+  }
+  if (input.media_prompt_or_brief !== undefined) {
+    value.media_prompt_or_brief = (
+      input.media_prompt_or_brief as string
+    ).trim();
+  }
+  if (input.risk_notes !== undefined) {
+    value.risk_notes = (input.risk_notes as string[]).map((n) => n.trim());
+  }
+  return { ok: true, value };
+}
+
 // ── signal.identities.update ──────────────────────────────────────
 
 export interface IdentitiesUpdateArgs {
