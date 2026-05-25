@@ -125,7 +125,8 @@ export const EXECUTION_ITEM_STATUS_LABELS: Record<
 export interface ExecutionQueue {
   id: string;
   workspaceId: string;
-  contractId: string;
+  /** Optional weekly contract. NULL on contract-free per-post queues. */
+  contractId: string | null;
   createdBy: string | null;
   title: string;
   status: ExecutionQueueStatus;
@@ -140,7 +141,9 @@ export interface ExecutionItem {
   id: string;
   workspaceId: string;
   queueId: string;
-  contractId: string;
+  /** Optional weekly contract. NULL when the item was scheduled on the
+   *  contract-free per-post path. */
+  contractId: string | null;
   sourceEntityType: string | null;
   sourceEntityId: string | null;
   productId: string | null;

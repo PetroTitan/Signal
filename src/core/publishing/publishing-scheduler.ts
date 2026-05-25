@@ -90,7 +90,7 @@ export async function tickOnce(
     id: string;
     workspace_id: string;
     queue_id: string;
-    contract_id: string;
+    contract_id: string | null;
     account_id: string | null;
     product_id: string | null;
     platform: string | null;
@@ -185,7 +185,7 @@ interface PublishOneInput {
     id: string;
     workspace_id: string;
     queue_id: string;
-    contract_id: string;
+    contract_id: string | null;
     account_id: string | null;
     product_id: string | null;
     title: string | null;

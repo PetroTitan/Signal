@@ -175,69 +175,101 @@ export async function schedulePublishTool(
     });
   }
 
-  // ── 6. Contract scope check ───────────────────────────────────────
+  // ── 6. Contract scope check (optional) ────────────────────────────
+  //
+  // Active weekly contract is OPTIONAL post-migration. When present,
+  // we apply scope checks. When absent, the per-post path runs
+  // contract-free.
   const { data: contract } = await ctx.db
     .from("weekly_contracts")
     .select("id, scope, week_start, week_end, title")
     .eq("workspace_id", ctx.workspaceId)
     .eq("status", "active")
     .maybeSingle();
-  if (!contract) {
-    return failed({
-      tool: TOOL,
-      summary: "no_active_weekly_contract",
-    });
-  }
-  const scope = (contract as { scope: { accountIds: string[]; productIds: string[]; platforms: string[] } | null }).scope;
-  if (!scope) {
-    return failed({
-      tool: TOOL,
-      summary: "active_contract_has_no_scope",
-    });
-  }
-  if (accountId && !scope.accountIds.includes(accountId)) {
-    return failed({
-      tool: TOOL,
-      summary: "plan_item_account_out_of_contract_scope",
-    });
-  }
-  const productId = (planItem as { product_id: string | null }).product_id;
-  if (productId && !scope.productIds.includes(productId)) {
-    return failed({
-      tool: TOOL,
-      summary: "plan_item_product_out_of_contract_scope",
-    });
-  }
-  if (!scope.platforms.includes(platform)) {
-    return failed({
-      tool: TOOL,
-      summary: "plan_item_platform_out_of_contract_scope",
-    });
+  const contractId =
+    contract === null
+      ? null
+      : (contract as { id: string }).id;
+  const contractMode: "contract_attached" | "contract_free_item" =
+    contract === null ? "contract_free_item" : "contract_attached";
+
+  if (contract !== null) {
+    const scope = (
+      contract as {
+        scope: {
+          accountIds: string[];
+          productIds: string[];
+          platforms: string[];
+        } | null;
+      }
+    ).scope;
+    if (!scope) {
+      return failed({
+        tool: TOOL,
+        summary: "active_contract_has_no_scope",
+      });
+    }
+    if (accountId && !scope.accountIds.includes(accountId)) {
+      return failed({
+        tool: TOOL,
+        summary: "plan_item_account_out_of_contract_scope",
+      });
+    }
+    const productId = (planItem as { product_id: string | null }).product_id;
+    if (productId && !scope.productIds.includes(productId)) {
+      return failed({
+        tool: TOOL,
+        summary: "plan_item_product_out_of_contract_scope",
+      });
+    }
+    if (!scope.platforms.includes(platform)) {
+      return failed({
+        tool: TOOL,
+        summary: "plan_item_platform_out_of_contract_scope",
+      });
+    }
   }
 
   // ── 7. Get / create execution_queue ───────────────────────────────
-  const { data: existingQueue } = await ctx.db
+  // Contract path: look up the contract-bound queue.
+  // Contract-free path: look up the workspace contract-free queue
+  // (one or more rows with contract_id IS NULL).
+  const queueQuery = ctx.db
     .from("execution_queues")
     .select("id")
     .eq("workspace_id", ctx.workspaceId)
-    .eq("contract_id", (contract as { id: string }).id)
-    .eq("status", "active")
-    .maybeSingle();
+    .eq("status", "active");
+  const { data: existingQueue } =
+    contractId === null
+      ? await queueQuery.is("contract_id", null).maybeSingle()
+      : await queueQuery.eq("contract_id", contractId).maybeSingle();
 
   let queueId = (existingQueue as { id: string } | null)?.id ?? null;
   if (!queueId) {
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const endIso = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000)
+      .toISOString()
+      .slice(0, 10);
+    const insertPayload = {
+      workspace_id: ctx.workspaceId,
+      contract_id: contractId,
+      title:
+        contract === null
+          ? "Contract-free items"
+          : (contract as { title: string }).title,
+      week_start:
+        contract === null
+          ? todayIso
+          : (contract as { week_start: string }).week_start,
+      week_end:
+        contract === null
+          ? endIso
+          : (contract as { week_end: string }).week_end,
+      status: "active",
+    };
     const { data: newQueue, error: queueErr } = await ctx.db
       .from("execution_queues")
-      .insert(
-        {
-          workspace_id: ctx.workspaceId,
-          contract_id: (contract as { id: string }).id,
-          title: (contract as { title: string }).title,
-          week_start: (contract as { week_start: string }).week_start,
-          week_end: (contract as { week_end: string }).week_end,
-          status: "active",
-        } as never,
-      )
+      .insert(insertPayload as never)
       .select("id")
       .single();
     if (queueErr || !newQueue) {
@@ -261,7 +293,7 @@ export async function schedulePublishTool(
       {
         workspace_id: ctx.workspaceId,
         queue_id: queueId,
-        contract_id: (contract as { id: string }).id,
+        contract_id: contractId,
         action_type:
           (planItem as { content_type: string | null }).content_type === "comment"
             ? "publish_scheduled_comment"
@@ -285,6 +317,9 @@ export async function schedulePublishTool(
           source: "mcp_operation",
           scheduled_by_operator_token_id: ctx.operatorTokenId,
           mcp_scheduled_at: new Date().toISOString(),
+          contract_mode: contractMode,
+          approval_mode: "per_item",
+          approved_without_contract: contract === null,
         },
       } as never,
     )
@@ -368,7 +403,10 @@ export async function schedulePublishTool(
   // ── 12. Response (no secrets, no DID, no tokens) ──────────────────
   return ok({
     tool: TOOL,
-    summary: `Scheduled plan_item for ${platform} publish at ${args.scheduled_at}. Scheduler will run runPublish at that time.`,
+    summary:
+      contractMode === "contract_free_item"
+        ? `Scheduled contract-free plan_item for ${platform} publish at ${args.scheduled_at}. Scheduler will run runPublish at that time.`
+        : `Scheduled plan_item for ${platform} publish at ${args.scheduled_at}. Scheduler will run runPublish at that time.`,
     data: {
       plan_item_id: args.plan_item_id,
       execution_item_id: execItemId,
@@ -376,6 +414,10 @@ export async function schedulePublishTool(
       platform,
       identity_id: accountId,
       scheduled_at: args.scheduled_at,
+      // Audit-trail fields — operators (and Claude) can see whether
+      // the schedule used a contract or ran contract-free.
+      contract_mode: contractMode,
+      contract_id: contractId,
       review_url: `/weekly-plan?focus=${encodeURIComponent(args.plan_item_id)}`,
     },
     requiresUserApproval: true,

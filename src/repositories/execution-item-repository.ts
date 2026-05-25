@@ -44,7 +44,8 @@ function toItem(row: ExecutionItemRow): ExecutionItem {
 export interface CreateExecutionItemInput {
   workspaceId: string;
   queueId: string;
-  contractId: string;
+  /** Optional. NULL for contract-free per-post items. */
+  contractId: string | null;
   actionType: string;
   sourceEntityType?: string | null;
   sourceEntityId?: string | null;
@@ -65,7 +66,9 @@ export async function createExecutionItem(
   input: CreateExecutionItemInput,
 ): Promise<ExecutionItem> {
   const supabase = createSupabaseServerClient();
-  const insert: ExecutionItemInsert = {
+  // contract_id is nullable post-migration; cast through `unknown`
+  // until Supabase types are regenerated.
+  const insert = {
     workspace_id: input.workspaceId,
     queue_id: input.queueId,
     contract_id: input.contractId,
@@ -84,7 +87,7 @@ export async function createExecutionItem(
     risk_level: input.riskLevel ?? null,
     max_attempts: input.maxAttempts ?? 3,
     metadata: input.metadata ?? {},
-  };
+  } as unknown as ExecutionItemInsert;
   const { data, error } = await supabase
     .from("execution_items")
     .insert(insert as never)

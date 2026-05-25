@@ -1013,6 +1013,7 @@ export async function approvePlanItemAndScheduleAction(
   );
   const {
     getActiveExecutionQueue,
+    getActiveContractFreeExecutionQueue,
     createExecutionQueue,
   } = await import("@/repositories/execution-queue-repository");
   const {
@@ -1030,6 +1031,10 @@ export async function approvePlanItemAndScheduleAction(
     const workspaceId = membership.workspace.id;
 
     const item = await getPlanItemById(workspaceId, itemId);
+    // Active contract is OPTIONAL post-migration. When attached, we
+    // record contract_id on the execution_item and apply scope
+    // checks. When absent, we use the workspace's contract-free
+    // execution queue (or create one).
     const contract = await getActiveContract(workspaceId);
     const allCreatives = await listCreativesForItems(workspaceId, [itemId]);
     const primaryCreative = allCreatives[0] ?? null;
@@ -1039,20 +1044,16 @@ export async function approvePlanItemAndScheduleAction(
       contract,
       primaryCreative,
       requireSchedule: true,
-      // execution_items.contract_id is NOT NULL; we MUST have a
-      // contract to create the row. The readiness helper surfaces
-      // the operator-readable blocker copy.
-      requireContract: true,
+      // Per-post immediate-schedule no longer requires an active
+      // weekly contract. When one IS present, the readiness helper
+      // still runs scope checks (requireContract: true). When absent,
+      // we skip both (requireContract: false).
+      requireContract: contract !== null,
     });
     if (!readiness.ready) {
       return actionFail(
         `Approval failed: ${readiness.blockers.slice(0, 2).join(" ")}`,
       );
-    }
-    if (!contract) {
-      // Defensive — readiness already covers this, but the rest of
-      // the function dereferences contract.
-      return actionFail("Active weekly contract required.");
     }
 
     // Duplicate-prevention: refuse if an execution_item already
@@ -1066,15 +1067,41 @@ export async function approvePlanItemAndScheduleAction(
       );
     }
 
-    let queue = await getActiveExecutionQueue(workspaceId, contract.id);
-    if (!queue) {
-      queue = await createExecutionQueue({
-        workspaceId,
-        contractId: contract.id,
-        title: contract.title,
-        weekStart: contract.weekStart,
-        weekEnd: contract.weekEnd,
-      });
+    // Queue selection — branch on whether a contract is attached.
+    // Contract path: reuse / create the contract-bound queue.
+    // Contract-free path: reuse / create the workspace contract-free
+    // queue (one live row at a time per workspace; the unique partial
+    // index on contract_id ignores NULL so we may have several, but
+    // this lookup picks the most recently created live one).
+    let queue;
+    if (contract) {
+      queue = await getActiveExecutionQueue(workspaceId, contract.id);
+      if (!queue) {
+        queue = await createExecutionQueue({
+          workspaceId,
+          contractId: contract.id,
+          title: contract.title,
+          weekStart: contract.weekStart,
+          weekEnd: contract.weekEnd,
+        });
+      }
+    } else {
+      queue = await getActiveContractFreeExecutionQueue(workspaceId);
+      if (!queue) {
+        const todayIso = new Date().toISOString().slice(0, 10);
+        // 90-day horizon — the queue is reusable for all
+        // contract-free items scheduled in the next quarter.
+        const endIso = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .slice(0, 10);
+        queue = await createExecutionQueue({
+          workspaceId,
+          contractId: null,
+          title: "Contract-free items",
+          weekStart: todayIso,
+          weekEnd: endIso,
+        });
+      }
     }
 
     const beforeStatus = item.status;
@@ -1091,7 +1118,7 @@ export async function approvePlanItemAndScheduleAction(
     const execItem = await createExecutionItem({
       workspaceId,
       queueId: queue.id,
-      contractId: contract.id,
+      contractId: contract ? contract.id : null,
       actionType:
         item.contentType === "comment"
           ? "publish_scheduled_comment"
@@ -1111,6 +1138,12 @@ export async function approvePlanItemAndScheduleAction(
         plan_item_id: item.id,
         plan_id: item.weeklyPlanId,
         source: "approve_plan_item_and_schedule",
+        // Audit-trail flags so future readers (and dashboards) can
+        // see whether the item was scheduled under a contract or
+        // without one.
+        contract_mode: contract ? "contract_attached" : "contract_free_item",
+        approval_mode: "per_item",
+        approved_without_contract: contract === null,
       },
     });
     await updateItemStatus({

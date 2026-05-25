@@ -653,9 +653,7 @@ function PerItemApproveButtons({
         >
           {actions.schedulePost.kind === "disabled_no_schedule"
             ? "No schedule — approve & hold first"
-            : actions.schedulePost.kind === "disabled_no_contract"
-              ? "No active contract — approve & hold first"
-              : "Approve post unavailable"}
+            : "Approve post unavailable"}
         </span>
       )}
       <form action={holdAction} className="inline">

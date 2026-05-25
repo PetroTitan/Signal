@@ -27,7 +27,8 @@ function toQueue(row: ExecutionQueueRow): ExecutionQueue {
 
 export interface CreateExecutionQueueInput {
   workspaceId: string;
-  contractId: string;
+  /** Optional. NULL for contract-free per-post queues. */
+  contractId: string | null;
   title: string;
   weekStart: string;
   weekEnd: string;
@@ -42,7 +43,11 @@ export async function createExecutionQueue(
   } = await supabase.auth.getUser();
   if (!user) throw notAuthenticated();
 
-  const insert: ExecutionQueueInsert = {
+  // contract_id is now nullable post-migration
+  // (20260605000001_contract_free_per_post_publishing.sql). The
+  // generated Supabase types lag behind the live schema until they're
+  // regenerated; cast through `unknown` here.
+  const insert = {
     workspace_id: input.workspaceId,
     contract_id: input.contractId,
     created_by: user.id,
@@ -50,7 +55,7 @@ export async function createExecutionQueue(
     status: "draft",
     week_start: input.weekStart,
     week_end: input.weekEnd,
-  };
+  } as unknown as ExecutionQueueInsert;
   const { data, error } = await supabase
     .from("execution_queues")
     .insert(insert as never)
@@ -106,6 +111,34 @@ export async function getActiveExecutionQueue(
     .limit(1)
     .maybeSingle();
   if (error) throw fromPostgres(error, "Failed to load active execution queue.");
+  if (!data) return null;
+  return toQueue(data as unknown as ExecutionQueueRow);
+}
+
+/**
+ * Look up the workspace's active contract-free queue (the bucket for
+ * per-post items scheduled without a weekly contract). Returns the
+ * most recently created live queue, or null when no contract-free
+ * queue exists yet — callers create one on demand.
+ */
+export async function getActiveContractFreeExecutionQueue(
+  workspaceId: string,
+): Promise<ExecutionQueue | null> {
+  const supabase = createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("execution_queues")
+    .select("*")
+    .eq("workspace_id", workspaceId)
+    .is("contract_id", null)
+    .in("status", ["draft", "ready", "running", "paused"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error)
+    throw fromPostgres(
+      error,
+      "Failed to load active contract-free execution queue.",
+    );
   if (!data) return null;
   return toQueue(data as unknown as ExecutionQueueRow);
 }

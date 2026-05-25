@@ -262,11 +262,13 @@ export async function queueWeeklyPlanItemsAction(
       );
     }
 
-    const contract = await getWeeklyContractById(
-      membership.workspace.id,
-      queue.contractId,
-    );
-    if (contract.status !== "active") {
+    // Contract-free queues (per-post path) skip the contract scope
+    // check. Contract-attached queues still enforce active status
+    // and scope at queue time as defense-in-depth.
+    const contract = queue.contractId
+      ? await getWeeklyContractById(membership.workspace.id, queue.contractId)
+      : null;
+    if (contract && contract.status !== "active") {
       return actionFail(
         `Queue's contract is "${contract.status}". Activate it before queuing items.`,
       );
@@ -279,8 +281,7 @@ export async function queueWeeklyPlanItemsAction(
     ]);
 
     const eligible = planItems.filter((p) => {
-      // Honor contract scope at queue time too (defense in depth — the
-      // evaluator will enforce again at authorize time).
+      if (!contract) return true; // contract-free queue: no scope filter
       if (p.accountId && !contract.scope.accountIds.includes(p.accountId)) {
         return false;
       }
@@ -298,7 +299,8 @@ export async function queueWeeklyPlanItemsAction(
       const item = await createExecutionItem({
         workspaceId: membership.workspace.id,
         queueId: queue.id,
-        contractId: contract.id,
+        // Inherit contract from the queue (null on contract-free queues).
+        contractId: contract ? contract.id : null,
         actionType: pickActionTypeForPlanItem(plan.platform, plan.contentType),
         sourceEntityType: "weekly_plan_item",
         sourceEntityId: plan.id,
