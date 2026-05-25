@@ -265,6 +265,230 @@ async function createPostRecord(
   return { ok: true, record: { uri: json.uri, cid: json.cid } };
 }
 
+// =====================================================================
+// uploadBlob — required by Bluesky to attach an image to a post.
+// =====================================================================
+//
+// AT Proto image flow:
+//   1. POST /xrpc/com.atproto.repo.uploadBlob with raw image bytes.
+//      The PDS returns a `blob` object (`{ $type:"blob", ref, mimeType,
+//      size }`) that's the durable handle.
+//   2. The blob object goes directly into the post record's
+//      `embed.images[0].image`. The record write is what makes the
+//      image actually appear on the feed; the upload alone does
+//      nothing visible.
+//
+// We perform exactly one blob upload per scheduled publish (the
+// approved primary creative) and attach it to the FIRST thread post
+// only. Multi-image attachments and thread-wide gallery support are
+// deferred.
+
+/** Opaque blob handle returned by AT Proto's uploadBlob. We never
+ *  inspect the inner fields; the publisher just embeds it verbatim
+ *  in the post record. */
+interface BlueskyBlob {
+  $type: "blob";
+  ref: { $link: string };
+  mimeType: string;
+  size: number;
+}
+
+interface UploadBlobFailure {
+  ok: false;
+  status: number;
+  detail: string;
+  errorBody: BlueskyErrorBody | null;
+}
+
+/**
+ * Bluesky-supported image MIME types. Anything else is rejected
+ * client-side so we don't pay a round-trip just to discover the
+ * platform won't accept it. List sourced from Bluesky's PDS
+ * tolerance (jpeg, png, webp, gif); see
+ * https://docs.bsky.app/docs/api/com-atproto-repo-upload-blob
+ */
+const SUPPORTED_IMAGE_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+]);
+
+function guessImageMimeType(url: string, contentTypeHeader: string | null): string | null {
+  if (contentTypeHeader) {
+    const headerMime = contentTypeHeader.split(";")[0]?.trim().toLowerCase();
+    if (headerMime && SUPPORTED_IMAGE_MIME_TYPES.has(headerMime)) {
+      return headerMime;
+    }
+  }
+  const lower = url.toLowerCase();
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".gif")) return "image/gif";
+  return null;
+}
+
+/**
+ * Fetch the image bytes from `imageUrl` and upload them to the
+ * caller's Bluesky PDS as a blob. Returns the blob handle that the
+ * caller embeds in the first post record.
+ *
+ * All failure modes (network, mime, fetch non-2xx, upload non-2xx)
+ * produce a structured `UploadBlobFailure` so the publish caller
+ * can surface `media_upload_failed` with a real reason.
+ */
+async function uploadImageToBlueskyBlob(input: {
+  service: string;
+  accessJwt: string;
+  imageUrl: string;
+}): Promise<{ ok: true; blob: BlueskyBlob } | UploadBlobFailure> {
+  const { service, accessJwt, imageUrl } = input;
+
+  // 1. Fetch the image.
+  let imageResp: Response;
+  try {
+    imageResp = await fetchWithTimeout(imageUrl, {
+      method: "GET",
+      timeoutMs: 20_000,
+    });
+  } catch (err) {
+    if (isTimeoutError(err)) {
+      return {
+        ok: false,
+        status: 0,
+        detail: "Image fetch timed out (20s).",
+        errorBody: null,
+      };
+    }
+    return {
+      ok: false,
+      status: 0,
+      detail: err instanceof Error ? err.message : "Image fetch network error",
+      errorBody: null,
+    };
+  }
+  if (!imageResp.ok) {
+    return {
+      ok: false,
+      status: imageResp.status,
+      detail: `Image fetch returned ${imageResp.status} from creative asset URL.`,
+      errorBody: null,
+    };
+  }
+  const contentType = imageResp.headers.get("content-type");
+  const mimeType = guessImageMimeType(imageUrl, contentType);
+  if (!mimeType) {
+    return {
+      ok: false,
+      status: 0,
+      detail: `Unsupported image MIME for Bluesky (got "${contentType ?? "unknown"}"). Supported: image/jpeg, image/png, image/webp, image/gif.`,
+      errorBody: null,
+    };
+  }
+  let bytes: ArrayBuffer;
+  try {
+    bytes = await imageResp.arrayBuffer();
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      detail:
+        err instanceof Error ? err.message : "Image body read failed",
+      errorBody: null,
+    };
+  }
+  if (bytes.byteLength === 0) {
+    return {
+      ok: false,
+      status: 0,
+      detail: "Image fetch returned empty body.",
+      errorBody: null,
+    };
+  }
+
+  // 2. Upload the blob to the PDS.
+  let uploadResp: Response;
+  try {
+    uploadResp = await fetchWithTimeout(
+      `${service}/xrpc/com.atproto.repo.uploadBlob`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessJwt}`,
+          "Content-Type": mimeType,
+        },
+        body: bytes,
+        timeoutMs: 30_000,
+      },
+    );
+  } catch (err) {
+    if (isTimeoutError(err)) {
+      return {
+        ok: false,
+        status: 0,
+        detail: "Bluesky uploadBlob timed out (30s).",
+        errorBody: null,
+      };
+    }
+    return {
+      ok: false,
+      status: 0,
+      detail:
+        err instanceof Error ? err.message : "uploadBlob network error",
+      errorBody: null,
+    };
+  }
+  if (!uploadResp.ok) {
+    const errorBody = await readBlueskyErrorBody(uploadResp);
+    return {
+      ok: false,
+      status: uploadResp.status,
+      detail: formatBlueskyReasonDetail(
+        "uploadBlob",
+        uploadResp.status,
+        errorBody,
+      ),
+      errorBody,
+    };
+  }
+  let json: { blob?: BlueskyBlob };
+  try {
+    json = (await uploadResp.json()) as { blob?: BlueskyBlob };
+  } catch {
+    return {
+      ok: false,
+      status: uploadResp.status,
+      detail: "uploadBlob response was not JSON",
+      errorBody: null,
+    };
+  }
+  if (
+    !json.blob ||
+    typeof json.blob.ref?.$link !== "string" ||
+    typeof json.blob.mimeType !== "string"
+  ) {
+    return {
+      ok: false,
+      status: uploadResp.status,
+      detail: "uploadBlob response missing blob handle",
+      errorBody: null,
+    };
+  }
+  return { ok: true, blob: json.blob };
+}
+
+/** Build the AT Proto `embed.images` payload for a single image. */
+function buildImageEmbed(
+  blob: BlueskyBlob,
+  altText: string,
+): Record<string, unknown> {
+  return {
+    $type: "app.bsky.embed.images",
+    images: [{ alt: altText, image: blob }],
+  };
+}
+
 /**
  * Convert an at-uri (at://<did>/app.bsky.feed.post/<rkey>) to a
  * bsky.app permalink. Bluesky doesn't return a permalink directly,
@@ -318,6 +542,17 @@ export async function publishToBluesky(
     return publishFail("missing_body", "Bluesky thread had no content.");
   }
 
+  // 2b. If the scheduler attached an approved creative, upload the
+  // blob now. Embed lives only on the first post — the rest of the
+  // thread is reply records without an embed.
+  const imageEmbed = await maybeUploadCreativeForRequest({
+    request,
+    service,
+    accessJwt: session.accessJwt,
+    endpoint: "publishToBluesky",
+  });
+  if (imageEmbed.kind === "failed") return imageEmbed.outcome;
+
   // 3. Publish the thread, threading reply references.
   let rootUri: string | null = null;
   let rootCid: string | null = null;
@@ -341,6 +576,10 @@ export async function publishToBluesky(
         root: { uri: rootUri, cid: rootCid },
         parent: { uri: previousUri, cid: previousCid },
       };
+    }
+    // First post only — attach the image embed if upload succeeded.
+    if (!rootUri && imageEmbed.kind === "embed") {
+      record.embed = imageEmbed.embed;
     }
     const result = await createPostRecord(service, session, record);
     if (!result.ok) {
@@ -378,6 +617,7 @@ export async function publishToBluesky(
     metadata: {
       thread_length: thread.length,
       root_uri: rootUri,
+      media_attached: imageEmbed.kind === "embed",
     },
   });
 }
@@ -429,6 +669,16 @@ export async function publishToBlueskyAsIdentity(
     return publishFail("missing_body", "Bluesky thread had no content.");
   }
 
+  // Upload the approved creative (if any) before the thread loop.
+  // First post gets the embed; subsequent posts are reply records.
+  const imageEmbed = await maybeUploadCreativeForRequest({
+    request,
+    service,
+    accessJwt,
+    endpoint: "publishToBlueskyAsIdentity",
+  });
+  if (imageEmbed.kind === "failed") return imageEmbed.outcome;
+
   const session: BlueskySession = { accessJwt, did };
   const createdAt = new Date().toISOString();
   let rootUri: string | null = null;
@@ -450,6 +700,10 @@ export async function publishToBlueskyAsIdentity(
         root: { uri: rootUri, cid: rootCid },
         parent: { uri: previousUri, cid: previousCid },
       };
+    }
+    // First post only — attach the image embed if upload succeeded.
+    if (!rootUri && imageEmbed.kind === "embed") {
+      record.embed = imageEmbed.embed;
     }
     const result = await createPostRecord(service, session, record);
     if (!result.ok) {
@@ -493,11 +747,98 @@ export async function publishToBlueskyAsIdentity(
     metadata: {
       thread_length: thread.length,
       root_uri: rootUri,
+      media_attached: imageEmbed.kind === "embed",
       // No tokens, no app passwords. DID is public and useful for
       // operator audit ("which exact account did this post under?").
       did,
     },
   });
+}
+
+/**
+ * Resolve the request's optional creative to an AT Proto image embed.
+ *
+ * The scheduler has already vetted that `request.creative` (when
+ * present) has both a URL and alt text. This helper performs the
+ * actual blob upload against the caller's PDS session and converts
+ * the resulting handle into the `embed` object the post record needs.
+ *
+ * Returns one of three states:
+ *   - `none`   — no creative on the request; thread publishes
+ *                text-only (existing behavior).
+ *   - `embed`  — upload succeeded; first post will carry the embed.
+ *   - `failed` — upload (or pre-flight image fetch) failed; the
+ *                publish caller returns this PublishOutcome directly,
+ *                guaranteeing the operator sees `media_upload_failed`
+ *                rather than a silent text-only publish.
+ */
+type CreativeUploadResult =
+  | { kind: "none" }
+  | { kind: "embed"; embed: Record<string, unknown> }
+  | { kind: "failed"; outcome: PublishOutcome };
+
+async function maybeUploadCreativeForRequest(input: {
+  request: PublishRequest;
+  service: string;
+  accessJwt: string;
+  endpoint: "publishToBluesky" | "publishToBlueskyAsIdentity";
+}): Promise<CreativeUploadResult> {
+  const creative = input.request.creative ?? null;
+  if (!creative) return { kind: "none" };
+  const url = creative.assetUrl ?? creative.sourceUrl ?? null;
+  // Defensive: the scheduler's resolver already validated url + alt.
+  // If we somehow get here without them, treat it as a media failure
+  // rather than dropping the operator's image silently.
+  if (!url) {
+    return {
+      kind: "failed",
+      outcome: publishFail(
+        "media_upload_failed",
+        "Bluesky: creative attached to request had no URL.",
+        {
+          endpoint: "uploadBlob",
+          creative_id: creative.id,
+        },
+      ),
+    };
+  }
+  if (!creative.altText || creative.altText.trim().length === 0) {
+    return {
+      kind: "failed",
+      outcome: publishFail(
+        "media_upload_failed",
+        "Bluesky: creative attached to request had no alt text.",
+        {
+          endpoint: "uploadBlob",
+          creative_id: creative.id,
+        },
+      ),
+    };
+  }
+  const upload = await uploadImageToBlueskyBlob({
+    service: input.service,
+    accessJwt: input.accessJwt,
+    imageUrl: url,
+  });
+  if (!upload.ok) {
+    return {
+      kind: "failed",
+      outcome: publishFail(
+        "media_upload_failed",
+        `Bluesky: ${upload.detail}`,
+        {
+          endpoint: "uploadBlob",
+          http_status: upload.status,
+          creative_id: creative.id,
+          ...errorBodyMetadata(upload.errorBody),
+        },
+      ),
+    };
+  }
+  return {
+    kind: "embed",
+    embed: buildImageEmbed(upload.blob, creative.altText),
+  };
 }
 
 /**

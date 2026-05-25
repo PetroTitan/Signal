@@ -408,11 +408,55 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
       ? ((item.metadata as { target: string }).target)
       : null;
 
+  // Approved creative pickup. Only the Bluesky publisher reads media
+  // today; loading is platform-gated so we don't pay the read for
+  // text-only adapters. The scheduler uses its service-role client
+  // because the cron runtime has no operator cookie (same RLS reason
+  // as the orchestrator's repo plumbing).
+  //
+  // If an approved creative exists but is malformed (no asset URL or
+  // no alt text), we BLOCK the publish here rather than letting the
+  // publisher silently downgrade to text-only. The operator gets a
+  // clear reason code (creative_missing_asset / creative_missing_alt_text)
+  // they can act on.
+  let publishCreative: import("./publishing-types").PublishCreative | null = null;
+  const planItemId =
+    (item.metadata as { plan_item_id?: string })?.plan_item_id ?? "";
+  if (platform === "bluesky" && planItemId) {
+    const { listCreativesForItem } = await import(
+      "@/repositories/weekly-plan-creative-repository"
+    );
+    const { resolvePublishCreative } = await import(
+      "./resolve-publish-creative"
+    );
+    const creatives = await listCreativesForItem(
+      item.workspace_id,
+      planItemId,
+      supabase as never,
+    );
+    const decision = resolvePublishCreative(creatives);
+    if (decision.kind === "blocked") {
+      return {
+        status: "blocked",
+        reasonCode: decision.reasonCode,
+        reasonDetail: decision.reasonDetail,
+        externalId: null,
+        externalUrl: null,
+        metadata: {
+          creative_id: decision.creativeId,
+          plan_item_id: planItemId,
+        },
+      };
+    }
+    if (decision.kind === "ready") {
+      publishCreative = decision.creative;
+    }
+  }
+
   const outcome = await runPublish({
     request: {
       workspaceId: item.workspace_id,
-      planItemId:
-        (item.metadata as { plan_item_id?: string })?.plan_item_id ?? "",
+      planItemId,
       executionItemId: item.id,
       platform,
       accountId: item.account_id ?? "",
@@ -422,6 +466,7 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
       linkUrl: item.link_url,
       target,
       mode,
+      creative: publishCreative,
     },
     context: {
       hasActiveContract,
