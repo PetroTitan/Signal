@@ -37,7 +37,7 @@ export interface ComposeActionStateInput {
 
 export type ComposeActionVariant =
   | "send_for_approval"
-  | "awaiting_approval_info"
+  | "awaiting_approval_actions"
   | "schedule_or_mcp"
   | "reschedule_or_unschedule"
   | "read_only";
@@ -88,28 +88,24 @@ export function deriveComposeActionState(
   }
 
   if (status === "pending_approval") {
-    // Alt text is the only common blocker surfaced here. Other
-    // contract/creative blockers are surfaced on the weekly-plan
-    // page (where the per-plan approval form lives).
+    // Per-item approval lives in the modal footer now. The page-wide
+    // bulk form still exists for batch operations.
     //
-    // IMPORTANT: this variant must NOT render a navigation link.
-    // The /approval-queue route does not exist and we don't create
-    // it in this PR. Operators approve via the "Approve this week"
-    // form already rendered on /weekly-plan.
+    // The modal renders TWO buttons:
+    //   - Approve post (requires schedule)
+    //   - Approve & hold (no schedule required)
+    //
+    // The footer is responsible for disabling the schedule button
+    // when no schedule is set; the readiness state below tells it
+    // about the alt-text blocker.
     const blocker = input.altTextMissing
       ? "Alt text required before approval and publishing."
       : null;
     return {
-      variant: "awaiting_approval_info",
-      primaryLabel: blocker
-        ? "Add alt text to unblock approval"
-        : "Awaiting approval",
-      primaryDisabled: true,
-      primaryBlocker:
-        blocker ??
-        "Use the Approve this week panel on /weekly-plan to approve or hold this item.",
-      // The operator is no longer in draft-land; "Save as draft"
-      // would be misleading — the row isn't a draft anymore.
+      variant: "awaiting_approval_actions",
+      primaryLabel: "Approve post",
+      primaryDisabled: blocker !== null,
+      primaryBlocker: blocker,
       showSaveAsDraft: false,
       readOnly: false,
     };

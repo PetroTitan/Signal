@@ -73,28 +73,26 @@ describe("deriveComposeActionState — pending_approval", () => {
     expect(s.primaryLabel).not.toBe("Send for approval");
   });
 
-  it("variant is awaiting_approval_info (no navigation)", () => {
+  it("variant is awaiting_approval_actions (per-item approval buttons)", () => {
     const s = deriveComposeActionState(
       makeInput({ status: "pending_approval" }),
     );
-    expect(s.variant).toBe("awaiting_approval_info");
+    expect(s.variant).toBe("awaiting_approval_actions");
   });
 
   it("never produces variant='open_approval_queue' (broken /approval-queue link removed)", () => {
     const s = deriveComposeActionState(
       makeInput({ status: "pending_approval" }),
     );
-    // Defensive: catches any future regression that re-introduces
-    // the broken navigation variant.
     expect(s.variant as string).not.toBe("open_approval_queue");
   });
 
-  it("primary CTA is disabled with inline guidance (no navigation)", () => {
+  it("primary is enabled when no blockers (per-item buttons render)", () => {
     const s = deriveComposeActionState(
-      makeInput({ status: "pending_approval" }),
+      makeInput({ status: "pending_approval", altTextMissing: false }),
     );
-    expect(s.primaryDisabled).toBe(true);
-    expect(s.primaryBlocker).toMatch(/Approve this week|weekly-plan/i);
+    expect(s.primaryDisabled).toBe(false);
+    expect(s.primaryLabel).toBe("Approve post");
   });
 
   it("blocks approval when alt text is missing", () => {

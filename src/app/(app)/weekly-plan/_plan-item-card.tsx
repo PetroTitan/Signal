@@ -4,13 +4,17 @@ import { useState } from "react";
 import Link from "next/link";
 import { useFormState, useFormStatus } from "react-dom";
 import {
+  approvePlanItemAndHoldAction,
+  approvePlanItemAndScheduleAction,
   duplicatePlanItemAction,
   sendForApprovalAction,
   updatePlanItemAction,
+  type ApprovePlanItemResult,
   type DuplicatePlanItemResult,
   type SendForApprovalResult,
   type UpdatePlanItemResult,
 } from "./_actions";
+import { describeCreativeState } from "./approval-readiness";
 import {
   CreativeCard,
   type CreativeCardData,
@@ -31,6 +35,7 @@ import { asPreviewPlatform } from "@/core/platform-preview/preview-renderer";
 const updateInitial: UpdatePlanItemResult = { ok: false, error: "" };
 const duplicateInitial: DuplicatePlanItemResult = { ok: false, error: "" };
 const sendInitial: SendForApprovalResult = { ok: false, error: "" };
+const approveItemInitial: ApprovePlanItemResult = { ok: false, error: "" };
 
 /**
  * Lightweight, sheet-driven plan item card.
@@ -217,6 +222,17 @@ export function PlanItemCard(props: PlanItemCardProps) {
               </div>
             ) : null}
 
+            {/* Post vs creative status — clear separation so the
+                operator never has to guess whether "Approved" refers
+                to the creative or the post. */}
+            {props.isPost ? (
+              <PostCreativeStatusSummary
+                postStatus={props.status}
+                creative={props.creative}
+                hasWarnings={props.warnings.length > 0}
+              />
+            ) : null}
+
             {/* Quick actions — title, body, and creative already open the
                 sheet on click, so no redundant "Edit" button here. */}
             <div className="flex flex-wrap items-center gap-1.5 pt-2">
@@ -246,6 +262,12 @@ export function PlanItemCard(props: PlanItemCardProps) {
               ) : null}
               {isDraft && props.isPost ? (
                 <SendForApprovalButton itemId={props.id} />
+              ) : null}
+              {props.status === "pending_approval" && props.isPost ? (
+                <PerItemApproveButtons
+                  itemId={props.id}
+                  scheduleSet={props.scheduledAt !== null}
+                />
               ) : null}
               <QuickReschedule
                 itemId={props.id}
@@ -465,4 +487,191 @@ function formatSchedule(iso: string): string {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+// =====================================================================
+// Post + creative status summary — explicit separation so an
+// "Approved" badge on the creative is never confused with post
+// approval.
+// =====================================================================
+
+function PostCreativeStatusSummary({
+  postStatus,
+  creative,
+  hasWarnings,
+}: {
+  postStatus: import("@/lib/supabase/types").WeeklyPlanItemStatus;
+  creative: CreativeCardData | null;
+  hasWarnings: boolean;
+}) {
+  const creativeState = describeCreativeState(creative);
+  const postLabel = postStatusLabel(postStatus);
+  // Cross-state helper copy.
+  let helper: { tone: "ok" | "warn"; text: string } | null = null;
+  if (postStatus === "pending_approval") {
+    if (creativeState.tone === "ok" && !hasWarnings) {
+      helper = { tone: "ok", text: "Ready for post approval." };
+    } else if (creativeState.tone === "ok") {
+      helper = {
+        tone: "warn",
+        text: "Creative is approved. Post still needs approval.",
+      };
+    }
+  } else if (postStatus === "approved") {
+    helper = {
+      tone: "ok",
+      text:
+        "Approved. Schedule via the Schedule button or signal.schedule_publish (MCP).",
+    };
+  } else if (postStatus === "scheduled") {
+    helper = { tone: "ok", text: "Scheduled. The scheduler will publish it." };
+  }
+  return (
+    <div className="rounded-md border border-ink-100 bg-ink-50/40 px-3 py-2 mt-1 space-y-1">
+      <div className="grid grid-cols-2 gap-3 text-[11px]">
+        <div>
+          <div className="text-ink-500 uppercase tracking-wide text-[10px]">
+            Post
+          </div>
+          <div className="text-ink-900 font-medium mt-0.5">{postLabel}</div>
+        </div>
+        <div>
+          <div className="text-ink-500 uppercase tracking-wide text-[10px]">
+            Creative
+          </div>
+          <div
+            className={`font-medium mt-0.5 ${
+              creativeState.tone === "ok"
+                ? "text-emerald-700"
+                : creativeState.tone === "needs_review"
+                  ? "text-amber-700"
+                  : creativeState.tone === "blocked"
+                    ? "text-red-700"
+                    : "text-ink-600"
+            }`}
+          >
+            {creativeState.label}
+          </div>
+        </div>
+      </div>
+      {helper ? (
+        <p
+          className={`text-[11px] leading-relaxed ${
+            helper.tone === "ok" ? "text-emerald-700" : "text-amber-700"
+          }`}
+        >
+          {helper.text}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function postStatusLabel(
+  status: import("@/lib/supabase/types").WeeklyPlanItemStatus,
+): string {
+  switch (status) {
+    case "draft":
+      return "Draft";
+    case "pending_approval":
+      return "Awaiting post approval";
+    case "approved":
+      return "Approved";
+    case "scheduled":
+      return "Scheduled";
+    case "published":
+      return "Published";
+    case "rejected":
+      return "Rejected";
+    case "skipped":
+      return "Skipped";
+    case "backlog":
+      return "Backlog";
+    case "paused":
+      return "Paused";
+    default:
+      return status;
+  }
+}
+
+// =====================================================================
+// Per-item approve buttons — Approve post + Approve & hold.
+// Available on pending_approval items. Refuses the schedule path
+// when no scheduled_at is set, with a calm inline note.
+// =====================================================================
+
+function PerItemApproveButtons({
+  itemId,
+  scheduleSet,
+}: {
+  itemId: string;
+  scheduleSet: boolean;
+}) {
+  const [holdState, holdAction] = useFormState(
+    approvePlanItemAndHoldAction,
+    approveItemInitial,
+  );
+  const [scheduleState, scheduleAction] = useFormState(
+    approvePlanItemAndScheduleAction,
+    approveItemInitial,
+  );
+  const holdSafe = holdState ?? approveItemInitial;
+  const scheduleSafe = scheduleState ?? approveItemInitial;
+
+  return (
+    <div className="inline-flex flex-wrap items-center gap-1.5">
+      {scheduleSet ? (
+        <form action={scheduleAction} className="inline">
+          <input type="hidden" name="item_id" value={itemId} />
+          <ApprovePostSubmit />
+        </form>
+      ) : (
+        <span
+          className="inline-flex items-center text-[11px] text-ink-500 italic"
+          title="No schedule set. Use Approve & hold, then schedule later."
+        >
+          No schedule — approve & hold first
+        </span>
+      )}
+      <form action={holdAction} className="inline">
+        <input type="hidden" name="item_id" value={itemId} />
+        <ApproveAndHoldSubmit />
+      </form>
+      {scheduleSafe.error ? (
+        <span className="text-[11px] text-amber-700 ml-1">
+          {scheduleSafe.error}
+        </span>
+      ) : holdSafe.error ? (
+        <span className="text-[11px] text-amber-700 ml-1">
+          {holdSafe.error}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function ApprovePostSubmit() {
+  const { pending } = useFormStatus();
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      className="btn-primary text-xs disabled:opacity-60"
+    >
+      {pending ? "Approving…" : "Approve post"}
+    </button>
+  );
+}
+
+function ApproveAndHoldSubmit() {
+  const { pending } = useFormStatus();
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      className="btn-secondary text-xs disabled:opacity-60"
+    >
+      {pending ? "Approving…" : "Approve & hold"}
+    </button>
+  );
 }
