@@ -54,18 +54,29 @@ describe("SCHEDULER_AUTONOMOUS_PLATFORMS", () => {
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("devto")).toBe(true);
   });
 
-  it("excludes manual-confirmation-only platforms (hashnode, telegram, youtube, threads, instagram)", () => {
+  it("includes hashnode (Phase F8 — identity-scoped Hashnode publishing)", () => {
+    // Hashnode now has a real identity-scoped publisher
+    // (hashnode-publish-orchestrator.ts: encrypted per-identity API
+    // key + publication_id metadata + Hashnode-prefixed reason
+    // codes), so scheduled items MUST route to runPublish. The
+    // pre-PR scheduler refused them at the allowlist guard, the
+    // same trap dev.to fell into pre-PR #123. This test pins the
+    // inclusion so a future cleanup can't reopen the regression
+    // for Hashnode.
+    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("hashnode")).toBe(true);
+  });
+
+  it("excludes manual-confirmation-only platforms (telegram, youtube, threads, instagram)", () => {
     // These platforms are still routed through manual confirmation
     // at /execution/items/[id]; the scheduler should skip them.
-    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("hashnode")).toBe(false);
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("telegram")).toBe(false);
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("youtube")).toBe(false);
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("threads")).toBe(false);
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("instagram")).toBe(false);
   });
 
-  it("is exactly the five-platform set today (reddit, x, linkedin, bluesky, devto)", () => {
-    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.size).toBe(5);
+  it("is exactly the six-platform set today (reddit, x, linkedin, bluesky, devto, hashnode)", () => {
+    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.size).toBe(6);
   });
 });
 
@@ -201,6 +212,20 @@ describe("nextExecutionStatusForOutcome — silent-scheduled-forever invariant",
       "missing_account",
       "platform_mismatch",
       "scheduler_exception",
+      // Phase F8 — Hashnode-prefixed codes round out the regression
+      // matrix so no skip+hashnode_* combination can silently
+      // leave the row "scheduled" forever.
+      "hashnode_token_missing",
+      "hashnode_token_invalid",
+      "hashnode_publication_missing",
+      "hashnode_requires_article_intent",
+      "hashnode_title_required",
+      "hashnode_body_required",
+      "hashnode_validation_error",
+      "hashnode_rate_limited",
+      "hashnode_provider_unavailable",
+      "hashnode_api_error",
+      "hashnode_network_error",
     ] as const;
     for (const code of allCodes) {
       const next = nextExecutionStatusForOutcome(

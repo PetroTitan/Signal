@@ -50,6 +50,27 @@ export default function SettingsPage() {
 
       <div className="px-6 lg:px-10 py-8 max-w-3xl space-y-6">
         <section className="card p-5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-ink-900">
+                Setup guide
+              </h2>
+              <p className="text-xs text-ink-600 mt-1 leading-relaxed">
+                Connect publishing automation without asking the
+                founder. Walks through per-platform setup, what
+                operators must NOT do, and a truthful status table.
+              </p>
+            </div>
+            <Link
+              href="/settings/setup"
+              className="btn-ghost text-xs whitespace-nowrap shrink-0"
+            >
+              Open →
+            </Link>
+          </div>
+        </section>
+
+        <section className="card p-5">
           <h2 className="text-sm font-semibold text-ink-900">Demo data</h2>
           <p className="text-xs text-ink-600 mt-1 leading-relaxed">
             Off by default. Signal shows real empty states unless this is on.

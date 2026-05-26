@@ -102,9 +102,15 @@ export function nextExecutionStatusForOutcome(
  * `platform_not_supported` at line ~188 BEFORE the runner could
  * route them. The execution_item flipped to blocked, the plan_item
  * to paused, and no provider HTTP request was ever attempted.
+ *
+ * Phase F8 — Hashnode joined the autonomous set when PR #N landed
+ * the identity-scoped orchestrator + Hashnode-prefixed reason codes
+ * + the publication-id metadata flow. Without including "hashnode"
+ * here, scheduled Hashnode items would hit the same short-circuit
+ * dev.to fell into pre-PR #123.
  */
 export const SCHEDULER_AUTONOMOUS_PLATFORMS: ReadonlySet<PublishPlatform> =
-  new Set(["reddit", "x", "linkedin", "bluesky", "devto"]);
+  new Set(["reddit", "x", "linkedin", "bluesky", "devto", "hashnode"]);
 
 export interface SchedulerTickInput {
   /** Soft cap on items processed per tick. Default 10. */

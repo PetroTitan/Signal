@@ -117,6 +117,24 @@ export const PUBLISH_REASON_CODES = [
   // the network call.
   "article_title_required",
   "article_body_required",
+  // Phase F8 — Hashnode automated publishing.
+  //
+  // Hashnode-prefixed reason codes. Additive — generic codes still
+  // accepted for legacy rows. New code paths use Hashnode-specific
+  // codes so operator-facing messages stay actionable. The verifier
+  // already surfaces `api_unavailable` for the retired-free-API
+  // case; the publisher equivalent is `hashnode_provider_unavailable`.
+  "hashnode_token_missing",
+  "hashnode_token_invalid",
+  "hashnode_publication_missing",
+  "hashnode_requires_article_intent",
+  "hashnode_title_required",
+  "hashnode_body_required",
+  "hashnode_validation_error",
+  "hashnode_rate_limited",
+  "hashnode_provider_unavailable",
+  "hashnode_api_error",
+  "hashnode_network_error",
 ] as const;
 export type PublishReasonCode = (typeof PUBLISH_REASON_CODES)[number];
 
