@@ -365,10 +365,12 @@ describe("publishToBlueskyAsIdentity — media_upload_failed branches", () => {
     expect(outcome.reasonDetail).toMatch(/missing blob handle/);
   });
 
-  it("creative with no URL on the request → media_upload_failed (defensive)", async () => {
-    // The scheduler's resolver should never hand us a creative
-    // without a URL, but the publisher refuses defensively rather
-    // than silently dropping the image.
+  it("creative with no URL on the request → blocked / creative_missing_asset (shared payload validation)", async () => {
+    // PR 2 routes creative validation through the shared payload
+    // layer, which produces the same reasonCode as the scheduler's
+    // pre-flight check (PR 1). The publisher returns `blocked` (not
+    // `failed`) — `blocked` is the canonical terminal for "operator
+    // must act" — and no media upload is attempted.
     const outcome = await publishToBlueskyAsIdentity({
       request: baseRequest({
         creative: withCreative({ assetUrl: null, sourceUrl: null }),
@@ -379,12 +381,13 @@ describe("publishToBlueskyAsIdentity — media_upload_failed branches", () => {
       service: "https://bsky.social",
     });
 
-    expect(outcome.reasonCode).toBe("media_upload_failed");
-    expect(outcome.reasonDetail).toMatch(/no URL/i);
+    expect(outcome.status).toBe("blocked");
+    expect(outcome.reasonCode).toBe("creative_missing_asset");
+    expect(outcome.reasonDetail).toMatch(/asset_url \/ source_url/i);
     expect(calls).toHaveLength(0);
   });
 
-  it("creative with no alt text on the request → media_upload_failed (defensive)", async () => {
+  it("creative with no alt text on the request → blocked / creative_missing_alt_text (shared payload validation)", async () => {
     const outcome = await publishToBlueskyAsIdentity({
       request: baseRequest({
         creative: withCreative({ altText: "" }),
@@ -395,8 +398,9 @@ describe("publishToBlueskyAsIdentity — media_upload_failed branches", () => {
       service: "https://bsky.social",
     });
 
-    expect(outcome.reasonCode).toBe("media_upload_failed");
-    expect(outcome.reasonDetail).toMatch(/no alt text/i);
+    expect(outcome.status).toBe("blocked");
+    expect(outcome.reasonCode).toBe("creative_missing_alt_text");
+    expect(outcome.reasonDetail).toMatch(/alt text/i);
     expect(calls).toHaveLength(0);
   });
 });

@@ -84,7 +84,15 @@ export type PreviewWarningKind =
   | "alt_text_missing"
   | "thread_too_long"
   | "first_post_too_short"
-  | "title_ignored_by_platform";
+  | "title_ignored_by_platform"
+  // PR 2 — shared payload contract. Surfaced by the preview when the
+  // attached creative would block the publish (mirrors the publisher's
+  // `creative_missing_asset` / `creative_missing_alt_text` reason
+  // codes from PR 1). The preview still renders the text parts; the
+  // operator gets a clear signal the publish won't happen until the
+  // creative is fixed.
+  | "creative_missing_asset"
+  | "creative_blocked_missing_alt_text";
 
 export interface PreviewWarning {
   kind: PreviewWarningKind;
