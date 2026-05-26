@@ -1318,9 +1318,11 @@ function CreativeRow({
 
       {/* Phase F6.0 — platform-native shape summary. Read-only block
           surfacing what the platform-native adapter will produce for
-          this item. Renders for every platform; stub adapters show a
-          "Stub adapter" warning; legacy rows show "Legacy payload
-          mode". Live edits to body / platform / creative re-compute. */}
+          this item. Renders for every platform; each adapter decides
+          what to do with the inputs. The UI passes draft.subreddit as
+          `target` for every platform — adapters that don't need it
+          (X, Bluesky, etc.) simply ignore. No platform branching in
+          the modal. */}
       {isKnownPublishPlatform(draft.platform) ? (
         <PlatformShapeSummary
           platform={draft.platform as PublishPlatform}
@@ -1337,6 +1339,7 @@ function CreativeRow({
               : null
           }
           rawIntent={existingItem?.platformPublishIntent ?? null}
+          target={draft.subreddit || null}
         />
       ) : null}
     </div>

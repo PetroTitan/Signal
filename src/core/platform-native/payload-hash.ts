@@ -108,6 +108,11 @@ interface CanonicalPayload {
   format: string;
   parts: ReadonlyArray<CanonicalPart>;
   blockers: ReadonlyArray<CanonicalBlocker>;
+  /** Sorted key/value pairs from preview.routing — adapter-supplied
+   *  provider-native metadata (subreddit, link URL, etc.). Always
+   *  emitted as a JSON object with keys in alphabetical order so the
+   *  hash is order-stable. */
+  routing: Readonly<Record<string, string | null>>;
 }
 
 interface CanonicalPart {
@@ -132,7 +137,19 @@ function canonicalize(preview: ProviderPayloadPreview): CanonicalPayload {
     format: preview.format,
     parts: preview.parts.map(canonicalizePart),
     blockers: preview.blockers.map(canonicalizeBlocker),
+    routing: canonicalizeRouting(preview.routing),
   };
+}
+
+function canonicalizeRouting(
+  routing: Readonly<Record<string, string | null>> | undefined,
+): Readonly<Record<string, string | null>> {
+  if (!routing) return {};
+  const sorted: Record<string, string | null> = {};
+  for (const key of Object.keys(routing).sort()) {
+    sorted[key] = routing[key];
+  }
+  return sorted;
 }
 
 function canonicalizePart(p: ProviderPayloadPart): CanonicalPart {

@@ -150,12 +150,16 @@ describe("buildShapeForCreate — explicit mode", () => {
     expect(r.blockers.map((b) => b.code)).toContain("intent_not_supported");
   });
 
-  it("stub adapter (x) + intent=new_post → adapter_not_implemented", () => {
+  it("X (now a real adapter) + intent=new_post → bind, no adapter_not_implemented", () => {
+    // Phase F6.3: X moved from stub to real. This test pins that
+    // the MCP layer no longer surfaces adapter_not_implemented for
+    // a platform whose adapter ships.
     const r = buildShapeForCreate({
       platform: "x",
       input: { intent: "new_post" },
     });
-    expect(r.blockers.map((b) => b.code)).toContain("adapter_not_implemented");
+    expect(r.mode).toBe("explicit");
+    expect(r.blockers.map((b) => b.code)).not.toContain("adapter_not_implemented");
   });
 });
 
@@ -392,24 +396,38 @@ describe("serializeMcpResponse", () => {
 });
 
 // =====================================================================
-// Stub-adapter warnings
+// All adapters real — MCP perspective
 // =====================================================================
+//
+// Phase F6.3 shipped real adapters for every platform; no stubs
+// remain. These tests pin the post-F6.3 contract:
+//   - empty input on any platform still → legacy mode
+//   - explicit intent on any platform → validated against THAT
+//     platform's capability matrix (no adapter_not_implemented)
 
-describe("stub adapter behaviour from MCP perspective", () => {
-  it("legacy shape (intent=unknown) on a stub → no blocker; emits stub warning when explicit", () => {
-    // A non-unknown intent on a stub produces a blocker. A legacy
-    // shape (intent=unknown) goes through the stub path validly but
-    // mode is still "legacy" because no native field was supplied.
-    const legacy = buildShapeForCreate({ platform: "x", input: {} });
-    expect(legacy.mode).toBe("legacy");
-    expect(legacy.blockers).toEqual([]);
+describe("all adapters real — MCP perspective", () => {
+  it("X: empty input → legacy mode (no native fields supplied)", () => {
+    const r = buildShapeForCreate({ platform: "x", input: {} });
+    expect(r.mode).toBe("legacy");
+    expect(r.blockers).toEqual([]);
+  });
 
-    // Stubs reject any non-unknown intent.
-    const explicit = buildShapeForCreate({
-      platform: "x",
+  it("Reddit: explicit new_post → validated against Reddit capability matrix", () => {
+    const r = buildShapeForCreate({
+      platform: "reddit",
       input: { intent: "new_post" },
     });
-    expect(explicit.blockers.map((b) => b.code)).toContain(
+    expect(r.mode).toBe("explicit");
+    expect(r.blockers.map((b) => b.code)).not.toContain("adapter_not_implemented");
+  });
+
+  it("Instagram: explicit unsupported intent (new_post) → intent_not_supported, not adapter_not_implemented", () => {
+    const r = buildShapeForCreate({
+      platform: "instagram",
+      input: { intent: "new_post" },
+    });
+    expect(r.blockers.map((b) => b.code)).toContain("intent_not_supported");
+    expect(r.blockers.map((b) => b.code)).not.toContain(
       "adapter_not_implemented",
     );
   });
