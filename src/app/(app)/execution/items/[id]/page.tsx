@@ -11,6 +11,10 @@ import {
   formatUtcForWorkspace,
   getRelativeDueLabel,
 } from "@/core/scheduling/workspace-time";
+import { buildBlueskyOutcomeSummary } from "@/core/publishing/bluesky-outcome-summary";
+import { BlueskyOutcomeDiagnostics } from "@/components/publishing/bluesky-outcome-diagnostics";
+import { listLogsForItem } from "@/repositories/execution-log-repository";
+import { listCreativesForItem } from "@/repositories/weekly-plan-creative-repository";
 import {
   evaluateSafeTestPolicy,
   type SafeTestPolicyVerdict,
@@ -232,6 +236,47 @@ export default async function ExecutionItemPage({ params }: PageProps) {
       ? cadenceMessage(cadence, item.platform)
       : null;
 
+  // Bluesky-specific outcome diagnostics. Built from:
+  //   - execution_items.metadata.publish_outcome (status fields)
+  //   - latest terminal execution_logs row (rich AT Proto fields)
+  //   - plan_item creatives (for divergence detection)
+  // No-op for other platforms; the component is only rendered when
+  // platform === "bluesky".
+  let blueskyOutcomeSummary:
+    | ReturnType<typeof buildBlueskyOutcomeSummary>
+    | null = null;
+  if (item.platform === "bluesky") {
+    const logs = await listLogsForItem(workspaceId, item.id, 50);
+    const TERMINAL_LOG_EVENTS = new Set([
+      "item.completed",
+      "item.failed",
+      "item.blocked",
+      "item.dry_run_finished",
+    ]);
+    const latestTerminalLog =
+      logs.find((l) => TERMINAL_LOG_EVENTS.has(l.eventType)) ?? null;
+    const planItemCreatives = planItemId
+      ? await listCreativesForItem(workspaceId, planItemId).catch(() => [])
+      : [];
+    blueskyOutcomeSummary = buildBlueskyOutcomeSummary({
+      executionItem: {
+        status: item.status,
+        metadata: item.metadata as Record<string, unknown> | null,
+        body: item.body,
+        title: item.title,
+      },
+      latestTerminalLog: latestTerminalLog
+        ? {
+            eventType: latestTerminalLog.eventType,
+            message: latestTerminalLog.message,
+            metadata: latestTerminalLog.metadata as Record<string, unknown> | null,
+            createdAt: latestTerminalLog.createdAt,
+          }
+        : null,
+      planItemCreatives,
+    });
+  }
+
   return (
     <>
       <Topbar
@@ -262,6 +307,10 @@ export default async function ExecutionItemPage({ params }: PageProps) {
         }
       />
       <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-3xl space-y-5">
+        {item.platform === "bluesky" && blueskyOutcomeSummary ? (
+          <BlueskyOutcomeDiagnostics summary={blueskyOutcomeSummary} />
+        ) : null}
+
         {item.platform === "reddit" && subreddit ? (
           <section>
             <div className="text-[11px] uppercase tracking-wide text-ink-500 mb-2">
