@@ -31,6 +31,7 @@ import {
   splitIntoThreadParts,
   stripMarkdownForSocial,
 } from "@/core/platform-preview/preview-renderer";
+import { adaptCopyForBluesky } from "./bluesky-copy-adapter";
 
 /** AT Proto's per-post grapheme cap. */
 export const BLUESKY_POST_BUDGET = 300;
@@ -226,6 +227,29 @@ export function prepareBlueskyThreadPayload(
     };
   }
 
+  // 1b. Bluesky-native copy adapter. Deterministic rule pipeline:
+  // strips blog-style framing, corporate hype prefixes, generic CTAs,
+  // section heading stubs, blockquote markers, and whitespace noise.
+  // Preserves URLs, mentions, hashtags, and all factual claims. The
+  // adapter operates on stripped (plain-text) input and feeds its
+  // output to the splitter — both preview and publisher reach the
+  // splitter with the SAME adapted text, preserving the PR-2 parity
+  // contract.
+  const adapted = adaptCopyForBluesky({ body: stripped });
+  const adaptedBody = adapted.body;
+  for (const note of adapted.transformationNotes) {
+    transformationNotes.push(note);
+  }
+  if (adaptedBody.trim().length === 0) {
+    // Defensive: the adapter's per-rule guard already prevents this,
+    // but if a future rule lands that doesn't enforce the guard, we
+    // refuse rather than publish empty text.
+    return {
+      kind: "empty_body",
+      reasonDetail: "Bluesky posts need body text.",
+    };
+  }
+
   // 2. Creative validation.
   const creativeBlocked = validateBlueskyCreative(input.creative);
   const media: BlueskyPayloadMedia | null =
@@ -234,13 +258,13 @@ export function prepareBlueskyThreadPayload(
   // 3. Split into thread parts. Reserve suffix room when threading is
   // likely; if a single chunk fits without the suffix, we use the
   // full budget. Two-pass keeps the common case (single post) tight.
-  const total = graphemeCount(stripped);
+  const total = graphemeCount(adaptedBody);
   let chunks: string[];
   if (total <= BLUESKY_POST_BUDGET) {
-    chunks = [stripped];
+    chunks = [adaptedBody];
   } else {
     chunks = splitIntoThreadParts(
-      stripped,
+      adaptedBody,
       BLUESKY_POST_BUDGET - SUFFIX_RESERVED_GRAPHEMES,
     );
   }

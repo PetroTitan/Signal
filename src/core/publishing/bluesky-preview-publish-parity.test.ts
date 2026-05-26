@@ -432,6 +432,93 @@ describe("parity — blocked reasons", () => {
 // No-regression: existing test bodies still split into the same shape
 // ---------------------------------------------------------------------
 
+// ---------------------------------------------------------------------
+// PR 3 — copy adapter still produces identical output on both surfaces
+// ---------------------------------------------------------------------
+//
+// The adapter runs inside prepareBlueskyThreadPayload, so by
+// construction preview and publish receive the same adapted text.
+// These tests pin that contract: an input that triggers the adapter
+// must produce the SAME adapted thread on both surfaces.
+
+describe("parity — copy adapter applies identically", () => {
+  it("blog-style intro + trailing CTA: preview and publish strip the same way", async () => {
+    const body =
+      "In this post, I'll explain our retry fix. We switched to exponential backoff with jitter. Latency dropped 40% during the next incident. Subscribe to my newsletter!";
+
+    const preview = renderBlueskyPreview(previewInput({ body }));
+
+    const recordedTexts: string[] = [];
+    for (let i = 0; i < preview.parts.length; i++) {
+      enqueue(
+        "https://bsky.social/xrpc/com.atproto.repo.createRecord",
+        jsonResponse(200, {
+          uri: `at://did:plc:test/app.bsky.feed.post/p${i + 1}`,
+          cid: `cid${i + 1}`,
+        }),
+        (init) => {
+          recordedTexts.push(JSON.parse(String(init?.body)).record.text);
+        },
+      );
+    }
+
+    const outcome = await publishToBlueskyAsIdentity({
+      request: publishRequest({ body }),
+      accessJwt: "jwt",
+      did: "did:plc:test",
+      handle: "op.bsky.social",
+      service: "https://bsky.social",
+    });
+
+    expect(outcome.status).toBe("published");
+    expect(recordedTexts).toEqual(preview.parts.map((p) => p.text));
+    // Verify the adapter actually fired (otherwise this test would
+    // pass even if the adapter were silently no-op).
+    expect(preview.transformationNotes).toContain(
+      "Removed blog-style intro.",
+    );
+    expect(preview.transformationNotes).toContain("Removed trailing CTA.");
+    // And the published text doesn't carry either the intro or CTA.
+    const joined = recordedTexts.join(" ");
+    expect(joined).not.toMatch(/^In this post/);
+    expect(joined).not.toMatch(/Subscribe to my newsletter/);
+  });
+
+  it("corporate hype prefix: preview and publish strip identically", async () => {
+    const body =
+      "We are excited to announce that the queue retry fix shipped this week. Latency dropped 40%.";
+
+    const preview = renderBlueskyPreview(previewInput({ body }));
+
+    enqueue(
+      "https://bsky.social/xrpc/com.atproto.repo.createRecord",
+      jsonResponse(200, {
+        uri: "at://did:plc:test/app.bsky.feed.post/abc",
+        cid: "cid",
+      }),
+      (init) => {
+        const record = JSON.parse(String(init?.body)).record;
+        expect(record.text).toBe(preview.parts[0].text);
+      },
+    );
+
+    await publishToBlueskyAsIdentity({
+      request: publishRequest({ body }),
+      accessJwt: "jwt",
+      did: "did:plc:test",
+      handle: "op.bsky.social",
+      service: "https://bsky.social",
+    });
+
+    expect(preview.transformationNotes).toContain(
+      "Removed corporate framing.",
+    );
+    expect(preview.parts[0].text).toBe(
+      "The queue retry fix shipped this week. Latency dropped 40%.",
+    );
+  });
+});
+
 describe("parity — title handling matches", () => {
   it("non-empty title triggers the same warning + transformation note", async () => {
     const preview = renderBlueskyPreview(
