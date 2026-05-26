@@ -297,6 +297,18 @@ export function ConnectionControls(props: ConnectionControlsProps) {
           `Account mismatch — this key belongs to ${authenticated}, but this identity expects ${declared}.`,
         );
         setCooldownUntil(Date.now() + FAILED_AUTH_COOLDOWN_MS);
+      } else if (json.code === "attached_to_another_identity") {
+        // Strict per-identity invariant: the credential resolves to
+        // an account already attached to a sibling identity in this
+        // workspace. Surface the route's operator copy verbatim — it
+        // already explains the next step (manage the existing
+        // identity or sign out of it). No cooldown — there's nothing
+        // for the operator to brute-force here.
+        setMessage(
+          json.message ??
+            json.error ??
+            "That credential is already attached to another identity in this workspace.",
+        );
       } else if (json.code === "auth_failed") {
         setMessage("Sign-in failed. Check the API key and try again.");
         setCooldownUntil(Date.now() + FAILED_AUTH_COOLDOWN_MS);
@@ -458,6 +470,14 @@ export function ConnectionControls(props: ConnectionControlsProps) {
             "Signed in as a different Bluesky account than this identity expects.",
         );
         setCooldownUntil(Date.now() + FAILED_AUTH_COOLDOWN_MS);
+      } else if (json.code === "attached_to_another_identity") {
+        // Strict per-identity invariant — see the personal_api_key
+        // branch above. Same copy-from-route pattern.
+        setMessage(
+          json.message ??
+            json.error ??
+            "That Bluesky session is already attached to another identity in this workspace.",
+        );
       } else if (json.code === "auth_failed") {
         setMessage(
           "Bluesky rejected the credentials. Double-check the handle and App Password.",

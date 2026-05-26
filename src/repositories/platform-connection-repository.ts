@@ -17,6 +17,27 @@ import type {
 import { fromPostgres, notFound } from "./errors";
 
 /**
+ * Thrown by `upsertPlatformConnection` when the insert path would
+ * have rebound an existing `(workspace_id, platform, provider_account_id)`
+ * row onto a DIFFERENT `account_id`.
+ *
+ * Decision (per-identity invariant): we do NOT rebind one
+ * `platform_connections` row across identities. If an operator pastes
+ * a credential that resolves to a provider account already attached
+ * to a sibling identity in the same workspace, we refuse the insert
+ * and surface a closed-list error to the connect route. The operator
+ * is told which identity already owns it and routed to the existing
+ * Manage panel instead of silently moving the row.
+ */
+export class PlatformConnectionAttachedToAnotherIdentityError extends Error {
+  readonly code = "attached_to_another_identity" as const;
+  constructor(message?: string) {
+    super(message ?? "Provider account already attached to another identity.");
+    this.name = "PlatformConnectionAttachedToAnotherIdentityError";
+  }
+}
+
+/**
  * Domain projection. The repository is the *only* place that ever
  * sees the encrypted-token columns; the client receives the
  * `hasAccessToken` / `hasRefreshToken` booleans instead.
@@ -159,8 +180,15 @@ export async function upsertPlatformConnection(
   const supabase = db ?? createSupabaseServerClient();
   const nowIso = new Date().toISOString();
 
-  // Find existing row keyed by (workspace, account, platform) or
-  // (workspace, platform, provider_account_id).
+  // Strict per-identity lookup. The row is keyed only by
+  // (workspace_id, account_id, platform). We deliberately do NOT
+  // fall back to a (workspace_id, platform, provider_account_id)
+  // lookup — that would let two identities share or rebind one row,
+  // which is the cross-identity reuse the product contract refuses.
+  //
+  // If accountId is null (some OAuth-callback error paths land here
+  // before the state row has bound an identity), we always insert a
+  // fresh row.
   let existingId: string | null = null;
   if (input.accountId) {
     const { data } = await supabase
@@ -169,16 +197,6 @@ export async function upsertPlatformConnection(
       .eq("workspace_id", input.workspaceId)
       .eq("account_id", input.accountId)
       .eq("platform", input.platform)
-      .maybeSingle();
-    if (data) existingId = (data as { id: string }).id;
-  }
-  if (!existingId && input.providerAccountId) {
-    const { data } = await supabase
-      .from("platform_connections")
-      .select("id")
-      .eq("workspace_id", input.workspaceId)
-      .eq("platform", input.platform)
-      .eq("provider_account_id", input.providerAccountId)
       .maybeSingle();
     if (data) existingId = (data as { id: string }).id;
   }
@@ -241,8 +259,27 @@ export async function upsertPlatformConnection(
       "id, workspace_id, account_id, platform, provider_account_id, handle, display_name, connection_status, scopes, expires_at, connected_at, revoked_at, last_checked_at, health_status, metadata, created_at, updated_at, access_token_encrypted, refresh_token_encrypted",
     )
     .single();
-  if (error || !data)
+  if (error || !data) {
+    // 23505 = Postgres unique-violation. Two indexes can trigger it
+    // on this table:
+    //   - platform_connections_unique_per_account
+    //     (workspace_id, account_id, platform) — would only fire on a
+    //     race where the upsert lookup above missed a concurrent
+    //     insert; surface generically.
+    //   - platform_connections_unique_provider
+    //     (workspace_id, platform, provider_account_id) — fires when
+    //     an operator tries to attach a credential that resolves to a
+    //     provider account already bound to a sibling identity in the
+    //     same workspace. That's the per-identity invariant; we want
+    //     the connect route to surface "attached_to_another_identity"
+    //     rather than a generic 500.
+    if (error?.code === "23505") {
+      throw new PlatformConnectionAttachedToAnotherIdentityError(
+        "Provider account already attached to another identity in this workspace.",
+      );
+    }
     throw fromPostgres(error, "Failed to insert platform connection.");
+  }
   return toConnection(data as unknown as PlatformConnectionRow);
 }
 

@@ -5,7 +5,10 @@ import {
   getAccountById,
   setAccountConnectionStatus,
 } from "@/repositories/account-repository";
-import { upsertPlatformConnection } from "@/repositories/platform-connection-repository";
+import {
+  PlatformConnectionAttachedToAnotherIdentityError,
+  upsertPlatformConnection,
+} from "@/repositories/platform-connection-repository";
 import { recordActivity } from "@/repositories/activity-repository";
 import {
   verifyDevtoIdentity,
@@ -136,6 +139,13 @@ export async function POST(
           console.error("[devto/connect] activity log failed", err);
         }
       } catch (err) {
+        if (err instanceof PlatformConnectionAttachedToAnotherIdentityError) {
+          return jsonError(
+            409,
+            "attached_to_another_identity",
+            "That dev.to API key resolves to an account already attached to another identity in this workspace. Open that identity to manage its connection, or sign out of it before reusing the key here.",
+          );
+        }
         console.error("[devto/connect] upsert failed", err);
         return jsonError(
           500,
