@@ -21,6 +21,10 @@ import { PlanItemCard } from "./_plan-item-card";
 import { isApprovablePublishObject } from "@/core/platform-native/approval-policy";
 import { parsePlatformNativeShape } from "@/core/platform-native";
 import type { PublishPlatform } from "@/core/publishing/publishing-types";
+import {
+  normalizeWorkspaceTimezone,
+  validateWorkspaceTimezone,
+} from "@/core/scheduling/workspace-time";
 import { FocusOnMount } from "./_focus-on-mount";
 import { ExecutionStateBadge } from "@/components/publishing/execution-state";
 import { readAllowedTestSubreddits } from "@/core/publishing/safe-test-env";
@@ -84,8 +88,16 @@ export default async function WeeklyPlanPage() {
     .select("timezone")
     .eq("workspace_id", workspaceId)
     .maybeSingle();
-  const timezoneLabel =
+  // Phase F7.5 — validate the persisted timezone. A bad legacy
+  // value (operator typed "Eastern Time" before the settings
+  // validator landed) MUST NOT crash the page. We surface a
+  // friendly "UTC" label in that case; the formatter helpers
+  // ALSO defend internally via normalizeWorkspaceTimezone so the
+  // Intl call site can never throw at render.
+  const rawTimezone =
     (wsSettings as { timezone?: string | null } | null)?.timezone ?? null;
+  const tzValidation = validateWorkspaceTimezone(rawTimezone);
+  const timezoneLabel = tzValidation.ok ? tzValidation.value : null;
 
   const [plan, products, accounts, recentPublishes, connections, activeContract] =
     await Promise.all([
@@ -174,7 +186,7 @@ export default async function WeeklyPlanPage() {
   // Canonical schedule display per plan_item, computed once with the
   // workspace timezone so every card and every "today / tomorrow"
   // bucket sees the same wall clock.
-  const workspaceTimezone = timezoneLabel ?? "UTC";
+  const workspaceTimezone = normalizeWorkspaceTimezone(timezoneLabel);
   const serverNow = new Date();
   const scheduleDisplayByItem = new Map<string, ScheduleDisplay>();
   for (const it of items) {

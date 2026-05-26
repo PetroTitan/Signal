@@ -3,6 +3,7 @@ import { Topbar } from "@/components/topbar";
 import { LockIcon } from "@/components/icons";
 import { isSupabaseConfigured, createSupabaseServerClient } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
+import { normalizeWorkspaceTimezone } from "@/core/scheduling/workspace-time";
 import { listProducts } from "@/repositories/product-repository";
 import { listAccounts } from "@/repositories/account-repository";
 import {
@@ -81,8 +82,17 @@ export default async function DashboardPage() {
       .select("timezone")
       .eq("workspace_id", workspaceId)
       .maybeSingle();
-    const timezoneLabel =
+    // Phase F7.5 — validate workspace timezone at read time so an
+    // invalid persisted value can't cascade into a render crash.
+    const rawTimezone =
       (wsSettings as { timezone?: string | null } | null)?.timezone ?? null;
+    const timezoneLabel =
+      rawTimezone === null
+        ? null
+        : normalizeWorkspaceTimezone(rawTimezone) === "UTC" &&
+            rawTimezone !== "UTC"
+          ? null
+          : rawTimezone;
     const allowedSubreddits = readAllowedTestSubreddits();
     const composeDefaults = {
       timezoneLabel,
@@ -146,8 +156,19 @@ export default async function DashboardPage() {
     .select("timezone")
     .eq("workspace_id", workspaceId)
     .maybeSingle();
-  const timezoneLabel =
+  // Phase F7.5 — validate workspace timezone at read time so an
+  // invalid persisted value can't cascade into a render crash. The
+  // formatter helpers ALSO defend internally; this normalization
+  // exists so the topbar / debug copy shows a clean label.
+  const rawTimezoneTopLevel =
     (wsSettings as { timezone?: string | null } | null)?.timezone ?? null;
+  const timezoneLabel =
+    rawTimezoneTopLevel === null
+      ? null
+      : normalizeWorkspaceTimezone(rawTimezoneTopLevel) === "UTC" &&
+          rawTimezoneTopLevel !== "UTC"
+        ? null
+        : rawTimezoneTopLevel;
   const allowedSubreddits = readAllowedTestSubreddits();
   const confirmedRedditAccounts = accounts.filter(
     (a) => a.platform === "reddit" && a.reviewStatus === "confirmed",

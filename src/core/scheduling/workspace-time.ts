@@ -27,6 +27,70 @@ const MINUTE_MS = 60 * 1000;
 const SECOND_MS = 1000;
 
 /**
+ * Phase F7.5 — safe IANA timezone normalizer.
+ *
+ * Production crash root cause: workspace_settings.timezone is a
+ * free-text column written from a free-text settings input, so
+ * operators can save non-IANA strings ("Eastern Time", typo'd
+ * casing, stray whitespace, accidental empty). Passing any of those
+ * into `Intl.DateTimeFormat({ timeZone })` throws `RangeError:
+ * Invalid time zone specified`, which propagates as a Server
+ * Component render error and crashes /dashboard and /weekly-plan.
+ *
+ * This helper is the single point of truth: every formatter call
+ * site is wrapped to normalize the input through here first.
+ * Invalid / null / empty → "UTC" fallback. Valid IANA → returned
+ * verbatim (post-trim).
+ *
+ * Probe-based validation: `Intl.DateTimeFormat({ timeZone })` is
+ * the only cross-runtime way to ask "is this a valid IANA name?"
+ * without bundling tzdata. We catch the RangeError and translate
+ * it to the safe fallback.
+ *
+ * Pure — no I/O, no clock.
+ */
+export function normalizeWorkspaceTimezone(
+  input: string | null | undefined,
+): string {
+  if (input === null || input === undefined) return "UTC";
+  const trimmed = String(input).trim();
+  if (trimmed.length === 0) return "UTC";
+  try {
+    // The constructor itself throws on invalid zones — even before
+    // .format() is called. Cheapest valid-IANA probe available.
+    new Intl.DateTimeFormat("en-US", { timeZone: trimmed });
+    return trimmed;
+  } catch {
+    return "UTC";
+  }
+}
+
+/**
+ * Like normalizeWorkspaceTimezone but returns a richer result so
+ * callers can surface an operator-facing reason. Used by the
+ * settings-action validator to refuse writes of invalid zones.
+ */
+export function validateWorkspaceTimezone(
+  input: string | null | undefined,
+):
+  | { ok: true; value: string }
+  | { ok: false; reason: "empty" | "invalid"; rawValue: string } {
+  if (input === null || input === undefined) {
+    return { ok: false, reason: "empty", rawValue: "" };
+  }
+  const trimmed = String(input).trim();
+  if (trimmed.length === 0) {
+    return { ok: false, reason: "empty", rawValue: trimmed };
+  }
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: trimmed });
+    return { ok: true, value: trimmed };
+  } catch {
+    return { ok: false, reason: "invalid", rawValue: trimmed };
+  }
+}
+
+/**
  * Read the offset (in ms) that a given UTC instant is from a target
  * timezone's wall clock. Positive when the zone is east of UTC.
  *
@@ -36,8 +100,14 @@ const SECOND_MS = 1000;
  * parts as a `Date.UTC(...)` pseudo-instant, and subtract.
  */
 function tzOffsetMs(utcInstantMs: number, timeZone: string): number {
+  // Defense-in-depth: production crash was traced to invalid IANA
+  // values reaching this Intl call site. Callers normalize via
+  // `normalizeWorkspaceTimezone` upstream, but we double-check here
+  // so a server component can never throw `RangeError: Invalid
+  // time zone specified` even if a future caller forgets.
+  const safeZone = normalizeWorkspaceTimezone(timeZone);
   const dtf = new Intl.DateTimeFormat("en-US", {
-    timeZone,
+    timeZone: safeZone,
     hourCycle: "h23",
     year: "numeric",
     month: "2-digit",
@@ -158,16 +228,22 @@ export function formatUtcForWorkspace(
   utcIso: string,
   timezone: string,
 ): FormattedTime {
+  // Defense-in-depth normalization. The crash on /dashboard +
+  // /weekly-plan came from passing a non-IANA workspace timezone
+  // into Intl.DateTimeFormat here — RangeError propagated as a
+  // Server Component render error. We normalize so the formatter
+  // never throws; the operator sees UTC instead of a 500.
+  const safeZone = normalizeWorkspaceTimezone(timezone);
   const d = new Date(utcIso);
   if (Number.isNaN(d.getTime())) {
     return {
       local: utcIso,
-      timezone,
+      timezone: safeZone,
       utc: utcIso,
     };
   }
   const local = new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone,
+    timeZone: safeZone,
     weekday: "short",
     month: "short",
     day: "numeric",
@@ -177,7 +253,7 @@ export function formatUtcForWorkspace(
   }).format(d);
   return {
     local,
-    timezone,
+    timezone: safeZone,
     utc: formatUtcForOperatorDebug(utcIso),
   };
 }

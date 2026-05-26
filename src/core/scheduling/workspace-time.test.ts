@@ -3,6 +3,8 @@ import {
   assertScheduleRoundTrip,
   formatUtcForOperatorDebug,
   formatUtcForWorkspace,
+  normalizeWorkspaceTimezone,
+  validateWorkspaceTimezone,
   getRelativeDueLabel,
   parseWorkspaceLocalDateTimeToUtc,
 } from "./workspace-time";
@@ -410,5 +412,151 @@ describe("assertScheduleRoundTrip", () => {
         "America/New_York",
       ),
     ).not.toThrow();
+  });
+});
+
+// =====================================================================
+// Phase F7.5 — IANA timezone normalizer + validator + crash safety
+// =====================================================================
+//
+// Production crash on /dashboard + /weekly-plan was traced to
+// `Intl.DateTimeFormat({ timeZone: <invalid> })` throwing
+// `RangeError: Invalid time zone specified`. These tests pin the
+// normalizer + validator + formatter hardening.
+
+describe("normalizeWorkspaceTimezone — valid IANA passes through", () => {
+  it("accepts canonical IANA names verbatim", () => {
+    expect(normalizeWorkspaceTimezone("America/New_York")).toBe(
+      "America/New_York",
+    );
+    expect(normalizeWorkspaceTimezone("Europe/Prague")).toBe("Europe/Prague");
+    expect(normalizeWorkspaceTimezone("UTC")).toBe("UTC");
+  });
+
+  it("trims surrounding whitespace from valid IANA names", () => {
+    expect(normalizeWorkspaceTimezone("  America/New_York  ")).toBe(
+      "America/New_York",
+    );
+  });
+});
+
+describe("normalizeWorkspaceTimezone — invalid → UTC fallback", () => {
+  it("null → UTC", () => {
+    expect(normalizeWorkspaceTimezone(null)).toBe("UTC");
+  });
+
+  it("undefined → UTC", () => {
+    expect(normalizeWorkspaceTimezone(undefined)).toBe("UTC");
+  });
+
+  it("empty string → UTC", () => {
+    expect(normalizeWorkspaceTimezone("")).toBe("UTC");
+  });
+
+  it("whitespace-only → UTC", () => {
+    expect(normalizeWorkspaceTimezone("    ")).toBe("UTC");
+  });
+
+  it("operator label (not IANA) → UTC", () => {
+    // V8 / ICU is lenient on legacy aliases (EST, PST are accepted),
+    // but truly invalid operator-typed labels fall back to UTC.
+    expect(normalizeWorkspaceTimezone("Eastern Time")).toBe("UTC");
+    expect(normalizeWorkspaceTimezone("Eastern Standard Time")).toBe("UTC");
+    expect(normalizeWorkspaceTimezone("Pacific Time")).toBe("UTC");
+  });
+
+  it("garbage string → UTC", () => {
+    expect(normalizeWorkspaceTimezone("not-a-timezone")).toBe("UTC");
+    expect(normalizeWorkspaceTimezone("xyz")).toBe("UTC");
+  });
+
+  it("space instead of underscore (common operator typo) → UTC", () => {
+    expect(normalizeWorkspaceTimezone("America/New York")).toBe("UTC");
+  });
+});
+
+describe("validateWorkspaceTimezone — structured result for settings UI", () => {
+  it("returns ok with canonical value for valid IANA", () => {
+    const r = validateWorkspaceTimezone("America/New_York");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toBe("America/New_York");
+  });
+
+  it("returns ok with trimmed value", () => {
+    const r = validateWorkspaceTimezone("  Europe/Prague  ");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toBe("Europe/Prague");
+  });
+
+  it("returns reason='empty' for null", () => {
+    const r = validateWorkspaceTimezone(null);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("empty");
+  });
+
+  it("returns reason='empty' for empty string", () => {
+    const r = validateWorkspaceTimezone("");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("empty");
+  });
+
+  it("returns reason='invalid' for non-IANA string", () => {
+    const r = validateWorkspaceTimezone("Eastern Time");
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toBe("invalid");
+      expect(r.rawValue).toBe("Eastern Time");
+    }
+  });
+
+  it("returns reason='invalid' for a non-IANA operator label", () => {
+    const r = validateWorkspaceTimezone("Eastern Standard Time");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("invalid");
+  });
+});
+
+describe("formatUtcForWorkspace — defense-in-depth, never throws", () => {
+  const utcIso = "2026-06-15T14:30:00.000Z";
+
+  it("formats with a valid IANA timezone", () => {
+    const r = formatUtcForWorkspace(utcIso, "America/New_York");
+    expect(r.timezone).toBe("America/New_York");
+    expect(r.local.length).toBeGreaterThan(0);
+    expect(r.local).not.toBe(utcIso);
+  });
+
+  it("does NOT throw on invalid timezone — falls back to UTC formatting", () => {
+    let formatted: ReturnType<typeof formatUtcForWorkspace> | null = null;
+    expect(() => {
+      formatted = formatUtcForWorkspace(utcIso, "Eastern Time");
+    }).not.toThrow();
+    expect(formatted).not.toBeNull();
+    expect(formatted!.timezone).toBe("UTC");
+  });
+
+  it("does NOT throw on null timezone (treated as UTC)", () => {
+    expect(() =>
+      formatUtcForWorkspace(utcIso, null as unknown as string),
+    ).not.toThrow();
+  });
+
+  it("does NOT throw on empty timezone", () => {
+    expect(() => formatUtcForWorkspace(utcIso, "")).not.toThrow();
+  });
+
+  it("does NOT throw on whitespace-only timezone", () => {
+    expect(() => formatUtcForWorkspace(utcIso, "   ")).not.toThrow();
+  });
+
+  it("does NOT throw on garbage timezone", () => {
+    expect(() =>
+      formatUtcForWorkspace(utcIso, "totally-not-a-timezone"),
+    ).not.toThrow();
+  });
+
+  it("returns the raw ISO when utcIso is invalid (existing behavior preserved)", () => {
+    const r = formatUtcForWorkspace("not-an-iso", "America/New_York");
+    expect(r.local).toBe("not-an-iso");
   });
 });
