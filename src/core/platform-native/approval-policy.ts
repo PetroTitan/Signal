@@ -95,3 +95,115 @@ export function getApprovalPolicy(
 ): ApprovalPolicy {
   return { creativeRequired: requiresCreative(input) };
 }
+
+// =====================================================================
+// Phase F7.4 — approvable publish object policy
+// =====================================================================
+//
+// The legacy assumption "only items with content_type='post' can be
+// approved" rejected every dev.to / Hashnode article (and every
+// future article-shaped platform). Signal is a platform-native
+// publishing system; the approvable set is the set of valid
+// platform-native publish objects.
+//
+// V1 explicit allowlist (the spec's enumeration):
+//   - post                     (legacy text-post default)
+//   - article                  (dev.to, Hashnode, LinkedIn article)
+//   - thread                   (X, Threads, Bluesky)
+//   - media_post               (any platform)
+//   - video_post               (YouTube)
+//   - carousel                 (Instagram, LinkedIn document)
+//   - reply / comment          (Bluesky, X, Threads, Reddit)
+//   - quote                    (X, Threads)
+//   - link_post                (Reddit, LinkedIn share)
+//   - community_post           (YouTube community)
+//   - channel_message          (Telegram)
+//   - group_message            (Telegram)
+//   - story / short_video      (Instagram, YouTube Shorts)
+//
+// Anything else (unknown, malformed, debug-only, empty, etc.) is
+// NOT approvable. The UI surfaces neutral copy:
+//   "This item is not a publishable platform object yet."
+//
+// Legacy items predating platform-native intent typically carry
+// content_type='post' (the MCP default) and remain approvable.
+
+export interface ApprovableObjectInput {
+  /** weekly_plan_items.platform. Null tolerated for legacy rows. */
+  platform: string | null;
+  /** weekly_plan_items.content_type — free-text column. The check is
+   *  against an explicit allowlist; case-insensitive. */
+  contentType: string | null;
+  /** Optional intent override (parsed from platform_publish_intent).
+   *  When set AND the contentType is null/empty, the intent acts as
+   *  the object signal — e.g. a row created via the MCP intent path
+   *  without an explicit content_type. */
+  intent?: PublishingIntent | null;
+  /** Reserved for future axis-3 rules; v1 ignores. */
+  format?: string | null;
+}
+
+const APPROVABLE_CONTENT_TYPES: ReadonlySet<string> = new Set([
+  "post",
+  "article",
+  "thread",
+  "media_post",
+  "video_post",
+  "carousel",
+  "reply",
+  "comment",
+  "quote",
+  "repost",
+  "link_post",
+  "community_post",
+  "channel_message",
+  "group_message",
+  "story",
+  "short_video",
+]);
+
+const APPROVABLE_INTENTS: ReadonlySet<PublishingIntent> = new Set<PublishingIntent>([
+  "new_post",
+  "article",
+  "thread",
+  "reply",
+  "comment",
+  "quote",
+  "repost",
+  "media_post",
+  "link_post",
+  "video_post",
+  "carousel",
+  "story",
+  "short_video",
+]);
+
+/**
+ * True when the (platform, contentType, intent) tuple describes a
+ * publishable platform-native object that the operator may approve.
+ *
+ * The decision lives HERE so callers (UI + server actions + future
+ * MCP enforcement) all agree. No `if (contentType === "article")`
+ * branches should appear anywhere else in the codebase — add to the
+ * allowlist instead.
+ *
+ * Returns false for:
+ *   - empty / whitespace-only contentType when no intent is set
+ *   - unknown contentType values not in the allowlist (and no
+ *     approvable intent)
+ *   - explicit "unknown" intent without a recognized contentType
+ */
+export function isApprovablePublishObject(
+  input: ApprovableObjectInput,
+): boolean {
+  const normalized = (input.contentType ?? "").trim().toLowerCase();
+  if (normalized.length > 0) {
+    return APPROVABLE_CONTENT_TYPES.has(normalized);
+  }
+  // No explicit contentType — try the intent (MCP intent path may
+  // leave contentType null on rows where intent carries the signal).
+  if (input.intent && input.intent !== "unknown") {
+    return APPROVABLE_INTENTS.has(input.intent);
+  }
+  return false;
+}

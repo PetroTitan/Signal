@@ -70,7 +70,23 @@ export interface PlanItemCardProps {
   status: import("@/lib/supabase/types").WeeklyPlanItemStatus;
   riskScore: number | null;
   notes: string | null;
+  /**
+   * Whether the item is "post-shaped" for social/thumbnail/Reddit-pill
+   * UX. Kept as a separate signal from `isApprovable` because the
+   * card's creative-thumbnail / subreddit-pill / Reddit-only
+   * affordances are specific to social posts. Articles and other
+   * platform-native objects can be APPROVABLE without being
+   * post-shaped.
+   */
   isPost: boolean;
+  /**
+   * Phase F7.4 — whether this item is a valid platform-native
+   * publish object (per the centralized approval policy). Drives
+   * the approve / approve & hold / schedule / cancel-approval
+   * buttons. Computed by page.tsx via
+   * `isApprovablePublishObject(...)`.
+   */
+  isApprovable: boolean;
   warnings: string[];
   timezoneLabel: string | null;
   subreddit: string | null;
@@ -347,10 +363,15 @@ export function PlanItemCard(props: PlanItemCardProps) {
                   View published →
                 </Link>
               ) : null}
-              {isDraft && props.isPost ? (
+              {/* Phase F7.4 — approve / hold / schedule / cancel-approval
+                  buttons are gated on `isApprovable` (the centralized
+                  platform-native policy) rather than `isPost`. Articles,
+                  threads, media posts, link posts, carousels, replies,
+                  channel messages etc. all render the approval buttons. */}
+              {isDraft && props.isApprovable ? (
                 <SendForApprovalButton itemId={props.id} />
               ) : null}
-              {props.status === "pending_approval" && props.isPost ? (
+              {props.status === "pending_approval" && props.isApprovable ? (
                 <PerItemApproveButtons
                   itemId={props.id}
                   scheduleSet={props.scheduledAt !== null}
@@ -358,7 +379,7 @@ export function PlanItemCard(props: PlanItemCardProps) {
                 />
               ) : null}
               {(props.status === "approved" || props.status === "paused") &&
-              props.isPost &&
+              props.isApprovable &&
               props.scheduledAt !== null ? (
                 <ScheduleApprovedItemButton
                   itemId={props.id}
@@ -367,7 +388,7 @@ export function PlanItemCard(props: PlanItemCardProps) {
               ) : null}
               {(props.status === "approved" ||
                 props.status === "scheduled") &&
-              props.isPost ? (
+              props.isApprovable ? (
                 <CancelApprovalButton itemId={props.id} />
               ) : null}
               <QuickReschedule

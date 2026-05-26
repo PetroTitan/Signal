@@ -345,6 +345,211 @@ describe("hold path (contract not required) — per-item approve-and-hold", () =
     });
   });
 
+  // =====================================================================
+  // Phase F7.4 — approvable platform-native publish objects
+  // =====================================================================
+  //
+  // The legacy gate refused anything where content_type !== "post".
+  // The new policy accepts every recognized platform-native publish
+  // object (article, thread, link_post, etc.) AND surfaces neutral
+  // copy for unrecognized content types.
+
+  describe("Phase F7.4 — approvable platform-native publish objects", () => {
+    it("dev.to article (contentType='article') can approve without creative", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platform: "devto",
+          contentType: "article",
+          platformPublishIntent: {
+            version: 1,
+            platform: "devto",
+            intent: "article",
+          } as never,
+        }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ready).toBe(true);
+      expect(r.blockers).toHaveLength(0);
+      expect(r.ok.approvableObject).toBe(true);
+      expect(r.ok.creativeRequired).toBe(false);
+    });
+
+    it("Hashnode article can approve without creative", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platform: "hashnode",
+          contentType: "article",
+          platformPublishIntent: {
+            version: 1,
+            platform: "hashnode",
+            intent: "article",
+          } as never,
+        }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ready).toBe(true);
+      expect(r.ok.approvableObject).toBe(true);
+    });
+
+    it("Reddit link_post can approve", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platform: "reddit",
+          contentType: "link_post",
+        }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ready).toBe(true);
+      expect(r.ok.approvableObject).toBe(true);
+    });
+
+    it("X thread can approve", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platform: "x",
+          contentType: "thread",
+        }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ready).toBe(true);
+      expect(r.ok.approvableObject).toBe(true);
+    });
+
+    it("LinkedIn article can approve", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platform: "linkedin",
+          contentType: "article",
+        }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ready).toBe(true);
+      expect(r.ok.approvableObject).toBe(true);
+    });
+
+    it("Telegram channel_message can approve", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platform: "telegram",
+          contentType: "channel_message",
+        }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ready).toBe(true);
+      expect(r.ok.approvableObject).toBe(true);
+    });
+
+    it("Instagram media_post still blocks WITHOUT creative (creative-required policy)", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platform: "instagram",
+          contentType: "media_post",
+        }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      // Approvable as an object, but the creative gate blocks.
+      expect(r.ok.approvableObject).toBe(true);
+      expect(r.ready).toBe(false);
+      expect(r.ok.creativeRequired).toBe(true);
+      expect(r.blockers.join(" ")).toMatch(/creative|missing/i);
+    });
+
+    it("YouTube video_post still blocks WITHOUT video creative", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platform: "youtube",
+          contentType: "video_post",
+          platformPublishIntent: {
+            version: 1,
+            platform: "youtube",
+            intent: "video_post",
+          } as never,
+        }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ok.approvableObject).toBe(true);
+      expect(r.ready).toBe(false);
+      expect(r.ok.creativeRequired).toBe(true);
+    });
+
+    it("malformed contentType → neutral copy, not approvable", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platform: "devto",
+          contentType: "random_unknown_type",
+        }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ready).toBe(false);
+      expect(r.ok.approvableObject).toBe(false);
+      expect(r.blockers).toContain(
+        "This item is not a publishable platform object yet.",
+      );
+      // Negative: the old hostile copy is gone.
+      expect(r.blockers.join(" ")).not.toMatch(/only posts can be approved/i);
+    });
+
+    it("empty contentType + no intent → neutral copy, not approvable", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platform: "devto",
+          contentType: "",
+        }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ok.approvableObject).toBe(false);
+      expect(r.blockers).toContain(
+        "This item is not a publishable platform object yet.",
+      );
+    });
+
+    it("published item cannot be approved (lifecycle gate still fires)", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platform: "devto",
+          contentType: "article",
+          status: "published",
+        }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ready).toBe(false);
+      expect(r.blockers.join(" ")).toMatch(/pending_approval/);
+    });
+  });
+
   it("still blocks when QA flagged the item (riskLevel='blocked')", () => {
     const r = assessItemApprovalReadiness({
       item: makeItem({ riskLevel: "blocked" }),
