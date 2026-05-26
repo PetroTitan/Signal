@@ -41,6 +41,7 @@ export function publishSkip(
 export function publishBlocked(
   reasonCode: PublishReasonCode,
   reasonDetail: string,
+  metadata: Record<string, unknown> = {},
 ): PublishOutcome {
   return {
     status: "blocked",
@@ -48,7 +49,7 @@ export function publishBlocked(
     reasonDetail,
     externalId: null,
     externalUrl: null,
-    metadata: {},
+    metadata,
   };
 }
 

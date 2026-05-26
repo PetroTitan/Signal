@@ -23,10 +23,8 @@ import "server-only";
  *   - retries automatically
  */
 
-import { publishFail, publishOk } from "./publishing-result";
+import { publishBlocked, publishFail, publishOk } from "./publishing-result";
 import type { PublishOutcome, PublishRequest } from "./publishing-types";
-import { canonicalPostFromRequest } from "./canonical-post";
-import { transformForBluesky } from "./transformers/bluesky";
 import { fetchWithTimeout, isTimeoutError } from "./fetch-with-timeout";
 import { extractFacets } from "./transformers/bluesky-facets";
 import {
@@ -35,6 +33,11 @@ import {
   readBlueskyErrorBody,
   type BlueskyErrorBody,
 } from "./atproto-error-body";
+import {
+  prepareBlueskyThreadPayload,
+  type BlueskyPayloadMedia,
+  type BlueskyPayloadResult,
+} from "./bluesky-payload";
 
 export interface PublishBlueskyInput {
   request: PublishRequest;
@@ -535,23 +538,42 @@ export async function publishToBluesky(
   }
   const { session } = sessionResult;
 
-  // 2. Transform canonical post into a thread of Bluesky posts.
-  const post = canonicalPostFromRequest(request);
-  const thread = transformForBluesky(post);
-  if (thread.length === 0) {
-    return publishFail("missing_body", "Bluesky thread had no content.");
+  // 2. Build the shared payload (text parts + media metadata). Both
+  // preview and publisher route through this single function so they
+  // can't disagree about thread shape or media placement.
+  const payload = prepareBlueskyThreadPayload({
+    title: request.title,
+    body: request.body ?? "",
+    creative: request.creative
+      ? {
+          id: request.creative.id,
+          assetUrl: request.creative.assetUrl,
+          sourceUrl: request.creative.sourceUrl,
+          altText: request.creative.altText,
+          creativeType: request.creative.creativeType,
+        }
+      : null,
+  });
+  if (payload.kind === "empty_body") {
+    return publishFail("missing_body", `Bluesky: ${payload.reasonDetail}`);
+  }
+  if (payload.creativeBlocked) {
+    return publishBlocked(
+      payload.creativeBlocked.reasonCode,
+      `Bluesky: ${payload.creativeBlocked.reasonDetail}`,
+      { creative_id: request.creative?.id ?? null },
+    );
   }
 
-  // 2b. If the scheduler attached an approved creative, upload the
-  // blob now. Embed lives only on the first post — the rest of the
-  // thread is reply records without an embed.
-  const imageEmbed = await maybeUploadCreativeForRequest({
-    request,
+  // 2b. Upload the blob now if the payload calls for media. Embed
+  // metadata is added at record-build time using the AT Proto blob
+  // handle the upload returns.
+  const uploaded = await maybeUploadMediaForPayload({
+    media: payload.media,
     service,
     accessJwt: session.accessJwt,
-    endpoint: "publishToBluesky",
   });
-  if (imageEmbed.kind === "failed") return imageEmbed.outcome;
+  if (uploaded.kind === "failed") return uploaded.outcome;
 
   // 3. Publish the thread, threading reply references.
   let rootUri: string | null = null;
@@ -560,7 +582,7 @@ export async function publishToBluesky(
   let previousCid: string | null = null;
   const createdAt = new Date().toISOString();
 
-  for (const part of thread) {
+  for (const part of payload.parts) {
     const facets = extractFacets(part.text);
     const record: Record<string, unknown> = {
       $type: "app.bsky.feed.post",
@@ -577,9 +599,9 @@ export async function publishToBluesky(
         parent: { uri: previousUri, cid: previousCid },
       };
     }
-    // First post only — attach the image embed if upload succeeded.
-    if (!rootUri && imageEmbed.kind === "embed") {
-      record.embed = imageEmbed.embed;
+    // Shared payload owns the "first post only" decision.
+    if (part.attachMedia && uploaded.kind === "embed") {
+      record.embed = uploaded.embed;
     }
     const result = await createPostRecord(service, session, record);
     if (!result.ok) {
@@ -593,8 +615,8 @@ export async function publishToBluesky(
       return publishFail(code, `Bluesky: ${result.detail}`, {
         http_status: result.status,
         endpoint: "createRecord",
-        thread_position_failed: thread.indexOf(part) + 1,
-        thread_total: thread.length,
+        thread_position_failed: part.index,
+        thread_total: part.total,
         ...errorBodyMetadata(result.errorBody),
       });
     }
@@ -615,9 +637,9 @@ export async function publishToBluesky(
     externalId: rootUri,
     externalUrl: permalink,
     metadata: {
-      thread_length: thread.length,
+      thread_length: payload.parts.length,
       root_uri: rootUri,
-      media_attached: imageEmbed.kind === "embed",
+      media_attached: uploaded.kind === "embed",
     },
   });
 }
@@ -662,22 +684,40 @@ export async function publishToBlueskyAsIdentity(
     return publishFail("missing_body", "Bluesky posts need body text.");
   }
 
-  // Transform canonical post into a thread of Bluesky posts.
-  const post = canonicalPostFromRequest(request);
-  const thread = transformForBluesky(post);
-  if (thread.length === 0) {
-    return publishFail("missing_body", "Bluesky thread had no content.");
+  // Shared payload preparation — same source of truth as the
+  // preview renderer.
+  const payload = prepareBlueskyThreadPayload({
+    title: request.title,
+    body: request.body ?? "",
+    creative: request.creative
+      ? {
+          id: request.creative.id,
+          assetUrl: request.creative.assetUrl,
+          sourceUrl: request.creative.sourceUrl,
+          altText: request.creative.altText,
+          creativeType: request.creative.creativeType,
+        }
+      : null,
+  });
+  if (payload.kind === "empty_body") {
+    return publishFail("missing_body", `Bluesky: ${payload.reasonDetail}`);
+  }
+  if (payload.creativeBlocked) {
+    return publishBlocked(
+      payload.creativeBlocked.reasonCode,
+      `Bluesky: ${payload.creativeBlocked.reasonDetail}`,
+      { creative_id: request.creative?.id ?? null },
+    );
   }
 
   // Upload the approved creative (if any) before the thread loop.
   // First post gets the embed; subsequent posts are reply records.
-  const imageEmbed = await maybeUploadCreativeForRequest({
-    request,
+  const uploaded = await maybeUploadMediaForPayload({
+    media: payload.media,
     service,
     accessJwt,
-    endpoint: "publishToBlueskyAsIdentity",
   });
-  if (imageEmbed.kind === "failed") return imageEmbed.outcome;
+  if (uploaded.kind === "failed") return uploaded.outcome;
 
   const session: BlueskySession = { accessJwt, did };
   const createdAt = new Date().toISOString();
@@ -686,7 +726,7 @@ export async function publishToBlueskyAsIdentity(
   let previousUri: string | null = null;
   let previousCid: string | null = null;
 
-  for (const part of thread) {
+  for (const part of payload.parts) {
     const facets = extractFacets(part.text);
     const record: Record<string, unknown> = {
       $type: "app.bsky.feed.post",
@@ -701,9 +741,9 @@ export async function publishToBlueskyAsIdentity(
         parent: { uri: previousUri, cid: previousCid },
       };
     }
-    // First post only — attach the image embed if upload succeeded.
-    if (!rootUri && imageEmbed.kind === "embed") {
-      record.embed = imageEmbed.embed;
+    // Shared payload owns the "first post only" decision.
+    if (part.attachMedia && uploaded.kind === "embed") {
+      record.embed = uploaded.embed;
     }
     const result = await createPostRecord(service, session, record);
     if (!result.ok) {
@@ -722,8 +762,8 @@ export async function publishToBlueskyAsIdentity(
       return publishFail(code, `Bluesky: ${result.detail}`, {
         http_status: result.status,
         endpoint: "createRecord",
-        thread_position_failed: thread.indexOf(part) + 1,
-        thread_total: thread.length,
+        thread_position_failed: part.index,
+        thread_total: part.total,
         // The DID is public information — already in the at-uri of
         // any of this identity's published posts. Including it in
         // diagnostic metadata is safe.
@@ -745,9 +785,9 @@ export async function publishToBlueskyAsIdentity(
     externalId: rootUri,
     externalUrl: permalink,
     metadata: {
-      thread_length: thread.length,
+      thread_length: payload.parts.length,
       root_uri: rootUri,
-      media_attached: imageEmbed.kind === "embed",
+      media_attached: uploaded.kind === "embed",
       // No tokens, no app passwords. DID is public and useful for
       // operator audit ("which exact account did this post under?").
       did,
@@ -756,69 +796,38 @@ export async function publishToBlueskyAsIdentity(
 }
 
 /**
- * Resolve the request's optional creative to an AT Proto image embed.
+ * Upload the prepared media (when present) and produce the AT Proto
+ * `embed` object the first record will carry. Returns:
  *
- * The scheduler has already vetted that `request.creative` (when
- * present) has both a URL and alt text. This helper performs the
- * actual blob upload against the caller's PDS session and converts
- * the resulting handle into the `embed` object the post record needs.
+ *   - `none`   — payload.media was null; no upload attempted.
+ *   - `embed`  — upload succeeded; the caller embeds on the first
+ *                record (the shared payload already decided which
+ *                part attaches media).
+ *   - `failed` — upload or pre-flight fetch failed; the caller
+ *                returns this PublishOutcome directly so the
+ *                operator sees `media_upload_failed` rather than a
+ *                silent text-only publish.
  *
- * Returns one of three states:
- *   - `none`   — no creative on the request; thread publishes
- *                text-only (existing behavior).
- *   - `embed`  — upload succeeded; first post will carry the embed.
- *   - `failed` — upload (or pre-flight image fetch) failed; the
- *                publish caller returns this PublishOutcome directly,
- *                guaranteeing the operator sees `media_upload_failed`
- *                rather than a silent text-only publish.
+ * Validation (URL + alt text presence) lives in
+ * `bluesky-payload.ts`; by the time we reach this function the
+ * payload guarantees both fields are non-empty.
  */
-type CreativeUploadResult =
+type MediaUploadResult =
   | { kind: "none" }
   | { kind: "embed"; embed: Record<string, unknown> }
   | { kind: "failed"; outcome: PublishOutcome };
 
-async function maybeUploadCreativeForRequest(input: {
-  request: PublishRequest;
+async function maybeUploadMediaForPayload(input: {
+  media: BlueskyPayloadMedia | null;
   service: string;
   accessJwt: string;
-  endpoint: "publishToBluesky" | "publishToBlueskyAsIdentity";
-}): Promise<CreativeUploadResult> {
-  const creative = input.request.creative ?? null;
-  if (!creative) return { kind: "none" };
-  const url = creative.assetUrl ?? creative.sourceUrl ?? null;
-  // Defensive: the scheduler's resolver already validated url + alt.
-  // If we somehow get here without them, treat it as a media failure
-  // rather than dropping the operator's image silently.
-  if (!url) {
-    return {
-      kind: "failed",
-      outcome: publishFail(
-        "media_upload_failed",
-        "Bluesky: creative attached to request had no URL.",
-        {
-          endpoint: "uploadBlob",
-          creative_id: creative.id,
-        },
-      ),
-    };
-  }
-  if (!creative.altText || creative.altText.trim().length === 0) {
-    return {
-      kind: "failed",
-      outcome: publishFail(
-        "media_upload_failed",
-        "Bluesky: creative attached to request had no alt text.",
-        {
-          endpoint: "uploadBlob",
-          creative_id: creative.id,
-        },
-      ),
-    };
-  }
+}): Promise<MediaUploadResult> {
+  const media = input.media;
+  if (!media) return { kind: "none" };
   const upload = await uploadImageToBlueskyBlob({
     service: input.service,
     accessJwt: input.accessJwt,
-    imageUrl: url,
+    imageUrl: media.imageUrl,
   });
   if (!upload.ok) {
     return {
@@ -829,7 +838,7 @@ async function maybeUploadCreativeForRequest(input: {
         {
           endpoint: "uploadBlob",
           http_status: upload.status,
-          creative_id: creative.id,
+          creative_id: media.creativeId,
           ...errorBodyMetadata(upload.errorBody),
         },
       ),
@@ -837,7 +846,7 @@ async function maybeUploadCreativeForRequest(input: {
   }
   return {
     kind: "embed",
-    embed: buildImageEmbed(upload.blob, creative.altText),
+    embed: buildImageEmbed(upload.blob, media.altText),
   };
 }
 
