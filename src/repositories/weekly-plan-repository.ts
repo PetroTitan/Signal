@@ -40,6 +40,13 @@ export interface WeeklyPlanItem {
   riskScore: number | null;
   scheduledAt: string | null;
   metadata: Record<string, unknown>;
+  /**
+   * Phase F6.0 — opaque JSONB envelope for the operator's
+   * platform-native shape. Consumers should parse via
+   * parsePlatformNativeShape from @/core/platform-native rather than
+   * touching keys directly here. Null on legacy rows.
+   */
+  platformPublishIntent: Record<string, unknown> | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -75,6 +82,7 @@ function toItem(row: WeeklyPlanItemRow): WeeklyPlanItem {
     riskScore: row.risk_score,
     scheduledAt: row.scheduled_at,
     metadata: row.metadata,
+    platformPublishIntent: row.platform_publish_intent ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -242,6 +250,12 @@ export interface PlanItemInput {
   riskScore?: number | null;
   scheduledAt?: string | null;
   metadata?: Record<string, unknown>;
+  /**
+   * Phase F6.0 — opaque JSONB envelope describing the operator's
+   * platform-native shape. Repository writes are passthrough only;
+   * structural validation belongs to the adapter layer.
+   */
+  platformPublishIntent?: Record<string, unknown> | null;
 }
 
 export async function createPlanItem(input: PlanItemInput): Promise<WeeklyPlanItem> {
@@ -262,6 +276,7 @@ export async function createPlanItem(input: PlanItemInput): Promise<WeeklyPlanIt
     risk_score: input.riskScore ?? null,
     scheduled_at: input.scheduledAt ?? null,
     metadata: input.metadata ?? {},
+    platform_publish_intent: input.platformPublishIntent ?? null,
   };
   const { data, error } = await supabase
     .from("weekly_plan_items")

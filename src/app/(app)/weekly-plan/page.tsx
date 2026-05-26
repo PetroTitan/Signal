@@ -362,6 +362,7 @@ export default async function WeeklyPlanPage() {
         body: it.body,
         platform: it.platform,
         contentType: it.contentType,
+        platformPublishIntent: it.platformPublishIntent,
         subreddit:
           typeof it.metadata?.target === "string"
             ? (it.metadata.target as string)
@@ -538,6 +539,7 @@ export default async function WeeklyPlanPage() {
                           hasActiveContract={hasActiveContract}
                           executionItemId={exec?.id ?? null}
                           executionItemStatus={exec?.status ?? null}
+                          platformPublishIntent={it.platformPublishIntent}
                           aiAssistedKind={deriveAiAssistedKind(
                             it.metadata as Record<string, unknown> | null,
                           )}
