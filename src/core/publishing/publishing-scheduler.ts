@@ -295,6 +295,7 @@ interface PublishOneInput {
     contract_id: string | null;
     account_id: string | null;
     product_id: string | null;
+    platform: string | null;
     title: string | null;
     body: string | null;
     link_url: string | null;
@@ -500,7 +501,25 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
 
 interface ApplyOutcomeInput {
   supabase: NonNullable<ReturnType<typeof createSupabaseServiceRoleClient>>;
-  item: { id: string; workspace_id: string; queue_id: string; metadata: Record<string, unknown> };
+  /**
+   * Full execution_items row. Widened from the previous {id,
+   * workspace_id, queue_id, metadata} shape so applyOutcome can
+   * also write a publish_history row with the per-item identifiers
+   * (account_id, product_id, platform) + the content the duplicate-
+   * fingerprint check uses (title, body, link_url).
+   */
+  item: {
+    id: string;
+    workspace_id: string;
+    queue_id: string;
+    account_id: string | null;
+    product_id: string | null;
+    platform: string | null;
+    title: string | null;
+    body: string | null;
+    link_url: string | null;
+    metadata: Record<string, unknown>;
+  };
   outcome: PublishOutcome;
 }
 
@@ -574,6 +593,111 @@ async function applyOutcome(input: ApplyOutcomeInput): Promise<void> {
       ...outcome.metadata,
     },
   } as never);
+
+  // publish_history persistence (fix/scheduler-write-publish-history).
+  //
+  // Write a row for every terminal outcome (completed / failed /
+  // blocked). The repository helper handles dedup at the
+  // (execution_item_id, mode='api') level: existing manual rows are
+  // never touched; existing 'published' rows are never downgraded by
+  // a later 'failed'/'blocked' attempt.
+  //
+  // Skips:
+  //   - "skipped" outcomes (transient — item stays scheduled).
+  //   - "not_implemented" outcomes.
+  //
+  // Failures here are LOGGED but never abort the tick — the
+  // execution_items + execution_logs writes have already succeeded;
+  // a publish_history hiccup must not roll back the canonical state.
+  if (
+    nextStatus === "completed" ||
+    nextStatus === "failed" ||
+    nextStatus === "blocked"
+  ) {
+    try {
+      const historyOutcome: "published" | "failed" | "blocked" =
+        outcome.status === "published"
+          ? "published"
+          : outcome.status === "blocked"
+          ? "blocked"
+          : "failed";
+      const { computeFingerprint } = await import("./publish-fingerprint");
+      const target =
+        typeof (item.metadata as { target?: string })?.target === "string"
+          ? ((item.metadata as { target: string }).target)
+          : null;
+      const fingerprint = await computeFingerprint({
+        platform: item.platform ?? "",
+        subreddit: target,
+        title: item.title,
+        body: item.body,
+        linkUrl: item.link_url,
+      });
+      // Whitelist of outcome.metadata fields we lift onto the
+      // publish_history row. NEVER copy outcome.metadata wholesale —
+      // that's the only place a future publisher change could leak
+      // a token-shaped value into the canonical history.
+      const meta = outcome.metadata as Record<string, unknown>;
+      const httpStatus =
+        typeof meta.http_status === "number" ? meta.http_status : null;
+      const endpoint =
+        typeof meta.endpoint === "string" ? meta.endpoint : null;
+      const atprotoError =
+        typeof meta.atproto_error === "string" ? meta.atproto_error : null;
+      const atprotoMessage =
+        typeof meta.atproto_message === "string" ? meta.atproto_message : null;
+      const threadLength =
+        typeof meta.thread_length === "number" ? meta.thread_length : null;
+      const mediaAttached =
+        typeof meta.media_attached === "boolean" ? meta.media_attached : null;
+      const contractMode =
+        typeof (item.metadata as { contract_mode?: string })?.contract_mode ===
+        "string"
+          ? ((item.metadata as { contract_mode: string }).contract_mode)
+          : null;
+      // Provider boundary: we reached the platform iff a structured
+      // endpoint (and therefore an HTTP status) made it back. Pre-
+      // provider blocks (creative_missing_*, missing_body, etc.)
+      // never set `endpoint`.
+      const providerAttempted = endpoint !== null;
+
+      const { upsertSchedulerPublishHistoryFromOutcome } = await import(
+        "@/repositories/publish-history-repository"
+      );
+      await upsertSchedulerPublishHistoryFromOutcome({
+        workspaceId: item.workspace_id,
+        executionItemId: item.id,
+        accountId: item.account_id,
+        productId: item.product_id,
+        platform: item.platform ?? "",
+        subreddit: target,
+        outcome: historyOutcome,
+        reasonCode: outcome.reasonCode ?? null,
+        reasonDetail: outcome.reasonDetail ?? null,
+        providerPostId: outcome.externalId,
+        providerPermalink: outcome.externalUrl,
+        fingerprint: fingerprint.fingerprint,
+        titleHash: fingerprint.titleHash,
+        bodyHash: fingerprint.bodyHash,
+        linkUrl: item.link_url,
+        httpStatus,
+        startedAt: new Date().toISOString(),
+        providerAttempted,
+        threadLength,
+        mediaAttached,
+        endpoint,
+        atprotoError,
+        atprotoMessage,
+        contractMode,
+        db: supabase as never,
+      });
+    } catch (err) {
+      console.error(
+        "[publishing-scheduler] publish_history upsert failed",
+        err,
+      );
+    }
+  }
 }
 
 interface MarkReadyInput {
