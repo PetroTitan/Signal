@@ -65,7 +65,7 @@ describe("blueskyAdapter.buildPreview — auto-thread when body exceeds budget",
 });
 
 describe("blueskyAdapter.buildPreview — single_only operator stance is honored", () => {
-  it("surfaces single_only_exceeds_budget blocker when split would happen", () => {
+  it("surfaces single_post_exceeds_budget blocker when split would happen", () => {
     const longBody = "A. ".repeat(200);
     const singleOnly: PlatformNativeShape = {
       ...legacyPlatformNativeShape("bluesky"),
@@ -77,7 +77,7 @@ describe("blueskyAdapter.buildPreview — single_only operator stance is honored
       input({ body: longBody, shape: singleOnly }),
     );
     expect(preview.blockers.map((b) => b.code)).toContain(
-      "single_only_exceeds_budget",
+      "single_post_exceeds_budget",
     );
   });
 
@@ -92,7 +92,7 @@ describe("blueskyAdapter.buildPreview — single_only operator stance is honored
       input({ body: "short", shape: singleOnly }),
     );
     expect(preview.blockers.map((b) => b.code)).not.toContain(
-      "single_only_exceeds_budget",
+      "single_post_exceeds_budget",
     );
     expect(preview.format).toBe("single_post");
   });

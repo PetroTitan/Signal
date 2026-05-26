@@ -64,8 +64,9 @@ import {
   readBlueskyCredentials,
   readBlueskyServiceUrl,
 } from "./platform-credentials";
-import { publishFail } from "./publishing-result";
+import { publishBlocked, publishFail } from "./publishing-result";
 import type { PublishOutcome, PublishRequest } from "./publishing-types";
+import { decideBlueskyPublishGate } from "@/core/platform-native/adapters/bluesky/shape-binding";
 
 export interface OrchestratorInput {
   request: PublishRequest;
@@ -201,6 +202,38 @@ export async function publishBlueskyForIdentity(
       "Bluesky connection row is missing a DID.",
     );
   }
+
+  // Phase F6.2 — shape-binding gate. Bluesky-only.
+  //
+  // Load weekly_plan_items.platform_publish_intent for THIS item
+  // and decide whether the operator's approved payload shape still
+  // matches what we're about to publish. Legacy rows (no envelope,
+  // or envelope without operatorApprovedShapeHash) skip the gate —
+  // current behavior preserved.
+  //
+  // CRITICAL: the gate runs BEFORE any provider call. A stale
+  // approval must short-circuit before uploadBlob / createRecord.
+  const gate = await loadAndCheckBlueskyShapeGate({
+    request,
+    db,
+  });
+  if (gate.kind === "block_stale") {
+    return publishBlocked(
+      "approved_shape_stale",
+      gate.reasonDetail,
+      {
+        endpoint: null,
+        approved_shape_hash: gate.approvedHash,
+        current_shape_hash: gate.currentHash,
+        plan_item_id: request.planItemId,
+      },
+    );
+  }
+  // gate.kind === "proceed" — fall through. payloadHash (when
+  // present) becomes telemetry-only metadata after the publish
+  // succeeds; we don't attach it here to keep the success-path
+  // metadata stable for downstream consumers.
+  void gate.payloadHash;
 
   // First publish attempt.
   const firstOutcome = await publishToBlueskyAsIdentity({
@@ -461,4 +494,79 @@ function tagLegacyFallback(outcome: PublishOutcome): PublishOutcome {
       bluesky_publish_path: "legacy_workspace_fallback",
     },
   };
+}
+
+/**
+ * Phase F6.2 — Bluesky-only: load the plan_item's
+ * platform_publish_intent + the current creative, then ask the
+ * shape-binding helper whether to gate the publish.
+ *
+ * Returns a "proceed" decision for ANY row that lacks an
+ * operator-bound shape (legacy rows; MCP-prepared but never
+ * approved). Returns "block_stale" only when an approved hash
+ * exists AND the freshly-rendered payload no longer matches.
+ *
+ * No-op fallback: any error reading the row falls back to "proceed"
+ * — we never let an observability failure block a publish that
+ * would otherwise succeed.
+ */
+async function loadAndCheckBlueskyShapeGate(input: {
+  request: PublishRequest;
+  db?: SupabaseClient;
+}): Promise<
+  | { kind: "proceed"; payloadHash: string | null }
+  | {
+      kind: "block_stale";
+      approvedHash: string;
+      currentHash: string;
+      reasonDetail: string;
+    }
+> {
+  try {
+    const { request } = input;
+    const db = input.db;
+    const { createSupabaseServerClient } = await import("@/lib/supabase");
+    const client = db ?? createSupabaseServerClient();
+
+    const { data: row } = await client
+      .from("weekly_plan_items")
+      .select("id, title, body, platform_publish_intent")
+      .eq("workspace_id", request.workspaceId)
+      .eq("id", request.planItemId)
+      .maybeSingle();
+
+    if (!row) {
+      // Plan item not found — leave existing publisher behavior to
+      // surface the right error. No gate.
+      return { kind: "proceed", payloadHash: null };
+    }
+    const rawIntent =
+      (row as { platform_publish_intent: Record<string, unknown> | null })
+        .platform_publish_intent ?? null;
+
+    // Source the current creative from the publish request — that's
+    // the exact creative the publisher will attach, so the hash we
+    // compare matches what the publisher would persist.
+    const creative = request.creative
+      ? {
+          assetUrl: request.creative.assetUrl,
+          sourceUrl: request.creative.sourceUrl,
+          altText: request.creative.altText,
+          creativeType: request.creative.creativeType,
+        }
+      : null;
+
+    return await decideBlueskyPublishGate({
+      rawIntent,
+      title: (row as { title: string | null }).title,
+      body: (row as { body: string | null }).body ?? request.body ?? "",
+      creative,
+    });
+  } catch (err) {
+    console.error(
+      "[bluesky-orch] shape-binding gate load failed; proceeding",
+      err,
+    );
+    return { kind: "proceed", payloadHash: null };
+  }
 }
