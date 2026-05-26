@@ -380,6 +380,7 @@ export default async function WeeklyPlanPage() {
               assetUrl: creative.assetUrl,
               altText: creative.altText,
               sourceType: creative.sourceType,
+              status: creative.status,
             }
           : null,
       },

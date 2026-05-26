@@ -35,7 +35,7 @@ import { MiniPreview } from "@/components/platform-preview/MiniPreview";
 import { asPreviewPlatform } from "@/core/platform-preview/preview-renderer";
 import {
   CreativeApprovalControls,
-  type CreativeStatusToken,
+  toCreativeStatusToken,
 } from "./_creative-approval-controls";
 import type { ScheduleDisplay } from "@/core/scheduling/format-schedule-display";
 
@@ -305,7 +305,7 @@ export function PlanItemCard(props: PlanItemCardProps) {
             {props.isPost ? (
               <CreativeApprovalControls
                 creativeId={props.creative?.id ?? null}
-                creativeStatus={creativeStatusToken(props.creative?.status)}
+                creativeStatus={toCreativeStatusToken(props.creative?.status)}
                 postStatus={props.status}
                 approvalBlockers={props.warnings}
               />
@@ -410,6 +410,7 @@ export function PlanItemCard(props: PlanItemCardProps) {
                 assetUrl: props.creative.assetUrl,
                 altText: props.creative.altText,
                 sourceType: props.creative.sourceType,
+                status: props.creative.status,
               }
             : null,
         }}
@@ -567,24 +568,6 @@ function ReschedSubmit({ alreadyScheduled }: { alreadyScheduled: boolean }) {
   );
 }
 
-
-/**
- * Narrow the CreativeCardData status (CreativeStatus from supabase
- * types) into the operator-facing token the approval controls render.
- * The supabase enum currently includes
- *   `pending_review | approved | rejected | planned`
- * — we surface "none" for the no-creative case so the controls
- * component can render its "no controls needed" branch.
- */
-function creativeStatusToken(
-  status: CreativeCardData["status"] | undefined,
-): CreativeStatusToken {
-  if (!status) return "none";
-  if (status === "approved") return "approved";
-  if (status === "rejected") return "rejected";
-  if (status === "planned") return "planned";
-  return "pending_review";
-}
 
 // =====================================================================
 // Post + creative status summary — explicit separation so an
