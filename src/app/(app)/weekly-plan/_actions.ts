@@ -107,6 +107,18 @@ export type ApprovePlanItemResult = ActionResult<{
   executionItemId: string | null;
 }>;
 
+export type CancelApprovalResult = ActionResult<{
+  itemId: string;
+  /** Status the item lands in after cancellation. Always
+   *  "pending_approval" today — the operator already reviewed once,
+   *  so we keep the readiness signal rather than reverting all the
+   *  way to "draft". */
+  status: "pending_approval";
+  /** Number of execution_items the action cancelled (0 for the
+   *  approved-and-held path; ≥1 for the scheduled path). */
+  cancelledExecutionItemCount: number;
+}>;
+
 function isoMonday(date: Date): string {
   const d = new Date(
     Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
@@ -1409,6 +1421,203 @@ export async function approvePlanItemAndScheduleAction(
       planItemId: itemId,
       failureReason: message,
     });
+    return actionFail(message);
+  }
+}
+
+// =====================================================================
+// Phase F7.2 — cancelApprovalAction
+// =====================================================================
+//
+// Reverts an `approved` or `scheduled` plan_item back to
+// `pending_approval` so the operator can edit / drop / re-think
+// before publishing. Real-world trigger: circumstances change after
+// approval (content stale, change of mind, edits needed). Without
+// this action the operator had to wait for the scheduled publish
+// to fail / be paused, or fall back to admin-shaped Supabase edits.
+//
+// Allowed transitions
+// -------------------
+//   approved                                → pending_approval
+//   scheduled (+ execution_item not yet running / not completed)
+//                                           → pending_approval
+//                                            + execution_item.status = cancelled
+//
+// Refused
+// -------
+//   published / rejected / paused / skipped / backlog / draft /
+//   pending_approval → caller already at terminal state OR has no
+//   approval to cancel. Returned with an actionable message.
+//
+//   scheduled + execution_item.status='running' → publish is in
+//   flight, so cancellation could race with the provider call.
+//   Refused; operator waits for the tick to finish.
+//
+//   scheduled + execution_item.status='completed' → the publish
+//   already succeeded; revert is impossible. Refused.
+//
+// Race safety
+// -----------
+// The execution_item cancel uses an atomic `UPDATE ... WHERE
+// status IN (cancellable_set)` so a scheduler tick that picks up
+// the row between our status check and the cancel write cannot
+// produce inconsistent state. The repository's `updateItemStatus`
+// applies the WHERE filter for us; here we additionally pin the
+// from-status set explicitly.
+//
+// Operator-only / cookie-session protected — mirrors the other
+// approval actions. No MCP bypass.
+
+/**
+ * Execution-item states that can be safely flipped to `cancelled` by
+ * this operator action. Strictly pre-dispatch + manual-publish-ready;
+ * anything past this point either succeeded, failed terminally, or
+ * is in the operator's hands already (paused / blocked / backlogged
+ * / skipped). The `cancelled` status is its own no-op.
+ */
+const CANCELLABLE_EXECUTION_STATUSES: ReadonlySet<string> = new Set([
+  "pending_authorization",
+  "authorized",
+  "scheduled",
+  "ready",
+  "ready_for_manual_publish",
+]);
+
+/**
+ * Execution-item states the operator must NOT race against (running)
+ * or that are already finished (completed). Surfacing either of
+ * these for a plan_item still in `scheduled` is rare but possible
+ * if the scheduler tick is mid-flight; refuse so we don't double-
+ * publish or paper over a successful publish.
+ */
+const TERMINAL_EXECUTION_STATUSES: ReadonlySet<string> = new Set([
+  "running",
+  "completed",
+]);
+
+export async function cancelApprovalAction(
+  _prev: CancelApprovalResult,
+  formData: FormData,
+): Promise<CancelApprovalResult> {
+  const itemId = String(formData.get("item_id") ?? "").trim();
+  if (!itemId) return actionFail("Missing item id.");
+
+  const { updatePlanItemStatus } = await import(
+    "@/repositories/weekly-plan-repository"
+  );
+  const { listExecutionItemsByPlanItemIds } = await import(
+    "@/repositories/execution-item-repository"
+  );
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    const item = await getPlanItemById(workspaceId, itemId);
+
+    // Gate on plan-item status. Only approved / scheduled have
+    // approval state TO cancel.
+    if (item.status !== "approved" && item.status !== "scheduled") {
+      const friendly =
+        item.status === "published"
+          ? "This item has already been published — cancellation is no longer possible."
+          : item.status === "rejected"
+            ? "This item has been rejected; there's no approval to cancel."
+            : item.status === "paused" || item.status === "skipped"
+              ? "This item is not currently approved. Edit it and approve again to publish."
+              : "There's no approved state to cancel on this item.";
+      return actionFail(friendly);
+    }
+
+    // Find any execution_items for this plan_item. The
+    // approved-and-held path won't have any; the scheduled path
+    // typically has one in pending_authorization / authorized /
+    // scheduled. We cancel any that are still cancellable; refuse
+    // if any has progressed to running or completed.
+    const execItems = await listExecutionItemsByPlanItemIds(workspaceId, [
+      itemId,
+    ]);
+    const terminal = execItems.find((e) =>
+      TERMINAL_EXECUTION_STATUSES.has(e.status),
+    );
+    if (terminal) {
+      return actionFail(
+        terminal.status === "running"
+          ? "A publish is in flight for this item. Wait for it to finish, then try again."
+          : "This item has already been published — cancellation is no longer possible.",
+      );
+    }
+
+    // Cancel each cancellable execution_item via the supabase
+    // service-role-aware client. We use a direct atomic UPDATE so
+    // the from-status filter is enforced at the DB layer.
+    const { createSupabaseServerClient } = await import("@/lib/supabase");
+    const supabase = createSupabaseServerClient();
+    let cancelledExecutionItemCount = 0;
+    for (const exec of execItems) {
+      if (!CANCELLABLE_EXECUTION_STATUSES.has(exec.status)) continue;
+      const { data: cancelled, error } = await supabase
+        .from("execution_items")
+        .update({ status: "cancelled" } as never)
+        .eq("workspace_id", workspaceId)
+        .eq("id", exec.id)
+        .in("status", Array.from(CANCELLABLE_EXECUTION_STATUSES))
+        .select("id, status")
+        .maybeSingle();
+      if (error) {
+        return actionFail(
+          "Could not cancel the scheduled execution. Try again in a few seconds.",
+        );
+      }
+      if (cancelled) {
+        cancelledExecutionItemCount += 1;
+      }
+    }
+
+    // Now flip the plan_item back to pending_approval. We keep it
+    // editable but not yet ready for publish.
+    await updatePlanItemStatus({
+      workspaceId,
+      itemId: item.id,
+      status: "pending_approval",
+    });
+
+    const fresh = await getPlanItemById(workspaceId, item.id);
+    if (fresh.status !== "pending_approval") {
+      return actionFail(
+        "Cancellation failed: item did not transition back to pending_approval.",
+      );
+    }
+
+    await logActivityBestEffort({
+      workspaceId,
+      eventType: "weekly_plan_item.approval_cancelled",
+      entityType: "weekly_plan_item",
+      entityId: item.id,
+      title: `Approval cancelled for "${item.title ?? "Untitled"}"`,
+      description:
+        cancelledExecutionItemCount > 0
+          ? `Reverted to pending_approval; cancelled ${cancelledExecutionItemCount} pending execution(s).`
+          : "Reverted to pending_approval.",
+    });
+
+    revalidatePath("/weekly-plan");
+    revalidatePath("/execution");
+    revalidatePath("/activity");
+    return actionOk({
+      itemId: item.id,
+      status: "pending_approval",
+      cancelledExecutionItemCount,
+    });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : "Could not cancel approval.";
+    console.error("[cancelApprovalAction] failed", error);
     return actionFail(message);
   }
 }
