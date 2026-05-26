@@ -1,73 +1,36 @@
 import Link from "next/link";
 import { Topbar } from "@/components/topbar";
 import { readTierOneConfigStatus } from "@/core/publishing/platform-credentials";
-import { isRedditOauthBlocked } from "@/lib/oauth/env";
+import {
+  hasTokenEncryptionKey,
+  isOAuthProviderConfigured,
+  isRedditOauthBlocked,
+} from "@/lib/oauth/env";
+import {
+  buildPublishingPlatformRows,
+  type PublishingPlatformRowStatus,
+} from "./_rows";
 
 export const dynamic = "force-dynamic";
 
-interface Row {
-  label: string;
-  status:
-    | { kind: "ready"; detail: string }
-    | { kind: "missing"; detail: string }
-    | { kind: "manual"; detail: string };
-}
-
+/**
+ * /settings/publishing-platforms — workspace-level platform overview.
+ *
+ * This page renders WORKSPACE-LEVEL truth ("is the integration
+ * plumbing in place?"), not per-identity sign-in state. Per-identity
+ * status lives on /accounts.
+ *
+ * Row logic is in `./_rows` so it can be unit-tested without
+ * rendering the React tree.
+ */
 export default function PublishingPlatformsPage() {
   const tier1 = readTierOneConfigStatus();
-  const redditBlocked = isRedditOauthBlocked();
-
-  const rows: Row[] = [
-    {
-      label: "Reddit",
-      status: redditBlocked
-        ? {
-            kind: "manual",
-            detail:
-              "Manual mode. Reddit's API approval is still pending — copy and paste from the post preview.",
-          }
-        : {
-            kind: "ready",
-            detail: "Connected via OAuth.",
-          },
-    },
-    {
-      label: "dev.to",
-      status: tier1.devto.configured
-        ? { kind: "ready", detail: "Connected." }
-        : {
-            kind: "missing",
-            detail:
-              "Add a dev.to API key in your environment to publish here.",
-          },
-    },
-    {
-      label: "Hashnode",
-      status: tier1.hashnode.configured
-        ? { kind: "ready", detail: "Connected." }
-        : tier1.hashnode.hasPublicationId
-          ? {
-              kind: "missing",
-              detail:
-                "Publication is set, but the API key is missing. Add a Hashnode key in your environment.",
-            }
-          : {
-              kind: "missing",
-              detail:
-                "Add a Hashnode API key and select the publication to publish to.",
-            },
-    },
-    {
-      label: "Bluesky",
-      status: tier1.bluesky.configured
-        ? { kind: "ready", detail: "Connected." }
-        : {
-            kind: "missing",
-            detail:
-              "Add your Bluesky identifier and app-password in your environment.",
-          },
-    },
-  ];
+  const rows = buildPublishingPlatformRows({
+    tier1,
+    redditProviderConfigured: isOAuthProviderConfigured("reddit"),
+    redditBlocked: isRedditOauthBlocked(),
+    encryptionOn: hasTokenEncryptionKey(),
+  });
 
   return (
     <>
@@ -85,7 +48,7 @@ export default function PublishingPlatformsPage() {
           <ul className="row-divider">
             {rows.map((row) => (
               <li
-                key={row.label}
+                key={row.key}
                 className="px-5 py-4 flex items-start gap-4"
               >
                 <div className="min-w-0 flex-1">
@@ -105,15 +68,15 @@ export default function PublishingPlatformsPage() {
         <p className="text-[11px] text-ink-500 leading-relaxed">
           Connections happen through each platform&apos;s official method —
           OAuth for Reddit, API key for dev.to and Hashnode, app-password
-          for Bluesky. Signal never asks for your platform password and
-          never stores plaintext tokens.
+          for Bluesky, bot token for Telegram. Signal never asks for your
+          platform password and never stores plaintext tokens.
         </p>
       </div>
     </>
   );
 }
 
-function StatusBadge({ kind }: { kind: Row["status"]["kind"] }) {
+function StatusBadge({ kind }: { kind: PublishingPlatformRowStatus["kind"] }) {
   if (kind === "ready") {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 text-[11px] font-medium shrink-0">

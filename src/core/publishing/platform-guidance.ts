@@ -55,7 +55,22 @@ const GUIDANCE: Record<FounderPlatform, FounderPlatformGuidance> = {
     short: "r/",
     voiceHint:
       "Community-native discussions and topic-specific posting. Read the subreddit first; write like you belong there.",
-    publishingMode: "manual",
+    // Reddit is automated. The OAuth flow (start/callback/disconnect/
+    // health), the publisher (`publishToReddit`), and the scheduler
+    // allowlist all support per-identity Reddit publishing. The old
+    // `"manual"` value here was a leftover from the pre-API-approval
+    // era and was making the /accounts identity pill render
+    // "Manual publish" even when OAuth was fully wired, because
+    // `resolveIdentityPublishState` short-circuits manual platforms
+    // to the "manual" state regardless of connection.
+    //
+    // OAuth availability at runtime is a separate concern handled by
+    // /accounts threading `workspace: { configured: <oauth env up
+    // AND !redditOauthBlocked AND encryption-on> }` into the
+    // resolver — so when the OAuth flow is unusable, identity state
+    // falls through to `pending_auth` ("Not signed in") rather than
+    // the misleading "Manual publish."
+    publishingMode: "api",
   },
   devto: {
     label: "dev.to",

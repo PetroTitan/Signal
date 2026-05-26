@@ -81,7 +81,12 @@ describe("authControls gate coverage (page.tsx)", () => {
   // publishingMode='manual' for Hashnode would get the generic
   // manual plan — that's covered as a regression below.
   it.each([
-    { platform: "reddit", publishingMode: "manual", oauthAvailable: true, expectedKind: "oauth" },
+    // Reddit is api-mode in platform-guidance now (the manual-mode
+    // declaration was a stale remnant of the pre-OAuth-approval era).
+    // The resolver still produces `oauth` because Reddit is the only
+    // entry in OAUTH_PLATFORMS and the plan-layer check fires before
+    // the publishingMode dispatch.
+    { platform: "reddit", publishingMode: "api", oauthAvailable: true, expectedKind: "oauth" },
     { platform: "bluesky", publishingMode: "api", oauthAvailable: false, expectedKind: "app_password" },
     { platform: "devto", publishingMode: "api", oauthAvailable: false, expectedKind: "personal_api_key" },
     { platform: "hashnode", publishingMode: "api", oauthAvailable: false, expectedKind: "personal_api_key" },

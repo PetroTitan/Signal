@@ -187,6 +187,17 @@ export default async function AccountsPage() {
     hashnode: tier1.hashnode.configured,
     bluesky: tier1.bluesky.configured,
     telegram: tier1.telegram.configured,
+    // Reddit is OAuth, not tier-1 in the env-var sense — but it has
+    // the same shape from the resolver's perspective: a workspace-
+    // level integration that must be configured before any identity
+    // can sign in. We thread `configured` as the AND of provider env
+    // (REDDIT_CLIENT_ID), encryption (TOKEN_ENCRYPTION_KEY), and
+    // the !blocked flag so the resolver returns `pending_auth`
+    // (rather than a misleading state) when the OAuth flow is
+    // unusable. The /accounts page also surfaces the existing
+    // Reddit-specific helperNote separately in the blocked case.
+    reddit:
+      providerConfigured.reddit && !redditOauthBlocked && encryptionOn,
   };
 
   const identityPublishStateById = new Map<string, IdentityPublishState>();
