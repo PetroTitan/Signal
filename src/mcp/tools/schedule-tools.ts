@@ -11,12 +11,14 @@ import "server-only";
  * but only after a strict refusal gate:
  *
  *   - plan_item.status === "approved" (refuses anything else)
- *   - platform === "bluesky" (Bluesky is the only verified API-
- *     publishable platform today; dev.to and Telegram have known
- *     publish-path blockers; Reddit gated by approval; Hashnode is
- *     in manual mode)
- *   - identity is signed in (platform_connections.connection_status
- *     === "connected")
+ *   - platform is in the verified-autonomous set (today: bluesky,
+ *     devto, hashnode, telegram, reddit). X / LinkedIn stay blocked
+ *     because their publishers still return `not_implemented`;
+ *     manual / distribution platforms stay blocked because
+ *     publishing is operator-driven, not scheduler-driven.
+ *   - identity is signed in for THIS platform (platform_connections
+ *     row exists with connection_status === "connected" for
+ *     (workspace, account, platform))
  *   - plan_item.risk_level !== "blocked" (proxy for the QA verdict;
  *     the existing approve flow uses the same check)
  *   - active weekly contract exists and the item's account/product/
@@ -36,19 +38,27 @@ import type { FounderPlatform } from "@/core/publishing/platform-guidance";
 const TOOL = "signal.schedule_publish";
 
 /**
- * Platforms `signal.schedule_publish` will currently allow. Anything
- * outside the set is refused with an explicit reason — see the
- * refusal table in the handler.
+ * Platforms `signal.schedule_publish` will currently allow.
  *
- * Start narrow (Bluesky only). dev.to + Telegram return here after
- * their respective publish-path follow-ups land
- * (feat/devto-publish-uses-identity-key,
- * feat/telegram-publish-wires-channel-binding). Reddit returns here
- * once OAuth readiness is explicitly confirmed and a safe test
- * subreddit is whitelisted. Hashnode returns here only after Pro/API
- * access is verified.
+ * This set is intentionally narrower than the scheduler's
+ * `SCHEDULER_AUTONOMOUS_PLATFORMS` (which includes X / LinkedIn
+ * stubs that return `not_implemented` cleanly). MCP exposes only
+ * platforms whose publishers actually publish, so an external
+ * caller can't successfully schedule a publish that's guaranteed
+ * to fail at the tick.
+ *
+ * Drift safety: a regression test in `schedule-tools.test.ts`
+ * asserts every entry here is also present in
+ * `SCHEDULER_AUTONOMOUS_PLATFORMS`. If MCP ever gets ahead of the
+ * scheduler, that test fires.
  */
-const SCHEDULABLE_PLATFORMS: ReadonlySet<FounderPlatform> = new Set(["bluesky"]);
+const SCHEDULABLE_PLATFORMS: ReadonlySet<FounderPlatform> = new Set([
+  "bluesky",
+  "devto",
+  "hashnode",
+  "telegram",
+  "reddit",
+]);
 
 const MANUAL_OR_DISTRIBUTION_PLATFORMS: ReadonlySet<FounderPlatform> = new Set([
   "x",
@@ -57,13 +67,6 @@ const MANUAL_OR_DISTRIBUTION_PLATFORMS: ReadonlySet<FounderPlatform> = new Set([
   "threads",
   "youtube",
   "indie_hackers",
-]);
-
-const PHASE_5_BLOCKED_PLATFORMS: ReadonlySet<FounderPlatform> = new Set([
-  "devto", // pending feat/devto-publish-uses-identity-key
-  "telegram", // pending feat/telegram-publish-wires-channel-binding
-  "reddit", // pending explicit operator approval + safe test subreddit
-  "hashnode", // in manual mode until Pro/API access is verified
 ]);
 
 export async function schedulePublishTool(
@@ -311,13 +314,10 @@ export async function schedulePublishTool(
       summary: `platform_is_manual_or_distribution_only:${platform}`,
     });
   }
-  if (PHASE_5_BLOCKED_PLATFORMS.has(platform)) {
-    return failed({
-      tool: TOOL,
-      summary: `platform_has_unresolved_publish_blocker:${platform}`,
-    });
-  }
   if (!SCHEDULABLE_PLATFORMS.has(platform)) {
+    // Catches X / LinkedIn (stub publishers) and any unknown
+    // platform string. Verified-autonomous platforms (bluesky,
+    // devto, hashnode, telegram, reddit) pass this gate.
     return failed({
       tool: TOOL,
       summary: `platform_not_schedulable_yet:${platform}`,
@@ -334,7 +334,15 @@ export async function schedulePublishTool(
     });
   }
 
-  // ── 5. Identity must be signed in (Bluesky-specific check) ────────
+  // ── 5. Identity must be signed in for THIS platform ───────────────
+  //
+  // The connection lookup is keyed by (workspace_id, account_id,
+  // platform) — strictly identity-scoped. The Bluesky-only carve-out
+  // that used to live here (.eq("platform", "bluesky")) was a
+  // leftover from when Bluesky was the only scheduler-driven
+  // platform; it refused every non-Bluesky scheduling attempt with
+  // `identity_has_no_bluesky_connection_signed_in` even for
+  // platforms that had healthy connection rows of their own.
   const accountId = (planItem as { account_id: string | null }).account_id;
   if (!accountId) {
     return failed({
@@ -347,12 +355,12 @@ export async function schedulePublishTool(
     .select("id, connection_status, provider_account_id")
     .eq("workspace_id", ctx.workspaceId)
     .eq("account_id", accountId)
-    .eq("platform", "bluesky")
+    .eq("platform", platform)
     .maybeSingle();
   if (!connection) {
     return failed({
       tool: TOOL,
-      summary: "identity_has_no_bluesky_connection_signed_in",
+      summary: `identity_has_no_${platform}_connection_signed_in`,
     });
   }
   const connStatus = (connection as { connection_status: string })
@@ -363,16 +371,33 @@ export async function schedulePublishTool(
       summary: `identity_connection_status_${connStatus}_must_be_connected`,
     });
   }
-  // Defensive: the orchestrator needs a DID. If somehow the connection
-  // exists but the provider_account_id is malformed, refuse here so
-  // the scheduler doesn't later fail with session_missing.
-  const did = (connection as { provider_account_id: string | null })
+  // Provider-account-id format gate.
+  //
+  //   - Bluesky: must be a DID (starts with "did:") — the
+  //     orchestrator needs this exact shape for AT Protocol calls.
+  //     Without it the publish would later fail with
+  //     `session_missing`, so we refuse early.
+  //   - All other platforms: require a non-empty string. Their
+  //     orchestrators / publishers each enforce platform-specific
+  //     validation (chat_id format for Telegram, user_id for
+  //     dev.to / Hashnode, t2_... for Reddit). MCP does not
+  //     re-encode those rules here.
+  const providerAccountId = (connection as { provider_account_id: string | null })
     .provider_account_id;
-  if (!did || !did.startsWith("did:")) {
-    return failed({
-      tool: TOOL,
-      summary: "identity_connection_missing_did",
-    });
+  if (platform === "bluesky") {
+    if (!providerAccountId || !providerAccountId.startsWith("did:")) {
+      return failed({
+        tool: TOOL,
+        summary: "identity_connection_missing_did",
+      });
+    }
+  } else {
+    if (!providerAccountId || providerAccountId.trim().length === 0) {
+      return failed({
+        tool: TOOL,
+        summary: `identity_connection_missing_provider_account_id:${platform}`,
+      });
+    }
   }
 
   // ── 6. Contract scope check (optional) ────────────────────────────
