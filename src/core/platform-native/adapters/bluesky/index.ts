@@ -114,15 +114,15 @@ function buildBluesky(input: AdapterRenderInput): ProviderPayloadPreview {
 
   // single_only enforcement at the preview layer: surface a blocker
   // when the operator picked single but the body forces threading.
-  // Foundation PR does NOT gate publishing on this — that's the
-  // Bluesky shape-binding follow-up PR's job. The blocker shows up
-  // in the preview so the operator can act.
+  // The Bluesky shape-binding PR (this one) uses the same blocker
+  // code at approval-time so the operator-facing message is
+  // consistent across preview and approval refusal.
   if (
     shape.threadMode === "single_only" &&
     payload.parts.length > 1
   ) {
     blockers.push({
-      code: "single_only_exceeds_budget",
+      code: "single_post_exceeds_budget",
       message: `Body would split into ${payload.parts.length} parts but operator chose single_only. Shorten the body or change threadMode to auto_thread_allowed.`,
     });
   }

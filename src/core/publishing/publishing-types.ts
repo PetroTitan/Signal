@@ -80,6 +80,23 @@ export const PUBLISH_REASON_CODES = [
   // unsupported type, network error). Surfaces as a real publish
   // failure rather than letting the orchestrator publish text-only.
   "media_upload_failed",
+  // Phase F6.2 — Bluesky shape-binding enforcement (Bluesky-only).
+  //
+  // approved_shape_stale: at publish time, the freshly-rendered
+  // payload hash no longer matches the operator's approved hash —
+  // the body / title / creative / intent drifted after approval.
+  // The orchestrator refuses to call uploadBlob or createRecord;
+  // operator must re-approve.
+  //
+  // single_post_exceeds_budget: at approval time, the operator's
+  // shape says single_only but the rendered body would force a
+  // thread. Approval is refused so the operator must either shorten
+  // the body or explicitly enable threading.
+  //
+  // Both are Bluesky-only today. Other platform adapters introduce
+  // their own enforcement codes in their isolated PRs.
+  "approved_shape_stale",
+  "single_post_exceeds_budget",
 ] as const;
 export type PublishReasonCode = (typeof PUBLISH_REASON_CODES)[number];
 

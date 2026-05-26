@@ -10,6 +10,7 @@ import {
   getPlanItemById,
   updatePlanItem,
 } from "@/repositories/weekly-plan-repository";
+import { decideBlueskyApprovalShape } from "@/core/platform-native/adapters/bluesky/shape-binding";
 import {
   listExecutionItemsByPlanItemIds,
   updateItemStatus as updateExecutionItemStatus,
@@ -854,6 +855,70 @@ export async function approveAndHoldAction(
 }
 
 // =====================================================================
+// Phase F6.2 — Bluesky-only operator-bound shape enforcement.
+// =====================================================================
+//
+// The approval-time half of the shape-binding contract. Runs ONLY
+// when item.platform === "bluesky". Never invoked for any other
+// platform — keeps cross-platform isolation intact.
+//
+// Three return modes:
+//   - { ok: true, intent: null }      → no enforcement (legacy item)
+//   - { ok: true, intent: {...} }     → write platform_publish_intent
+//                                       with new operatorApprovedShapeHash
+//   - { ok: false, error: "…" }       → REFUSE approval; surface to operator
+//
+// This helper is intentionally inline-private — it never escapes the
+// approval action surface, so future platform PRs can each ship
+// their own equivalent without crossing boundaries.
+
+async function bindBlueskyApprovalShapeOrRefuse(input: {
+  platform: string | null;
+  rawIntent: Record<string, unknown> | null;
+  title: string | null;
+  body: string | null;
+  creative: {
+    assetUrl: string | null;
+    altText: string | null;
+    sourceType: string;
+  } | null;
+}): Promise<
+  | { ok: true; intent: Record<string, unknown> | null }
+  | { ok: false; error: string }
+> {
+  // Hard isolation: this entire helper is a no-op for any platform
+  // other than Bluesky. Other platforms remain in legacy mode.
+  if (input.platform !== "bluesky") {
+    return { ok: true, intent: null };
+  }
+  const decision = await decideBlueskyApprovalShape({
+    rawIntent: input.rawIntent,
+    title: input.title,
+    body: input.body ?? "",
+    creative: input.creative
+      ? {
+          assetUrl: input.creative.assetUrl,
+          sourceUrl: null,
+          altText: input.creative.altText,
+          creativeType: input.creative.sourceType ?? "image",
+        }
+      : null,
+  });
+  if (decision.kind === "legacy_no_enforcement") {
+    return { ok: true, intent: null };
+  }
+  if (decision.kind === "refuse") {
+    const primary = decision.blockers[0];
+    return {
+      ok: false,
+      error: `Bluesky approval blocked: ${primary.code} — ${primary.message}`,
+    };
+  }
+  // kind === "bind"
+  return { ok: true, intent: decision.serializedIntent };
+}
+
+// =====================================================================
 // Per-item approval — approvePlanItemAndHoldAction
 // =====================================================================
 //
@@ -903,6 +968,27 @@ export async function approvePlanItemAndHoldAction(
       );
     }
 
+    // Phase F6.2 — Bluesky-only operator-bound shape enforcement.
+    // No-op for every other platform. Refuses approval when the
+    // operator's shape (e.g. single_only) conflicts with the
+    // rendered payload. On success, binds operatorApprovedShapeHash.
+    const shapeBinding = await bindBlueskyApprovalShapeOrRefuse({
+      platform: item.platform,
+      rawIntent: item.platformPublishIntent,
+      title: item.title,
+      body: item.body,
+      creative: primaryCreative
+        ? {
+            assetUrl: primaryCreative.assetUrl,
+            altText: primaryCreative.altText,
+            sourceType: primaryCreative.sourceType,
+          }
+        : null,
+    });
+    if (!shapeBinding.ok) {
+      return actionFail(shapeBinding.error);
+    }
+
     const beforeStatus = item.status;
     const beforeScheduledAt = item.scheduledAt;
     emitApprovalTransitionStarted({
@@ -913,6 +999,19 @@ export async function approvePlanItemAndHoldAction(
       beforeStatus,
       beforeScheduledAt,
     });
+
+    // Persist the new approved-shape envelope BEFORE the status flip
+    // so a stray race can never see status="approved" without the
+    // bound hash. The status update is the canonical commit.
+    if (shapeBinding.intent !== null) {
+      await updatePlanItem({
+        workspaceId,
+        itemId: item.id,
+        patch: {
+          platform_publish_intent: shapeBinding.intent,
+        },
+      });
+    }
 
     await updatePlanItemStatus({
       workspaceId,
@@ -1078,6 +1177,27 @@ export async function approvePlanItemAndScheduleAction(
       );
     }
 
+    // Phase F6.2 — Bluesky-only operator-bound shape enforcement.
+    // No-op for every other platform. Runs BEFORE the duplicate-
+    // execution-item check so a stale-shape refusal doesn't waste a
+    // queue lookup.
+    const shapeBinding = await bindBlueskyApprovalShapeOrRefuse({
+      platform: item.platform,
+      rawIntent: item.platformPublishIntent,
+      title: item.title,
+      body: item.body,
+      creative: primaryCreative
+        ? {
+            assetUrl: primaryCreative.assetUrl,
+            altText: primaryCreative.altText,
+            sourceType: primaryCreative.sourceType,
+          }
+        : null,
+    });
+    if (!shapeBinding.ok) {
+      return actionFail(shapeBinding.error);
+    }
+
     // Duplicate-prevention: refuse if an execution_item already
     // points at this plan_item.
     const existingExec = await listExecutionItemsByPlanItemIds(workspaceId, [
@@ -1178,6 +1298,17 @@ export async function approvePlanItemAndScheduleAction(
       itemId: execItem.id,
       to: "scheduled",
     });
+    // Persist the bound shape (Bluesky-only; no-op for other
+    // platforms) BEFORE the canonical plan_item status flip.
+    if (shapeBinding.intent !== null) {
+      await updatePlanItem({
+        workspaceId,
+        itemId: item.id,
+        patch: {
+          platform_publish_intent: shapeBinding.intent,
+        },
+      });
+    }
     await updatePlanItemStatus({
       workspaceId,
       itemId: item.id,
