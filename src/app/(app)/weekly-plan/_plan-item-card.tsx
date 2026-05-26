@@ -6,11 +6,13 @@ import { useFormState, useFormStatus } from "react-dom";
 import {
   approvePlanItemAndHoldAction,
   approvePlanItemAndScheduleAction,
+  cancelApprovalAction,
   duplicatePlanItemAction,
   scheduleApprovedItemAction,
   sendForApprovalAction,
   updatePlanItemAction,
   type ApprovePlanItemResult,
+  type CancelApprovalResult,
   type DuplicatePlanItemResult,
   type SendForApprovalResult,
   type UpdatePlanItemResult,
@@ -43,6 +45,7 @@ const updateInitial: UpdatePlanItemResult = { ok: false, error: "" };
 const duplicateInitial: DuplicatePlanItemResult = { ok: false, error: "" };
 const sendInitial: SendForApprovalResult = { ok: false, error: "" };
 const approveItemInitial: ApprovePlanItemResult = { ok: false, error: "" };
+const cancelApprovalInitial: CancelApprovalResult = { ok: false, error: "" };
 
 /**
  * Lightweight, sheet-driven plan item card.
@@ -362,6 +365,11 @@ export function PlanItemCard(props: PlanItemCardProps) {
                   isRetry={props.status === "paused"}
                 />
               ) : null}
+              {(props.status === "approved" ||
+                props.status === "scheduled") &&
+              props.isPost ? (
+                <CancelApprovalButton itemId={props.id} />
+              ) : null}
               <QuickReschedule
                 itemId={props.id}
                 scheduledAt={props.scheduledAt}
@@ -483,6 +491,74 @@ function DupSubmit() {
       className="btn-ghost text-xs disabled:opacity-60"
     >
       {pending ? "Duplicating…" : "Duplicate"}
+    </button>
+  );
+}
+
+/**
+ * Phase F7.2 — operator action that reverts an `approved` or
+ * `scheduled` item back to `pending_approval`. Two-click pattern:
+ * the first click expands an inline warning + confirm button so the
+ * operator can't blow away an approval with a stray click.
+ *
+ * Mirrors `RemoveButton`'s two-step UX (no modal, no portal).
+ */
+function CancelApprovalButton({ itemId }: { itemId: string }) {
+  const [state, action] = useFormState(
+    cancelApprovalAction,
+    cancelApprovalInitial,
+  );
+  const [confirming, setConfirming] = useState(false);
+  const safe = state ?? cancelApprovalInitial;
+
+  if (!confirming) {
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => setConfirming(true)}
+          className="btn-ghost text-xs"
+        >
+          Cancel approval
+        </button>
+        {safe.error ? (
+          <span className="ml-2 text-[11px] text-amber-700">{safe.error}</span>
+        ) : null}
+      </>
+    );
+  }
+
+  return (
+    <form action={action} className="inline-flex items-center gap-2 flex-wrap">
+      <input type="hidden" name="item_id" value={itemId} />
+      <span className="text-[11px] text-amber-700 leading-snug max-w-[28ch]">
+        This post will no longer be eligible for publishing until approved
+        again.
+      </span>
+      <CancelApprovalSubmit />
+      <button
+        type="button"
+        onClick={() => setConfirming(false)}
+        className="btn-ghost text-[11px]"
+      >
+        Keep approved
+      </button>
+      {safe.error ? (
+        <span className="text-[11px] text-amber-700">{safe.error}</span>
+      ) : null}
+    </form>
+  );
+}
+
+function CancelApprovalSubmit() {
+  const { pending } = useFormStatus();
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      className="text-xs px-2 py-1 rounded-md border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 disabled:opacity-60"
+    >
+      {pending ? "Cancelling…" : "Yes, cancel approval"}
     </button>
   );
 }
