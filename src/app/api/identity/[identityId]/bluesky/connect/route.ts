@@ -5,7 +5,10 @@ import {
   getAccountById,
   setAccountConnectionStatus,
 } from "@/repositories/account-repository";
-import { upsertPlatformConnection } from "@/repositories/platform-connection-repository";
+import {
+  PlatformConnectionAttachedToAnotherIdentityError,
+  upsertPlatformConnection,
+} from "@/repositories/platform-connection-repository";
 import { recordActivity } from "@/repositories/activity-repository";
 import {
   connectBlueskyWithAppPassword,
@@ -147,6 +150,13 @@ export async function POST(
           console.error("[bluesky/connect] activity log failed", err);
         }
       } catch (err) {
+        if (err instanceof PlatformConnectionAttachedToAnotherIdentityError) {
+          return jsonError(
+            409,
+            "attached_to_another_identity",
+            "That Bluesky session resolves to an account already attached to another identity in this workspace. Open that identity to manage its connection, or sign out of it before reusing the credentials here.",
+          );
+        }
         console.error("[bluesky/connect] upsert failed", err);
         return jsonError(
           500,
