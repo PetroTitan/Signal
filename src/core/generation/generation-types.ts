@@ -112,6 +112,15 @@ export interface GenerationPromptContext {
   platform: string;
   platformLabel: string;
   voiceProfile: string | null;
+  /**
+   * Phase F7.0 — canonical factual source for this publishing
+   * identity. Generation MUST ground topic / positioning here and
+   * MUST NOT default to internal infrastructure / debugging /
+   * scheduler / MCP discussions.
+   */
+  sourceWebsiteUrl: string | null;
+  /** Phase F7.0 — optional additional reference sources. */
+  referenceUrls: ReadonlyArray<string>;
   product: {
     name: string;
     domain: string | null;

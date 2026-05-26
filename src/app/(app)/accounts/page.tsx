@@ -15,6 +15,7 @@ import { AccountCreateForm } from "./_create-form";
 import { ArchiveAccountButton } from "./_archive-button";
 import { ConnectionControls } from "./_connection-controls";
 import { VoiceProfileEditor } from "./_voice-profile-editor";
+import { IdentitySourcesEditor } from "./_identity-sources-editor";
 import { PublishingCapabilitiesPanel } from "./_capabilities-panel";
 import { GenerateDraftButton } from "./_generate-draft-button";
 import { IdentityCardWithManage } from "./_identity-card-with-manage";
@@ -355,11 +356,18 @@ export default async function AccountsPage() {
               );
               const guidance = resolveIdentityPlatformGuidance(a.platform);
               const voiceProfileSlot = (
-                <VoiceProfileEditor
-                  accountId={a.id}
-                  initialValue={a.voiceProfile ?? a.role ?? null}
-                  platformHint={guidance?.voiceHint ?? null}
-                />
+                <div className="space-y-3">
+                  <VoiceProfileEditor
+                    accountId={a.id}
+                    initialValue={a.voiceProfile ?? a.role ?? null}
+                    platformHint={guidance?.voiceHint ?? null}
+                  />
+                  <IdentitySourcesEditor
+                    accountId={a.id}
+                    initialSourceWebsiteUrl={a.sourceWebsiteUrl}
+                    initialReferenceUrls={a.referenceUrls}
+                  />
+                </div>
               );
               return (
                 <IdentityCardWithManage

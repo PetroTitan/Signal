@@ -48,6 +48,17 @@ export interface PublishingIdentityContext {
   /** Operator-written voice profile. Verbatim. */
   voiceProfile: string | null;
   /**
+   * Phase F7.0 — canonical factual source for this publishing
+   * identity. Generation flows ground topic + positioning choices
+   * here so they avoid drifting into internal infrastructure
+   * conversations. Null only on legacy rows that pre-date the
+   * identity-source migration.
+   */
+  sourceWebsiteUrl: string | null;
+  /** Phase F7.0 — optional additional reference sources. Always an
+   *  array (empty when none). */
+  referenceUrls: ReadonlyArray<string>;
+  /**
    * Account age in days, derived from growth_accounts.created_at.
    * Drives new-account safety caps inside the platform-native
    * adapter and QA. Always >= 0; defaults to 0 if createdAt parses
@@ -166,6 +177,8 @@ export async function getPublishingIdentityContext(input: {
     // read (the migration already backfills this; the fallback covers
     // pre-migration test environments).
     voiceProfile: identity.voiceProfile ?? identity.role ?? null,
+    sourceWebsiteUrl: identity.sourceWebsiteUrl,
+    referenceUrls: identity.referenceUrls,
     ageDays: ageDaysFromCreatedAt(identity.createdAt),
     lifecycleStatus: narrowLifecycle(identity.status),
     associatedProduct: associatedProduct

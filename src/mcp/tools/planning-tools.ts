@@ -38,6 +38,10 @@ import {
   serializeMcpResponse,
 } from "../platform-intent";
 import type { PublishPlatform } from "@/core/publishing/publishing-types";
+import {
+  validateIdentityReferenceUrls,
+  validateIdentitySourceUrl,
+} from "@/core/identity-sources/url-validation";
 
 const ACCOUNT_SELECT_COLUMNS =
   "id, platform, handle, display_name, voice_profile, product_id, status, connection_status, source, review_status, created_at";
@@ -646,6 +650,42 @@ export async function identitiesUpdateTool(
   if (args.handle !== undefined) patch.handle = args.handle;
   if (args.product_id !== undefined) patch.product_id = args.product_id;
   if (args.voice_profile !== undefined) patch.voice_profile = args.voice_profile;
+
+  // Phase F7.0 — validate + normalize source URLs upfront. Bad
+  // URLs short-circuit with a structured error; the DB write only
+  // happens with normalized values.
+  if (args.source_website_url !== undefined) {
+    if (args.source_website_url === null) {
+      patch.source_website_url = null;
+    } else {
+      const r = validateIdentitySourceUrl(args.source_website_url);
+      if (!r.ok) {
+        return failed({
+          tool: "signal.identities.update",
+          summary: `source_website_url_invalid:${r.error}`,
+          warnings: r.message ? [r.message] : [],
+        });
+      }
+      patch.source_website_url = r.normalized;
+    }
+  }
+  if (args.reference_urls !== undefined) {
+    if (args.reference_urls === null) {
+      patch.reference_urls = [];
+    } else {
+      const r = validateIdentityReferenceUrls(args.reference_urls);
+      if (!r.ok) {
+        return failed({
+          tool: "signal.identities.update",
+          summary: `reference_urls_invalid:${r.errors
+            .map((e) => `${e.index}:${e.error}`)
+            .join(",")}`,
+          warnings: r.errors.map((e) => `[${e.index}] ${e.message}`),
+        });
+      }
+      patch.reference_urls = r.normalized;
+    }
+  }
 
   // Source-note is operator-facing context for the activity log, not
   // a column on the row.

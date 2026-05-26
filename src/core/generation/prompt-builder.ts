@@ -52,6 +52,13 @@ export function buildGenerationPrompt(
     "Voice profile (the operator's own words — match this voice closely):",
     context.voiceProfile?.trim() || "(no explicit voice profile — write as a calm, technical founder sharing a build update)",
     "",
+    // Phase F7.0 — factual grounding. The identity's canonical
+    // source website (plus optional reference sources) is the
+    // FIRST PLACE the model should look for topics, positioning,
+    // and product details. This block also names explicitly what
+    // the model must NOT default to.
+    ...buildFactualGroundingBlock(context),
+    "",
     // Platform shape: prefer the typed platform-native engine when
     // the target platform is one of the supported founder platforms;
     // fall back to the legacy switch for anything outside the set
@@ -206,4 +213,46 @@ function platformShape(platform: string): string {
     default:
       return "- Calm, founder-shaped post in markdown.";
   }
+}
+
+/**
+ * Phase F7.0 — factual grounding block.
+ *
+ * Names the identity's canonical source website (+ optional
+ * reference sources) and explicitly forbids drafting from internal
+ * infrastructure / debugging / scheduler / MCP topics unless the
+ * operator's topic input explicitly asks for it. This is the
+ * mechanism that stops a Codex/MCP generation call from turning
+ * "today's MCP approval-hash fix" into a published post.
+ *
+ * Returns an array of lines (the caller joins with "\n"). When the
+ * identity has no source website (a legacy row), emits a softer
+ * warning so the model still understands the boundary even without
+ * a positive grounding URL.
+ */
+function buildFactualGroundingBlock(
+  context: GenerationPromptContext,
+): string[] {
+  const lines: string[] = ["Factual grounding (read this first):"];
+  if (context.sourceWebsiteUrl) {
+    lines.push(
+      `- Primary source: ${context.sourceWebsiteUrl}  (this identity publishes on behalf of THIS site — topics, positioning, product details, value proposition all come from here)`,
+    );
+  } else {
+    lines.push(
+      "- Primary source: (not set) — this identity has not declared a canonical source website. Stick to the operator's topic input and DO NOT invent positioning.",
+    );
+  }
+  if (context.referenceUrls.length > 0) {
+    lines.push("- Additional references:");
+    for (const url of context.referenceUrls) {
+      lines.push(`  · ${url}`);
+    }
+  }
+  lines.push(
+    "- DO NOT draft about Signal's internal infrastructure, MCP implementation, scheduler runtime, publish failures, approval-hash mechanics, or any other meta / workflow / debugging topic.",
+    "- DO NOT default to AI-tooling discussions when the topic input is product-shaped.",
+    "- The operator's topic input is the trigger; the primary source is the SUBJECT. If the topic conflicts with the source, prefer the topic but stay anchored in the source's actual product context.",
+  );
+  return lines;
 }

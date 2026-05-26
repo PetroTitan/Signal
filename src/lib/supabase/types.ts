@@ -91,6 +91,16 @@ export interface GrowthAccountRow {
   connection_status: string;
   source: string;
   review_status: string;
+  /**
+   * Phase F7.0 — canonical factual source for this publishing
+   * identity. Generation flows ground their topic + voice choices
+   * here so they avoid drifting into internal infrastructure
+   * conversations. Validated in TypeScript only (DB stays neutral).
+   */
+  source_website_url: string | null;
+  /** Optional additional reference sources (canonical sub-sites,
+   *  related properties). Always a string array (defaults to []). */
+  reference_urls: string[];
   created_at: string;
   updated_at: string;
 }
@@ -108,6 +118,8 @@ export interface GrowthAccountInsert {
   connection_status?: string;
   source?: string;
   review_status?: string;
+  source_website_url?: string | null;
+  reference_urls?: string[];
 }
 
 export interface GrowthAccountUpdate {
@@ -120,6 +132,8 @@ export interface GrowthAccountUpdate {
   connection_status?: string;
   source?: string;
   review_status?: string;
+  source_website_url?: string | null;
+  reference_urls?: string[];
 }
 
 export interface WorkspaceSettingsRow {

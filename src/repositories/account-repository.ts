@@ -30,6 +30,16 @@ export interface GrowthAccountRecord {
   connectionStatus: string;
   source: string;
   reviewStatus: string;
+  /**
+   * Phase F7.0 — canonical factual source for this identity.
+   * Generation flows ground topics + positioning here. Null only on
+   * legacy rows that pre-date the identity-source migration; active
+   * publishing identities are expected to set it (enforced in the
+   * UI / MCP write path, not at the DB layer).
+   */
+  sourceWebsiteUrl: string | null;
+  /** Optional additional reference sources. Empty array when none. */
+  referenceUrls: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -48,6 +58,8 @@ function toAccount(row: GrowthAccountRow): GrowthAccountRecord {
     connectionStatus: row.connection_status,
     source: row.source,
     reviewStatus: row.review_status,
+    sourceWebsiteUrl: row.source_website_url ?? null,
+    referenceUrls: Array.isArray(row.reference_urls) ? row.reference_urls : [],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -138,6 +150,10 @@ export interface AccountInput {
   role?: string | null;
   voiceProfile?: string | null;
   productId?: string | null;
+  /** Phase F7.0 — canonical factual source URL. */
+  sourceWebsiteUrl?: string | null;
+  /** Phase F7.0 — optional additional reference sources. */
+  referenceUrls?: ReadonlyArray<string>;
 }
 
 export async function createAccount(
@@ -159,6 +175,8 @@ export async function createAccount(
     voice_profile: input.voiceProfile ?? null,
     status: "planned",
     connection_status: "not_connected",
+    source_website_url: input.sourceWebsiteUrl ?? null,
+    reference_urls: input.referenceUrls ? [...input.referenceUrls] : [],
   };
   const { data, error } = await supabase
     .from("growth_accounts")
@@ -180,6 +198,10 @@ export async function updateAccount(input: {
   status?: string;
   productId?: string | null;
   reviewStatus?: "pending_review" | "confirmed" | "rejected" | "needs_edit";
+  /** Phase F7.0 — set/clear canonical factual source URL. */
+  sourceWebsiteUrl?: string | null;
+  /** Phase F7.0 — replace the reference URL list. Pass [] to clear. */
+  referenceUrls?: ReadonlyArray<string>;
 }): Promise<GrowthAccountRecord> {
   const supabase = createSupabaseServerClient();
   const patch: GrowthAccountUpdate = {};
@@ -190,6 +212,10 @@ export async function updateAccount(input: {
   if (input.status !== undefined) patch.status = input.status;
   if (input.productId !== undefined) patch.product_id = input.productId;
   if (input.reviewStatus !== undefined) patch.review_status = input.reviewStatus;
+  if (input.sourceWebsiteUrl !== undefined)
+    patch.source_website_url = input.sourceWebsiteUrl;
+  if (input.referenceUrls !== undefined)
+    patch.reference_urls = [...input.referenceUrls];
 
   const { data, error } = await supabase
     .from("growth_accounts")

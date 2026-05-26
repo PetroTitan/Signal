@@ -20,6 +20,7 @@ import {
 export type CreateAccountResult = ActionResult<{ accountId: string }>;
 export type ArchiveAccountResult = ActionResult<{ accountId: string }>;
 export type UpdateVoiceProfileResult = ActionResult<{ accountId: string }>;
+export type UpdateIdentitySourcesResult = ActionResult<{ accountId: string }>;
 
 const VOICE_PROFILE_MAX = 1500;
 
@@ -32,6 +33,42 @@ export async function createAccountAction(
   const handle = String(formData.get("handle") ?? "").trim();
   const voiceProfile = String(formData.get("voice_profile") ?? "").trim();
   const productId = String(formData.get("product_id") ?? "").trim();
+  const sourceWebsiteUrlRaw = String(
+    formData.get("source_website_url") ?? "",
+  ).trim();
+  const referenceUrlsRaw = String(formData.get("reference_urls") ?? "")
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  const {
+    validateIdentityReferenceUrls,
+    validateIdentitySourceUrl,
+  } = await import("@/core/identity-sources/url-validation");
+  // Source website is required at creation for active publishing
+  // identities. Operators can still leave it empty at create time
+  // (it then surfaces as an explicit "this identity has no factual
+  // source" warning in the UI and in the generation prompt); the
+  // validator only refuses if a value is supplied that doesn't pass.
+  let sourceWebsiteUrl: string | null = null;
+  if (sourceWebsiteUrlRaw.length > 0) {
+    const v = validateIdentitySourceUrl(sourceWebsiteUrlRaw);
+    if (!v.ok) {
+      return actionFail(v.message ?? "Source website URL is invalid.");
+    }
+    sourceWebsiteUrl = v.normalized;
+  }
+  let referenceUrls: string[] = [];
+  if (referenceUrlsRaw.length > 0) {
+    const v = validateIdentityReferenceUrls(referenceUrlsRaw);
+    if (!v.ok) {
+      const first = v.errors[0];
+      return actionFail(
+        `Reference URL #${first.index + 1} is invalid: ${first.message}`,
+      );
+    }
+    referenceUrls = v.normalized;
+  }
 
   if (!platform) return actionFail("Pick a platform.");
   if (!displayName)
@@ -81,6 +118,8 @@ export async function createAccountAction(
       handle: handle || null,
       voiceProfile: voiceProfile || null,
       productId: resolvedProductId,
+      sourceWebsiteUrl,
+      referenceUrls,
     });
 
     try {
@@ -202,6 +241,78 @@ export async function updateVoiceProfileAction(
         ? error.message
         : "Could not save the voice profile.";
     console.error("[updateVoiceProfileAction] failed", error);
+    return actionFail(message);
+  }
+}
+
+// =====================================================================
+// Phase F7.0 — update the identity's canonical factual source(s).
+// =====================================================================
+//
+// Updates source_website_url and reference_urls on the identity row.
+// Validation is delegated to the pure helpers in
+// `@/core/identity-sources/url-validation`. Both fields are optional:
+//   - empty `source_website_url` → null (legacy mode for this row)
+//   - empty `reference_urls` (one URL per line in the textarea) → []
+export async function updateIdentitySourcesAction(
+  _prev: UpdateIdentitySourcesResult,
+  formData: FormData,
+): Promise<UpdateIdentitySourcesResult> {
+  const accountId = String(formData.get("account_id") ?? "").trim();
+  if (!accountId) return actionFail("Missing identity.");
+
+  const sourceWebsiteUrlRaw = String(
+    formData.get("source_website_url") ?? "",
+  ).trim();
+  const referenceUrlsRaw = String(formData.get("reference_urls") ?? "")
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  const {
+    validateIdentityReferenceUrls,
+    validateIdentitySourceUrl,
+  } = await import("@/core/identity-sources/url-validation");
+
+  let sourceWebsiteUrl: string | null = null;
+  if (sourceWebsiteUrlRaw.length > 0) {
+    const v = validateIdentitySourceUrl(sourceWebsiteUrlRaw);
+    if (!v.ok) {
+      return actionFail(v.message ?? "Source website URL is invalid.");
+    }
+    sourceWebsiteUrl = v.normalized;
+  }
+  let referenceUrls: string[] = [];
+  if (referenceUrlsRaw.length > 0) {
+    const v = validateIdentityReferenceUrls(referenceUrlsRaw);
+    if (!v.ok) {
+      const first = v.errors[0];
+      return actionFail(
+        `Reference URL #${first.index + 1} is invalid: ${first.message}`,
+      );
+    }
+    referenceUrls = v.normalized;
+  }
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+
+    const updated = await updateAccount({
+      workspaceId: membership.workspace.id,
+      accountId,
+      sourceWebsiteUrl,
+      referenceUrls,
+    });
+
+    revalidatePath("/accounts");
+    return actionOk({ accountId: updated.id });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : "Could not save identity sources.";
+    console.error("[updateIdentitySourcesAction] failed", error);
     return actionFail(message);
   }
 }

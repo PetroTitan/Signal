@@ -110,6 +110,8 @@ export async function generateDraft(input: {
     platform,
     platformLabel: guidance?.label ?? identityContext.platformLabel,
     voiceProfile: identityContext.voiceProfile,
+    sourceWebsiteUrl: identityContext.sourceWebsiteUrl,
+    referenceUrls: identityContext.referenceUrls,
     product: identityContext.associatedProduct
       ? {
           name: identityContext.associatedProduct.name,
