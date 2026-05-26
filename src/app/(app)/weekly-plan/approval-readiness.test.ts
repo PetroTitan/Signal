@@ -122,9 +122,14 @@ describe("hold path (contract not required) — per-item approve-and-hold", () =
     expect(r.blockers.join(" ")).toMatch(/pending_approval/);
   });
 
-  it("still blocks when creative is missing", () => {
+  it("still blocks when creative is missing AND platform-native policy requires one", () => {
+    // Instagram is creative-required for every intent — pre-F7.3
+    // this test asserted Bluesky also blocked, but the new policy
+    // makes Bluesky text-post optional. Use Instagram to preserve
+    // the regression: when the policy says required, missing
+    // creative DOES still block.
     const r = assessItemApprovalReadiness({
-      item: makeItem(),
+      item: makeItem({ platform: "instagram" }),
       contract: null,
       primaryCreative: null,
       requireSchedule: false,
@@ -134,9 +139,9 @@ describe("hold path (contract not required) — per-item approve-and-hold", () =
     expect(r.blockers.join(" ")).toMatch(/missing/i);
   });
 
-  it("still blocks when alt text is missing", () => {
+  it("still blocks when alt text is missing AND platform-native policy requires creative", () => {
     const r = assessItemApprovalReadiness({
-      item: makeItem(),
+      item: makeItem({ platform: "instagram" }),
       contract: null,
       primaryCreative: { ...readyCreative!, altText: "" },
       requireSchedule: false,
@@ -144,6 +149,200 @@ describe("hold path (contract not required) — per-item approve-and-hold", () =
     });
     expect(r.ready).toBe(false);
     expect(r.blockers.join(" ")).toMatch(/alt text/i);
+  });
+
+  // Phase F7.3 — platform-native creative-required policy.
+  //
+  // Article / text-first platforms no longer block approval on a
+  // missing creative. The legacy "every post needs a creative"
+  // assumption is replaced by the policy module's matrix.
+  describe("Phase F7.3 — creative-optional platforms approve without creative", () => {
+    it("dev.to article: missing creative is NOT a blocker", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platform: "devto",
+          platformPublishIntent: {
+            version: 1,
+            platform: "devto",
+            intent: "article",
+          } as never,
+        }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ready).toBe(true);
+      expect(r.blockers).toHaveLength(0);
+      expect(r.ok.creativeRequired).toBe(false);
+      expect(r.informational).toContain(
+        "Creative optional for this platform/format.",
+      );
+    });
+
+    it("Hashnode article: missing creative is NOT a blocker", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platform: "hashnode",
+          platformPublishIntent: {
+            version: 1,
+            platform: "hashnode",
+            intent: "article",
+          } as never,
+        }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ready).toBe(true);
+      expect(r.ok.creativeRequired).toBe(false);
+    });
+
+    it("Bluesky text post (legacy, no intent set): missing creative is NOT a blocker", () => {
+      const r = assessItemApprovalReadiness({
+        // Default makeItem() is bluesky + no intent — the legacy row
+        // shape. Pre-F7.3 this blocked on creative_missing; post-
+        // F7.3 the policy default for Bluesky is optional.
+        item: makeItem(),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ready).toBe(true);
+      expect(r.ok.creativeRequired).toBe(false);
+    });
+
+    it("Reddit text post (new_post): missing creative is NOT a blocker", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platform: "reddit",
+          platformPublishIntent: {
+            version: 1,
+            platform: "reddit",
+            intent: "new_post",
+          } as never,
+        }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ready).toBe(true);
+      expect(r.ok.creativeRequired).toBe(false);
+    });
+
+    it("X text post: missing creative is NOT a blocker", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platform: "x",
+          platformPublishIntent: {
+            version: 1,
+            platform: "x",
+            intent: "new_post",
+          } as never,
+        }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ready).toBe(true);
+      expect(r.ok.creativeRequired).toBe(false);
+    });
+
+    it("YouTube community post (new_post): missing creative is NOT a blocker", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platform: "youtube",
+          platformPublishIntent: {
+            version: 1,
+            platform: "youtube",
+            intent: "new_post",
+          } as never,
+        }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ready).toBe(true);
+      expect(r.ok.creativeRequired).toBe(false);
+    });
+  });
+
+  describe("Phase F7.3 — creative-required platforms still block", () => {
+    it("Instagram: blocks even when intent is null (platform-level mandate)", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({ platform: "instagram" }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ready).toBe(false);
+      expect(r.ok.creativeRequired).toBe(true);
+      expect(r.informational).not.toContain(
+        "Creative optional for this platform/format.",
+      );
+    });
+
+    it("Bluesky media_post: blocks (intent-level mandate)", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platformPublishIntent: {
+            version: 1,
+            platform: "bluesky",
+            intent: "media_post",
+          } as never,
+        }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ready).toBe(false);
+      expect(r.ok.creativeRequired).toBe(true);
+    });
+
+    it("YouTube video_post: blocks without creative", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platform: "youtube",
+          platformPublishIntent: {
+            version: 1,
+            platform: "youtube",
+            intent: "video_post",
+          } as never,
+        }),
+        contract: null,
+        primaryCreative: null,
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ready).toBe(false);
+      expect(r.ok.creativeRequired).toBe(true);
+    });
+
+    it("Instagram carousel with missing alt text: still blocks", () => {
+      const r = assessItemApprovalReadiness({
+        item: makeItem({
+          platform: "instagram",
+          platformPublishIntent: {
+            version: 1,
+            platform: "instagram",
+            intent: "carousel",
+          } as never,
+        }),
+        contract: null,
+        primaryCreative: { ...readyCreative!, altText: "" },
+        requireSchedule: false,
+        requireContract: false,
+      });
+      expect(r.ready).toBe(false);
+      expect(r.blockers.join(" ")).toMatch(/alt text/i);
+    });
   });
 
   it("still blocks when QA flagged the item (riskLevel='blocked')", () => {
@@ -354,6 +553,7 @@ describe("summarizeReadiness", () => {
       summarizeReadiness({
         ready: true,
         blockers: [],
+        informational: [],
         ok: {} as never,
       }),
     ).toBe("Ready for post approval.");
@@ -362,6 +562,7 @@ describe("summarizeReadiness", () => {
     const s = summarizeReadiness({
       ready: false,
       blockers: ["A", "B", "C"],
+      informational: [],
       ok: {} as never,
     });
     expect(s).toBe("A (+2 more)");
