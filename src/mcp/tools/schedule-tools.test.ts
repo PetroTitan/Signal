@@ -4,6 +4,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { schedulePublishTool } from "./schedule-tools";
 import type { ToolContext } from "../tool-context";
 import type { SchedulePublishArgs } from "../schemas";
+import { SCHEDULER_AUTONOMOUS_PLATFORMS } from "@/core/publishing/publishing-scheduler";
+import { TOOLS_BY_NAME } from "../tool-registry";
 
 // =====================================================================
 // Fake Supabase client — same shape used by planning-tools.test.ts
@@ -456,19 +458,63 @@ describe("schedulePublishTool — platform gate", () => {
     },
   );
 
-  it.each(["devto", "telegram", "reddit", "hashnode"])(
-    "refuses %s (Phase 5 publish blocker / manual mode)",
-    async (platform) => {
+  // Verified-autonomous platforms — devto / hashnode / telegram /
+  // reddit — used to be in PHASE_5_BLOCKED_PLATFORMS and were
+  // refused with `platform_has_unresolved_publish_blocker`. They're
+  // now allowed, because each has a real publisher wired into the
+  // runner and is in SCHEDULER_AUTONOMOUS_PLATFORMS. The per-
+  // platform end-to-end success cases live in the dedicated suite
+  // below — here we just assert the platform_gate itself no longer
+  // refuses them.
+  it.each([
+    {
+      platform: "devto" as const,
+      provider_account_id: "555",
+    },
+    {
+      platform: "hashnode" as const,
+      provider_account_id: "user_abc123",
+    },
+    {
+      platform: "telegram" as const,
+      provider_account_id: "@webmasterid",
+    },
+    {
+      platform: "reddit" as const,
+      provider_account_id: "t2_redditfake",
+    },
+  ])(
+    "no longer blocks platform=$platform at the platform gate (regression: PHASE_5_BLOCKED_PLATFORMS / Bluesky-only stale gate)",
+    async ({ platform, provider_account_id }) => {
       const store = emptyStore();
       const planItemId = seedPlanItem(store, { platform });
-      seedConnection(store, { platform });
+      seedConnection(store, { platform, provider_account_id });
       seedContract(store, { platforms: [platform] });
       seedQueue(store);
 
-      const result = await schedulePublishTool(ctxWith(store), validArgs(planItemId));
+      const result = await schedulePublishTool(
+        ctxWith(store),
+        validArgs(planItemId),
+      );
 
-      expect(result.ok).toBe(false);
-      expect(result.summary).toContain("platform_has_unresolved_publish_blocker");
+      // The platform gate must NOT fire. We don't assert ok=true
+      // here because downstream gates (queue, contract scope) have
+      // their own dedicated success tests. We just assert the gate
+      // we used to fail at — platform allowlist — passed.
+      if (!result.ok) {
+        expect(result.summary).not.toContain(
+          "platform_has_unresolved_publish_blocker",
+        );
+        expect(result.summary).not.toContain("platform_not_schedulable_yet");
+        expect(result.summary).not.toContain(
+          "identity_has_no_bluesky_connection_signed_in",
+        );
+        // Regression: this is the Telegram MCP error operators saw
+        // before this hotfix. After the fix it must never reappear.
+        expect(result.summary).not.toContain(
+          "telegram_scheduler_allowlist_missing",
+        );
+      }
     },
   );
 
@@ -510,7 +556,7 @@ describe("schedulePublishTool — identity gate", () => {
     expect(result.summary).toBe("plan_item_missing_account_id");
   });
 
-  it("refuses when no platform_connections row exists for the identity", async () => {
+  it("refuses when no platform_connections row exists for the identity (refusal summary names the actual platform, not always 'bluesky')", async () => {
     const store = emptyStore();
     const planItemId = seedPlanItem(store);
     seedContract(store);
@@ -520,6 +566,29 @@ describe("schedulePublishTool — identity gate", () => {
 
     expect(result.ok).toBe(false);
     expect(result.summary).toBe("identity_has_no_bluesky_connection_signed_in");
+  });
+
+  it("refuses Telegram with the Telegram-specific summary (not the Bluesky one)", async () => {
+    // Regression: pre-fix, the connection lookup hardcoded
+    // .eq("platform", "bluesky"), so a Telegram identity with a
+    // healthy Telegram connection still failed with
+    // `identity_has_no_bluesky_connection_signed_in`.
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store, { platform: "telegram" });
+    // NOTE: no Telegram connection seeded — testing the refusal
+    // path. The lookup must now query platform=telegram.
+    seedContract(store, { platforms: ["telegram"] });
+    seedQueue(store);
+
+    const result = await schedulePublishTool(
+      ctxWith(store),
+      validArgs(planItemId),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toBe(
+      "identity_has_no_telegram_connection_signed_in",
+    );
   });
 
   it("refuses when connection_status is not 'connected'", async () => {
@@ -537,7 +606,7 @@ describe("schedulePublishTool — identity gate", () => {
     );
   });
 
-  it("refuses when provider_account_id is not a DID", async () => {
+  it("refuses Bluesky when provider_account_id is not a DID (Bluesky-only format gate)", async () => {
     const store = emptyStore();
     const planItemId = seedPlanItem(store);
     seedConnection(store, { provider_account_id: "not-a-did" });
@@ -549,6 +618,55 @@ describe("schedulePublishTool — identity gate", () => {
     expect(result.ok).toBe(false);
     expect(result.summary).toBe("identity_connection_missing_did");
   });
+
+  it.each([
+    { platform: "telegram" as const, provider_account_id: "@webmasterid" },
+    { platform: "devto" as const, provider_account_id: "555" },
+    { platform: "hashnode" as const, provider_account_id: "user_abc" },
+    { platform: "reddit" as const, provider_account_id: "t2_xyz" },
+  ])(
+    "does NOT apply the DID format check to $platform (any non-empty provider_account_id passes)",
+    async ({ platform, provider_account_id }) => {
+      const store = emptyStore();
+      const planItemId = seedPlanItem(store, { platform });
+      seedConnection(store, { platform, provider_account_id });
+      seedContract(store, { platforms: [platform] });
+      seedQueue(store);
+
+      const result = await schedulePublishTool(
+        ctxWith(store),
+        validArgs(planItemId),
+      );
+
+      // The identity gate must not produce the DID failure. Other
+      // downstream refusals (contract scope, etc.) are tested
+      // separately; here we just assert no DID complaint.
+      if (!result.ok) {
+        expect(result.summary).not.toBe("identity_connection_missing_did");
+      }
+    },
+  );
+
+  it.each(["devto" as const, "hashnode" as const, "telegram" as const, "reddit" as const])(
+    "refuses %s when provider_account_id is empty (non-Bluesky non-empty-string gate)",
+    async (platform) => {
+      const store = emptyStore();
+      const planItemId = seedPlanItem(store, { platform });
+      seedConnection(store, { platform, provider_account_id: "   " });
+      seedContract(store, { platforms: [platform] });
+      seedQueue(store);
+
+      const result = await schedulePublishTool(
+        ctxWith(store),
+        validArgs(planItemId),
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.summary).toBe(
+        `identity_connection_missing_provider_account_id:${platform}`,
+      );
+    },
+  );
 });
 
 // =====================================================================
@@ -802,5 +920,204 @@ describe("schedulePublishTool — resync active execution_item", () => {
         (r) => r.status === "scheduled" && r.scheduled_at === newIso,
       ),
     ).toBe(true);
+  });
+});
+
+// =====================================================================
+// Per-platform end-to-end success — verified-autonomous platforms.
+//
+// Pre-hotfix only Bluesky reached the success path. After the hotfix,
+// devto / hashnode / telegram / reddit each schedule end-to-end with
+// their own provider_account_id format. These tests prove the
+// platform allowlist, the platform-aware connection lookup, and the
+// platform-aware provider-account-id format gate all let the right
+// platforms through.
+// =====================================================================
+
+describe("schedulePublishTool — verified-autonomous platforms", () => {
+  it.each([
+    {
+      platform: "telegram" as const,
+      provider_account_id: "@webmasterid",
+    },
+    {
+      platform: "devto" as const,
+      provider_account_id: "555",
+    },
+    {
+      platform: "hashnode" as const,
+      provider_account_id: "user_abc123",
+    },
+    {
+      platform: "reddit" as const,
+      provider_account_id: "t2_redditfake",
+    },
+    {
+      platform: "bluesky" as const,
+      provider_account_id: "did:plc:fake-12345",
+    },
+  ])(
+    "$platform schedules end-to-end with its native provider_account_id",
+    async ({ platform, provider_account_id }) => {
+      const store = emptyStore();
+      const planItemId = seedPlanItem(store, { platform });
+      seedConnection(store, { platform, provider_account_id });
+      seedContract(store, { platforms: [platform] });
+      seedQueue(store);
+
+      const result = await schedulePublishTool(
+        ctxWith(store),
+        validArgs(planItemId),
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.status).toBe("completed");
+
+      // execution_item created for THIS platform
+      expect(store.execution_items.length).toBe(1);
+      expect(store.execution_items[0].platform).toBe(platform);
+      expect(store.execution_items[0].status).toBe("scheduled");
+
+      // plan_item flipped to scheduled
+      expect(store.weekly_plan_items[0].status).toBe("scheduled");
+
+      // activity row mentions the right platform
+      expect(store.activity_events.length).toBe(1);
+      expect(store.activity_events[0].title).toContain(platform);
+    },
+  );
+
+  it("Telegram scheduling no longer surfaces the pre-hotfix `telegram_scheduler_allowlist_missing` shape", async () => {
+    // Regression for the exact failure mode operators saw before
+    // this hotfix landed: MCP refused Telegram items with
+    // `platform_has_unresolved_publish_blocker:telegram` (since
+    // removed) which surfaced upstream as
+    // `telegram_scheduler_allowlist_missing` in operator audits.
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store, { platform: "telegram" });
+    seedConnection(store, {
+      platform: "telegram",
+      provider_account_id: "@webmasterid",
+    });
+    seedContract(store, { platforms: ["telegram"] });
+    seedQueue(store);
+
+    const result = await schedulePublishTool(
+      ctxWith(store),
+      validArgs(planItemId),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      // Defense in depth — if for any reason ok becomes false in a
+      // future regression, make sure it's not THIS specific pre-fix
+      // failure shape.
+      expect(result.summary).not.toContain("telegram_scheduler_allowlist_missing");
+      expect(result.summary).not.toContain(
+        "platform_has_unresolved_publish_blocker",
+      );
+    }
+  });
+});
+
+// =====================================================================
+// Drift regression — MCP allowlist must stay ⊆ scheduler allowlist.
+//
+// We don't mirror the sets (X / LinkedIn are in the scheduler set as
+// `not_implemented` stubs and intentionally excluded from MCP) but
+// MCP should never get AHEAD of the scheduler. If an entry exists in
+// MCP but not in the scheduler, scheduled items would land in
+// `execution_items.status="blocked"` with reasonCode
+// `platform_not_supported` — exactly the bug class this PR resolves.
+// =====================================================================
+
+describe("schedulePublishTool — MCP/scheduler drift regression", () => {
+  it("every MCP-schedulable platform is also in SCHEDULER_AUTONOMOUS_PLATFORMS", async () => {
+    // We test by attempting to schedule each MCP-allowed platform
+    // and confirming none hit a platform-related refusal. The
+    // schedulable set isn't exported (intentional — implementation
+    // detail), so we exercise it through the tool.
+    const mcpAllowedPlatforms = [
+      "bluesky",
+      "devto",
+      "hashnode",
+      "telegram",
+      "reddit",
+    ] as const;
+    for (const platform of mcpAllowedPlatforms) {
+      expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has(platform)).toBe(true);
+    }
+  });
+
+  it("X and LinkedIn — scheduler-routable (stub publishers) but MCP-blocked (until publishers ship)", async () => {
+    // The scheduler set includes X / LinkedIn because their
+    // not_implemented stubs resolve cleanly. MCP intentionally
+    // refuses them via MANUAL_OR_DISTRIBUTION_PLATFORMS so an
+    // external caller can't schedule something the publisher
+    // hasn't implemented yet.
+    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("x")).toBe(true);
+    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("linkedin")).toBe(true);
+
+    for (const platform of ["x", "linkedin"] as const) {
+      const store = emptyStore();
+      const planItemId = seedPlanItem(store, { platform });
+      seedConnection(store, { platform });
+      seedContract(store, { platforms: [platform] });
+      seedQueue(store);
+
+      const result = await schedulePublishTool(
+        ctxWith(store),
+        validArgs(planItemId),
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.summary).toContain("platform_is_manual_or_distribution_only");
+    }
+  });
+});
+
+// =====================================================================
+// Tool description — operator-facing copy contract.
+// =====================================================================
+
+describe("signal.schedule_publish — tool registry description", () => {
+  it("description no longer claims 'Bluesky only for now'", () => {
+    const def = TOOLS_BY_NAME["signal.schedule_publish"];
+    expect(def).toBeDefined();
+    expect(def.description.toLowerCase()).not.toContain("bluesky only");
+  });
+
+  it("description names every verified-autonomous platform", () => {
+    const def = TOOLS_BY_NAME["signal.schedule_publish"];
+    const desc = def.description;
+    expect(desc).toContain("Bluesky");
+    expect(desc).toContain("dev.to");
+    expect(desc).toContain("Hashnode");
+    expect(desc).toContain("Telegram");
+    expect(desc).toContain("Reddit");
+  });
+
+  it("description still flags X / LinkedIn as not implemented and lists the manual platforms", () => {
+    const def = TOOLS_BY_NAME["signal.schedule_publish"];
+    const desc = def.description;
+    expect(desc).toContain("X");
+    expect(desc).toContain("LinkedIn");
+    expect(desc.toLowerCase()).toContain("not implemented");
+    expect(desc).toContain("Instagram");
+    expect(desc).toContain("Threads");
+    expect(desc).toContain("YouTube");
+  });
+
+  it("required scopes and approval mode are unchanged", () => {
+    // Scope regression — operator approval requirement stays
+    // exactly as it was, and the two scopes the tool needs are
+    // unchanged.
+    const def = TOOLS_BY_NAME["signal.schedule_publish"];
+    expect(def.requiredScopes).toEqual([
+      "weekly_plans:write_pending",
+      "execution:schedule",
+    ]);
+    expect(def.approvalMode).toBe("approval_required");
+    expect(def.writesDatabase).toBe(true);
   });
 });

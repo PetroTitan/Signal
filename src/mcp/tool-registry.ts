@@ -450,7 +450,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: "signal.schedule_publish",
     description:
-      "Schedule an already-approved plan item for future publishing. Refuses anything not in status='approved'. Bluesky only for now — dev.to / Telegram / Reddit / Hashnode are blocked until their publish paths are verified. The scheduled item is picked up by the existing /api/scheduler/tick cron; this tool does NOT call any platform API itself.",
+      "Schedule an already-approved plan item for future publishing. Refuses anything not in status='approved'. Allowed on verified autonomous platforms only — today: Bluesky, dev.to, Hashnode, Telegram, Reddit. X / LinkedIn (publisher not implemented) and manual / distribution platforms (Instagram / Threads / YouTube / indie_hackers) are refused. The scheduled item is picked up by the existing /api/scheduler/tick cron; this tool does NOT call any platform API itself.",
     requiredScopes: ["weekly_plans:write_pending", "execution:schedule"],
     riskLevel: "remote_write",
     approvalMode: "approval_required",
