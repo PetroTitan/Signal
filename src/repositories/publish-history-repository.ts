@@ -271,6 +271,19 @@ export interface SchedulerHistoryUpsertInput {
   atprotoError?: string | null;
   atprotoMessage?: string | null;
   contractMode?: string | null;
+  /** Telegram-specific diagnostic field — records which scheduler
+   *  path resolved the chat_id passed to the runner:
+   *    - "metadata" → from execution_items.metadata.target (explicit
+   *      override by the schedule-creating caller).
+   *    - "platform_connection.provider_account_id" → fallback to the
+   *      chat id stored on platform_connections at verify time.
+   *    - null → neither source produced a value (publish refused
+   *      upstream with missing_identifier).
+   *  Operator-visible; chat id itself is not treated as a secret. */
+  targetSource?:
+    | "metadata"
+    | "platform_connection.provider_account_id"
+    | null;
   /** Service-role client. Cron runtime has no operator cookie; RLS
    *  would hide publish_history without this. Manual callers can
    *  omit and use the cookie-aware client. */
@@ -319,6 +332,11 @@ export async function upsertSchedulerPublishHistoryFromOutcome(
   }
   if (input.contractMode !== undefined && input.contractMode !== null) {
     metadata.contract_mode = input.contractMode;
+  }
+  if (input.targetSource !== undefined) {
+    // Emit even when null — for Telegram, "we tried both sources and
+    // got nothing" is itself diagnostic.
+    metadata.target_source = input.targetSource;
   }
 
   // 1. Look up the existing scheduler row (mode='api') for this exec

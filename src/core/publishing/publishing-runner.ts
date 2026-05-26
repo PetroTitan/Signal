@@ -114,10 +114,14 @@ export async function runPublish(input: RunnerInput): Promise<PublishOutcome> {
           "TELEGRAM_BOT_TOKEN is not configured.",
         );
       }
-      // The chat id (channel @username or numeric) lives on the
-      // identity's `handle` field. The runner doesn't have direct
-      // access to growth_accounts here, so the caller (the action
-      // wiring) must pass it via request.target.
+      // The chat id (channel @username or numeric) lives on
+      // `platform_connections.provider_account_id`, persisted by the
+      // /api/identity/[id]/telegram/verify route after `getChat +
+      // getChatMember` confirms the bot has admin access. The runner
+      // doesn't talk to the DB directly — the scheduler reads the
+      // chat id from the connection row and threads it into
+      // `request.target`. Manual callers may override by setting
+      // `execution_items.metadata.target` (operator-visible value).
       const chatId = input.request.target ?? input.target ?? "";
       if (!chatId) {
         return publishFail(
