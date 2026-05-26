@@ -26,6 +26,7 @@
  * approval boundary.
  */
 
+import { useEffect } from "react";
 import { useFormState, useFormStatus } from "react-dom";
 import {
   approveCreativeAction,
@@ -45,12 +46,36 @@ export type CreativeStatusToken =
   | "approved"
   | "rejected";
 
+/**
+ * Narrow a raw `weekly_plan_item_creatives.status` string (or
+ * `null` when no creative is attached) into the operator-facing
+ * token the controls component consumes. Exported so the card +
+ * compose modal map identically.
+ */
+export function toCreativeStatusToken(
+  status: string | null | undefined,
+): CreativeStatusToken {
+  if (!status) return "none";
+  if (status === "approved") return "approved";
+  if (status === "rejected") return "rejected";
+  if (status === "planned") return "planned";
+  return "pending_review";
+}
+
 export interface CreativeApprovalControlsProps {
   creativeId: string | null;
   creativeStatus: CreativeStatusToken;
   postStatus: WeeklyPlanItemStatus;
   /** Optional structured blockers to render in the debug section. */
   approvalBlockers?: ReadonlyArray<string>;
+  /** Optional callback fired when the operator successfully approves
+   *  the creative. The compose modal uses this to refresh its local
+   *  draft.creativeStatus so the buttons disappear live without a
+   *  server round-trip. The card path doesn't need it — the action
+   *  revalidatePath("/weekly-plan") re-renders the page. */
+  onCreativeApproved?: () => void;
+  /** Same for reject. */
+  onCreativeRejected?: () => void;
 }
 
 export function CreativeApprovalControls(props: CreativeApprovalControlsProps) {
@@ -73,8 +98,14 @@ export function CreativeApprovalControls(props: CreativeApprovalControlsProps) {
 
       {isPendingReview && !postIsTerminal ? (
         <div className="flex flex-wrap items-center gap-2">
-          <ApproveCreativeButton creativeId={props.creativeId!} />
-          <RejectCreativeButton creativeId={props.creativeId!} />
+          <ApproveCreativeButton
+            creativeId={props.creativeId!}
+            onSuccess={props.onCreativeApproved}
+          />
+          <RejectCreativeButton
+            creativeId={props.creativeId!}
+            onSuccess={props.onCreativeRejected}
+          />
         </div>
       ) : null}
 
@@ -102,8 +133,21 @@ function WorkflowBanner() {
 // Approve button — form-action, sends creative_id
 // ---------------------------------------------------------------------
 
-function ApproveCreativeButton({ creativeId }: { creativeId: string }) {
+function ApproveCreativeButton({
+  creativeId,
+  onSuccess,
+}: {
+  creativeId: string;
+  onSuccess?: () => void;
+}) {
   const [state, action] = useFormState(approveCreativeAction, approveInitial);
+  // Fire the optional success callback exactly once per ok transition.
+  // Watching `state` is sufficient — useFormState swaps the reference
+  // only when the action returns.
+  useEffect(() => {
+    if (state?.ok) onSuccess?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state]);
   return (
     <form action={action} className="inline-flex flex-col gap-1">
       <input type="hidden" name="creative_id" value={creativeId} />
@@ -132,8 +176,18 @@ function ApproveSubmit() {
 // Reject button — same shape
 // ---------------------------------------------------------------------
 
-function RejectCreativeButton({ creativeId }: { creativeId: string }) {
+function RejectCreativeButton({
+  creativeId,
+  onSuccess,
+}: {
+  creativeId: string;
+  onSuccess?: () => void;
+}) {
   const [state, action] = useFormState(rejectCreativeAction, rejectInitial);
+  useEffect(() => {
+    if (state?.ok) onSuccess?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state]);
   return (
     <form action={action} className="inline-flex flex-col gap-1">
       <input type="hidden" name="creative_id" value={creativeId} />

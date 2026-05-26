@@ -13,6 +13,11 @@ import {
   attachCreativeAction,
 } from "@/app/(app)/weekly-plan/_actions";
 import {
+  CreativeApprovalControls,
+  toCreativeStatusToken,
+  type CreativeStatusToken,
+} from "@/app/(app)/weekly-plan/_creative-approval-controls";
+import {
   SCHEDULE_PRESETS,
   toDatetimeLocalString,
 } from "@/core/publishing/schedule-presets";
@@ -131,6 +136,12 @@ export interface FounderComposeSheetExistingItem {
     assetUrl: string | null;
     altText: string | null;
     sourceType: string;
+    /** Creative approval status. Drives the in-modal approve/reject
+     *  controls and the "is the post approvable?" gate. Required so
+     *  the modal can render the same first-class approval affordance
+     *  as the card — operators who interact via the modal must NOT
+     *  hit the pre-fix deadlock. */
+    status: string;
   } | null;
 }
 
@@ -168,6 +179,11 @@ interface DraftState {
   creativeId: string | null;
   creativeAssetUrl: string | null;
   creativeAltText: string;
+  /** Local mirror of the creative's approval status. Initialised
+   *  from existingItem.creative.status; updated optimistically when
+   *  the in-modal approve/reject buttons report success so the
+   *  operator sees the buttons disappear immediately. */
+  creativeStatus: string | null;
   // NOTE: schedule lives in its own state (ScheduleState). Body
   // autosaves cannot touch it; only the dedicated save path can.
 }
@@ -191,6 +207,7 @@ function initialDraft(
       creativeId: existing.creative?.id ?? null,
       creativeAssetUrl: existing.creative?.assetUrl ?? null,
       creativeAltText: existing.creative?.altText ?? "",
+      creativeStatus: existing.creative?.status ?? null,
     };
   }
   return {
@@ -207,6 +224,7 @@ function initialDraft(
     creativeId: null,
     creativeAssetUrl: null,
     creativeAltText: "",
+    creativeStatus: null,
   };
 }
 
@@ -1264,8 +1282,43 @@ function CreativeRow({
           }
         />
       ) : null}
+
+      {/* Creative approval controls — same first-class affordance the
+          card renders. Without this block, operators who interact via
+          the modal would hit the pre-fix deadlock: they could see
+          "Creative pending review" but no button to flip it.
+          On success, draft.creativeStatus is updated locally so the
+          buttons disappear immediately. The server action also
+          revalidates /weekly-plan so the card reflects the change
+          when the modal closes. */}
+      {hasCreative && draft.creativeId && existingItem ? (
+        <CreativeApprovalControls
+          creativeId={draft.creativeId}
+          creativeStatus={
+            toCreativeStatusTokenLocal(draft.creativeStatus)
+          }
+          postStatus={existingItem.status}
+          onCreativeApproved={() =>
+            setDraft((d) => ({ ...d, creativeStatus: "approved" }))
+          }
+          onCreativeRejected={() =>
+            setDraft((d) => ({ ...d, creativeStatus: "rejected" }))
+          }
+        />
+      ) : null}
     </div>
   );
+}
+
+/**
+ * Local thin wrapper around `toCreativeStatusToken` — narrow
+ * function reference avoids a TS-strict "string | null" mismatch
+ * when the draft hasn't loaded a creative yet.
+ */
+function toCreativeStatusTokenLocal(
+  status: string | null,
+): CreativeStatusToken {
+  return toCreativeStatusToken(status);
 }
 
 function productNameById(
