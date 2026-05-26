@@ -94,9 +94,17 @@ export function nextExecutionStatusForOutcome(
  * with `platform_not_supported` and never published. The runner
  * itself (`runPublish` → `publishBlueskyForIdentity`) was fine —
  * the scheduler just never routed Bluesky items to it.
+ *
+ * Phase F7.6 hotfix — dev.to was caught in the same trap. PR #118
+ * added the runner case, the identity-scoped orchestrator, and the
+ * publisher hardening, but never added "devto" to this allowlist.
+ * Scheduled dev.to items were short-circuited to
+ * `platform_not_supported` at line ~188 BEFORE the runner could
+ * route them. The execution_item flipped to blocked, the plan_item
+ * to paused, and no provider HTTP request was ever attempted.
  */
 export const SCHEDULER_AUTONOMOUS_PLATFORMS: ReadonlySet<PublishPlatform> =
-  new Set(["reddit", "x", "linkedin", "bluesky"]);
+  new Set(["reddit", "x", "linkedin", "bluesky", "devto"]);
 
 export interface SchedulerTickInput {
   /** Soft cap on items processed per tick. Default 10. */

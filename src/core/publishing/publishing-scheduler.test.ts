@@ -42,10 +42,21 @@ describe("SCHEDULER_AUTONOMOUS_PLATFORMS", () => {
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("linkedin")).toBe(true);
   });
 
-  it("excludes manual-confirmation-only platforms (devto, hashnode, telegram, etc.)", () => {
-    // These platforms are only published via /execution/items/[id]
-    // manual confirmation; the scheduler should skip them.
-    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("devto")).toBe(false);
+  it("includes devto (Phase F7.6 hotfix — pre-fix scheduler short-circuited dev.to items to platform_not_supported)", () => {
+    // dev.to has a real publisher (PR #118: identity-scoped
+    // orchestrator + per-identity encrypted API key + dev.to-prefixed
+    // reason codes), so scheduled items MUST route to runPublish.
+    // The pre-hotfix scheduler refused them at the allowlist guard,
+    // landing the item in execution_items.status="blocked" and
+    // weekly_plan_items.status="paused" without ever calling the
+    // dev.to API. This test pins the inclusion so a future cleanup
+    // can't reopen the same regression for dev.to.
+    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("devto")).toBe(true);
+  });
+
+  it("excludes manual-confirmation-only platforms (hashnode, telegram, youtube, threads, instagram)", () => {
+    // These platforms are still routed through manual confirmation
+    // at /execution/items/[id]; the scheduler should skip them.
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("hashnode")).toBe(false);
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("telegram")).toBe(false);
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("youtube")).toBe(false);
@@ -53,8 +64,8 @@ describe("SCHEDULER_AUTONOMOUS_PLATFORMS", () => {
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("instagram")).toBe(false);
   });
 
-  it("is exactly the four-platform set today", () => {
-    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.size).toBe(4);
+  it("is exactly the five-platform set today (reddit, x, linkedin, bluesky, devto)", () => {
+    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.size).toBe(5);
   });
 });
 
