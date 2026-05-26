@@ -22,6 +22,12 @@ import {
   type ApprovalReadiness,
   type CreativeReadinessCode,
 } from "./approval-readiness.shared";
+import { requiresCreative } from "@/core/platform-native/approval-policy";
+import {
+  parsePlatformNativeShape,
+  type PublishingIntent,
+} from "@/core/platform-native";
+import type { PublishPlatform } from "@/core/publishing/publishing-types";
 
 export type { ApprovalReadiness } from "./approval-readiness.shared";
 export { summarizeReadiness } from "./approval-readiness.shared";
@@ -88,12 +94,51 @@ export function assessItemApprovalReadiness(
     );
   }
 
+  // Phase F7.3 — platform-native approval policy.
+  //
+  // The legacy assumption was "every post needs a creative" — that
+  // doesn't fit article / text-first platforms (dev.to, Hashnode,
+  // Reddit text, LinkedIn article, Bluesky text, X text, Telegram).
+  // We now consult `requiresCreative` from the central policy
+  // module to decide whether the creative gate runs.
+  //
+  // Behavior:
+  //   - creativeRequired = true (e.g. Instagram, YouTube video_post,
+  //     intent ∈ {media_post, carousel, story, short_video}) →
+  //     existing strict gate; missing/invalid creative blocks.
+  //   - creativeRequired = false → never block on creative at the
+  //     approval layer. Adapters still validate at render / publish
+  //     time when a creative IS attached (Bluesky alt-text, etc.).
+  //
+  // The informational copy "Creative optional for this platform/
+  // format." is emitted on the readiness output when the policy
+  // says optional AND no creative is attached, so the UI can show a
+  // neutral note instead of red blocker text.
+  const intent = readIntentFromItem(input.item);
+  const creativeRequired = requiresCreative({
+    platform: input.item.platform,
+    intent,
+  });
+
   const creativeReasonCode = creativeReadinessReason(input.primaryCreative);
-  const creativeReady = creativeReasonCode === null;
-  if (!creativeReady) {
-    blockers.push(
-      creativeBlockerCopy(creativeReasonCode as CreativeReadinessCode | null),
-    );
+  let creativeReady: boolean;
+  if (creativeRequired) {
+    creativeReady = creativeReasonCode === null;
+    if (!creativeReady) {
+      blockers.push(
+        creativeBlockerCopy(creativeReasonCode as CreativeReadinessCode | null),
+      );
+    }
+  } else {
+    // Optional policy: approval is never blocked on creative.
+    // creativeReady reflects whether the gate WOULD have passed (so
+    // observability stays accurate), but we don't push a blocker.
+    creativeReady = true;
+  }
+
+  const informational: string[] = [];
+  if (!creativeRequired && input.primaryCreative === null) {
+    informational.push("Creative optional for this platform/format.");
   }
 
   // Contract handling — gated by requireContract.
@@ -150,6 +195,7 @@ export function assessItemApprovalReadiness(
   return {
     ready: blockers.length === 0,
     blockers,
+    informational,
     ok: {
       statusPending,
       riskNotBlocked,
@@ -160,6 +206,29 @@ export function assessItemApprovalReadiness(
       productScope,
       platformScope,
       scheduleSet,
+      creativeRequired,
     },
   };
+}
+
+/**
+ * Phase F7.3 — parse the operator's intent off the plan item's
+ * `platform_publish_intent` JSONB envelope. The platform-native
+ * shape parser is strict about platform mismatch; here we use the
+ * item's own platform as the expected platform (the policy only
+ * cares about the intent string, not the rest of the envelope).
+ *
+ * Returns:
+ *   - the intent string when the envelope parses cleanly
+ *   - null otherwise (legacy rows, malformed envelopes, no platform)
+ *
+ * Null intent → policy default ("optional" for most platforms; still
+ * "required" for Instagram via the platform-level rule).
+ */
+function readIntentFromItem(item: WeeklyPlanItem): PublishingIntent | null {
+  if (!item.platform) return null;
+  const raw = item.platformPublishIntent;
+  if (!raw) return null;
+  const parsed = parsePlatformNativeShape(raw, item.platform as PublishPlatform);
+  return parsed?.intent ?? null;
 }

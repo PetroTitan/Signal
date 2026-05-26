@@ -31,6 +31,13 @@ export interface ApprovalReadinessOkFlags {
   productScope: boolean;
   platformScope: boolean;
   scheduleSet: boolean;
+  /**
+   * Phase F7.3 — true when the platform-native approval policy says
+   * a creative is REQUIRED for this item's (platform, intent). When
+   * false, the assessor skips the creative blocker entirely and the
+   * UI shows neutral informational copy instead of a red blocker.
+   */
+  creativeRequired: boolean;
 }
 
 export interface ApprovalReadiness {
@@ -39,6 +46,14 @@ export interface ApprovalReadiness {
   /** Concrete blockers in operator-readable copy. Order is stable
    *  across calls so the UI can render them deterministically. */
   blockers: ReadonlyArray<string>;
+  /**
+   * Phase F7.3 — non-blocking notes the UI MAY surface alongside
+   * blockers. Today populated with a "Creative optional for this
+   * platform/format." message when the platform-native policy says
+   * creative is optional and none is attached. Strictly additive —
+   * existing consumers that ignore this field keep working.
+   */
+  informational: ReadonlyArray<string>;
   /** Structured breakdown — UI uses this to render affordances. */
   ok: ApprovalReadinessOkFlags;
 }
