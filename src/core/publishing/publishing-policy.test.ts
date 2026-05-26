@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { evaluatePublishingPolicy, type PolicyContext } from "./publishing-policy";
-import type { PublishRequest } from "./publishing-types";
+import {
+  evaluatePublishingPolicy,
+  usesWorkspaceCredential,
+  type PolicyContext,
+} from "./publishing-policy";
+import type { PublishPlatform, PublishRequest } from "./publishing-types";
 
 function makeRequest(
   overrides: Partial<PublishRequest> = {},
@@ -129,12 +133,176 @@ describe("evaluatePublishingPolicy — OAuth / token / connection", () => {
     expect(v?.reasonCode).toBe("oauth_not_connected");
   });
 
-  it("blocks with oauth_token_not_stored when hasStoredAccessToken is false", () => {
+  it("blocks with oauth_token_not_stored when hasStoredAccessToken is false (default platform = bluesky)", () => {
     const v = evaluatePublishingPolicy(
       makeCtx({ hasStoredAccessToken: false }),
     );
     expect(v?.status).toBe("blocked");
     expect(v?.reasonCode).toBe("oauth_token_not_stored");
+  });
+});
+
+// =====================================================================
+// Workspace-credential platforms (Telegram).
+//
+// Telegram's bot token lives in env (TELEGRAM_BOT_TOKEN); the
+// per-identity platform_connections row is intentionally token-less
+// (verify route persists connection_status="connected" + chat-id
+// metadata but never an encrypted access token).
+//
+// Pre-fix the policy gate blocked every Telegram publish with
+// `oauth_token_not_stored` because `hasStoredAccessToken=false` is
+// the steady state for this auth model. The check now skips for
+// platforms where `usesWorkspaceCredential` is true.
+//
+// All other publish-time gates (connectionStatus,
+// accountReviewStatus, productReviewStatus, risk, schedule) still
+// apply to Telegram.
+// =====================================================================
+
+describe("evaluatePublishingPolicy — workspace-credential platforms (Telegram)", () => {
+  function telegramCtx(overrides: Partial<PolicyContext> = {}): PolicyContext {
+    return makeCtx({
+      request: makeRequest({ platform: "telegram" }),
+      ...overrides,
+    });
+  }
+
+  it("Telegram with connected identity + hasStoredAccessToken=false → null (publish proceeds; regression for the oauth_token_not_stored block)", () => {
+    const v = evaluatePublishingPolicy(
+      telegramCtx({ hasStoredAccessToken: false }),
+    );
+    expect(v).toBe(null);
+  });
+
+  it("Telegram with connectionStatus !== 'connected' still blocks with oauth_not_connected", () => {
+    const v = evaluatePublishingPolicy(
+      telegramCtx({
+        hasStoredAccessToken: false,
+        connectionStatus: "disconnected",
+      }),
+    );
+    expect(v?.status).toBe("blocked");
+    expect(v?.reasonCode).toBe("oauth_not_connected");
+  });
+
+  it("Telegram still blocked by account_not_confirmed (other identity gates still apply)", () => {
+    const v = evaluatePublishingPolicy(
+      telegramCtx({
+        hasStoredAccessToken: false,
+        accountReviewStatus: "pending",
+      }),
+    );
+    expect(v?.status).toBe("blocked");
+    expect(v?.reasonCode).toBe("account_not_confirmed");
+  });
+
+  it("Telegram still blocked by risk_level=blocked (QA gate still applies)", () => {
+    const v = evaluatePublishingPolicy(
+      telegramCtx({
+        hasStoredAccessToken: false,
+        riskLevel: "blocked",
+      }),
+    );
+    expect(v?.status).toBe("blocked");
+    expect(v?.reasonCode).toBe("risk_level_blocked");
+  });
+
+  it("Telegram still skipped by scheduled_in_future (time gate still applies)", () => {
+    const v = evaluatePublishingPolicy(
+      telegramCtx({
+        hasStoredAccessToken: false,
+        scheduledFor: "2026-05-26T00:00:00.000Z",
+        nowIso: "2026-05-25T01:00:00.000Z",
+      }),
+    );
+    expect(v?.status).toBe("skipped");
+    expect(v?.reasonCode).toBe("scheduled_in_future");
+  });
+
+  it("Telegram still skipped by dry_run mode", () => {
+    const v = evaluatePublishingPolicy(
+      telegramCtx({
+        hasStoredAccessToken: false,
+        request: makeRequest({ platform: "telegram", mode: "dry_run" }),
+      }),
+    );
+    expect(v?.status).toBe("skipped");
+    expect(v?.reasonCode).toBe("execution_mode_dry_run");
+  });
+
+  it("Telegram still blocked by publishing_disabled", () => {
+    const v = evaluatePublishingPolicy(
+      telegramCtx({
+        hasStoredAccessToken: false,
+        publishingEnabled: false,
+      }),
+    );
+    expect(v?.status).toBe("blocked");
+    expect(v?.reasonCode).toBe("publishing_disabled");
+  });
+
+  it("Telegram with everything healthy passes regardless of token state", () => {
+    // Mirror the live state of the deployed Telegram identity:
+    // verified, connected, healthy, no encrypted token.
+    expect(
+      evaluatePublishingPolicy(
+        telegramCtx({ hasStoredAccessToken: false }),
+      ),
+    ).toBe(null);
+    expect(
+      evaluatePublishingPolicy(
+        telegramCtx({ hasStoredAccessToken: true }),
+      ),
+    ).toBe(null);
+  });
+});
+
+// =====================================================================
+// Cross-platform regression — non-Telegram platforms must continue
+// to block on hasStoredAccessToken=false. The narrow Telegram
+// carve-out must NOT relax any OAuth / per-identity-credential
+// platform.
+// =====================================================================
+
+describe("evaluatePublishingPolicy — non-Telegram platforms still gated on hasStoredAccessToken", () => {
+  it.each<PublishPlatform>(["bluesky", "reddit", "devto", "hashnode", "x", "linkedin"])(
+    "%s with hasStoredAccessToken=false still blocks with oauth_token_not_stored",
+    (platform) => {
+      const v = evaluatePublishingPolicy(
+        makeCtx({
+          request: makeRequest({ platform }),
+          hasStoredAccessToken: false,
+        }),
+      );
+      expect(v?.status).toBe("blocked");
+      expect(v?.reasonCode).toBe("oauth_token_not_stored");
+    },
+  );
+});
+
+describe("usesWorkspaceCredential helper", () => {
+  it("is true ONLY for telegram today", () => {
+    expect(usesWorkspaceCredential("telegram")).toBe(true);
+  });
+
+  it.each<PublishPlatform>([
+    "bluesky",
+    "reddit",
+    "devto",
+    "hashnode",
+    "x",
+    "linkedin",
+    "instagram",
+    "threads",
+    "youtube",
+  ])("is false for %s (per-identity credential platforms)", (platform) => {
+    expect(usesWorkspaceCredential(platform)).toBe(false);
+  });
+
+  it("is false for null / undefined platform", () => {
+    expect(usesWorkspaceCredential(null)).toBe(false);
+    expect(usesWorkspaceCredential(undefined)).toBe(false);
   });
 });
 

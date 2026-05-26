@@ -17,8 +17,33 @@
  * does NOT block on contract absence.
  */
 
-import type { PublishOutcome, PublishRequest } from "./publishing-types";
+import type {
+  PublishOutcome,
+  PublishPlatform,
+  PublishRequest,
+} from "./publishing-types";
 import { publishBlocked, publishSkip } from "./publishing-result";
+
+/**
+ * Platforms whose credential lives at the workspace level (env var)
+ * rather than as a per-identity encrypted blob on `platform_connections.
+ * access_token_encrypted`. The publish-time `hasStoredAccessToken`
+ * check is meaningless for these — there is no encrypted access
+ * token to store, by design. The other identity-level gates
+ * (`connectionStatus === "connected"`, account/product
+ * `review_status`, risk, schedule) still apply.
+ *
+ * Today: Telegram (workspace `TELEGRAM_BOT_TOKEN`; the verify route
+ * confirms the bot has admin access to each channel and persists
+ * connection_status="connected" but never an access token).
+ *
+ * Pure helper. Exported for tests.
+ */
+export function usesWorkspaceCredential(
+  platform: PublishPlatform | null | undefined,
+): boolean {
+  return platform === "telegram";
+}
 
 export const PUBLISHING_POLICY_ALLOWED = [
   "Publish a text post on Reddit through the Reddit OAuth API.",
@@ -114,7 +139,19 @@ export function evaluatePublishingPolicy(
       `OAuth connection must be 'connected' (is '${ctx.connectionStatus ?? "missing"}').`,
     );
   }
-  if (!ctx.hasStoredAccessToken) {
+  // The encrypted-access-token check applies to per-identity-
+  // credential platforms (OAuth: Reddit; app-password: Bluesky;
+  // personal-API-key: dev.to, Hashnode). Workspace-credential
+  // platforms (Telegram) intentionally don't write a per-identity
+  // encrypted token — the bot token is workspace-wide env, and the
+  // publisher reads it directly at publish time. Applying the
+  // gate to them was a stale OAuth-only assumption that blocked
+  // every scheduled Telegram item with the misleading
+  // `oauth_token_not_stored` reason code.
+  if (
+    !usesWorkspaceCredential(ctx.request.platform) &&
+    !ctx.hasStoredAccessToken
+  ) {
     return publishBlocked(
       "oauth_token_not_stored",
       "OAuth flow completed but no encrypted access token is stored. TOKEN_ENCRYPTION_KEY may be unset.",
