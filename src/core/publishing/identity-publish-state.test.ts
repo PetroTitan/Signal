@@ -762,6 +762,96 @@ describe("connected_incomplete — UI-helper integrity", () => {
 });
 
 // =====================================================================
+// Reddit identity publish state — regression for the manual-mode
+// short-circuit that used to show "Manual publish" on the /accounts
+// Reddit card even when OAuth was wired. Reddit is now api-mode in
+// platform-guidance, so the resolver runs the full
+// workspace + connection + handle pipeline for Reddit identities.
+// =====================================================================
+
+describe("resolveIdentityPublishState — Reddit OAuth", () => {
+  function redditIdentity() {
+    return identity({
+      platform: "reddit",
+      declaredHandle: "u/webmasterid",
+    });
+  }
+  function redditConnection(
+    over: Partial<IdentityConnection> = {},
+  ): IdentityConnection {
+    return connection({
+      platform: "reddit",
+      authenticatedHandle: "u/webmasterid",
+      ...over,
+    });
+  }
+
+  it("connected Reddit OAuth + workspace configured → connected (NOT manual)", () => {
+    expect(
+      resolveIdentityPublishState({
+        identity: redditIdentity(),
+        platform: platform({ publishingMode: "api" }),
+        workspace: workspace({ configured: true }),
+        connection: redditConnection(),
+      }),
+    ).toBe("connected");
+  });
+
+  it("no Reddit connection + workspace configured → pending_auth (NOT manual)", () => {
+    expect(
+      resolveIdentityPublishState({
+        identity: redditIdentity(),
+        platform: platform({ publishingMode: "api" }),
+        workspace: workspace({ configured: true }),
+        connection: null,
+      }),
+    ).toBe("pending_auth");
+  });
+
+  it("expired Reddit OAuth → expired (not manual)", () => {
+    expect(
+      resolveIdentityPublishState({
+        identity: redditIdentity(),
+        platform: platform({ publishingMode: "api" }),
+        workspace: workspace({ configured: true }),
+        connection: redditConnection({ authStatus: "expired" }),
+      }),
+    ).toBe("expired");
+  });
+
+  it("Reddit OAuth workspace integration NOT configured (env-blocked) → pending_auth (degrade gracefully, no fake manual)", () => {
+    // When the OAuth flow is unusable at the workspace level
+    // (env-blocked, missing client id, encryption off), the resolver
+    // returns pending_auth. The /accounts page surfaces a separate
+    // helperNote explaining the manual hold — the pill itself stays
+    // truthful ("Not signed in") rather than misleading ("Manual
+    // publish" implies the operator should paste-and-record, but
+    // Reddit's hold is platform-side, not an operational pattern).
+    expect(
+      resolveIdentityPublishState({
+        identity: redditIdentity(),
+        platform: platform({ publishingMode: "api" }),
+        workspace: workspace({ configured: false }),
+        connection: null,
+      }),
+    ).toBe("pending_auth");
+  });
+
+  it("Reddit handle mismatch → mismatched (cross-account guard fires)", () => {
+    expect(
+      resolveIdentityPublishState({
+        identity: redditIdentity(),
+        platform: platform({ publishingMode: "api" }),
+        workspace: workspace({ configured: true }),
+        connection: redditConnection({
+          authenticatedHandle: "u/someoneelse",
+        }),
+      }),
+    ).toBe("mismatched");
+  });
+});
+
+// =====================================================================
 // Identity isolation — two identities on the same platform resolve
 // independently. Their connection rows must NOT bleed into each
 // other (defense in depth — the repository already keys by
