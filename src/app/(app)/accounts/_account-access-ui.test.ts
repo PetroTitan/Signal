@@ -75,15 +75,16 @@ const AUTH_PLAN_KINDS = [
 ] as const;
 
 describe("authControls gate coverage (page.tsx)", () => {
-  // NOTE: Hashnode is intentionally absent — fix/hashnode-manual-mode
-  // moved it to publishingMode='manual' in platform-guidance.ts.
-  // Hashnode now renders through the manualHint branch, NOT the auth
-  // gate. The Hashnode-as-manual case is covered in the dedicated
-  // suite below.
+  // Hashnode is now api-mode in production (per platform-guidance);
+  // the Manage panel renders the personal_api_key sign-in form +
+  // inline publication-id input. Operators who manually set
+  // publishingMode='manual' for Hashnode would get the generic
+  // manual plan — that's covered as a regression below.
   it.each([
     { platform: "reddit", publishingMode: "manual", oauthAvailable: true, expectedKind: "oauth" },
     { platform: "bluesky", publishingMode: "api", oauthAvailable: false, expectedKind: "app_password" },
     { platform: "devto", publishingMode: "api", oauthAvailable: false, expectedKind: "personal_api_key" },
+    { platform: "hashnode", publishingMode: "api", oauthAvailable: false, expectedKind: "personal_api_key" },
     { platform: "telegram", publishingMode: "api", oauthAvailable: false, expectedKind: "api_key_verify" },
   ] as const)(
     "%j resolves to a plan kind the Manage panel can render",
@@ -103,10 +104,11 @@ describe("authControls gate coverage (page.tsx)", () => {
     },
   );
 
-  it("Hashnode (publishingMode='manual') resolves to manual — NOT one of the auth-gated kinds", () => {
-    // Production routing for Hashnode after the manual-mode flip:
-    // the Manage panel renders the Hashnode-specific hint + note,
-    // never the personal_api_key sign-in form.
+  it("Hashnode forced to publishingMode='manual' resolves to generic manual plan (no auth surface)", () => {
+    // Regression guard for the removed Hashnode-specific hold copy.
+    // If a caller manually passes manual mode for Hashnode, the
+    // resolver no longer carries the "deliberate hold" note — it's
+    // a plain manual plan.
     const plan = resolveConnectIdentityPlan(
       input({
         platform: "hashnode",
@@ -117,8 +119,7 @@ describe("authControls gate coverage (page.tsx)", () => {
     expect(plan.kind).toBe("manual");
     expect(AUTH_PLAN_KINDS).not.toContain(plan.kind as never);
     if (plan.kind === "manual") {
-      expect(plan.hint.toLowerCase()).toContain("hashnode");
-      expect(plan.note).toBeDefined();
+      expect(plan.note).toBeUndefined();
     }
   });
 
@@ -152,13 +153,10 @@ describe("authControls gate coverage (page.tsx)", () => {
 
 // =====================================================================
 // Personal-API-key sign-in copy: the form must read like account
-// sign-in, not a developer-settings dump. dev.to is the only
-// platform currently surfacing this in production — Hashnode moved
-// to manual mode in fix/hashnode-manual-mode, and the equivalent
-// dev.to-only tests below still guard the form copy contract.
-// (The Hashnode personal_api_key plan IS still produced by the
-// resolver when given publishingMode='api' — see the "re-enable
-// contract" tests in connect-identity.test.ts.)
+// sign-in, not a developer-settings dump. dev.to and Hashnode both
+// surface this in production now. The form copy contract is pinned
+// below for dev.to specifically; Hashnode equivalents live in
+// connect-identity.test.ts.
 // =====================================================================
 
 describe("personal_api_key plan copy is account-sign-in shaped", () => {

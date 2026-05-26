@@ -658,6 +658,170 @@ describe("compareHandles", () => {
 });
 
 // =====================================================================
+// connected_incomplete — platform-specific completeness gate
+// =====================================================================
+//
+// Phase F8.1 — `connected_incomplete` is a new state that fires when
+// the auth IS healthy but a required piece of platform config is
+// still missing (today: Hashnode publication_id). The resolver
+// receives this as a boolean `requirementsMet`; it does not embed
+// platform-specific logic. These tests pin the gate so a future
+// refactor can't accidentally collapse it back into `connected`.
+
+describe("resolveIdentityPublishState — connected_incomplete", () => {
+  it("connected auth + requirementsMet=false → connected_incomplete", () => {
+    expect(
+      resolveIdentityPublishState(input({ requirementsMet: false })),
+    ).toBe("connected_incomplete");
+  });
+
+  it("connected auth + requirementsMet=true → connected", () => {
+    expect(
+      resolveIdentityPublishState(input({ requirementsMet: true })),
+    ).toBe("connected");
+  });
+
+  it("connected auth + requirementsMet=undefined → connected (default)", () => {
+    // Non-Hashnode platforms pass undefined; the resolver must NOT
+    // demote them to connected_incomplete.
+    expect(resolveIdentityPublishState(input())).toBe("connected");
+  });
+
+  it("expired auth + requirementsMet=false → expired (auth precedence)", () => {
+    // Auth issues take precedence over completeness — fixing the auth
+    // is the right next step, not finishing setup on a dead token.
+    expect(
+      resolveIdentityPublishState(
+        input({
+          connection: connection({ authStatus: "expired" }),
+          requirementsMet: false,
+        }),
+      ),
+    ).toBe("expired");
+  });
+
+  it("no connection row + requirementsMet=false → pending_auth (auth precedence)", () => {
+    expect(
+      resolveIdentityPublishState(
+        input({ connection: null, requirementsMet: false }),
+      ),
+    ).toBe("pending_auth");
+  });
+
+  it("handle mismatch + requirementsMet=false → mismatched (mismatch precedence)", () => {
+    // Mismatch is a security-relevant state — must not be hidden by a
+    // completeness gate. Operator should sign in with the correct
+    // account first, then finish setup.
+    expect(
+      resolveIdentityPublishState(
+        input({
+          connection: connection({
+            authenticatedHandle: "@someoneelse.bsky.social",
+          }),
+          requirementsMet: false,
+        }),
+      ),
+    ).toBe("mismatched");
+  });
+
+  it("manual platform + requirementsMet=false → manual (platform precedence)", () => {
+    expect(
+      resolveIdentityPublishState(
+        input({
+          platform: platform({ publishingMode: "manual" }),
+          requirementsMet: false,
+        }),
+      ),
+    ).toBe("manual");
+  });
+
+  it("disabled identity + requirementsMet=false → disabled (lifecycle precedence)", () => {
+    expect(
+      resolveIdentityPublishState(
+        input({
+          identity: identity({ disabled: true }),
+          requirementsMet: false,
+        }),
+      ),
+    ).toBe("disabled");
+  });
+});
+
+describe("connected_incomplete — UI-helper integrity", () => {
+  it("has a label", () => {
+    expect(IDENTITY_PUBLISH_STATE_LABELS.connected_incomplete).toBeTruthy();
+  });
+  it("has a tone (not success, not danger — should be actionable)", () => {
+    const tone = IDENTITY_PUBLISH_STATE_TONES.connected_incomplete;
+    expect(tone).toBeTruthy();
+    expect(tone).not.toBe("success");
+  });
+  it("does NOT qualify as canAutoPublish (publishing would fail)", () => {
+    expect(canAutoPublish("connected_incomplete")).toBe(false);
+  });
+});
+
+// =====================================================================
+// Identity isolation — two identities on the same platform resolve
+// independently. Their connection rows must NOT bleed into each
+// other (defense in depth — the repository already keys by
+// (workspace, account_id, platform), but the resolver shouldn't
+// blindly trust a connection row whose account_id mismatches).
+// =====================================================================
+
+describe("resolveIdentityPublishState — identity isolation", () => {
+  it("two identities with distinct connections resolve independently", () => {
+    const idA = identity({
+      declaredHandle: "@a.bsky.social",
+      workspaceId: "ws-shared",
+    });
+    const idB = identity({
+      declaredHandle: "@b.bsky.social",
+      workspaceId: "ws-shared",
+    });
+    const stateA = resolveIdentityPublishState({
+      identity: idA,
+      platform: platform(),
+      workspace: workspace(),
+      connection: connection({
+        workspaceId: "ws-shared",
+        authenticatedHandle: "@a.bsky.social",
+      }),
+    });
+    const stateB = resolveIdentityPublishState({
+      identity: idB,
+      platform: platform(),
+      workspace: workspace(),
+      // Identity B has no row of its own yet — it must NOT inherit
+      // identity A's connected state.
+      connection: null,
+    });
+    expect(stateA).toBe("connected");
+    expect(stateB).toBe("pending_auth");
+  });
+
+  it("connection wired to a different workspace is rejected (defense in depth)", () => {
+    const state = resolveIdentityPublishState({
+      identity: identity({ workspaceId: "ws-1" }),
+      platform: platform(),
+      workspace: workspace(),
+      connection: connection({ workspaceId: "ws-2" }),
+    });
+    expect(state).toBe("pending_auth");
+  });
+
+  it("connection wired to a different platform is rejected (defense in depth)", () => {
+    const state = resolveIdentityPublishState({
+      identity: identity({ platform: "bluesky" }),
+      platform: platform(),
+      workspace: workspace(),
+      connection: connection({ platform: "devto" }),
+    });
+    expect(state).toBe("pending_auth");
+  });
+});
+
+// =====================================================================
 // UI-helper integrity
 // =====================================================================
 

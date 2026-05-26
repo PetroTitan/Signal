@@ -65,6 +65,45 @@ function extractMismatchEvidence(
   };
 }
 
+/**
+ * Hashnode-specific: read the publication id off the connection
+ * metadata. Returns the trimmed string when present and non-empty;
+ * otherwise null. Used both to feed the `requirementsMet` gate of
+ * the publish-state resolver and to pre-fill the inline
+ * publication-id form in the Manage panel.
+ */
+function extractHashnodePublicationId(
+  metadata: unknown,
+): string | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const raw = (metadata as Record<string, unknown>).publication_id;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed.length === 0 ? null : trimmed;
+}
+
+/**
+ * Per-platform completeness gate. The resolver does not embed
+ * platform-specific config rules; this helper does. Today only
+ * Hashnode has a "credential alone is not enough" requirement
+ * (publication id). All other platforms return undefined so the
+ * resolver treats them as "no extra requirement applies."
+ *
+ * Returning undefined (not true) for non-Hashnode platforms makes
+ * resolver call sites match exactly what the resolver expects —
+ * undefined means "no platform-specific requirement," which collapses
+ * to `connected` once auth is healthy.
+ */
+function computeRequirementsMet(
+  platform: FounderPlatform,
+  metadata: unknown,
+): boolean | undefined {
+  if (platform === "hashnode") {
+    return extractHashnodePublicationId(metadata) !== null;
+  }
+  return undefined;
+}
+
 export default async function AccountsPage() {
   if (!isSupabaseConfigured()) {
     return (
@@ -170,6 +209,20 @@ export default async function AccountsPage() {
         ? null
         : { configured: workspaceConfigured };
 
+    // Platform-specific completeness gate. The resolver does NOT
+    // enumerate what each platform requires — we compute the boolean
+    // here at the call site, which already knows the platform.
+    //
+    // Today: Hashnode is the only platform with a "credential alone
+    // is not enough" requirement (the publication_id must be set on
+    // connection.metadata.publication_id). Other platforms default to
+    // undefined → resolver treats as "no requirement applies" and
+    // returns `connected` once auth is healthy.
+    const requirementsMet = computeRequirementsMet(
+      platformKey,
+      connection?.metadata,
+    );
+
     const publishState = resolveIdentityPublishState({
       identity: {
         platform: platformKey,
@@ -204,6 +257,7 @@ export default async function AccountsPage() {
               extractMismatchEvidence(connection.metadata) !== null,
           }
         : null,
+      requirementsMet,
     });
     identityPublishStateById.set(account.id, publishState);
 
@@ -331,6 +385,17 @@ export default async function AccountsPage() {
                     publishState={identityPublishState}
                     connectPlan={plan}
                     mismatchEvidence={mismatchEvidence}
+                    // Hashnode-only: pre-fill the inline publication-id
+                    // form in the Manage panel. Other platforms ignore
+                    // this prop. Sourced from the same metadata
+                    // location the orchestrator reads at publish time
+                    // (connection.metadata.publication_id) so the UI
+                    // and the publish path agree on what's stored.
+                    hashnodePublicationId={
+                      a.platform === "hashnode"
+                        ? extractHashnodePublicationId(c?.metadata)
+                        : null
+                    }
                   />
                 ) : null;
 
