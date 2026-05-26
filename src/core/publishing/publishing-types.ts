@@ -97,6 +97,26 @@ export const PUBLISH_REASON_CODES = [
   // their own enforcement codes in their isolated PRs.
   "approved_shape_stale",
   "single_post_exceeds_budget",
+  // Phase F7.1 — dev.to automated publishing.
+  //
+  // dev.to-prefixed reason codes. Additive — existing generic codes
+  // (`platform_unauthorized`, `platform_api_error`,
+  // `platform_rate_limited`, `missing_api_key`) remain valid for
+  // pre-F7.1 rows; new code paths use the dev.to-specific codes so
+  // operator-facing messages stay actionable.
+  "devto_token_missing",
+  "devto_token_invalid",
+  "devto_validation_error",
+  "devto_rate_limited",
+  "devto_provider_unavailable",
+  "devto_network_error",
+  "devto_api_error",
+  "devto_requires_article_intent",
+  // Article validation blockers — produced by the platform-native
+  // dev.to adapter, surfaced here so publishers can refuse before
+  // the network call.
+  "article_title_required",
+  "article_body_required",
 ] as const;
 export type PublishReasonCode = (typeof PUBLISH_REASON_CODES)[number];
 

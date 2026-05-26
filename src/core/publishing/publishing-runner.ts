@@ -20,12 +20,11 @@ import {
 import { publishToReddit } from "./publish-reddit";
 import { publishToX } from "./publish-x";
 import { publishToLinkedIn } from "./publish-linkedin";
-import { publishToDevto } from "./publish-devto";
+import { publishDevtoForIdentity } from "./devto-publish-orchestrator";
 import { publishToHashnode } from "./publish-hashnode";
 import { publishBlueskyForIdentity } from "./bluesky-publish-orchestrator";
 import { publishToTelegram } from "./publish-telegram";
 import {
-  readDevtoCredentials,
   readHashnodeCredentials,
   readTelegramCredentials,
 } from "./platform-credentials";
@@ -69,17 +68,16 @@ export async function runPublish(input: RunnerInput): Promise<PublishOutcome> {
   // that gates the OAuth platforms below.
   switch (input.request.platform) {
     case "devto": {
-      const creds = readDevtoCredentials();
-      if (!creds) {
-        return publishFail(
-          "missing_api_key",
-          "DEVTO_API_KEY is not configured.",
-        );
-      }
-      return publishToDevto({
+      // Phase F7.1 — identity-scoped dev.to publishing. The
+      // orchestrator loads THIS identity's encrypted API key,
+      // decrypts it for the single network call, and routes failures
+      // through dev.to-prefixed reason codes. Workspace-level
+      // DEVTO_API_KEY env is reachable ONLY as an opt-in legacy
+      // fallback (DEVTO_LEGACY_FALLBACK=true) — default behaviour
+      // fails safe with `devto_token_missing`.
+      return publishDevtoForIdentity({
         request: input.request,
-        apiKey: creds.apiKey,
-        published: true,
+        db: input.db,
       });
     }
     case "hashnode": {
