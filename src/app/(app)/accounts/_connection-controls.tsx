@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import type { ConnectIdentityPlan } from "@/core/publishing/connect-identity";
 import type { IdentityPublishState } from "@/core/publishing/identity-publish-state";
+import { HashnodePublicationForm } from "@/components/publishing/hashnode-publication-form";
 
 interface ConnectionControlsProps {
   /**
@@ -20,6 +21,14 @@ interface ConnectionControlsProps {
   /** Phase F2.5 (manual fallback): true when REDDIT_OAUTH_STATUS=blocked_…
    *  hides the Connect button + shows the operator the manual flow. */
   redditOauthBlocked?: boolean;
+  /**
+   * Hashnode-specific: the publication id currently saved on this
+   * identity's connection metadata. `null` when the operator hasn't
+   * set it yet (this is what produces the `connected_incomplete`
+   * state). Used to pre-fill the inline publication-id form inside
+   * the Manage panel.
+   */
+  hashnodePublicationId?: string | null;
   connectionStatus:
     | "not_connected"
     | "connected"
@@ -809,14 +818,25 @@ export function ConnectionControls(props: ConnectionControlsProps) {
         ) : null}
 
         {/*
-          Personal API key flow (dev.to today). Same four-state UI
-          pattern as Bluesky: signed-out, signed-in, mismatch, form.
-          The form is single-field (the secret); the handle is
-          already on the identity row.
+          Personal API key flow (dev.to + Hashnode today). Same
+          four-state UI pattern as Bluesky: signed-out, signed-in,
+          mismatch, form. The form is single-field (the secret); the
+          handle is already on the identity row.
+
+          For Hashnode, an additional inline form for the publication
+          id renders under the signed-in summary. It is the second
+          piece of required setup (the API key proves account
+          ownership; the publication id picks which blog to publish
+          to). The `connected_incomplete` state is what fires when
+          the API key is saved but no publication id is set yet — we
+          render this branch for BOTH `connected` and
+          `connected_incomplete` so the operator can finish setup
+          inline without leaving /accounts.
         */}
         {plan?.kind === "personal_api_key" &&
         !apiKeyFormOpen &&
-        props.publishState === "connected" ? (
+        (props.publishState === "connected" ||
+          props.publishState === "connected_incomplete") ? (
           <div className="basis-full space-y-2">
             <div className="text-[11px] text-ink-700">
               Signed in as{" "}
@@ -825,6 +845,23 @@ export function ConnectionControls(props: ConnectionControlsProps) {
               </span>
               .
             </div>
+            {plan.platform === "hashnode" ? (
+              <div className="rounded-md border border-ink-100 bg-ink-50/40 px-3 py-2.5">
+                {props.publishState === "connected_incomplete" ? (
+                  <p className="text-[11px] text-amber-800 leading-relaxed mb-2">
+                    API key is saved. Add the publication id Hashnode
+                    publishes to in order to enable scheduled
+                    publishing.
+                  </p>
+                ) : null}
+                <HashnodePublicationForm
+                  identityId={props.accountId}
+                  identityHandle={props.handle ?? props.accountId}
+                  initialPublicationId={props.hashnodePublicationId ?? null}
+                  variant="compact"
+                />
+              </div>
+            ) : null}
             <div className="flex gap-2 flex-wrap">
               <button
                 type="button"
@@ -880,6 +917,7 @@ export function ConnectionControls(props: ConnectionControlsProps) {
         {plan?.kind === "personal_api_key" &&
         !apiKeyFormOpen &&
         props.publishState !== "connected" &&
+        props.publishState !== "connected_incomplete" &&
         props.publishState !== "mismatched" ? (
           <>
             <button

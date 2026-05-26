@@ -4,7 +4,7 @@ import { isSupabaseConfigured } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { listAccounts } from "@/repositories/account-repository";
 import { listPlatformConnections } from "@/repositories/platform-connection-repository";
-import { HashnodePublicationForm } from "./_hashnode-publication-form";
+import { HashnodePublicationForm } from "@/components/publishing/hashnode-publication-form";
 
 export const dynamic = "force-dynamic";
 
@@ -293,6 +293,21 @@ export default async function SetupPage() {
                       identityHandle={identity.handle ?? identity.id}
                       initialPublicationId={currentPubId}
                     />
+                    {/*
+                      Deep-link to the identity card on /accounts so
+                      operators can do the rest of setup (API key
+                      sign-in, sign-out, voice profile) in one place.
+                      The publication-id form here is a backup —
+                      /accounts is the canonical surface.
+                    */}
+                    <div className="mt-2">
+                      <Link
+                        href="/accounts"
+                        className="text-[11px] text-signal-700 underline"
+                      >
+                        Open {identity.handle ?? "this identity"} on Accounts →
+                      </Link>
+                    </div>
                   </div>
                 );
               })}
@@ -626,6 +641,20 @@ function PlatformSection({
           </ul>
         </>
       ) : null}
+      <div className="mt-3">
+        {/*
+          Deep-link to where the operator finishes setup. /accounts is
+          the canonical surface for connection management — this page
+          stays a backup discovery surface so the documentation never
+          becomes the only path to the action.
+        */}
+        <Link
+          href="/accounts"
+          className="text-[11px] text-signal-700 underline"
+        >
+          Open Accounts to manage {label} identities →
+        </Link>
+      </div>
     </div>
   );
 }

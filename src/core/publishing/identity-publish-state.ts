@@ -51,6 +51,25 @@ export const IDENTITY_PUBLISH_STATES = [
    */
   "connected",
   /**
+   * Credential is stored AND the handle/account matches AND the auth
+   * is healthy — BUT a platform-specific required piece of setup is
+   * still missing. Today: Hashnode identities with an API key saved
+   * but no `metadata.publication_id`. A publish attempt would fail
+   * deterministically (`hashnode_publication_missing`), so this is
+   * not "connected." It is also not `pending_auth` — the auth
+   * itself works. The UI shows a "Finish setup" CTA pointing at the
+   * missing input.
+   *
+   * Pure resolver: callers pass `requirementsMet` for this identity;
+   * the resolver does not embed platform-specific logic. When
+   * `requirementsMet === false` and the auth path would otherwise
+   * have returned `connected`, we return `connected_incomplete`.
+   * When `requirementsMet` is undefined, the resolver assumes
+   * "no platform-specific requirement applies" and returns
+   * `connected` as before.
+   */
+  "connected_incomplete",
+  /**
    * Identity had a valid auth but the credential has expired or the
    * platform requires reauthorization. Drafts and history are
    * preserved; the operator needs to reconnect.
@@ -248,6 +267,21 @@ export interface ResolveInput {
    * The identity's own auth row. `null` when no row exists yet.
    */
   connection: IdentityConnection | null;
+  /**
+   * Whether platform-specific required configuration (beyond the
+   * credential itself) is in place for this identity. The resolver
+   * does not enumerate what those requirements are — that lives at
+   * the call site, which already knows the platform. Today:
+   *   - Hashnode: `metadata.publication_id` is a non-empty string.
+   *   - All other platforms: pass undefined (or true) — they have
+   *     no extra requirement beyond a verified credential.
+   *
+   * When this is `false` and the auth path would have returned
+   * `connected`, the resolver returns `connected_incomplete`
+   * instead. When undefined, the resolver treats it as "no
+   * platform requirement applies" (i.e. true).
+   */
+  requirementsMet?: boolean;
 }
 
 // =====================================================================
@@ -431,6 +465,15 @@ export function resolveIdentityPublishState(
       ) {
         return "mismatched";
       }
+      // 13. Platform-specific completeness gate. Authenticated AND
+      // handle-matching, but the caller flagged a required piece of
+      // platform config as missing (today: Hashnode publication_id).
+      // Returning `connected` here would lie — a publish attempt
+      // would fail deterministically — so surface incompleteness as
+      // its own state.
+      if (input.requirementsMet === false) {
+        return "connected_incomplete";
+      }
       return "connected";
   }
 }
@@ -463,6 +506,7 @@ export const IDENTITY_PUBLISH_STATE_LABELS: Record<
   string
 > = {
   connected: "Signed in",
+  connected_incomplete: "Finish setup",
   expired: "Sign in again",
   pending_auth: "Not signed in",
   mismatched: "Account mismatch",
@@ -480,6 +524,8 @@ export const IDENTITY_PUBLISH_STATE_HINTS: Record<
   string
 > = {
   connected: "Signal is signed in to this account and can publish.",
+  connected_incomplete:
+    "Signed in, but a required piece of platform setup is still missing. Finish setup to enable publishing.",
   expired:
     "Sign-in for this account has expired. Sign in again to resume publishing.",
   pending_auth:
@@ -501,6 +547,10 @@ export const IDENTITY_PUBLISH_STATE_TONES: Record<
   "success" | "warn" | "info" | "muted" | "danger"
 > = {
   connected: "success",
+  // connected_incomplete: auth is valid but publish would fail. Warn
+  // tone so the operator sees it as an action item (between
+  // "Connected" and "Not signed in").
+  connected_incomplete: "warn",
   expired: "warn",
   pending_auth: "info",
   // Mismatched is the riskiest non-publishing state: the token works,

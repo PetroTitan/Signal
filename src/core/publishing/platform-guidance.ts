@@ -69,15 +69,17 @@ const GUIDANCE: Record<FounderPlatform, FounderPlatformGuidance> = {
     short: "Hn",
     voiceHint:
       "Technical publishing with stronger engineering audiences. Cover image and series help discoverability.",
-    // Temporarily manual: Hashnode retired free GraphQL API access on
-    // 2026-05-13 and publication-level API access must be enabled on
-    // a paid plan. Until we've verified a working Pro response, the
-    // /accounts Manage panel renders a manual-publish hint instead of
-    // the API-key sign-in form. The verifier code and the
-    // hashnode/connect route stay in the tree so re-enabling is a
-    // one-line flip back to "api" — see also the matching note in
-    // connect-identity.ts.
-    publishingMode: "manual",
+    // Phase F8 — Hashnode is automated. The identity-scoped
+    // orchestrator (PR #124) loads a per-identity encrypted API key
+    // + a publication id from connection metadata, and the scheduler
+    // allowlist routes Hashnode items through runPublish. Hashnode's
+    // free GraphQL access remains gated for non-Pro accounts; the
+    // publisher surfaces that case explicitly as
+    // `hashnode_provider_unavailable` so the operator copy is
+    // accurate. This flip back to "api" is what makes the /accounts
+    // Manage panel expose the API-key sign-in form (instead of the
+    // legacy "manual publish" hint).
+    publishingMode: "api",
   },
   bluesky: {
     label: "Bluesky",
