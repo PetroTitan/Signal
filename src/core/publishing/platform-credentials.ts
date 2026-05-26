@@ -107,6 +107,21 @@ export function isBlueskyLegacyFallbackEnabled(): boolean {
 }
 
 /**
+ * Phase F7.1 — same opt-in pattern as Bluesky for dev.to. When this
+ * flag is enabled AND a scheduled dev.to publish has no per-identity
+ * encrypted API key, the publisher falls back to the workspace-
+ * level `DEVTO_API_KEY` env var. Default off — production should
+ * leave this unset so identities without a connected key fail fast
+ * with `devto_token_missing` instead of silently using a shared
+ * workspace token.
+ */
+export function isDevtoLegacyFallbackEnabled(): boolean {
+  const raw = safe(process.env.DEVTO_LEGACY_FALLBACK);
+  if (!raw) return false;
+  return raw === "true" || raw === "1";
+}
+
+/**
  * Service URL for AT Protocol calls. Same default as
  * readBlueskyCredentials. Exposed so the identity-scoped publisher
  * can read it without requiring the workspace credentials to be set.
