@@ -33,6 +33,10 @@ import {
 } from "@/components/founder-compose/founder-compose-sheet";
 import { MiniPreview } from "@/components/platform-preview/MiniPreview";
 import { asPreviewPlatform } from "@/core/platform-preview/preview-renderer";
+import {
+  CreativeApprovalControls,
+  type CreativeStatusToken,
+} from "./_creative-approval-controls";
 import type { ScheduleDisplay } from "@/core/scheduling/format-schedule-display";
 
 const updateInitial: UpdatePlanItemResult = { ok: false, error: "" };
@@ -293,6 +297,20 @@ export function PlanItemCard(props: PlanItemCardProps) {
               />
             ) : null}
 
+            {/* Creative approval controls — first-class buttons that
+                resolve the approval deadlock. Only renders for posts
+                that have a creative attached. When the creative is
+                already approved (or absent), this component shows
+                only the workflow explanation + DB-truth debug. */}
+            {props.isPost ? (
+              <CreativeApprovalControls
+                creativeId={props.creative?.id ?? null}
+                creativeStatus={creativeStatusToken(props.creative?.status)}
+                postStatus={props.status}
+                approvalBlockers={props.warnings}
+              />
+            ) : null}
+
             {/* Quick actions — title, body, and creative already open the
                 sheet on click, so no redundant "Edit" button here. */}
             <div className="flex flex-wrap items-center gap-1.5 pt-2">
@@ -549,6 +567,24 @@ function ReschedSubmit({ alreadyScheduled }: { alreadyScheduled: boolean }) {
   );
 }
 
+
+/**
+ * Narrow the CreativeCardData status (CreativeStatus from supabase
+ * types) into the operator-facing token the approval controls render.
+ * The supabase enum currently includes
+ *   `pending_review | approved | rejected | planned`
+ * — we surface "none" for the no-creative case so the controls
+ * component can render its "no controls needed" branch.
+ */
+function creativeStatusToken(
+  status: CreativeCardData["status"] | undefined,
+): CreativeStatusToken {
+  if (!status) return "none";
+  if (status === "approved") return "approved";
+  if (status === "rejected") return "rejected";
+  if (status === "planned") return "planned";
+  return "pending_review";
+}
 
 // =====================================================================
 // Post + creative status summary — explicit separation so an
