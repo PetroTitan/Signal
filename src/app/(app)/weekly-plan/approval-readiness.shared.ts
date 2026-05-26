@@ -24,7 +24,15 @@
 export interface ApprovalReadinessOkFlags {
   statusPending: boolean;
   riskNotBlocked: boolean;
-  contentTypePost: boolean;
+  /**
+   * Phase F7.4 — replaces the legacy `contentTypePost` flag. True
+   * when the platform-native approval policy recognizes the item's
+   * (platform, content_type, intent) as a publishable object.
+   * Articles, threads, media posts, link posts, carousels, replies,
+   * channel/group messages, video posts, community posts etc. all
+   * pass. Unknown / malformed types fail with neutral copy.
+   */
+  approvableObject: boolean;
   creativeReady: boolean;
   contractActive: boolean;
   accountScope: boolean;

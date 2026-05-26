@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   getApprovalPolicy,
+  isApprovablePublishObject,
   requiresCreative,
 } from "./approval-policy";
 import type { PublishingIntent } from "./publishing-intent";
@@ -174,5 +175,206 @@ describe("getApprovalPolicy — future-extensible wrapper", () => {
     expect(
       getApprovalPolicy({ platform: "devto", intent: "article" }),
     ).toEqual({ creativeRequired: false });
+  });
+});
+
+// =====================================================================
+// Phase F7.4 — isApprovablePublishObject matrix pins
+// =====================================================================
+
+describe("isApprovablePublishObject — approvable content types", () => {
+  const approvableContentTypes = [
+    "post",
+    "article",
+    "thread",
+    "media_post",
+    "video_post",
+    "carousel",
+    "reply",
+    "comment",
+    "quote",
+    "repost",
+    "link_post",
+    "community_post",
+    "channel_message",
+    "group_message",
+    "story",
+    "short_video",
+  ] as const;
+
+  for (const contentType of approvableContentTypes) {
+    it(`content_type='${contentType}' → approvable`, () => {
+      expect(
+        isApprovablePublishObject({
+          platform: "devto",
+          contentType,
+        }),
+      ).toBe(true);
+    });
+  }
+
+  it("case-insensitive: 'ARTICLE' → approvable", () => {
+    expect(
+      isApprovablePublishObject({
+        platform: "devto",
+        contentType: "ARTICLE",
+      }),
+    ).toBe(true);
+  });
+
+  it("trims surrounding whitespace", () => {
+    expect(
+      isApprovablePublishObject({
+        platform: "hashnode",
+        contentType: "  article  ",
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("isApprovablePublishObject — non-approvable content types", () => {
+  const refusedContentTypes = [
+    "",
+    "  ",
+    "unknown",
+    "debug",
+    "malformed",
+    "foo",
+    "random_string",
+  ];
+
+  for (const contentType of refusedContentTypes) {
+    it(`content_type='${contentType}' → NOT approvable`, () => {
+      expect(
+        isApprovablePublishObject({
+          platform: "devto",
+          contentType,
+        }),
+      ).toBe(false);
+    });
+  }
+
+  it("null contentType + null intent → NOT approvable", () => {
+    expect(
+      isApprovablePublishObject({
+        platform: "devto",
+        contentType: null,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("isApprovablePublishObject — intent fallback when contentType is empty", () => {
+  it("empty contentType + intent='article' → approvable", () => {
+    expect(
+      isApprovablePublishObject({
+        platform: "devto",
+        contentType: "",
+        intent: "article",
+      }),
+    ).toBe(true);
+  });
+
+  it("null contentType + intent='thread' → approvable", () => {
+    expect(
+      isApprovablePublishObject({
+        platform: "bluesky",
+        contentType: null,
+        intent: "thread",
+      }),
+    ).toBe(true);
+  });
+
+  it("null contentType + intent='unknown' → NOT approvable", () => {
+    expect(
+      isApprovablePublishObject({
+        platform: "bluesky",
+        contentType: null,
+        intent: "unknown",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("isApprovablePublishObject — spec lifecycle pins", () => {
+  it("dev.to article → approvable", () => {
+    expect(
+      isApprovablePublishObject({
+        platform: "devto",
+        contentType: "article",
+      }),
+    ).toBe(true);
+  });
+
+  it("Hashnode article → approvable", () => {
+    expect(
+      isApprovablePublishObject({
+        platform: "hashnode",
+        contentType: "article",
+      }),
+    ).toBe(true);
+  });
+
+  it("Reddit link_post → approvable", () => {
+    expect(
+      isApprovablePublishObject({
+        platform: "reddit",
+        contentType: "link_post",
+      }),
+    ).toBe(true);
+  });
+
+  it("X thread → approvable", () => {
+    expect(
+      isApprovablePublishObject({
+        platform: "x",
+        contentType: "thread",
+      }),
+    ).toBe(true);
+  });
+
+  it("LinkedIn article → approvable", () => {
+    expect(
+      isApprovablePublishObject({
+        platform: "linkedin",
+        contentType: "article",
+      }),
+    ).toBe(true);
+  });
+
+  it("Telegram channel_message → approvable", () => {
+    expect(
+      isApprovablePublishObject({
+        platform: "telegram",
+        contentType: "channel_message",
+      }),
+    ).toBe(true);
+  });
+
+  it("Instagram media_post → approvable (creative gate handled elsewhere)", () => {
+    expect(
+      isApprovablePublishObject({
+        platform: "instagram",
+        contentType: "media_post",
+      }),
+    ).toBe(true);
+  });
+
+  it("YouTube video_post → approvable (creative gate handled elsewhere)", () => {
+    expect(
+      isApprovablePublishObject({
+        platform: "youtube",
+        contentType: "video_post",
+      }),
+    ).toBe(true);
+  });
+
+  it("legacy Bluesky text post → approvable (content_type='post' default)", () => {
+    expect(
+      isApprovablePublishObject({
+        platform: "bluesky",
+        contentType: "post",
+      }),
+    ).toBe(true);
   });
 });

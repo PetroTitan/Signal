@@ -22,7 +22,10 @@ import {
   type ApprovalReadiness,
   type CreativeReadinessCode,
 } from "./approval-readiness.shared";
-import { requiresCreative } from "@/core/platform-native/approval-policy";
+import {
+  isApprovablePublishObject,
+  requiresCreative,
+} from "@/core/platform-native/approval-policy";
 import {
   parsePlatformNativeShape,
   type PublishingIntent,
@@ -87,11 +90,25 @@ export function assessItemApprovalReadiness(
     blockers.push("QA blocked this draft — risk level is 'blocked'.");
   }
 
-  const contentTypePost = input.item.contentType === "post";
-  if (!contentTypePost) {
-    blockers.push(
-      `Content type is "${input.item.contentType ?? "unset"}" — only posts can be approved.`,
-    );
+  // Phase F7.4 — approvable publish object policy.
+  //
+  // The legacy gate rejected anything where content_type !== "post".
+  // That blocked every dev.to / Hashnode / LinkedIn article and
+  // every future article-shaped platform from ever reaching
+  // approval. Approval now consults the central platform-native
+  // policy to decide whether the item's (platform, content_type,
+  // intent) tuple is a publishable object.
+  //
+  // The intent is parsed from platform_publish_intent (when set);
+  // legacy rows with content_type='post' continue to pass.
+  const intent = readIntentFromItem(input.item);
+  const approvableObject = isApprovablePublishObject({
+    platform: input.item.platform,
+    contentType: input.item.contentType,
+    intent,
+  });
+  if (!approvableObject) {
+    blockers.push("This item is not a publishable platform object yet.");
   }
 
   // Phase F7.3 — platform-native approval policy.
@@ -114,7 +131,6 @@ export function assessItemApprovalReadiness(
   // format." is emitted on the readiness output when the policy
   // says optional AND no creative is attached, so the UI can show a
   // neutral note instead of red blocker text.
-  const intent = readIntentFromItem(input.item);
   const creativeRequired = requiresCreative({
     platform: input.item.platform,
     intent,
@@ -199,7 +215,7 @@ export function assessItemApprovalReadiness(
     ok: {
       statusPending,
       riskNotBlocked,
-      contentTypePost,
+      approvableObject,
       creativeReady,
       contractActive,
       accountScope,

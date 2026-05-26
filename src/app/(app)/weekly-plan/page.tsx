@@ -18,6 +18,9 @@ import { listPlatformConnections } from "@/repositories/platform-connection-repo
 import { isRedditOauthBlocked } from "@/lib/oauth/env";
 import { ApprovePlanForm } from "./_approve-plan-form";
 import { PlanItemCard } from "./_plan-item-card";
+import { isApprovablePublishObject } from "@/core/platform-native/approval-policy";
+import { parsePlatformNativeShape } from "@/core/platform-native";
+import type { PublishPlatform } from "@/core/publishing/publishing-types";
 import { FocusOnMount } from "./_focus-on-mount";
 import { ExecutionStateBadge } from "@/components/publishing/execution-state";
 import { readAllowedTestSubreddits } from "@/core/publishing/safe-test-env";
@@ -478,6 +481,22 @@ export default async function WeeklyPlanPage() {
                   <div className="space-y-2">
                     {group.items.map((it) => {
                       const isPost = it.contentType === "post";
+                      // Phase F7.4 — `isApprovable` drives the approve /
+                      // hold / schedule / cancel-approval button gates.
+                      // Articles, threads, link posts, etc. all become
+                      // approvable through the centralized policy.
+                      const parsedIntent =
+                        it.platform && it.platformPublishIntent
+                          ? parsePlatformNativeShape(
+                              it.platformPublishIntent,
+                              it.platform as PublishPlatform,
+                            )?.intent ?? null
+                          : null;
+                      const isApprovable = isApprovablePublishObject({
+                        platform: it.platform,
+                        contentType: it.contentType,
+                        intent: parsedIntent,
+                      });
                       const creative = creativeByItem.get(it.id) ?? null;
                       const creativeReason = isPost
                         ? creativeReadinessReason(creative)
@@ -530,6 +549,7 @@ export default async function WeeklyPlanPage() {
                           riskScore={it.riskScore}
                           notes={notes}
                           isPost={isPost}
+                          isApprovable={isApprovable}
                           warnings={warnings}
                           timezoneLabel={timezoneLabel}
                           subreddit={subreddit}
