@@ -57,6 +57,17 @@ export interface PlatformShapeSummaryProps {
    * legacy mode.
    */
   rawIntent: Record<string, unknown> | null;
+  /**
+   * Platform-specific routing target (Reddit: subreddit; Telegram:
+   * chat / channel; LinkedIn: company URN). Adapters that don't
+   * consume it ignore. Passed-through verbatim — UI never branches
+   * on platform.
+   */
+  target?: string | null;
+  /** Outbound URL for link-post intents. */
+  linkUrl?: string | null;
+  /** Tag list (article platforms, YouTube). */
+  tags?: ReadonlyArray<string>;
 }
 
 export function PlatformShapeSummary(props: PlatformShapeSummaryProps) {
@@ -80,8 +91,20 @@ export function PlatformShapeSummary(props: PlatformShapeSummaryProps) {
       identity: { displayName: null, handle: null, avatarUrl: null },
       creative: props.creative,
       shape,
+      target: props.target ?? null,
+      linkUrl: props.linkUrl ?? null,
+      tags: props.tags,
     });
-  }, [adapter, props.title, props.body, props.creative, shape]);
+  }, [
+    adapter,
+    props.title,
+    props.body,
+    props.creative,
+    shape,
+    props.target,
+    props.linkUrl,
+    props.tags,
+  ]);
 
   const [liveHash, setLiveHash] = useState<string | null>(null);
   useEffect(() => {
@@ -182,6 +205,26 @@ export function PlatformShapeSummary(props: PlatformShapeSummaryProps) {
             </span>
           ) : null}
         </Row>
+      ) : null}
+
+      {preview?.routing && Object.keys(preview.routing).length > 0 ? (
+        <div className="mt-1.5">
+          <div className="text-[10px] uppercase tracking-wide text-ink-500">
+            provider routing
+          </div>
+          <dl className="grid grid-cols-[140px_1fr] gap-x-3 gap-y-0.5 text-[11px] mt-0.5">
+            {Object.keys(preview.routing)
+              .sort()
+              .map((key) => (
+                <div key={key} className="contents">
+                  <dt className="text-ink-500 font-mono">{key}</dt>
+                  <dd className="text-ink-800 break-all">
+                    {preview.routing![key] ?? "—"}
+                  </dd>
+                </div>
+              ))}
+          </dl>
+        </div>
       ) : null}
 
       {preview && preview.warnings.length > 0 ? (

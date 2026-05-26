@@ -228,10 +228,21 @@ export interface ProviderPayloadPreview {
   parts: ReadonlyArray<ProviderPayloadPart>;
   warnings: ReadonlyArray<string>;
   blockers: ReadonlyArray<ProviderPayloadBlocker>;
-  // NB: the payload hash is a DERIVED async property of this preview.
-  // It is computed via computeProviderPayloadHash(preview) so the
-  // adapter layer stays sync and platform-agnostic. Approval binding
-  // code is the only consumer that needs the hash.
+  /**
+   * Provider-native routing / metadata the publisher (and the
+   * compose-modal UI) needs to display the FULL provider payload:
+   * subreddit names, channel targets, article titles, link URLs,
+   * carousel counts, video thumbnails, etc.
+   *
+   * Adapters populate this freely with string keys + nullable string
+   * values. The UI renders the entries as a generic key / value
+   * list; the hash includes this map in canonical (sorted-key) form
+   * so any drift invalidates an operator approval.
+   *
+   * Optional — when absent the row has no provider-native routing
+   * (most short-form social posts).
+   */
+  routing?: Readonly<Record<string, string | null>>;
 }
 
 // =====================================================================

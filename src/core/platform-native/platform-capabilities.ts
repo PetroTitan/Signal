@@ -105,8 +105,15 @@ export function validateShapeAgainstCapabilities(
       message: `${shape.platform}: mediaMode "${shape.mediaMode}" is not supported.`,
     });
   }
+  // Legacy/unknown rows never trigger requiresMedia — they predate
+  // platform-native intent and would otherwise become permanently
+  // blocked. Adapters that need to enforce media for SPECIFIC intents
+  // (e.g. Instagram media_post) do so in their own validate/preview
+  // path; this shared rule fires only when the operator has chosen a
+  // real intent.
   if (
     capabilities.requiresMedia &&
+    shape.intent !== "unknown" &&
     (shape.mediaMode === "none" || shape.mediaMode === "platform_default")
   ) {
     blockers.push({

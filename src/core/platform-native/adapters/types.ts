@@ -64,6 +64,23 @@ export interface AdapterRenderInput {
   creative: AdapterCreative | null;
   /** The operator's platform-native shape. */
   shape: PlatformNativeShape;
+  /**
+   * Platform-specific routing target (Reddit: subreddit; LinkedIn:
+   * company URN; Telegram: chat / channel id). Adapters that don't
+   * need it ignore. Caller may always pass `null`.
+   */
+  target?: string | null;
+  /**
+   * Outbound URL for link-post / link-share intents. Adapters that
+   * don't model link posts ignore.
+   */
+  linkUrl?: string | null;
+  /**
+   * Optional array of tags. Used by article platforms (dev.to,
+   * Hashnode) and some social platforms (YouTube tags). Adapters
+   * that don't model tags ignore.
+   */
+  tags?: ReadonlyArray<string>;
 }
 
 // =====================================================================
