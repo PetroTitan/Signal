@@ -572,6 +572,9 @@ export async function publishToBluesky(
     media: payload.media,
     service,
     accessJwt: session.accessJwt,
+    // App-password path can't refresh — a 401 with no AT Proto error
+    // body is a wrong-password problem, not an expired-token problem.
+    default401: "platform_unauthorized",
   });
   if (uploaded.kind === "failed") return uploaded.outcome;
 
@@ -716,6 +719,10 @@ export async function publishToBlueskyAsIdentity(
     media: payload.media,
     service,
     accessJwt,
+    // Identity-scoped path can refresh — a 401 with no AT Proto error
+    // body is an aged-out access JWT; the orchestrator's
+    // refresh-and-retry path is gated on `session_expired`.
+    default401: "session_expired",
   });
   if (uploaded.kind === "failed") return uploaded.outcome;
 
@@ -821,6 +828,11 @@ async function maybeUploadMediaForPayload(input: {
   media: BlueskyPayloadMedia | null;
   service: string;
   accessJwt: string;
+  /** What the caller wants for a 401 with no structured AT Proto
+   *  body error. Identity-scoped publish passes "session_expired" so
+   *  the orchestrator's refresh-and-retry path fires; app-password
+   *  publish passes "platform_unauthorized" (no refresh story). */
+  default401: "session_expired" | "platform_unauthorized";
 }): Promise<MediaUploadResult> {
   const media = input.media;
   if (!media) return { kind: "none" };
@@ -830,18 +842,32 @@ async function maybeUploadMediaForPayload(input: {
     imageUrl: media.imageUrl,
   });
   if (!upload.ok) {
+    // Body error trumps HTTP status — bsky.social returns
+    // ExpiredToken / InvalidToken on HTTP 400 in the wild for
+    // uploadBlob just as it does for createRecord. Route through the
+    // same mapper so the orchestrator's refresh-and-retry path can
+    // recover the recoverable cases.
+    //
+    // We only widen past "media_upload_failed" for codes the mapper
+    // positively identified — session_expired (recoverable),
+    // platform_unauthorized (operator must intervene), or
+    // platform_rate_limited. Everything else (genuine media failures
+    // like "Blob size exceeds maximum") stays "media_upload_failed"
+    // so the operator-facing classification remains media-specific.
+    const mapped = mapBlueskyAtprotoErrorToReasonCode(
+      upload.errorBody,
+      upload.status,
+      input.default401,
+    );
+    const code = mapped === "platform_api_error" ? "media_upload_failed" : mapped;
     return {
       kind: "failed",
-      outcome: publishFail(
-        "media_upload_failed",
-        `Bluesky: ${upload.detail}`,
-        {
-          endpoint: "uploadBlob",
-          http_status: upload.status,
-          creative_id: media.creativeId,
-          ...errorBodyMetadata(upload.errorBody),
-        },
-      ),
+      outcome: publishFail(code, `Bluesky: ${upload.detail}`, {
+        endpoint: "uploadBlob",
+        http_status: upload.status,
+        creative_id: media.creativeId,
+        ...errorBodyMetadata(upload.errorBody),
+      }),
     };
   }
   return {

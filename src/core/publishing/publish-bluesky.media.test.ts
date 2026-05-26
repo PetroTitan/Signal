@@ -427,9 +427,106 @@ describe("publishToBlueskyAsIdentity — no token leakage on media failure", () 
       service: "https://bsky.social",
     });
 
-    expect(outcome.reasonCode).toBe("media_upload_failed");
+    // After the uploadBlob ExpiredToken routing fix: identity-scoped
+    // uploadBlob failures with an ExpiredToken body now flow through
+    // the same mapper as createRecord, so the reasonCode is the
+    // recoverable session_expired — orchestrator refresh-and-retry
+    // gate becomes reachable.
+    expect(outcome.reasonCode).toBe("session_expired");
     const serialized = JSON.stringify(outcome);
     expect(serialized).not.toContain(accessJwt);
     expect(serialized).not.toContain("Bearer eyJ");
+  });
+});
+
+// ---------------------------------------------------------------------
+// uploadBlob — AT Proto body errors route through the shared mapper
+// ---------------------------------------------------------------------
+//
+// Regression guards for the deadlock-fix PR. Before this PR the
+// uploadBlob wrapper hardcoded reasonCode = "media_upload_failed" for
+// every upload failure, so the bluesky-publish-orchestrator never saw
+// "session_expired" and never refreshed the token — a stale access
+// JWT on uploadBlob got the post stuck in `paused` forever even
+// though the encrypted refresh JWT in platform_connections would
+// have cleared the failure on retry.
+//
+// These tests pin the mapper-routed outputs at the uploadBlob caller
+// level so a future refactor cannot silently revert the wiring.
+
+describe("publishToBlueskyAsIdentity — uploadBlob AT Proto error → reasonCode mapping", () => {
+  function arrangeUploadFailure(status: number, body: unknown): void {
+    enqueue("https://example.com/image.jpg", imageResponse());
+    enqueue(
+      "https://bsky.social/xrpc/com.atproto.repo.uploadBlob",
+      jsonResponse(status, body),
+    );
+  }
+
+  async function publishOnce() {
+    return publishToBlueskyAsIdentity({
+      request: baseRequest({ creative: withCreative() }),
+      accessJwt: "test-jwt",
+      did: "did:plc:test",
+      handle: "handle.bsky.social",
+      service: "https://bsky.social",
+    });
+  }
+
+  it("HTTP 400 + ExpiredToken body → session_expired (deadlock fix)", async () => {
+    arrangeUploadFailure(400, {
+      error: "ExpiredToken",
+      message: "Token has expired",
+    });
+    const outcome = await publishOnce();
+    expect(outcome.status).toBe("failed");
+    expect(outcome.reasonCode).toBe("session_expired");
+    expect(outcome.metadata.endpoint).toBe("uploadBlob");
+    expect(outcome.metadata.http_status).toBe(400);
+    expect(outcome.metadata.atproto_error).toBe("ExpiredToken");
+    expect(outcome.metadata.creative_id).toBe("c-1");
+  });
+
+  it("HTTP 400 + InvalidToken body → session_expired", async () => {
+    arrangeUploadFailure(400, {
+      error: "InvalidToken",
+      message: "Token is invalid",
+    });
+    const outcome = await publishOnce();
+    expect(outcome.reasonCode).toBe("session_expired");
+    expect(outcome.metadata.atproto_error).toBe("InvalidToken");
+  });
+
+  it("HTTP 400 + AccountTakedown body → platform_unauthorized", async () => {
+    arrangeUploadFailure(400, {
+      error: "AccountTakedown",
+      message: "Account has been taken down",
+    });
+    const outcome = await publishOnce();
+    expect(outcome.reasonCode).toBe("platform_unauthorized");
+    expect(outcome.metadata.atproto_error).toBe("AccountTakedown");
+  });
+
+  it("HTTP 400 + AuthFactorTokenRequired body → platform_unauthorized", async () => {
+    arrangeUploadFailure(400, {
+      error: "AuthFactorTokenRequired",
+      message: "Second factor required",
+    });
+    const outcome = await publishOnce();
+    expect(outcome.reasonCode).toBe("platform_unauthorized");
+    expect(outcome.metadata.atproto_error).toBe("AuthFactorTokenRequired");
+  });
+
+  it("HTTP 400 + generic InvalidRequest body → media_upload_failed (safe fallback preserved)", async () => {
+    arrangeUploadFailure(400, {
+      error: "InvalidRequest",
+      message: "Blob size exceeds maximum",
+    });
+    const outcome = await publishOnce();
+    // Non-auth body errors keep the operator-facing media-specific
+    // classification — the orchestrator refresh path stays inert for
+    // genuine media failures.
+    expect(outcome.reasonCode).toBe("media_upload_failed");
+    expect(outcome.reasonDetail).toMatch(/Blob size exceeds maximum/);
   });
 });
