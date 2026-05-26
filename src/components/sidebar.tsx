@@ -47,6 +47,7 @@ const groups: NavGroup[] = [
       { href: "/accounts", label: "Accounts", icon: AccountsIcon },
       { href: "/products", label: "Products", icon: ProductsIcon },
       { href: "/settings", label: "Settings", icon: SettingsIcon, exact: true },
+      { href: "/settings/setup", label: "Setup guide", icon: SettingsIcon },
     ],
   },
   {

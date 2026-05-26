@@ -122,6 +122,21 @@ export function isDevtoLegacyFallbackEnabled(): boolean {
 }
 
 /**
+ * Phase F8 — same opt-in pattern as dev.to for Hashnode. When this
+ * flag is enabled AND a scheduled Hashnode publish has no per-
+ * identity encrypted API key, the publisher falls back to the
+ * workspace-level `HASHNODE_API_KEY` + `HASHNODE_PUBLICATION_ID`
+ * env vars. Default off — production should leave this unset so
+ * identities without a connected key fail fast with
+ * `hashnode_token_missing`.
+ */
+export function isHashnodeLegacyFallbackEnabled(): boolean {
+  const raw = safe(process.env.HASHNODE_LEGACY_FALLBACK);
+  if (!raw) return false;
+  return raw === "true" || raw === "1";
+}
+
+/**
  * Service URL for AT Protocol calls. Same default as
  * readBlueskyCredentials. Exposed so the identity-scoped publisher
  * can read it without requiring the workspace credentials to be set.

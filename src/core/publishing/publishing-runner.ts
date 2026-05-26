@@ -21,13 +21,10 @@ import { publishToReddit } from "./publish-reddit";
 import { publishToX } from "./publish-x";
 import { publishToLinkedIn } from "./publish-linkedin";
 import { publishDevtoForIdentity } from "./devto-publish-orchestrator";
-import { publishToHashnode } from "./publish-hashnode";
+import { publishHashnodeForIdentity } from "./hashnode-publish-orchestrator";
 import { publishBlueskyForIdentity } from "./bluesky-publish-orchestrator";
 import { publishToTelegram } from "./publish-telegram";
-import {
-  readHashnodeCredentials,
-  readTelegramCredentials,
-} from "./platform-credentials";
+import { readTelegramCredentials } from "./platform-credentials";
 import { publishFail } from "./publishing-result";
 import type { PublishOutcome, PublishRequest } from "./publishing-types";
 
@@ -81,17 +78,18 @@ export async function runPublish(input: RunnerInput): Promise<PublishOutcome> {
       });
     }
     case "hashnode": {
-      const creds = readHashnodeCredentials();
-      if (!creds) {
-        return publishFail(
-          "missing_api_key",
-          "HASHNODE_API_KEY / HASHNODE_PUBLICATION_ID are not configured.",
-        );
-      }
-      return publishToHashnode({
+      // Phase F8 — identity-scoped Hashnode publishing. The
+      // orchestrator loads THIS identity's encrypted API key,
+      // decrypts it for the single network call, and routes
+      // failures through Hashnode-prefixed reason codes. Workspace-
+      // level HASHNODE_API_KEY + HASHNODE_PUBLICATION_ID env vars
+      // are reachable ONLY as an opt-in legacy fallback
+      // (HASHNODE_LEGACY_FALLBACK=true) — default behaviour fails
+      // safe with `hashnode_token_missing` /
+      // `hashnode_publication_missing`.
+      return publishHashnodeForIdentity({
         request: input.request,
-        apiKey: creds.apiKey,
-        publicationId: creds.publicationId,
+        db: input.db,
       });
     }
     case "bluesky": {
