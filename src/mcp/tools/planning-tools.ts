@@ -33,6 +33,11 @@ import type {
 } from "../schemas";
 import { failed, ok, type McpToolResponse } from "../responses";
 import type { ToolContext } from "../tool-context";
+import {
+  buildShapeForUpdate,
+  serializeMcpResponse,
+} from "../platform-intent";
+import type { PublishPlatform } from "@/core/publishing/publishing-types";
 
 const ACCOUNT_SELECT_COLUMNS =
   "id, platform, handle, display_name, voice_profile, product_id, status, connection_status, source, review_status, created_at";
@@ -711,7 +716,9 @@ export async function weeklyPlanUpdateItemTool(
   //    metadata so we can preserve platform_native_draft on update.
   const { data: existing } = await ctx.db
     .from("weekly_plan_items")
-    .select("id, workspace_id, status, platform, title, body, metadata")
+    .select(
+      "id, workspace_id, status, platform, title, body, metadata, platform_publish_intent",
+    )
     .eq("workspace_id", ctx.workspaceId)
     .eq("id", args.plan_item_id)
     .maybeSingle();
@@ -821,6 +828,46 @@ export async function weeklyPlanUpdateItemTool(
   }
   columnPatch.metadata = newMetadata;
 
+  // 4b. Phase F6.1 — merge platform-native intent.
+  //
+  // Any payload-relevant change (body/title here; in future PRs:
+  // platform/account/creative) clears the operator-approved shape
+  // hash so a stale approval can never bind to drifted text. We
+  // pass externalPayloadChanged=true when title/body changed; the
+  // merge helper clears the hash unconditionally on any intent-
+  // field change.
+  const existingIntent =
+    (existing as { platform_publish_intent: Record<string, unknown> | null })
+      .platform_publish_intent ?? null;
+  const externalPayloadChanged =
+    args.title !== undefined || args.body !== undefined;
+  const intentResult = buildShapeForUpdate({
+    platform:
+      ((existing as { platform: string | null }).platform as
+        | PublishPlatform
+        | null) ?? null,
+    existingRaw: existingIntent,
+    input: args.platform_intent ?? {},
+    externalPayloadChanged,
+  });
+  if (intentResult.blockers.length > 0) {
+    return failed({
+      tool: TOOL,
+      summary: `platform_intent_invalid:${intentResult.blockers
+        .map((b) => b.code)
+        .join(",")}`,
+      warnings: intentResult.blockers.map(
+        (b) => `${b.code}: ${b.message}`,
+      ),
+    });
+  }
+  // Only write the column when the helper produced a serialized
+  // envelope. mode="legacy" leaves the column untouched.
+  if (intentResult.serialized !== null) {
+    columnPatch.platform_publish_intent = intentResult.serialized;
+    updatedFields.push("platform_publish_intent");
+  }
+
   // 5. Apply the update. Workspace scoping enforced again at the
   //    write boundary (defense in depth — the SELECT already
   //    verified workspace).
@@ -829,7 +876,7 @@ export async function weeklyPlanUpdateItemTool(
     .update(columnPatch as never)
     .eq("workspace_id", ctx.workspaceId)
     .eq("id", args.plan_item_id)
-    .select("id, status, title, body")
+    .select("id, status, title, body, platform_publish_intent")
     .single();
   if (error || !updated) {
     return failed({
@@ -872,7 +919,9 @@ export async function weeklyPlanUpdateItemTool(
       body_length: finalBody.length,
       platform_native_draft_updated: envelopeChanged,
       review_url: `/weekly-plan?focus=${encodeURIComponent(args.plan_item_id)}`,
+      ...serializeMcpResponse(intentResult),
     },
+    warnings: [...intentResult.warnings],
     requiresUserApproval: true,
   });
 }
