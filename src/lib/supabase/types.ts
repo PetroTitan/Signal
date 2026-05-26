@@ -289,6 +289,13 @@ export interface WeeklyPlanItemRow {
   risk_score: number | null;
   scheduled_at: string | null;
   metadata: Record<string, unknown>;
+  /**
+   * Phase F6.0 — platform-native publishing intent (JSONB).
+   * Null on legacy rows; treated as "legacy payload mode" by the
+   * platform-native adapter layer. Validated in TypeScript only;
+   * DB has no CHECK constraint.
+   */
+  platform_publish_intent: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
 }
@@ -310,6 +317,7 @@ export interface WeeklyPlanItemInsert {
   risk_score?: number | null;
   scheduled_at?: string | null;
   metadata?: Record<string, unknown>;
+  platform_publish_intent?: Record<string, unknown> | null;
 }
 
 export interface WeeklyPlanItemUpdate {
@@ -326,6 +334,7 @@ export interface WeeklyPlanItemUpdate {
   risk_score?: number | null;
   scheduled_at?: string | null;
   metadata?: Record<string, unknown>;
+  platform_publish_intent?: Record<string, unknown> | null;
 }
 
 // Phase F2.5 — publish history (rate limit + dup check + audit).

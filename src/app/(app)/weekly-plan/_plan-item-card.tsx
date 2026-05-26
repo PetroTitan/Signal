@@ -81,6 +81,12 @@ export interface PlanItemCardProps {
   creative: CreativeCardData | null;
   executionItemId: string | null;
   executionItemStatus: string | null;
+  /**
+   * Phase F6.0 — raw JSONB envelope from
+   * weekly_plan_items.platform_publish_intent. Passed straight through
+   * to the compose modal; null for legacy rows.
+   */
+  platformPublishIntent: Record<string, unknown> | null;
   /** F4.6.1 — null when the draft is purely manual. */
   aiAssistedKind: "ai_draft" | "ai_assisted" | null;
   /** Canonical schedule display computed server-side from the
@@ -396,6 +402,7 @@ export function PlanItemCard(props: PlanItemCardProps) {
           body: props.body,
           platform: props.platform,
           contentType: props.contentType,
+          platformPublishIntent: props.platformPublishIntent,
           subreddit: props.subreddit,
           accountId: props.accountId,
           productId: props.productId,

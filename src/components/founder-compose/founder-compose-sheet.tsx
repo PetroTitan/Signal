@@ -17,6 +17,8 @@ import {
   toCreativeStatusToken,
   type CreativeStatusToken,
 } from "@/app/(app)/weekly-plan/_creative-approval-controls";
+import { PlatformShapeSummary } from "@/components/platform-native/platform-shape-summary";
+import type { PublishPlatform } from "@/core/publishing/publishing-types";
 import {
   SCHEDULE_PRESETS,
   toDatetimeLocalString,
@@ -108,6 +110,13 @@ export interface FounderComposeSheetExistingItem {
   body: string | null;
   platform: string | null;
   contentType: string | null;
+  /**
+   * Phase F6.0 — raw platform-native intent envelope from
+   * weekly_plan_items.platform_publish_intent. Null on legacy rows.
+   * The compose modal renders this via PlatformShapeSummary; the
+   * field is opaque here (validation lives in the adapter layer).
+   */
+  platformPublishIntent: Record<string, unknown> | null;
   subreddit: string | null;
   accountId: string | null;
   productId: string | null;
@@ -1306,8 +1315,48 @@ function CreativeRow({
           }
         />
       ) : null}
+
+      {/* Phase F6.0 — platform-native shape summary. Read-only block
+          surfacing what the platform-native adapter will produce for
+          this item. Renders for every platform; stub adapters show a
+          "Stub adapter" warning; legacy rows show "Legacy payload
+          mode". Live edits to body / platform / creative re-compute. */}
+      {isKnownPublishPlatform(draft.platform) ? (
+        <PlatformShapeSummary
+          platform={draft.platform as PublishPlatform}
+          title={draft.title || null}
+          body={draft.body}
+          creative={
+            draft.creativeAssetUrl
+              ? {
+                  assetUrl: draft.creativeAssetUrl,
+                  sourceUrl: null,
+                  altText: draft.creativeAltText || null,
+                  creativeType: "image",
+                }
+              : null
+          }
+          rawIntent={existingItem?.platformPublishIntent ?? null}
+        />
+      ) : null}
     </div>
   );
+}
+
+const KNOWN_PUBLISH_PLATFORMS: ReadonlySet<string> = new Set([
+  "reddit",
+  "x",
+  "linkedin",
+  "devto",
+  "hashnode",
+  "bluesky",
+  "youtube",
+  "threads",
+  "instagram",
+  "telegram",
+]);
+function isKnownPublishPlatform(p: string): boolean {
+  return KNOWN_PUBLISH_PLATFORMS.has(p);
 }
 
 /**
