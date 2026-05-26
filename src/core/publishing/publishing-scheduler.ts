@@ -120,6 +120,59 @@ export function nextExecutionStatusForOutcome(
  * Adding "telegram" here is the entire fix — no publisher, runner,
  * or orchestrator changes needed.
  */
+/**
+ * Resolve the `target` field of a PublishRequest from the available
+ * scheduler-side sources.
+ *
+ * Precedence:
+ *   1. `metadata.target` if non-empty — explicit per-item override
+ *      (legacy Reddit subreddit, or any caller that pinned the
+ *      target on the execution_item).
+ *   2. For Telegram, fall back to `provider_account_id` from the
+ *      connection row — the verify route stores the numeric chat_id
+ *      there.
+ *   3. Otherwise null. The runner's per-platform branch decides
+ *      whether null is acceptable.
+ *
+ * Returns the resolved value plus a diagnostic `source` so the
+ * scheduler can tag publish_history / execution_logs metadata.
+ *
+ * Pure. Exported for unit tests.
+ */
+export type TargetSource =
+  | "metadata"
+  | "platform_connection.provider_account_id"
+  | null;
+
+export interface ResolvedTarget {
+  target: string | null;
+  source: TargetSource;
+}
+
+export function resolveSchedulerTarget(input: {
+  platform: PublishPlatform;
+  metadataTarget: string | null | undefined;
+  providerAccountId: string | null | undefined;
+}): ResolvedTarget {
+  const md =
+    typeof input.metadataTarget === "string" &&
+    input.metadataTarget.trim().length > 0
+      ? input.metadataTarget
+      : null;
+  if (md) return { target: md, source: "metadata" };
+  if (
+    input.platform === "telegram" &&
+    typeof input.providerAccountId === "string" &&
+    input.providerAccountId.trim().length > 0
+  ) {
+    return {
+      target: input.providerAccountId,
+      source: "platform_connection.provider_account_id",
+    };
+  }
+  return { target: null, source: null };
+}
+
 export const SCHEDULER_AUTONOMOUS_PLATFORMS: ReadonlySet<PublishPlatform> =
   new Set([
     "reddit",
@@ -404,13 +457,20 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
       ((prod as { review_status?: string } | null)?.review_status) ?? null;
   }
 
-  // Platform connection + stored encrypted token.
+  // Platform connection + stored encrypted token + provider account id.
+  //
+  // `provider_account_id` is read so we can thread it into
+  // `request.target` for workspace-credential platforms whose
+  // publisher needs an identity-scoped target id (Telegram: chat_id,
+  // persisted at verify time). The select stays narrow — no token
+  // fields beyond what we already read.
   let connectionStatus: string | null = null;
   let accessTokenEncrypted: string | null = null;
+  let providerAccountId: string | null = null;
   if (item.account_id) {
     const { data: conn } = await supabase
       .from("platform_connections")
-      .select("connection_status, access_token_encrypted")
+      .select("connection_status, access_token_encrypted, provider_account_id")
       .eq("workspace_id", item.workspace_id)
       .eq("account_id", item.account_id)
       .eq("platform", platform)
@@ -421,6 +481,9 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
       accessTokenEncrypted =
         (conn as { access_token_encrypted?: string | null })
           .access_token_encrypted ?? null;
+      providerAccountId =
+        (conn as { provider_account_id?: string | null })
+          .provider_account_id ?? null;
     }
   }
 
@@ -437,10 +500,24 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
     accessToken = decryptForOutboundUse(accessTokenEncrypted);
   }
 
-  const target =
+  // Target resolution for the PublishRequest. The pure helper
+  // `resolveSchedulerTarget` encapsulates the precedence rules — see
+  // its docstring + tests in publishing-scheduler.test.ts. The chat
+  // id is operator-visible (Telegram shows it in admin UI) and is
+  // not treated as a secret; safe to surface in publish_history /
+  // execution_logs metadata via the `target_source` field tagged on
+  // the outcome below.
+  const metadataTarget =
     typeof (item.metadata as { target?: string })?.target === "string"
       ? ((item.metadata as { target: string }).target)
       : null;
+  const resolvedTarget = resolveSchedulerTarget({
+    platform,
+    metadataTarget,
+    providerAccountId,
+  });
+  const target = resolvedTarget.target;
+  const targetSource = resolvedTarget.source;
 
   // Approved creative pickup. Only the Bluesky publisher reads media
   // today; loading is platform-gated so we don't pay the read for
@@ -523,13 +600,27 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
     db: supabase as never,
   });
 
+  // Tag Telegram outcomes with the scheduler-side target source so
+  // execution_logs / publish_history record which path resolved the
+  // chat_id (operator-visible `metadata.target` override, or
+  // `provider_account_id` from the verified connection). Useful for
+  // diagnosing missing_identifier regressions. Not emitted for other
+  // platforms — they have their own target conventions.
+  const taggedOutcome =
+    platform === "telegram"
+      ? {
+          ...outcome,
+          metadata: { ...outcome.metadata, target_source: targetSource },
+        }
+      : outcome;
+
   await applyOutcome({
     supabase,
     item,
-    outcome,
+    outcome: taggedOutcome,
   });
 
-  return outcome;
+  return taggedOutcome;
 }
 
 interface ApplyOutcomeInput {
@@ -688,6 +779,21 @@ async function applyOutcome(input: ApplyOutcomeInput): Promise<void> {
         "string"
           ? ((item.metadata as { contract_mode: string }).contract_mode)
           : null;
+      // Telegram-only diagnostic: which path resolved request.target.
+      // The taggedOutcome metadata wrote this above only for Telegram;
+      // for other platforms the field is undefined and the repository
+      // helper omits it from the metadata bag.
+      const targetSourceMeta = meta.target_source;
+      const targetSource:
+        | "metadata"
+        | "platform_connection.provider_account_id"
+        | null
+        | undefined =
+        targetSourceMeta === "metadata" ||
+        targetSourceMeta === "platform_connection.provider_account_id" ||
+        targetSourceMeta === null
+          ? targetSourceMeta
+          : undefined;
       // Provider boundary: we reached the platform iff a structured
       // endpoint (and therefore an HTTP status) made it back. Pre-
       // provider blocks (creative_missing_*, missing_body, etc.)
@@ -722,6 +828,7 @@ async function applyOutcome(input: ApplyOutcomeInput): Promise<void> {
         atprotoError,
         atprotoMessage,
         contractMode,
+        targetSource,
         db: supabase as never,
       });
     } catch (err) {

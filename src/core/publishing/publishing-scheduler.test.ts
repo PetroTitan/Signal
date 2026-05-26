@@ -3,8 +3,9 @@ import {
   SCHEDULER_AUTONOMOUS_PLATFORMS,
   nextExecutionStatusForOutcome,
   resolvePublishMode,
+  resolveSchedulerTarget,
 } from "./publishing-scheduler";
-import type { PublishOutcome } from "./publishing-types";
+import type { PublishOutcome, PublishPlatform } from "./publishing-types";
 
 function outcome(
   overrides: Partial<PublishOutcome> = {},
@@ -314,5 +315,200 @@ describe("resolvePublishMode — only exact 'dry_run' yields dry_run", () => {
     "dry_run ",
   ])("execution_mode = %j → live (anything other than exact 'dry_run')", (value) => {
     expect(resolvePublishMode({ execution_mode: value })).toBe("live");
+  });
+});
+
+// =====================================================================
+// resolveSchedulerTarget — chat_id / target resolution for the
+// PublishRequest. Pre-fix the scheduler only read `metadata.target`,
+// which left Telegram items with `request.target=null` and the runner
+// refused with `missing_identifier`. The verify route persists the
+// numeric chat_id on `platform_connections.provider_account_id`;
+// the scheduler now falls back to it for Telegram.
+// =====================================================================
+
+describe("resolveSchedulerTarget — metadata precedence", () => {
+  it("returns metadata.target when set (Telegram + connection both available)", () => {
+    const r = resolveSchedulerTarget({
+      platform: "telegram",
+      metadataTarget: "@override-channel",
+      providerAccountId: "-1003810234438",
+    });
+    expect(r).toEqual({ target: "@override-channel", source: "metadata" });
+  });
+
+  it("returns metadata.target for Reddit (subreddit override) regardless of provider_account_id", () => {
+    const r = resolveSchedulerTarget({
+      platform: "reddit",
+      metadataTarget: "testingground4bots",
+      providerAccountId: "t2_redditfake",
+    });
+    expect(r).toEqual({
+      target: "testingground4bots",
+      source: "metadata",
+    });
+  });
+
+  it("empty / whitespace-only metadata.target is ignored", () => {
+    expect(
+      resolveSchedulerTarget({
+        platform: "telegram",
+        metadataTarget: "",
+        providerAccountId: "-1003810234438",
+      }),
+    ).toEqual({
+      target: "-1003810234438",
+      source: "platform_connection.provider_account_id",
+    });
+    expect(
+      resolveSchedulerTarget({
+        platform: "telegram",
+        metadataTarget: "   ",
+        providerAccountId: "-1003810234438",
+      }),
+    ).toEqual({
+      target: "-1003810234438",
+      source: "platform_connection.provider_account_id",
+    });
+  });
+});
+
+describe("resolveSchedulerTarget — Telegram fallback to provider_account_id", () => {
+  it("regression: Telegram with provider_account_id + no metadata.target → uses the chat id", () => {
+    // Reproduces the production state of the @webmasterid identity:
+    // verify route persisted the numeric chat id on
+    // provider_account_id, but the schedule-creating actions never
+    // wrote metadata.target. Pre-fix this resolved to null and the
+    // runner refused with missing_identifier.
+    const r = resolveSchedulerTarget({
+      platform: "telegram",
+      metadataTarget: null,
+      providerAccountId: "-1003810234438",
+    });
+    expect(r).toEqual({
+      target: "-1003810234438",
+      source: "platform_connection.provider_account_id",
+    });
+  });
+
+  it("Telegram with metadata.target=undefined and provider_account_id set → fallback fires", () => {
+    const r = resolveSchedulerTarget({
+      platform: "telegram",
+      metadataTarget: undefined,
+      providerAccountId: "@webmasterid",
+    });
+    expect(r.target).toBe("@webmasterid");
+    expect(r.source).toBe("platform_connection.provider_account_id");
+  });
+
+  it("Telegram with no metadata.target and no provider_account_id → null (runner refuses with missing_identifier downstream)", () => {
+    const r = resolveSchedulerTarget({
+      platform: "telegram",
+      metadataTarget: null,
+      providerAccountId: null,
+    });
+    expect(r).toEqual({ target: null, source: null });
+  });
+
+  it("Telegram with empty-string provider_account_id is treated as null (defensive)", () => {
+    expect(
+      resolveSchedulerTarget({
+        platform: "telegram",
+        metadataTarget: null,
+        providerAccountId: "",
+      }),
+    ).toEqual({ target: null, source: null });
+    expect(
+      resolveSchedulerTarget({
+        platform: "telegram",
+        metadataTarget: null,
+        providerAccountId: "   ",
+      }),
+    ).toEqual({ target: null, source: null });
+  });
+});
+
+describe("resolveSchedulerTarget — non-Telegram platforms do NOT inherit provider_account_id", () => {
+  it.each<PublishPlatform>([
+    "bluesky",
+    "devto",
+    "hashnode",
+    "reddit",
+    "x",
+    "linkedin",
+    "instagram",
+    "threads",
+    "youtube",
+  ])(
+    "%s with provider_account_id but no metadata.target → null (no inheritance)",
+    (platform) => {
+      const r = resolveSchedulerTarget({
+        platform,
+        metadataTarget: null,
+        providerAccountId: "some-provider-id",
+      });
+      expect(r).toEqual({ target: null, source: null });
+    },
+  );
+
+  it("Bluesky / dev.to / Hashnode unchanged: with metadata.target null and provider_account_id present, scheduler still passes null target", () => {
+    // These platforms have their own orchestrator-level identity
+    // lookups; the scheduler-level target stays null for them.
+    for (const platform of ["bluesky", "devto", "hashnode"] as const) {
+      const r = resolveSchedulerTarget({
+        platform,
+        metadataTarget: null,
+        providerAccountId: "did:plc:fake",
+      });
+      expect(r.target).toBeNull();
+      expect(r.source).toBeNull();
+    }
+  });
+});
+
+describe("resolveSchedulerTarget — diagnostic source value", () => {
+  it("source is exactly one of three values: 'metadata' | 'platform_connection.provider_account_id' | null", () => {
+    const cases: Array<{
+      platform: PublishPlatform;
+      metadataTarget: string | null;
+      providerAccountId: string | null;
+      expectedSource:
+        | "metadata"
+        | "platform_connection.provider_account_id"
+        | null;
+    }> = [
+      {
+        platform: "telegram",
+        metadataTarget: "@x",
+        providerAccountId: "y",
+        expectedSource: "metadata",
+      },
+      {
+        platform: "telegram",
+        metadataTarget: null,
+        providerAccountId: "y",
+        expectedSource: "platform_connection.provider_account_id",
+      },
+      {
+        platform: "telegram",
+        metadataTarget: null,
+        providerAccountId: null,
+        expectedSource: null,
+      },
+      {
+        platform: "bluesky",
+        metadataTarget: null,
+        providerAccountId: "did:plc:fake",
+        expectedSource: null,
+      },
+    ];
+    for (const c of cases) {
+      const r = resolveSchedulerTarget({
+        platform: c.platform,
+        metadataTarget: c.metadataTarget,
+        providerAccountId: c.providerAccountId,
+      });
+      expect(r.source).toBe(c.expectedSource);
+    }
   });
 });
