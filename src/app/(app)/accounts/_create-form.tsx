@@ -148,6 +148,49 @@ export function AccountCreateForm({ products }: AccountCreateFormProps) {
           </p>
         </label>
 
+        {/* Phase F7.0 — identity-level factual grounding. */}
+        <label className="block">
+          <div className="flex items-baseline justify-between mb-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
+              Source website
+            </span>
+            <span className="text-[10px] text-ink-400">
+              recommended for active publishing
+            </span>
+          </div>
+          <input
+            type="url"
+            name="source_website_url"
+            placeholder="https://www.example.com"
+            className="input w-full text-sm font-mono"
+          />
+          <p className="mt-1 text-[10px] text-ink-400 leading-relaxed">
+            The canonical site this identity publishes about. Generation
+            grounds topics + positioning here so drafts stay on-brand and
+            avoid drifting into internal infrastructure / debugging topics.
+          </p>
+        </label>
+
+        <label className="block">
+          <div className="flex items-baseline justify-between mb-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
+              Reference sources (optional)
+            </span>
+            <span className="text-[10px] text-ink-400">one URL per line</span>
+          </div>
+          <textarea
+            name="reference_urls"
+            rows={3}
+            placeholder={"https://docs.example.com\nhttps://blog.example.com"}
+            className="input w-full text-sm font-mono leading-relaxed"
+          />
+          <p className="mt-1 text-[10px] text-ink-400 leading-relaxed">
+            Additional canonical surfaces (sub-sites, docs, related
+            properties). Each must be https://… ; preview / staging
+            domains are rejected.
+          </p>
+        </label>
+
         {safe.ok ? (
           <div
             role="status"

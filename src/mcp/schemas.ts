@@ -100,6 +100,12 @@ export interface AccountsPrepareArgs {
   // to skip the review gate; the handler still requires an
   // authenticated operator token + the tool's existing approval mode.
   review_status?: AccountsPrepareReviewHint;
+  // Phase F7.0 — identity-level factual grounding. Both validated
+  // by the MCP handler via validateIdentitySourceUrl /
+  // validateIdentityReferenceUrls before write; invalid URLs are
+  // rejected with a structured error.
+  source_website_url?: string | null;
+  reference_urls?: ReadonlyArray<string> | null;
 }
 export function parseAccountsPrepare(input: unknown): Parse<AccountsPrepareArgs> {
   if (!isObject(input)) return { ok: false, errors: ["expected_object"] };
@@ -134,6 +140,16 @@ export function parseAccountsPrepare(input: unknown): Parse<AccountsPrepareArgs>
       errors.push("review_status_unsupported");
     }
   }
+  if (input.source_website_url !== undefined && input.source_website_url !== null) {
+    if (!str(input.source_website_url)) {
+      errors.push("source_website_url_must_be_string_or_null");
+    }
+  }
+  if (input.reference_urls !== undefined && input.reference_urls !== null) {
+    if (!Array.isArray(input.reference_urls) || !input.reference_urls.every(str)) {
+      errors.push("reference_urls_must_be_string_array");
+    }
+  }
   if (errors.length > 0) return { ok: false, errors };
   // The parser preserves `undefined` for absent optional fields and
   // converts explicit-null/explicit-empty inputs to `null`. The
@@ -164,6 +180,18 @@ export function parseAccountsPrepare(input: unknown): Parse<AccountsPrepareArgs>
   }
   if (input.review_status !== undefined) {
     value.review_status = input.review_status as AccountsPrepareReviewHint;
+  }
+  if (input.source_website_url !== undefined) {
+    value.source_website_url =
+      input.source_website_url === null
+        ? null
+        : String(input.source_website_url).trim();
+  }
+  if (input.reference_urls !== undefined) {
+    value.reference_urls =
+      input.reference_urls === null
+        ? null
+        : (input.reference_urls as string[]).map((s) => String(s).trim());
   }
   return { ok: true, value };
 }
@@ -1169,6 +1197,10 @@ export interface IdentitiesUpdateArgs {
   product_id?: string | null;
   voice_profile?: string | null;
   source_note?: string | null;
+  // Phase F7.0 — identity-level factual grounding. Same validation
+  // path as accountsPrepare; explicit null clears the field.
+  source_website_url?: string | null;
+  reference_urls?: ReadonlyArray<string> | null;
 }
 
 export function parseIdentitiesUpdate(
@@ -1187,6 +1219,8 @@ export function parseIdentitiesUpdate(
     "product_id",
     "voice_profile",
     "source_note",
+    "source_website_url",
+    "reference_urls",
   ];
   const presentKeys = updatableKeys.filter((k) => input[k] !== undefined);
   if (presentKeys.length === 0) {
@@ -1216,6 +1250,21 @@ export function parseIdentitiesUpdate(
     !str(input.source_note)
   )
     errors.push("source_note_must_be_string");
+  if (
+    input.source_website_url !== undefined &&
+    input.source_website_url !== null &&
+    !str(input.source_website_url)
+  ) {
+    errors.push("source_website_url_must_be_string_or_null");
+  }
+  if (
+    input.reference_urls !== undefined &&
+    input.reference_urls !== null
+  ) {
+    if (!Array.isArray(input.reference_urls) || !input.reference_urls.every(str)) {
+      errors.push("reference_urls_must_be_string_array");
+    }
+  }
 
   if (errors.length > 0) return { ok: false, errors };
 
@@ -1240,5 +1289,17 @@ export function parseIdentitiesUpdate(
   if (input.source_note !== undefined)
     value.source_note =
       input.source_note === null ? null : (input.source_note as string).trim();
+  if (input.source_website_url !== undefined) {
+    value.source_website_url =
+      input.source_website_url === null
+        ? null
+        : (input.source_website_url as string).trim();
+  }
+  if (input.reference_urls !== undefined) {
+    value.reference_urls =
+      input.reference_urls === null
+        ? null
+        : (input.reference_urls as string[]).map((s) => String(s).trim());
+  }
   return { ok: true, value };
 }

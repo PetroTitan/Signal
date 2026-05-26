@@ -14,6 +14,10 @@ import {
   serializeMcpResponse,
 } from "../platform-intent";
 import type { PublishPlatform } from "@/core/publishing/publishing-types";
+import {
+  validateIdentityReferenceUrls,
+  validateIdentitySourceUrl,
+} from "@/core/identity-sources/url-validation";
 
 /**
  * Phase F0 — prepare/write-pending tools.
@@ -69,7 +73,7 @@ export async function productsPrepare(
 }
 
 const ACCOUNT_SELECT_COLUMNS =
-  "id, platform, handle, display_name, voice_profile, product_id, status, connection_status, source, review_status, created_at";
+  "id, platform, handle, display_name, voice_profile, product_id, status, connection_status, source, review_status, source_website_url, reference_urls, created_at";
 
 export async function accountsPrepare(
   ctx: ToolContext,
@@ -88,6 +92,44 @@ export async function accountsPrepare(
         tool: "signal.accounts.prepare",
         summary: "product_id does not belong to this workspace",
       });
+    }
+  }
+
+  // Phase F7.0 — validate optional source URLs upfront. Failure
+  // here is a 4xx-shaped validation refusal: no DB write, structured
+  // error code surfaced to the caller.
+  let normalizedSourceWebsiteUrl: string | null | undefined;
+  if (args.source_website_url !== undefined) {
+    if (args.source_website_url === null) {
+      normalizedSourceWebsiteUrl = null;
+    } else {
+      const r = validateIdentitySourceUrl(args.source_website_url);
+      if (!r.ok) {
+        return failed({
+          tool: "signal.accounts.prepare",
+          summary: `source_website_url_invalid:${r.error}`,
+          warnings: r.message ? [r.message] : [],
+        });
+      }
+      normalizedSourceWebsiteUrl = r.normalized;
+    }
+  }
+  let normalizedReferenceUrls: string[] | null | undefined;
+  if (args.reference_urls !== undefined) {
+    if (args.reference_urls === null) {
+      normalizedReferenceUrls = null;
+    } else {
+      const r = validateIdentityReferenceUrls(args.reference_urls);
+      if (!r.ok) {
+        return failed({
+          tool: "signal.accounts.prepare",
+          summary: `reference_urls_invalid:${r.errors
+            .map((e) => `${e.index}:${e.error}`)
+            .join(",")}`,
+          warnings: r.errors.map((e) => `[${e.index}] ${e.message}`),
+        });
+      }
+      normalizedReferenceUrls = r.normalized;
     }
   }
 
@@ -119,6 +161,12 @@ export async function accountsPrepare(
     if (args.voice_profile !== undefined) patch.voice_profile = args.voice_profile;
     if (args.product_id !== undefined) patch.product_id = args.product_id;
     if (args.review_status !== undefined) patch.review_status = args.review_status;
+    if (normalizedSourceWebsiteUrl !== undefined) {
+      patch.source_website_url = normalizedSourceWebsiteUrl;
+    }
+    if (normalizedReferenceUrls !== undefined) {
+      patch.reference_urls = normalizedReferenceUrls ?? [];
+    }
     const { data: updated, error: updateError } = await ctx.db
       .from("growth_accounts")
       .update(patch as never)
@@ -176,6 +224,8 @@ export async function accountsPrepare(
         connection_status: "not_connected",
         source: "mcp_operation",
         review_status: reviewStatus,
+        source_website_url: normalizedSourceWebsiteUrl ?? null,
+        reference_urls: normalizedReferenceUrls ?? [],
       } as never,
     )
     .select(ACCOUNT_SELECT_COLUMNS)

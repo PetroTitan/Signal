@@ -26,6 +26,8 @@ function fakeContext(
     displayName: "WebmasterID",
     handle: "webmasterid",
     voiceProfile: "Calm technical founder.",
+    sourceWebsiteUrl: null,
+    referenceUrls: [],
     ageDays: 120,
     lifecycleStatus: "active",
     associatedProduct: null,
