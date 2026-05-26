@@ -7,7 +7,11 @@ import {
   type CreateTokenResult,
 } from "./_actions";
 import { buildSnippets } from "@/mcp/snippets";
-import type { FounderPermissionGroup } from "@/mcp/founder-permissions";
+import {
+  FOUNDER_PERMISSION_PRESETS,
+  FULL_ACCESS_GROUP_KEY,
+  type FounderPermissionGroup,
+} from "@/mcp/founder-permissions";
 
 const initial: CreateTokenResult = { ok: false, error: "" };
 
@@ -43,6 +47,11 @@ export function CreateTokenForm({ endpoint, groups }: CreateTokenFormProps) {
   const [selectedGroups, setSelectedGroups] = useState<string[]>(() =>
     groups.filter((g) => g.defaultChecked).map((g) => g.key),
   );
+  // Advanced — trusted-agent shortcut. When on, the token is minted
+  // with every entry in ALLOWED_SCOPES. The individual checkboxes
+  // visually reflect that (all checked, all disabled). Unchecking
+  // returns the operator to manual selection.
+  const [fullAccess, setFullAccess] = useState<boolean>(false);
 
   useEffect(() => {
     if (state?.ok && formRef.current) {
@@ -52,6 +61,7 @@ export function CreateTokenForm({ endpoint, groups }: CreateTokenFormProps) {
       setSelectedGroups(
         groups.filter((g) => g.defaultChecked).map((g) => g.key),
       );
+      setFullAccess(false);
     }
   }, [state, groups]);
 
@@ -61,6 +71,11 @@ export function CreateTokenForm({ endpoint, groups }: CreateTokenFormProps) {
     setSelectedGroups((prev) =>
       prev.includes(key) ? prev.filter((g) => g !== key) : [...prev, key],
     );
+  }
+
+  function applyPreset(presetGroupKeys: readonly string[]) {
+    setFullAccess(false);
+    setSelectedGroups([...presetGroupKeys]);
   }
 
   return (
@@ -126,19 +141,39 @@ export function CreateTokenForm({ endpoint, groups }: CreateTokenFormProps) {
           <legend className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
             What the assistant can do
           </legend>
+          {FOUNDER_PERMISSION_PRESETS.length > 0 ? (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {FOUNDER_PERMISSION_PRESETS.map((preset) => (
+                <button
+                  key={preset.key}
+                  type="button"
+                  onClick={() => applyPreset(preset.groupKeys)}
+                  className="text-[11px] px-2.5 py-1 rounded-full border bg-white border-ink-200 text-ink-700 hover:bg-ink-50"
+                  title={preset.description}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <div className="mt-2 space-y-2">
             {groups.map((group) => {
-              const checked = selectedGroups.includes(group.key);
+              const checked = fullAccess || selectedGroups.includes(group.key);
               return (
                 <label
                   key={group.key}
-                  className="flex items-start gap-3 rounded-md border border-ink-200 bg-white px-3 py-2 cursor-pointer hover:bg-ink-50"
+                  className={`flex items-start gap-3 rounded-md border border-ink-200 bg-white px-3 py-2 ${
+                    fullAccess
+                      ? "opacity-60 cursor-not-allowed"
+                      : "cursor-pointer hover:bg-ink-50"
+                  }`}
                 >
                   <input
                     type="checkbox"
                     name="permission_groups"
                     value={group.key}
                     checked={checked}
+                    disabled={fullAccess}
                     onChange={() => toggleGroup(group.key)}
                     className="mt-0.5 shrink-0"
                   />
@@ -153,6 +188,42 @@ export function CreateTokenForm({ endpoint, groups }: CreateTokenFormProps) {
             })}
           </div>
         </fieldset>
+
+        <details className="rounded-md border border-ink-200 bg-ink-50/40 px-3 py-2">
+          <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wide text-ink-500">
+            Advanced
+          </summary>
+          <div className="mt-2 space-y-2">
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                name="permission_groups"
+                value={FULL_ACCESS_GROUP_KEY}
+                checked={fullAccess}
+                onChange={(e) => setFullAccess(e.target.checked)}
+                className="mt-0.5 shrink-0"
+              />
+              <div className="min-w-0">
+                <div className="text-sm text-ink-900">Full access</div>
+                <div className="text-[11px] text-ink-500 leading-relaxed mt-0.5">
+                  Grants all currently supported MCP scopes for this
+                  workspace. Use only for trusted local agents such as
+                  your own Codex/Claude environment. Workspace boundaries
+                  are still enforced; provider secrets are never
+                  exposed; operator approval is still required for
+                  publishing.
+                </div>
+              </div>
+            </label>
+            {fullAccess ? (
+              <p className="text-[11px] text-amber-700 leading-relaxed">
+                ⚠ Full access selected. Individual permissions above are
+                shown checked but are managed automatically. Uncheck Full
+                access to return to manual selection.
+              </p>
+            ) : null}
+          </div>
+        </details>
 
         <div>
           <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500 mb-1">
