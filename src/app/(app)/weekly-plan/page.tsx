@@ -22,6 +22,10 @@ import { isApprovablePublishObject } from "@/core/platform-native/approval-polic
 import { parsePlatformNativeShape } from "@/core/platform-native";
 import type { PublishPlatform } from "@/core/publishing/publishing-types";
 import {
+  computeContinueWritingMissingParts,
+  computePlanItemWarnings,
+} from "./_plan-item-warnings";
+import {
   normalizeWorkspaceTimezone,
   validateWorkspaceTimezone,
 } from "@/core/scheduling/workspace-time";
@@ -347,21 +351,27 @@ export default async function WeeklyPlanPage() {
     .filter((it) => it.status === "draft" || it.status === "skipped")
     .map((it) => {
       const creative = creativeByItem.get(it.id) ?? null;
-      const missingParts: string[] = [];
-      if (!it.title || it.title.trim().length === 0)
-        missingParts.push("title");
-      if (!it.body || it.body.trim().length === 0)
-        missingParts.push("body");
-      if (it.contentType === "post" && !it.scheduledAt)
-        missingParts.push("schedule");
-      if (
-        it.contentType === "post" &&
-        (!creative ||
-          (!creative.assetUrl && !creative.sourceUrl) ||
-          creative.status !== "approved")
-      ) {
-        missingParts.push("creative");
-      }
+      // Parse intent for the policy-aware creative gate. The shape
+      // parser is strict about platform mismatch; here we use the
+      // item's own platform as the expected platform (the policy
+      // only cares about the intent string).
+      const parsedIntent =
+        it.platform && it.platformPublishIntent
+          ? parsePlatformNativeShape(
+              it.platformPublishIntent,
+              it.platform as PublishPlatform,
+            )?.intent ?? null
+          : null;
+      const missingParts = computeContinueWritingMissingParts({
+        contentType: it.contentType,
+        title: it.title,
+        body: it.body,
+        scheduledAt: it.scheduledAt,
+        platform: it.platform,
+        intent: parsedIntent,
+        creativeAttached: creative !== null,
+        creativeReason: creativeReadinessReason(creative),
+      });
       return { it, creative, missingParts };
     })
     .filter((entry) => entry.missingParts.length > 0)
@@ -510,20 +520,21 @@ export default async function WeeklyPlanPage() {
                         intent: parsedIntent,
                       });
                       const creative = creativeByItem.get(it.id) ?? null;
-                      const creativeReason = isPost
-                        ? creativeReadinessReason(creative)
-                        : null;
-                      const warnings: string[] = [];
-                      if (isPost && !it.scheduledAt) {
-                        warnings.push(
-                          "Missing schedule — set a date/time before approving.",
-                        );
-                      }
-                      if (isPost && creativeReason) {
-                        warnings.push(
-                          `Creative not ready: ${creativeReason.replace(/_/g, " ")}.`,
-                        );
-                      }
+                      // Policy-aware creative gate. Same intent parse
+                      // as `isApprovable` above; the central
+                      // `requiresCreative` decides whether a missing
+                      // creative is a warning for this (platform,
+                      // intent) tuple. A malformed attached creative
+                      // still warns regardless of policy — see
+                      // `_plan-item-warnings.ts`.
+                      const warnings = computePlanItemWarnings({
+                        contentType: it.contentType,
+                        scheduledAt: it.scheduledAt,
+                        platform: it.platform,
+                        intent: parsedIntent,
+                        creativeAttached: creative !== null,
+                        creativeReason: creativeReadinessReason(creative),
+                      });
                       const exec = execByPlanItem.get(it.id) ?? null;
                       const subreddit =
                         typeof it.metadata?.target === "string"
