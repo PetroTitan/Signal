@@ -9,6 +9,11 @@ import type {
   WeeklyPlanAttachCreativeArgs,
   WeeklyPlanPrepareItemArgs,
 } from "../schemas";
+import {
+  buildShapeForCreate,
+  serializeMcpResponse,
+} from "../platform-intent";
+import type { PublishPlatform } from "@/core/publishing/publishing-types";
 
 /**
  * Phase F0 — prepare/write-pending tools.
@@ -250,6 +255,26 @@ export async function weeklyPlanPrepareItem(
     operator_token_id: ctx.operatorTokenId,
   };
   if (args.timezone) itemMetadata.timezone = args.timezone;
+
+  // Phase F6.1 — optional platform-native intent. Construct the shape
+  // BEFORE the insert so capability-validation failures abort early
+  // (no orphan row written).
+  const intentResult = buildShapeForCreate({
+    platform: (args.platform as PublishPlatform | null) ?? null,
+    input: args.platform_intent ?? {},
+  });
+  if (intentResult.blockers.length > 0) {
+    return failed({
+      tool: "signal.weekly_plan.prepare_item",
+      summary: `platform_intent_invalid:${intentResult.blockers
+        .map((b) => b.code)
+        .join(",")}`,
+      warnings: intentResult.blockers.map(
+        (b) => `${b.code}: ${b.message}`,
+      ),
+    });
+  }
+
   const { data, error } = await ctx.db
     .from("weekly_plan_items")
     .insert(
@@ -266,10 +291,11 @@ export async function weeklyPlanPrepareItem(
         scheduled_at: args.scheduled_at,
         status: targetStatus,
         metadata: itemMetadata,
+        platform_publish_intent: intentResult.serialized,
       } as never,
     )
     .select(
-      "id, weekly_plan_id, platform, content_type, title, status, risk_score, scheduled_at, created_at",
+      "id, weekly_plan_id, platform, content_type, title, status, risk_score, scheduled_at, created_at, platform_publish_intent",
     )
     .single();
   if (error || !data)
@@ -346,7 +372,12 @@ export async function weeklyPlanPrepareItem(
       targetStatus === "pending_approval"
         ? "Created weekly_plan_item as pending_approval (visible in the /weekly-plan approval panel)."
         : "Created weekly_plan_item as draft (not yet visible in the approval panel).",
-    data: { item: data, creative: creativeRow },
+    data: {
+      item: data,
+      creative: creativeRow,
+      ...serializeMcpResponse(intentResult),
+    },
+    warnings: [...intentResult.warnings],
     requiresUserApproval: targetStatus === "pending_approval",
   });
 }

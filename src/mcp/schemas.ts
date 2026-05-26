@@ -11,6 +11,10 @@ import {
   FOUNDER_PLATFORMS,
   type FounderPlatform,
 } from "@/core/publishing/platform-guidance";
+import {
+  parsePlatformIntentFields,
+  type McpPlatformIntentInput,
+} from "./platform-intent";
 
 type ParseOk<T> = { ok: true; value: T };
 type ParseFail = { ok: false; errors: string[] };
@@ -191,6 +195,27 @@ export interface WeeklyPlanPrepareItemArgs {
   creative_license?: string | null;
   creative_attribution?: string | null;
   creative_risk_notes?: string | null;
+  // -----------------------------------------------------------------
+  // Phase F6.1 — platform-native intent (optional).
+  //
+  // All fields below are OPTIONAL and additive. Existing callers that
+  // omit them get exact legacy behavior. When ANY of these is
+  // supplied the tool constructs a PlatformNativeShape, validates
+  // against the platform adapter's capability matrix, and persists
+  // serialized envelope into weekly_plan_items.platform_publish_intent.
+  //
+  // Hard rules
+  // ----------
+  //   - operator_approved_shape_hash is FORBIDDEN — only operator
+  //     approval can set it (caught by parsePlatformIntentFields).
+  //   - any of these without `platform` set → platform_required_for_intent
+  //     blocker.
+  //
+  // The internal representation lives on .platform_intent (camelCase
+  // via the platform-intent helper); these snake_case fields are the
+  // wire format.
+  // -----------------------------------------------------------------
+  platform_intent?: McpPlatformIntentInput;
 }
 
 const CREATIVE_TYPES = new Set(["image", "video", "animation"]);
@@ -251,6 +276,22 @@ export function parseWeeklyPlanPrepareItem(
   ) {
     errors.push("creative_source_type_invalid");
   }
+  // Phase F6.1 — platform-native intent fields. Optional. Each is
+  // parsed by the shared MCP-side helper so schema errors stay
+  // consistent across prepare_item and update_item.
+  let platformIntent: McpPlatformIntentInput | undefined;
+  if (input.platform_intent !== undefined && input.platform_intent !== null) {
+    if (!isObject(input.platform_intent)) {
+      errors.push("platform_intent_must_be_object");
+    } else {
+      const parsed = parsePlatformIntentFields(input.platform_intent);
+      if (!parsed.ok) {
+        for (const e of parsed.errors) errors.push(`platform_intent.${e}`);
+      } else {
+        platformIntent = parsed.value;
+      }
+    }
+  }
   if (errors.length > 0) return { ok: false, errors };
   return {
     ok: true,
@@ -298,6 +339,7 @@ export function parseWeeklyPlanPrepareItem(
       creative_risk_notes: input.creative_risk_notes
         ? String(input.creative_risk_notes)
         : null,
+      ...(platformIntent !== undefined ? { platform_intent: platformIntent } : {}),
     },
   };
 }
@@ -973,6 +1015,16 @@ export interface WeeklyPlanUpdateItemArgs {
   creative_brief?: string;
   media_prompt_or_brief?: string;
   risk_notes?: ReadonlyArray<string>;
+  /**
+   * Phase F6.1 — optional platform-native intent merge. Same
+   * vocabulary as on prepare_item. Merge semantics: undefined keeps
+   * existing value; explicit null clears reply/quote target;
+   * supplied value sets it.
+   *
+   * Supplying any field counts toward the "at least one content
+   * field required" check.
+   */
+  platform_intent?: McpPlatformIntentInput;
   confirm_update: true;
 }
 
@@ -991,7 +1043,7 @@ export function parseWeeklyPlanUpdateItem(
 
   // Optional content fields. Each must be valid IF provided, AND at
   // least one must be provided so the handler doesn't write a
-  // no-op patch.
+  // no-op patch. platform_intent counts toward this check.
   const updatableKeys = [
     "title",
     "body",
@@ -999,6 +1051,7 @@ export function parseWeeklyPlanUpdateItem(
     "creative_brief",
     "media_prompt_or_brief",
     "risk_notes",
+    "platform_intent",
   ];
   const presentKeys = updatableKeys.filter((k) => input[k] !== undefined);
   if (presentKeys.length === 0) {
@@ -1063,6 +1116,20 @@ export function parseWeeklyPlanUpdateItem(
     }
   }
 
+  let platformIntent: McpPlatformIntentInput | undefined;
+  if (input.platform_intent !== undefined && input.platform_intent !== null) {
+    if (!isObject(input.platform_intent)) {
+      errors.push("platform_intent_must_be_object");
+    } else {
+      const parsed = parsePlatformIntentFields(input.platform_intent);
+      if (!parsed.ok) {
+        for (const e of parsed.errors) errors.push(`platform_intent.${e}`);
+      } else {
+        platformIntent = parsed.value;
+      }
+    }
+  }
+
   if (errors.length > 0) return { ok: false, errors };
 
   const value: WeeklyPlanUpdateItemArgs = {
@@ -1086,6 +1153,9 @@ export function parseWeeklyPlanUpdateItem(
   }
   if (input.risk_notes !== undefined) {
     value.risk_notes = (input.risk_notes as string[]).map((n) => n.trim());
+  }
+  if (platformIntent !== undefined) {
+    value.platform_intent = platformIntent;
   }
   return { ok: true, value };
 }

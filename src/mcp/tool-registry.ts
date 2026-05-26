@@ -209,7 +209,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: "signal.weekly_plan.prepare_item",
     description:
-      "Create a weekly_plan_item (default pending_approval) and optionally attach a creative plan. Posts default to creative_required=true; if no creative fields are supplied a 'planned' placeholder is dropped so the approval queue shows 'creative missing'. Cannot publish — operator approval still required.",
+      "Create a weekly_plan_item (default pending_approval) and optionally attach a creative plan. Posts default to creative_required=true; if no creative fields are supplied a 'planned' placeholder is dropped so the approval queue shows 'creative missing'. Cannot publish — operator approval still required. Optional `platform_intent` object describes the platform-native publish shape (intent, thread_mode, media_mode, reply/quote target, single_post_only, expected_part_count). When supplied: validated against the platform adapter's capability matrix and persisted into platform_publish_intent; when omitted: legacy behavior preserved. Platform must be set explicitly when any platform_intent field is supplied. MCP may NEVER set operator_approved_shape_hash.",
     requiredScopes: ["weekly_plans:write_pending"],
     riskLevel: "remote_write",
     approvalMode: "approval_required",
@@ -403,7 +403,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: "signal.weekly_plan.update_item",
     description:
-      "Update body / title / CTA / creative brief / risk notes on a pre-approval plan item (status='draft' or 'pending_approval'). Refuses anything past pending_approval. Preserves metadata.platform_native_draft and updates the corresponding envelope fields when body/title/cta change. NEVER approves, schedules, or publishes — operator approval still required after the edit.",
+      "Update body / title / CTA / creative brief / risk notes / platform-native intent on a pre-approval plan item (status='draft' or 'pending_approval'). Refuses anything past pending_approval. Preserves metadata.platform_native_draft and updates the corresponding envelope fields when body/title/cta change. Optional `platform_intent` object merges into the existing platform_publish_intent (undefined preserves; explicit null clears reply/quote target). Any payload-relevant change (body/title/intent fields) clears operator_approved_shape_hash so stale approvals cannot bind to drifted text. NEVER approves, schedules, or publishes — operator approval still required after the edit.",
     requiredScopes: ["weekly_plans:write_pending"],
     riskLevel: "remote_write",
     approvalMode: "approval_required",
