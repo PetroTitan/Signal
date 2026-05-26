@@ -66,17 +66,28 @@ describe("SCHEDULER_AUTONOMOUS_PLATFORMS", () => {
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("hashnode")).toBe(true);
   });
 
-  it("excludes manual-confirmation-only platforms (telegram, youtube, threads, instagram)", () => {
+  it("includes telegram (hotfix: telegram_scheduler_allowlist_missing — pre-fix scheduler short-circuited Telegram items to platform_not_supported BEFORE the runner could route them)", () => {
+    // Telegram had a fully-wired publisher (publish-telegram.ts:
+    // Bot API sendMessage with admin-only channel publishing) and a
+    // runner branch (case "telegram" in publishing-runner.ts since
+    // Phase F5.1) — but this allowlist still omitted "telegram", so
+    // scheduled items hit the `platform_not_supported` guard at
+    // line ~202 and never reached the runner. Same bug class as
+    // dev.to (PR #123) and Hashnode (PR #124). Operator-side audits
+    // surfaced this as `telegram_scheduler_allowlist_missing`.
+    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("telegram")).toBe(true);
+  });
+
+  it("excludes manual-confirmation-only platforms (youtube, threads, instagram)", () => {
     // These platforms are still routed through manual confirmation
     // at /execution/items/[id]; the scheduler should skip them.
-    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("telegram")).toBe(false);
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("youtube")).toBe(false);
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("threads")).toBe(false);
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("instagram")).toBe(false);
   });
 
-  it("is exactly the six-platform set today (reddit, x, linkedin, bluesky, devto, hashnode)", () => {
-    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.size).toBe(6);
+  it("is exactly the seven-platform set today (reddit, x, linkedin, bluesky, devto, hashnode, telegram)", () => {
+    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.size).toBe(7);
   });
 });
 

@@ -84,10 +84,9 @@ export function nextExecutionStatusForOutcome(
  * Platforms the scheduler tick can fully drive end-to-end (auth +
  * publish + history write).
  *
- * Other platforms (devto / hashnode / telegram / youtube / threads /
- * instagram) are published via the manual confirmation path on
- * `/execution/items/[id]` — the scheduler skips them silently to
- * avoid surprises.
+ * Other platforms (youtube / threads / instagram) are published via
+ * the manual confirmation path on `/execution/items/[id]` — the
+ * scheduler skips them silently to avoid surprises.
  *
  * Bluesky was missing from this list pre-fix, which caused approved
  * + scheduled Bluesky items to be selected every tick but skipped
@@ -103,14 +102,34 @@ export function nextExecutionStatusForOutcome(
  * route them. The execution_item flipped to blocked, the plan_item
  * to paused, and no provider HTTP request was ever attempted.
  *
- * Phase F8 — Hashnode joined the autonomous set when PR #N landed
+ * Phase F8 — Hashnode joined the autonomous set when PR #124 landed
  * the identity-scoped orchestrator + Hashnode-prefixed reason codes
  * + the publication-id metadata flow. Without including "hashnode"
  * here, scheduled Hashnode items would hit the same short-circuit
  * dev.to fell into pre-PR #123.
+ *
+ * Telegram hotfix — Telegram was caught in the IDENTICAL trap as
+ * dev.to and Hashnode. The runner has had a `case "telegram"`
+ * branch since Phase F5.1 (calls `publishToTelegram` with the
+ * workspace bot token + per-identity chat id), and the publisher
+ * is fully wired (sendMessage via the Bot API with admin-only
+ * channel publishing). But the allowlist guard above this set
+ * refused scheduled Telegram items at the `platform_not_supported`
+ * branch BEFORE the runner could ever route them, surfacing as
+ * `telegram_scheduler_allowlist_missing` in operator-side audits.
+ * Adding "telegram" here is the entire fix — no publisher, runner,
+ * or orchestrator changes needed.
  */
 export const SCHEDULER_AUTONOMOUS_PLATFORMS: ReadonlySet<PublishPlatform> =
-  new Set(["reddit", "x", "linkedin", "bluesky", "devto", "hashnode"]);
+  new Set([
+    "reddit",
+    "x",
+    "linkedin",
+    "bluesky",
+    "devto",
+    "hashnode",
+    "telegram",
+  ]);
 
 export interface SchedulerTickInput {
   /** Soft cap on items processed per tick. Default 10. */
