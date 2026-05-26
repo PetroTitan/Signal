@@ -204,7 +204,9 @@ describe("end-to-end scheduled publishing — every required scope is reachable 
     const preset = FOUNDER_PERMISSION_PRESETS.find(
       (p) => p.key === "codex_full_workflow",
     )!;
-    const presetScopes = new Set(resolveScopesFromGroups(preset.groupKeys));
+    const presetScopes = new Set<string>(
+      resolveScopesFromGroups(preset.groupKeys),
+    );
     const tool = TOOLS_BY_NAME["signal.schedule_publish"]!;
     for (const required of tool.requiredScopes) {
       expect(presetScopes.has(required)).toBe(true);

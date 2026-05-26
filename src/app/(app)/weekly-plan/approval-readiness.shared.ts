@@ -136,7 +136,7 @@ export function creativeBlockerCopy(
     case "creative_missing_alt_text":
       return "Alt text is required before approval and publishing.";
     case "creative_not_approved":
-      return "Creative needs to be approved before the post can be approved.";
+      return "This post cannot be approved yet because the attached creative is still pending review. Approve or reject the creative first.";
     case "creative_rejected":
       return "Creative was rejected. Replace it before approval.";
     case "creative_only_planned":

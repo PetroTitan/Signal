@@ -61,6 +61,14 @@ export type UploadCreativeAssetResult = ActionResult<{
 export type DuplicatePlanItemResult = ActionResult<{ itemId: string }>;
 export type ComposeUpsertDraftResult = ActionResult<{ itemId: string }>;
 export type SendForApprovalResult = ActionResult<{ itemId: string }>;
+export type ApproveCreativeResult = ActionResult<{
+  creativeId: string;
+  status: "approved";
+}>;
+export type RejectCreativeResult = ActionResult<{
+  creativeId: string;
+  status: "rejected";
+}>;
 export type SaveScheduleResult = ActionResult<{
   itemId: string;
   scheduledAtIso: string | null;
@@ -2728,6 +2736,191 @@ export async function removePlanItemAction(
           ? error.message
           : "Could not remove this post.";
     console.error("[removePlanItemAction] failed", error);
+    return actionFail(message);
+  }
+}
+
+// =====================================================================
+// Creative approval / rejection — first-class operator actions
+// =====================================================================
+//
+// Background — the approval deadlock these actions resolve
+// --------------------------------------------------------
+// `assessItemApprovalReadiness` (server) refuses to approve a post
+// whose attached creative is anything but `status='approved'`. This
+// is correct: it preserves the operator-trust contract that a post
+// can't ship without an explicit creative approval.
+//
+// The deadlock was UI/UX: there was NO server action that flipped
+// `weekly_plan_item_creatives.status` from `pending_review` to
+// `approved`. The only path was the catch-all `attachCreativeAction`
+// with `approve_now=true`, which required the operator to reopen
+// the compose modal and re-submit the creative form. Operators
+// reasonably read the "Creative needs to be approved" copy as
+// "the system will approve it automatically" — and bounced.
+//
+// These actions surface creative approval as first-class buttons.
+// They DO NOT weaken the approval boundary:
+//   - run on cookie session (operator), not MCP token
+//   - re-validate the creative's readiness before flipping
+//     (`creativeReadinessReason` must return null for approval)
+//   - refuse to mutate creatives whose post is already `published`
+//   - log activity for the audit trail
+//   - never auto-approve from any side effect (MCP, scheduler)
+//
+// Removing a creative still unblocks post approval via the existing
+// `removeCreativeAction`.
+
+export async function approveCreativeAction(
+  _prev: ApproveCreativeResult,
+  formData: FormData,
+): Promise<ApproveCreativeResult> {
+  const creativeId = String(formData.get("creative_id") ?? "").trim();
+  if (!creativeId) return actionFail("Missing creative id.");
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    const existing = await getCreativeById(workspaceId, creativeId);
+
+    // Lock once the post has actually published — the creative is
+    // historical at that point.
+    const planItem = await getPlanItemById(
+      workspaceId,
+      existing.weeklyPlanItemId,
+    );
+    if (planItem.status === "published") {
+      return actionFail(
+        "Cannot change creative status after the post has published.",
+      );
+    }
+    if (existing.status === "approved") {
+      // Idempotent — already in target state. Return ok so the UI
+      // doesn't flash an error when the operator double-clicks.
+      return actionOk({
+        creativeId: existing.id,
+        status: "approved" as const,
+      });
+    }
+
+    // Re-validate readiness. This guard prevents approving a creative
+    // that's still missing asset/alt/license/etc. — the operator's
+    // approval is a commitment, not a YOLO.
+    const { creativeReadinessReason } = await import(
+      "@/repositories/weekly-plan-creative-repository"
+    );
+    // creativeReadinessReason returns "creative_not_approved" for
+    // a creative that's otherwise ready but not yet approved — that's
+    // the exact state we're trying to fix. Treat that single code as
+    // "ready to be approved"; any other non-null code is a real
+    // blocker.
+    const reason = creativeReadinessReason({
+      ...existing,
+      status: "approved",
+    } as never);
+    if (reason !== null) {
+      const { creativeBlockerCopy } = await import(
+        "./approval-readiness.shared"
+      );
+      return actionFail(
+        `Cannot approve this creative yet — ${creativeBlockerCopy(reason)}`,
+      );
+    }
+
+    const updated = await updateCreative({
+      workspaceId,
+      creativeId: existing.id,
+      patch: { status: "approved" },
+    });
+
+    await logActivityBestEffort({
+      workspaceId,
+      eventType: "weekly_plan_item.creative_approved",
+      entityType: "weekly_plan_item_creative",
+      entityId: updated.id,
+      title: `Creative approved (${updated.creativeType} · ${updated.sourceType})`,
+      description: null,
+      metadata: { plan_item_id: updated.weeklyPlanItemId },
+    });
+
+    revalidatePath("/weekly-plan");
+    return actionOk({
+      creativeId: updated.id,
+      status: "approved" as const,
+    });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : "Could not approve creative.";
+    console.error("[approveCreativeAction] failed", error);
+    return actionFail(message);
+  }
+}
+
+export async function rejectCreativeAction(
+  _prev: RejectCreativeResult,
+  formData: FormData,
+): Promise<RejectCreativeResult> {
+  const creativeId = String(formData.get("creative_id") ?? "").trim();
+  if (!creativeId) return actionFail("Missing creative id.");
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    const existing = await getCreativeById(workspaceId, creativeId);
+
+    const planItem = await getPlanItemById(
+      workspaceId,
+      existing.weeklyPlanItemId,
+    );
+    if (planItem.status === "published") {
+      return actionFail(
+        "Cannot change creative status after the post has published.",
+      );
+    }
+    if (existing.status === "rejected") {
+      return actionOk({
+        creativeId: existing.id,
+        status: "rejected" as const,
+      });
+    }
+
+    const updated = await updateCreative({
+      workspaceId,
+      creativeId: existing.id,
+      patch: { status: "rejected" },
+    });
+
+    await logActivityBestEffort({
+      workspaceId,
+      eventType: "weekly_plan_item.creative_rejected",
+      entityType: "weekly_plan_item_creative",
+      entityId: updated.id,
+      title: `Creative rejected (${updated.creativeType} · ${updated.sourceType})`,
+      description: null,
+      metadata: { plan_item_id: updated.weeklyPlanItemId },
+    });
+
+    revalidatePath("/weekly-plan");
+    return actionOk({
+      creativeId: updated.id,
+      status: "rejected" as const,
+    });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : "Could not reject creative.";
+    console.error("[rejectCreativeAction] failed", error);
     return actionFail(message);
   }
 }
