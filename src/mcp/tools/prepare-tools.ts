@@ -18,6 +18,7 @@ import {
   validateIdentityReferenceUrls,
   validateIdentitySourceUrl,
 } from "@/core/identity-sources/url-validation";
+import { requiresCreative } from "@/core/platform-native/approval-policy";
 
 /**
  * Phase F0 — prepare/write-pending tools.
@@ -354,12 +355,31 @@ export async function weeklyPlanPrepareItem(
       summary: error?.message ?? "item_insert_failed",
     });
 
-  // Phase F1: posts require a creative. If the operator provided
-  // creative fields, attach a real one; otherwise drop a `planned`
-  // placeholder so the approval queue can show "creative missing" UX.
+  // Whether to drop a planned-creative placeholder when the operator
+  // didn't pass `creative_required` explicitly.
+  //
+  // Default now consults the central platform-native approval policy
+  // — same source of truth as `assessItemApprovalReadiness` and the
+  // /weekly-plan UI warning banner. Platforms / intents where a
+  // creative is OPTIONAL (Telegram channel messages, Bluesky text
+  // posts, dev.to / Hashnode articles, etc.) skip the auto-attach
+  // entirely instead of dropping a misleading `planned` placeholder
+  // that the operator then has to clear.
+  //
+  // Required-creative cases (Instagram + any intent, YouTube +
+  // video_post, intent ∈ {media_post, carousel, story, short_video}
+  // on any platform) still get the placeholder so the approval
+  // queue surfaces "creative missing" UX as before.
+  //
+  // Explicit `args.creative_required === true | false` still
+  // overrides the policy default unchanged.
   const itemId = (data as { id: string }).id;
-  const isPost = (args.content_type ?? "").toLowerCase() === "post";
-  const creativeRequired = args.creative_required ?? isPost;
+  const creativeRequired =
+    args.creative_required ??
+    requiresCreative({
+      platform: (args.platform as string | null) ?? null,
+      intent: intentResult.shape?.intent ?? null,
+    });
   let creativeRow: unknown = null;
   if (creativeRequired) {
     const sourceType = args.creative_source_type ?? "planned";
