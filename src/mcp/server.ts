@@ -176,6 +176,9 @@ export async function dispatch(
 
   // 3) Scope check
   if (!hasAllScopes(token.scopes, definition.requiredScopes)) {
+    const missing = definition.requiredScopes.filter(
+      (s) => !token.scopes.includes(s),
+    );
     const auditId = await openToolCall({
       workspaceId: token.workspaceId,
       operatorTokenId: token.id,
@@ -188,14 +191,28 @@ export async function dispatch(
         workspaceId: token.workspaceId,
         callId: auditId,
         status: "unauthorized",
-        errorSummary: `missing_scopes:${definition.requiredScopes
-          .filter((s) => !token.scopes.includes(s))
-          .join(",")}`,
+        errorSummary: `missing_scopes:${missing.join(",")}`,
       });
     }
+    // Translate the missing scopes back into operator-friendly group
+    // labels (UI permission cards). Most operators don't carry a
+    // mental model of scope strings — they need to know which box
+    // to tick in /settings/mcp/tokens.
+    const { suggestGroupsForMissingScopes } = await import(
+      "./founder-permissions"
+    );
+    const groups = suggestGroupsForMissingScopes(missing);
+    const groupHint =
+      groups.length > 0
+        ? ` Create a new token with these permissions: ${groups
+            .map((g) => `“${g.label}”`)
+            .join(", ")}.`
+        : "";
     const response = unauthorized({
       tool: input.tool,
-      summary: `Token does not include the required scopes: ${definition.requiredScopes.join(", ")}.`,
+      summary:
+        `Token does not include the required scopes: ${missing.join(", ")}.` +
+        groupHint,
       auditId,
     });
     return { status: 403, body: response };

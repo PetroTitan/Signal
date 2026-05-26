@@ -27,6 +27,16 @@ export interface FounderPermissionGroup {
   defaultChecked: boolean;
 }
 
+/**
+ * Sentinel group key. NOT a real `FounderPermissionGroup` entry —
+ * the token action expands `full_access` into every entry in
+ * `ALLOWED_SCOPES` (and only into ALLOWED_SCOPES — blocked scopes
+ * are a separate list and cannot leak through this expansion).
+ *
+ * Kept as a constant so tests + the UI use the same source of truth.
+ */
+export const FULL_ACCESS_GROUP_KEY = "full_access";
+
 export const FOUNDER_PERMISSION_GROUPS: ReadonlyArray<FounderPermissionGroup> = [
   {
     key: "read_workspace",
@@ -44,11 +54,19 @@ export const FOUNDER_PERMISSION_GROUPS: ReadonlyArray<FounderPermissionGroup> = 
   },
   {
     key: "prepare_drafts",
-    label: "Prepare drafts",
+    label: "Modify pending weekly plan items",
     description:
-      "The assistant can create new draft posts in your weekly plan. Drafts land as draft — you still approve before publishing.",
+      "The assistant can create new drafts and update pending/draft items in your weekly plan, including the scheduled time. Items still land as draft / pending — you approve before publishing.",
     scopes: ["weekly_plans:write_pending"],
     defaultChecked: true,
+  },
+  {
+    key: "schedule_publishing",
+    label: "Schedule publishing",
+    description:
+      "The assistant can schedule approved plan items for publishing through Signal's scheduler. Does not bypass approval and does not call any platform API itself.",
+    scopes: ["weekly_plans:read", "execution:read", "execution:schedule"],
+    defaultChecked: false,
   },
   {
     key: "prepare_products",
@@ -111,6 +129,13 @@ export const FOUNDER_PERMISSION_GROUPS: ReadonlyArray<FounderPermissionGroup> = 
 export function resolveScopesFromGroups(
   groupKeys: ReadonlyArray<string>,
 ): AllowedScope[] {
+  // `full_access` is the only sentinel — it expands to every entry
+  // in ALLOWED_SCOPES and short-circuits the rest of the loop.
+  // BLOCKED_SCOPES are NOT in ALLOWED_SCOPES, so full_access cannot
+  // grant them even by accident.
+  if (groupKeys.includes(FULL_ACCESS_GROUP_KEY)) {
+    return [...ALLOWED_SCOPES];
+  }
   const out = new Set<AllowedScope>();
   for (const key of groupKeys) {
     const group = FOUNDER_PERMISSION_GROUPS.find((g) => g.key === key);
@@ -124,6 +149,61 @@ export function resolveScopesFromGroups(
   return [...out].filter((s) =>
     (ALLOWED_SCOPES as ReadonlyArray<string>).includes(s),
   );
+}
+
+/**
+ * Recommended preset list. UI-only — pre-selects a set of groups
+ * the operator can apply with one click. Presets never grant scopes
+ * that wouldn't already be granted by the underlying groups; they're
+ * a UX affordance, not a privilege escalation.
+ */
+export interface FounderPermissionPreset {
+  key: string;
+  label: string;
+  description: string;
+  groupKeys: readonly string[];
+}
+
+export const FOUNDER_PERMISSION_PRESETS: ReadonlyArray<FounderPermissionPreset> =
+  [
+    {
+      key: "codex_full_workflow",
+      label: "Codex / Claude full workflow",
+      description:
+        "Everything the assistant needs for the end-to-end scheduled publishing flow: read, prepare drafts, schedule publishing, review history, dry-run.",
+      groupKeys: [
+        "read_workspace",
+        "prepare_drafts",
+        "schedule_publishing",
+        "review_publishing_history",
+        "dry_run_execution",
+      ],
+    },
+  ];
+
+/**
+ * Reverse-map a list of missing scopes to the founder-readable
+ * groups that would grant them. The dispatcher's unauthorized
+ * response uses this to suggest which permission box(es) to enable
+ * rather than handing the operator raw scope strings.
+ *
+ * Returns deduplicated group labels in the order groups appear in
+ * FOUNDER_PERMISSION_GROUPS (deterministic UX).
+ */
+export function suggestGroupsForMissingScopes(
+  missingScopes: ReadonlyArray<string>,
+): FounderPermissionGroup[] {
+  const need = new Set(missingScopes);
+  const seen = new Set<string>();
+  const out: FounderPermissionGroup[] = [];
+  for (const group of FOUNDER_PERMISSION_GROUPS) {
+    if (seen.has(group.key)) continue;
+    if (group.scopes.some((s) => need.has(s))) {
+      out.push(group);
+      seen.add(group.key);
+    }
+  }
+  return out;
 }
 
 /**
