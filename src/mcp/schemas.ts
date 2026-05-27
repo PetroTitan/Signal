@@ -432,6 +432,130 @@ export function parseWeeklyPlanAttachCreative(
   };
 }
 
+// =====================================================================
+// signal.upload_creative_asset
+//
+// Ingests an already-generated creative file (created OUTSIDE Signal —
+// by Codex / Claude / any external tool) and attaches it to a
+// weekly_plan_item. Signal does NOT generate images; this tool only
+// stores + validates + attaches.
+//
+// Boundary contract:
+//   - source_type MUST be "uploaded". (Signal never persists
+//     "generated" via this tool — the user-facing rule is "Signal did
+//     not generate this file." The schema parser refuses the value at
+//     the boundary so the DB never sees a misleading row.)
+//   - mime_type MUST be on the existing creative-upload-policy
+//     whitelist (jpeg / png / webp / gif / mp4 / webm).
+//   - file_base64 carries the binary content as a standard base64
+//     string. The handler decodes it once and feeds the existing
+//     `validateUpload({mime, sizeBytes})` helper (10 MB image /
+//     100 MB video cap, same as the operator-driven upload path).
+//   - source_url + asset_url are NOT accepted on this tool. Use
+//     signal.weekly_plan.attach_creative for the URL-based path.
+// =====================================================================
+
+export interface UploadCreativeAssetArgs {
+  weekly_plan_item_id: string;
+  /** Always "uploaded" — Signal does NOT generate. The "external"
+   *  provenance lives on metadata.origin, not on source_type. */
+  source_type: "uploaded";
+  /** Required for the validation + extension mapping. Must be on the
+   *  creative-upload-policy MIME whitelist. */
+  mime_type: string;
+  /** Base64-encoded file bytes (RFC 4648). The handler decodes once
+   *  and discards. Size cap matches the existing operator-driven
+   *  upload path (10 MB image / 100 MB video). */
+  file_base64: string;
+  /** "image" | "video" | "animation". Optional — inferred from
+   *  mime_type via creativeTypeForMime when absent. */
+  creative_type?: "image" | "video" | "animation";
+  alt_text?: string | null;
+  /** Prompt / creative brief the external tool used. Stored for the
+   *  audit trail; readiness does NOT use this as proof of asset. */
+  prompt?: string | null;
+  /** Free-form aspect ratio hint (e.g. "1:1", "16:9"). Stored on
+   *  metadata; never gates publishing. */
+  aspect_ratio?: string | null;
+  /** Operator-declared origin for audit. Stored on metadata.origin.
+   *  Defaults to "ai_external" since the tool is Codex/Claude-driven
+   *  in practice; an operator-driven upload through this MCP path
+   *  may pass "operator". */
+  origin?: "ai_external" | "operator" | "external_tool" | null;
+  /** Optional free-form fields the operator can carry through. The
+   *  handler whitelists into metadata; never used by gating. */
+  notes?: string | null;
+}
+
+export function parseUploadCreativeAsset(
+  input: unknown,
+): Parse<UploadCreativeAssetArgs> {
+  if (!isObject(input)) return { ok: false, errors: ["expected_object"] };
+  const errors: string[] = [];
+  if (
+    !str(input.weekly_plan_item_id) ||
+    !isUuidLike(input.weekly_plan_item_id)
+  ) {
+    errors.push("weekly_plan_item_id_invalid");
+  }
+  if (input.source_type !== "uploaded") {
+    // Refuse "generated" at the boundary so the DB never sees a
+    // misleading row. Operator wants the prompt-only flow? Use
+    // signal.weekly_plan.attach_creative with source_type='planned'.
+    errors.push("source_type_must_be_uploaded");
+  }
+  if (!str(input.mime_type) || (input.mime_type as string).trim().length === 0) {
+    errors.push("mime_type_required");
+  }
+  if (
+    !str(input.file_base64) ||
+    (input.file_base64 as string).trim().length === 0
+  ) {
+    errors.push("file_base64_required");
+  }
+  if (
+    input.creative_type !== undefined &&
+    (!str(input.creative_type) ||
+      !CREATIVE_TYPES.has(input.creative_type as string))
+  ) {
+    errors.push("creative_type_invalid");
+  }
+  if (
+    input.origin !== undefined &&
+    input.origin !== null &&
+    input.origin !== "ai_external" &&
+    input.origin !== "operator" &&
+    input.origin !== "external_tool"
+  ) {
+    errors.push("origin_invalid");
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  return {
+    ok: true,
+    value: {
+      weekly_plan_item_id: input.weekly_plan_item_id as string,
+      source_type: "uploaded",
+      mime_type: (input.mime_type as string).trim(),
+      file_base64: input.file_base64 as string,
+      creative_type: str(input.creative_type)
+        ? (input.creative_type as "image" | "video" | "animation")
+        : undefined,
+      alt_text: input.alt_text ? String(input.alt_text) : null,
+      prompt: input.prompt ? String(input.prompt) : null,
+      aspect_ratio: input.aspect_ratio
+        ? String(input.aspect_ratio).trim()
+        : null,
+      origin:
+        input.origin === "ai_external" ||
+        input.origin === "operator" ||
+        input.origin === "external_tool"
+          ? input.origin
+          : null,
+      notes: input.notes ? String(input.notes) : null,
+    },
+  };
+}
+
 export interface ImportsPrepareMappingArgs {
   import_type: "product" | "account";
   raw_text: string;

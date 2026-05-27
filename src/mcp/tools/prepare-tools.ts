@@ -6,6 +6,7 @@ import type {
   ImportsPrepareMappingArgs,
   ProductsPrepareArgs,
   ReportsSubmitArgs,
+  UploadCreativeAssetArgs,
   WeeklyPlanAttachCreativeArgs,
   WeeklyPlanPrepareItemArgs,
 } from "../schemas";
@@ -552,6 +553,227 @@ export async function weeklyPlanAttachCreative(
     tool: "signal.weekly_plan.attach_creative",
     summary: `Attached creative as ${status}.`,
     data: { creative: data },
+    requiresUserApproval: false,
+  });
+}
+
+// =====================================================================
+// signal.upload_creative_asset
+//
+// Ingests an already-generated media file (binary as base64) into
+// the existing `weekly-plan-creatives` Supabase Storage bucket and
+// attaches it to a weekly_plan_item.
+//
+// Reuses the operator-driven server-action path's conventions
+// verbatim (`validateUpload`, bucket name, `<workspaceId>/<itemId>/
+// <uuid>.<ext>` path, `creativeTypeForMime`) — the only difference
+// is the row's `status` lands as `pending_review` (NOT `approved`).
+// MCP-ingested means a non-operator (Codex/Claude/external tool)
+// supplied the file; operator review is still required.
+//
+// Hard boundaries:
+//   - source_type is always "uploaded". Refused at the schema parser
+//     if the caller tries to write "generated" through this path
+//     (Signal does not generate; that label is reserved for an
+//     in-house generator that doesn't exist yet).
+//   - No execution_items, no scheduling, no publishing, no provider
+//     adapters touched.
+//   - The bot token / Supabase service role keys are never logged.
+//     The base64 payload is decoded once into a Buffer that lives
+//     only for the duration of this function.
+// =====================================================================
+
+export async function uploadCreativeAsset(
+  ctx: ToolContext,
+  args: UploadCreativeAssetArgs,
+): Promise<McpToolResponse> {
+  // 1) Verify the item belongs to this workspace.
+  const { data: itemCheck } = await ctx.db
+    .from("weekly_plan_items")
+    .select("id, content_type")
+    .eq("workspace_id", ctx.workspaceId)
+    .eq("id", args.weekly_plan_item_id)
+    .maybeSingle();
+  if (!itemCheck) {
+    return failed({
+      tool: "signal.upload_creative_asset",
+      summary: "weekly_plan_item not found in this workspace",
+    });
+  }
+
+  // 2) MIME + size validation — REUSES the same helper the
+  //    operator-driven upload action uses, so the constraint
+  //    surface is shared.
+  const { validateUpload, extensionForMime, creativeTypeForMime } =
+    await import("@/core/publishing/creative-upload-policy");
+
+  // Decode the base64 payload once. Defensive: refuse if the
+  // decode fails or the resulting buffer is empty. The buffer is
+  // only alive in this stack frame.
+  let buf: Buffer;
+  try {
+    buf = Buffer.from(args.file_base64, "base64");
+  } catch {
+    return failed({
+      tool: "signal.upload_creative_asset",
+      summary: "file_base64_decode_failed",
+    });
+  }
+  if (buf.length === 0) {
+    return failed({
+      tool: "signal.upload_creative_asset",
+      summary: "file_base64_empty",
+    });
+  }
+
+  const validation = validateUpload({
+    mime: args.mime_type,
+    sizeBytes: buf.length,
+  });
+  if (!validation.ok) {
+    return failed({
+      tool: "signal.upload_creative_asset",
+      summary: validation.reason ?? "upload_validation_failed",
+    });
+  }
+  const mime = args.mime_type as import(
+    "@/core/publishing/creative-upload-policy"
+  ).AllowedMime;
+  const creativeType =
+    args.creative_type ?? creativeTypeForMime(mime);
+
+  // 3) Upload to the existing `weekly-plan-creatives` bucket using
+  //    the existing `<workspaceId>/<itemId>/<uuid>.<ext>` path
+  //    convention.
+  const { randomUUID } = await import("node:crypto");
+  const ext = extensionForMime(mime);
+  const objectName = `${ctx.workspaceId}/${args.weekly_plan_item_id}/${randomUUID()}.${ext}`;
+
+  const upload = await ctx.db.storage
+    .from("weekly-plan-creatives")
+    .upload(objectName, buf, {
+      contentType: mime,
+      cacheControl: "3600",
+      upsert: false,
+    });
+  if (upload.error) {
+    return failed({
+      tool: "signal.upload_creative_asset",
+      summary: `storage_upload_failed:${upload.error.message}`,
+    });
+  }
+
+  const { data: pub } = ctx.db.storage
+    .from("weekly-plan-creatives")
+    .getPublicUrl(objectName);
+  const assetUrl = pub.publicUrl;
+
+  // 4) Persist the creative row as `pending_review` — NOT
+  //    `approved`. The operator-driven server action auto-approves
+  //    (the operator IS the uploader); the MCP path must NOT
+  //    bypass review.
+  //
+  //    We write via a direct insert (mirrors the
+  //    weeklyPlanAttachCreative shape) instead of going through the
+  //    server-action repository to keep the MCP code path
+  //    self-contained.
+  const origin = args.origin ?? "ai_external";
+  const metadata: Record<string, unknown> = {
+    source: "mcp_operation",
+    operator_token_id: ctx.operatorTokenId,
+    origin,
+    storage_path: objectName,
+    mime_type: mime,
+    size_bytes: buf.length,
+    uploaded_at: new Date().toISOString(),
+  };
+  if (args.aspect_ratio) metadata.aspect_ratio = args.aspect_ratio;
+  if (args.notes) metadata.notes = args.notes;
+
+  const { data: row, error: insertError } = await ctx.db
+    .from("weekly_plan_item_creatives")
+    .insert(
+      {
+        workspace_id: ctx.workspaceId,
+        weekly_plan_item_id: args.weekly_plan_item_id,
+        creative_type: creativeType,
+        source_type: "uploaded",
+        asset_url: assetUrl,
+        storage_path: objectName,
+        mime_type: mime,
+        size_bytes: buf.length,
+        prompt: args.prompt,
+        alt_text: args.alt_text,
+        status: "pending_review",
+        metadata,
+      } as never,
+    )
+    .select(
+      "id, weekly_plan_item_id, creative_type, source_type, status, asset_url, storage_path, alt_text, mime_type, size_bytes",
+    )
+    .single();
+  if (insertError || !row) {
+    // Best-effort cleanup of the storage object so we don't leave
+    // orphan files when the DB write fails.
+    await ctx.db.storage
+      .from("weekly-plan-creatives")
+      .remove([objectName])
+      .catch(() => undefined);
+    return failed({
+      tool: "signal.upload_creative_asset",
+      summary: insertError?.message ?? "creative_insert_failed",
+    });
+  }
+
+  // 5) Activity event for the audit trail. Never includes the
+  //    file content; only the storage path + size.
+  await ctx.db.from("activity_events").insert(
+    {
+      workspace_id: ctx.workspaceId,
+      event_type: "mcp.weekly_plan_item_creative_asset_uploaded",
+      entity_type: "weekly_plan_item_creative",
+      entity_id: (row as { id: string }).id,
+      title: `MCP uploaded creative asset (${creativeType} · ${mime})`,
+      source: "mcp_operation",
+      metadata: {
+        operator_token_id: ctx.operatorTokenId,
+        weekly_plan_item_id: args.weekly_plan_item_id,
+        storage_path: objectName,
+        size_bytes: buf.length,
+        origin,
+      },
+    } as never,
+  );
+
+  // 6) Surface the derived readiness state so the caller can
+  //    confirm the transition (planned/not-ready → pending_review)
+  //    without an extra read.
+  const { deriveCreativeReadinessState } = await import(
+    "@/core/publishing/creative-readiness"
+  );
+  const readinessState = deriveCreativeReadinessState({
+    status: "pending_review",
+    sourceType: "uploaded",
+    assetUrl,
+    sourceUrl: null,
+    storagePath: objectName,
+    altText: args.alt_text ?? null,
+    prompt: args.prompt ?? null,
+    license: null,
+    attribution: null,
+  });
+
+  return ok({
+    tool: "signal.upload_creative_asset",
+    summary: `Uploaded creative as pending_review (${creativeType} · ${mime}, ${buf.length} bytes).`,
+    data: {
+      creative: row,
+      storage_path: objectName,
+      asset_url: assetUrl,
+      readiness_state: readinessState,
+      asset_present: true,
+      ready_for_publish: false,
+    },
     requiresUserApproval: false,
   });
 }
