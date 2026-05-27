@@ -99,6 +99,9 @@ export {
   verifyTelegramIdentity,
   normalizeTelegramHandle,
   isValidTelegramHandle,
+  isTelegramNumericChatId,
+  isTelegramTargetType,
+  parseTelegramTarget,
 } from "./telegram";
 export type {
   TelegramVerifierInput,
@@ -107,8 +110,12 @@ export type {
   TelegramVerifierMismatched,
   TelegramVerifierError,
   TelegramVerifierErrorCode,
+  TelegramTargetType,
 } from "./telegram";
-export { buildTelegramVerifyPlan } from "./telegram-persistence";
+export {
+  buildTelegramVerifyPlan,
+  readTelegramTargetType,
+} from "./telegram-persistence";
 export type {
   TelegramVerifyPlan,
   TelegramVerifyPlanInput,

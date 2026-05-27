@@ -83,6 +83,37 @@ function extractHashnodePublicationId(
 }
 
 /**
+ * Telegram-specific: read the target type off the connection
+ * metadata. Defaults to "channel" for legacy rows that predate the
+ * group/supergroup support (the pre-PR verifier only verified
+ * channels). Matches the contract documented on
+ * `readTelegramTargetType` in the verifiers index.
+ */
+function extractTelegramTargetType(
+  metadata: unknown,
+): "channel" | "group" | "supergroup" {
+  if (!metadata || typeof metadata !== "object") return "channel";
+  const raw = (metadata as Record<string, unknown>).telegram_target_type;
+  if (raw === "channel" || raw === "group" || raw === "supergroup") {
+    return raw;
+  }
+  return "channel";
+}
+
+/**
+ * Telegram-specific: read the persisted target label (chat.title
+ * or @username) off the connection metadata. Returns null when not
+ * set so the UI falls back to identity.handle.
+ */
+function extractTelegramTargetLabel(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const raw = (metadata as Record<string, unknown>).telegram_target_label;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed.length === 0 ? null : trimmed;
+}
+
+/**
  * Per-platform completeness gate. The resolver does not embed
  * platform-specific config rules; this helper does. Today only
  * Hashnode has a "credential alone is not enough" requirement
@@ -405,6 +436,26 @@ export default async function AccountsPage() {
                     hashnodePublicationId={
                       a.platform === "hashnode"
                         ? extractHashnodePublicationId(c?.metadata)
+                        : null
+                    }
+                    // Telegram-only: pre-fill the target-type selector
+                    // and surface the persisted label + chat id in
+                    // the Manage panel. Legacy rows without
+                    // `metadata.telegram_target_type` default to
+                    // "channel" (matches the pre-PR behavior).
+                    telegramTargetType={
+                      a.platform === "telegram"
+                        ? extractTelegramTargetType(c?.metadata)
+                        : null
+                    }
+                    telegramTargetLabel={
+                      a.platform === "telegram"
+                        ? extractTelegramTargetLabel(c?.metadata)
+                        : null
+                    }
+                    telegramChatId={
+                      a.platform === "telegram"
+                        ? (c?.providerAccountId ?? null)
                         : null
                     }
                   />

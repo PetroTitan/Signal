@@ -284,6 +284,15 @@ export interface SchedulerHistoryUpsertInput {
     | "metadata"
     | "platform_connection.provider_account_id"
     | null;
+  /** Telegram-specific diagnostic — operator-declared target type
+   *  for this identity. Defaults to "channel" for legacy rows that
+   *  predate the group/supergroup support. */
+  telegramTargetType?: "channel" | "group" | "supergroup";
+  /** Telegram-specific diagnostic — whether the scheduler resolved
+   *  a non-empty target for this attempt. False indicates an
+   *  upstream `missing_identifier` regression (chat id never
+   *  reached the runner). */
+  chatIdPresent?: boolean;
   /** Service-role client. Cron runtime has no operator cookie; RLS
    *  would hide publish_history without this. Manual callers can
    *  omit and use the cookie-aware client. */
@@ -337,6 +346,12 @@ export async function upsertSchedulerPublishHistoryFromOutcome(
     // Emit even when null — for Telegram, "we tried both sources and
     // got nothing" is itself diagnostic.
     metadata.target_source = input.targetSource;
+  }
+  if (input.telegramTargetType !== undefined) {
+    metadata.telegram_target_type = input.telegramTargetType;
+  }
+  if (input.chatIdPresent !== undefined) {
+    metadata.chat_id_present = input.chatIdPresent;
   }
 
   // 1. Look up the existing scheduler row (mode='api') for this exec
