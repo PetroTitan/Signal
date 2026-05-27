@@ -11,6 +11,7 @@ import {
   creativeReadinessReason,
   listCreativesForItems,
 } from "@/repositories/weekly-plan-creative-repository";
+import { selectPrimaryCreativeByItem } from "./_primary-creative-selector";
 import { getActiveContract } from "@/repositories/weekly-contract-repository";
 import { listExecutionItemsByPlanItemIds } from "@/repositories/execution-item-repository";
 import { listRecentPublishes } from "@/repositories/publish-history-repository";
@@ -123,12 +124,12 @@ export default async function WeeklyPlanPage() {
         items.map((i) => i.id),
       )
     : [];
-  const creativeByItem = new Map<string, (typeof creatives)[number]>();
-  for (const c of creatives) {
-    if (!creativeByItem.has(c.weeklyPlanItemId)) {
-      creativeByItem.set(c.weeklyPlanItemId, c);
-    }
-  }
+  // UI / MCP parity: pick the primary creative per plan_item using
+  // the SAME asset-aware selector that `signal.weekly_plan.current`
+  // uses. Pre-fix this loop was "first row wins", which surfaced
+  // older legacy / placeholder creatives even after a real upload
+  // landed — diverging from MCP. See `_primary-creative-selector.ts`.
+  const creativeByItem = selectPrimaryCreativeByItem(creatives);
 
   const execItems = items.length
     ? await listExecutionItemsByPlanItemIds(
