@@ -30,6 +30,25 @@ import {
 } from "@/core/publishing/creative-readiness";
 import type { WeeklyPlanItemCreative } from "@/repositories/weekly-plan-creative-repository";
 
+type Candidate = SelectableCreative & { row: WeeklyPlanItemCreative };
+
+function toCandidate(c: WeeklyPlanItemCreative): Candidate {
+  return {
+    id: c.id,
+    createdAt: c.createdAt,
+    status: c.status,
+    sourceType: c.sourceType,
+    assetUrl: c.assetUrl,
+    sourceUrl: c.sourceUrl,
+    storagePath: c.storagePath,
+    altText: c.altText,
+    prompt: c.prompt,
+    license: c.license,
+    attribution: c.attribution,
+    row: c,
+  };
+}
+
 /**
  * Group `creatives` by `weeklyPlanItemId` and pick the primary
  * creative per item using the shared `selectPrimaryCreative`
@@ -42,23 +61,9 @@ import type { WeeklyPlanItemCreative } from "@/repositories/weekly-plan-creative
 export function selectPrimaryCreativeByItem(
   creatives: ReadonlyArray<WeeklyPlanItemCreative>,
 ): Map<string, WeeklyPlanItemCreative> {
-  type Candidate = SelectableCreative & { row: WeeklyPlanItemCreative };
   const byItem = new Map<string, Candidate[]>();
   for (const c of creatives) {
-    const candidate: Candidate = {
-      id: c.id,
-      createdAt: c.createdAt,
-      status: c.status,
-      sourceType: c.sourceType,
-      assetUrl: c.assetUrl,
-      sourceUrl: c.sourceUrl,
-      storagePath: c.storagePath,
-      altText: c.altText,
-      prompt: c.prompt,
-      license: c.license,
-      attribution: c.attribution,
-      row: c,
-    };
+    const candidate = toCandidate(c);
     const bucket = byItem.get(c.weeklyPlanItemId);
     if (bucket) {
       bucket.push(candidate);
@@ -72,4 +77,30 @@ export function selectPrimaryCreativeByItem(
     if (winner) out.set(itemId, winner.row);
   }
   return out;
+}
+
+/**
+ * Pick the primary creative from a flat list using the same shared
+ * selector. Single-item callers (e.g., the per-item approval action
+ * that fetches creatives for ONE plan_item) reach for this to
+ * replace the unsafe `creatives[0] ?? null` pattern.
+ *
+ * Returns the ORIGINAL `WeeklyPlanItemCreative` row (or null when
+ * the list is empty) so downstream consumers like
+ * `assessItemApprovalReadiness` and `bindBlueskyApprovalShapeOrRefuse`
+ * keep the exact shape they always had — selector input parity only,
+ * no approval-logic change.
+ *
+ * If the list contains creatives from multiple plan_items the
+ * winner is still the single highest-priority row across the whole
+ * input; callers that need per-item grouping should use
+ * `selectPrimaryCreativeByItem` instead.
+ */
+export function selectPrimaryCreativeFromList(
+  creatives: ReadonlyArray<WeeklyPlanItemCreative>,
+): WeeklyPlanItemCreative | null {
+  if (creatives.length === 0) return null;
+  const candidates = creatives.map(toCandidate);
+  const winner = selectPrimaryCreative(candidates);
+  return winner ? winner.row : null;
 }
