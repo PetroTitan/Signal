@@ -531,21 +531,36 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
   const target = resolvedTarget.target;
   const targetSource = resolvedTarget.source;
 
-  // Approved creative pickup. Only the Bluesky publisher reads media
-  // today; loading is platform-gated so we don't pay the read for
-  // text-only adapters. The scheduler uses its service-role client
-  // because the cron runtime has no operator cookie (same RLS reason
-  // as the orchestrator's repo plumbing).
+  // Approved creative pickup. Bluesky has used the full creative
+  // flow since Phase F1 (uploadBlob + embed). PR fix(media-wiring):
+  // dev.to and Telegram now also resolve approved creatives here so
+  // their adapters can attach the cover image / send a photo. Other
+  // platforms still skip the read to avoid the round-trip.
   //
-  // If an approved creative exists but is malformed (no asset URL or
-  // no alt text), we BLOCK the publish here rather than letting the
-  // publisher silently downgrade to text-only. The operator gets a
-  // clear reason code (creative_missing_asset / creative_missing_alt_text)
-  // they can act on.
+  // Per-platform block semantics (when an approved creative exists
+  // but is malformed — missing asset URL or alt text):
+  //
+  //   - bluesky: BLOCK the publish. The operator approved the row;
+  //     silently downgrading to text-only would publish the post
+  //     without the image they signed off on. Existing behavior.
+  //   - devto / telegram: media is OPTIONAL. Do NOT block. Fall back
+  //     to the existing text-only path and surface the resolve verdict
+  //     in publish_history metadata so the operator can see why the
+  //     media wasn't attached.
   let publishCreative: import("./publishing-types").PublishCreative | null = null;
+  let publishCoverImageUrl: string | null = null;
+  type MediaMode = "devto_cover_image" | "telegram_photo" | "text_only";
+  let mediaMode: MediaMode = "text_only";
+  let mediaResolveStatus: "none" | "ready" | "blocked" = "none";
+  let mediaResolveReason: string | null = null;
   const planItemId =
     (item.metadata as { plan_item_id?: string })?.plan_item_id ?? "";
-  if (platform === "bluesky" && planItemId) {
+  const PLATFORMS_THAT_RESOLVE_CREATIVE: ReadonlySet<PublishPlatform> = new Set<PublishPlatform>([
+    "bluesky",
+    "devto",
+    "telegram",
+  ]);
+  if (PLATFORMS_THAT_RESOLVE_CREATIVE.has(platform) && planItemId) {
     const { listCreativesForItem } = await import(
       "@/repositories/weekly-plan-creative-repository"
     );
@@ -559,20 +574,40 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
     );
     const decision = resolvePublishCreative(creatives);
     if (decision.kind === "blocked") {
-      return {
-        status: "blocked",
-        reasonCode: decision.reasonCode,
-        reasonDetail: decision.reasonDetail,
-        externalId: null,
-        externalUrl: null,
-        metadata: {
-          creative_id: decision.creativeId,
-          plan_item_id: planItemId,
-        },
-      };
+      if (platform === "bluesky") {
+        return {
+          status: "blocked",
+          reasonCode: decision.reasonCode,
+          reasonDetail: decision.reasonDetail,
+          externalId: null,
+          externalUrl: null,
+          metadata: {
+            creative_id: decision.creativeId,
+            plan_item_id: planItemId,
+          },
+        };
+      }
+      // dev.to / telegram — media optional, surface the verdict but
+      // continue text-only. The adapter publishes the post without
+      // the malformed creative; the operator sees the reason in
+      // publish_history.metadata.
+      mediaResolveStatus = "blocked";
+      mediaResolveReason = decision.reasonCode;
     }
     if (decision.kind === "ready") {
       publishCreative = decision.creative;
+      mediaResolveStatus = "ready";
+      if (platform === "devto") {
+        publishCoverImageUrl =
+          decision.creative.assetUrl ?? decision.creative.sourceUrl ?? null;
+        mediaMode = publishCoverImageUrl ? "devto_cover_image" : "text_only";
+      } else if (platform === "telegram") {
+        mediaMode =
+          decision.creative.assetUrl !== null ||
+          decision.creative.sourceUrl !== null
+            ? "telegram_photo"
+            : "text_only";
+      }
     }
   }
 
@@ -590,6 +625,7 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
       target,
       mode,
       creative: publishCreative,
+      coverImageUrl: publishCoverImageUrl,
     },
     context: {
       hasActiveContract,
@@ -627,7 +663,7 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
   // Operator-visible diagnostics only; the chat id itself is NOT
   // emitted in metadata (it lives in execution_items.metadata.target
   // upstream when set).
-  const taggedOutcome =
+  const baseTelegramTagged =
     platform === "telegram"
       ? {
           ...outcome,
@@ -641,6 +677,40 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
           },
         }
       : outcome;
+
+  // Media-wiring observability (dev.to + Telegram). Additive metadata
+  // only; no DB schema change. Bluesky is unchanged — the orchestrator
+  // already records its own media diagnostics (blob CID, etc.).
+  const mediaMetadata: Record<string, unknown> =
+    platform === "devto" || platform === "telegram"
+      ? {
+          media_mode: mediaMode,
+          media_url_present:
+            publishCreative !== null &&
+            (publishCreative.assetUrl !== null ||
+              publishCreative.sourceUrl !== null),
+          ...(publishCreative
+            ? { creative_id: publishCreative.id }
+            : {}),
+          ...(platform === "devto" && publishCoverImageUrl !== null
+            ? { cover_image_url: publishCoverImageUrl }
+            : {}),
+          ...(mediaResolveStatus !== "none"
+            ? { creative_resolve_status: mediaResolveStatus }
+            : {}),
+          ...(mediaResolveReason !== null
+            ? { creative_resolve_reason: mediaResolveReason }
+            : {}),
+        }
+      : {};
+
+  const taggedOutcome =
+    Object.keys(mediaMetadata).length > 0
+      ? {
+          ...baseTelegramTagged,
+          metadata: { ...baseTelegramTagged.metadata, ...mediaMetadata },
+        }
+      : baseTelegramTagged;
 
   await applyOutcome({
     supabase,
