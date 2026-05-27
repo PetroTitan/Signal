@@ -537,9 +537,7 @@ describe("creativeSelectionPriority", () => {
     ).toBe(0);
   });
 
-  it("returns 0 for source_type='planned' placeholder even if a stray asset_url leaks in", () => {
-    // Defensive: source_type='planned' is a placeholder by contract;
-    // it should never win selection regardless of column drift.
+  it("returns 0 for source_type='planned' placeholder", () => {
     expect(
       creativeSelectionPriority({
         status: "planned",
@@ -555,7 +553,9 @@ describe("creativeSelectionPriority", () => {
     ).toBe(0);
   });
 
-  it("returns 8 for approved + storage-backed (storage_path + asset_url)", () => {
+  // ---- storage_path-backed tier (12..15) ----
+
+  it("returns 15 for approved + storage_path (canonical workspace upload)", () => {
     expect(
       creativeSelectionPriority({
         status: "approved",
@@ -568,8 +568,126 @@ describe("creativeSelectionPriority", () => {
         license: null,
         attribution: null,
       }),
+    ).toBe(15);
+  });
+
+  it("returns 14 for pending_review + storage_path", () => {
+    expect(
+      creativeSelectionPriority({
+        status: "pending_review",
+        sourceType: "uploaded",
+        assetUrl: null,
+        sourceUrl: null,
+        storagePath: "ws-1/item-1/a.jpg",
+        altText: null,
+        prompt: null,
+        license: null,
+        attribution: null,
+      }),
+    ).toBe(14);
+  });
+
+  it("returns 13 for planned status + storage_path (derived asset_ready)", () => {
+    expect(
+      creativeSelectionPriority({
+        status: "planned",
+        sourceType: "uploaded",
+        assetUrl: null,
+        sourceUrl: null,
+        storagePath: "ws-1/item-1/a.jpg",
+        altText: null,
+        prompt: null,
+        license: null,
+        attribution: null,
+      }),
+    ).toBe(13);
+  });
+
+  it("returns 12 for rejected + storage_path", () => {
+    expect(
+      creativeSelectionPriority({
+        status: "rejected",
+        sourceType: "uploaded",
+        assetUrl: null,
+        sourceUrl: null,
+        storagePath: "ws-1/item-1/a.jpg",
+        altText: null,
+        prompt: null,
+        license: null,
+        attribution: null,
+      }),
+    ).toBe(12);
+  });
+
+  // ---- asset_url-only tier (8..11): legacy generated / hosted ----
+
+  it("returns 11 for approved + asset_url only (legacy generated, NO storage_path)", () => {
+    // Mirrors plan_item 41354be5 row 95695e78: generated/approved
+    // with a data: URL asset_url, no storage_path.
+    expect(
+      creativeSelectionPriority({
+        status: "approved",
+        sourceType: "generated",
+        assetUrl: "data:image/jpeg;base64,/9j/4AAQ...",
+        sourceUrl: null,
+        storagePath: null,
+        altText: "alt",
+        prompt: "A landscape photo",
+        license: null,
+        attribution: null,
+      }),
+    ).toBe(11);
+  });
+
+  it("returns 10 for pending_review + asset_url only", () => {
+    expect(
+      creativeSelectionPriority({
+        status: "pending_review",
+        sourceType: "generated",
+        assetUrl: "https://gen.example.com/result.png",
+        sourceUrl: null,
+        storagePath: null,
+        altText: null,
+        prompt: "p",
+        license: null,
+        attribution: null,
+      }),
+    ).toBe(10);
+  });
+
+  it("returns 9 for planned status + asset_url only", () => {
+    expect(
+      creativeSelectionPriority({
+        status: "planned",
+        sourceType: "generated",
+        assetUrl: "https://gen.example.com/result.png",
+        sourceUrl: null,
+        storagePath: null,
+        altText: null,
+        prompt: "p",
+        license: null,
+        attribution: null,
+      }),
+    ).toBe(9);
+  });
+
+  it("returns 8 for rejected + asset_url only", () => {
+    expect(
+      creativeSelectionPriority({
+        status: "rejected",
+        sourceType: "generated",
+        assetUrl: "https://gen.example.com/result.png",
+        sourceUrl: null,
+        storagePath: null,
+        altText: null,
+        prompt: "p",
+        license: null,
+        attribution: null,
+      }),
     ).toBe(8);
   });
+
+  // ---- source_url-only tier (4..7): external / degenerate ----
 
   it("returns 7 for approved + source_url only (external source)", () => {
     expect(
@@ -587,14 +705,14 @@ describe("creativeSelectionPriority", () => {
     ).toBe(7);
   });
 
-  it("returns 6 for pending_review + storage-backed (storage_path only is enough)", () => {
+  it("returns 6 for pending_review + source_url only (degenerate uploaded re-attach)", () => {
     expect(
       creativeSelectionPriority({
         status: "pending_review",
         sourceType: "uploaded",
         assetUrl: null,
-        sourceUrl: null,
-        storagePath: "ws-1/item-1/a.jpg",
+        sourceUrl: "https://example.com/img.png",
+        storagePath: null,
         altText: null,
         prompt: null,
         license: null,
@@ -603,11 +721,11 @@ describe("creativeSelectionPriority", () => {
     ).toBe(6);
   });
 
-  it("returns 5 for pending_review + source_url only (degenerate uploaded re-attach)", () => {
+  it("returns 5 for planned status + source_url only", () => {
     expect(
       creativeSelectionPriority({
-        status: "pending_review",
-        sourceType: "uploaded",
+        status: "planned",
+        sourceType: "manual_url",
         assetUrl: null,
         sourceUrl: "https://example.com/img.png",
         storagePath: null,
@@ -619,13 +737,13 @@ describe("creativeSelectionPriority", () => {
     ).toBe(5);
   });
 
-  it("returns 4 for planned status + storage-backed (derived asset_ready)", () => {
+  it("returns 4 for rejected + source_url only", () => {
     expect(
       creativeSelectionPriority({
-        status: "planned",
-        sourceType: "uploaded",
-        assetUrl: "https://cdn.example.com/a.jpg",
-        sourceUrl: null,
+        status: "rejected",
+        sourceType: "manual_url",
+        assetUrl: null,
+        sourceUrl: "https://example.com/img.png",
         storagePath: null,
         altText: null,
         prompt: null,
@@ -635,52 +753,60 @@ describe("creativeSelectionPriority", () => {
     ).toBe(4);
   });
 
-  it("returns 3 for planned status + source_url only", () => {
-    expect(
-      creativeSelectionPriority({
-        status: "planned",
-        sourceType: "manual_url",
-        assetUrl: null,
-        sourceUrl: "https://example.com/img.png",
-        storagePath: null,
-        altText: null,
-        prompt: null,
-        license: null,
-        attribution: null,
-      }),
-    ).toBe(3);
+  // ---- presence-dominates-status cross-tier checks ----
+
+  it("storage_path tier (any status) always outranks asset_url-only tier (any status)", () => {
+    // Pins the key structural rule. rejected+storage_path (12) >
+    // approved+asset_url-only (11).
+    const rejectedStorage = creativeSelectionPriority({
+      status: "rejected",
+      sourceType: "uploaded",
+      assetUrl: null,
+      sourceUrl: null,
+      storagePath: "ws-1/item-1/a.jpg",
+      altText: null,
+      prompt: null,
+      license: null,
+      attribution: null,
+    });
+    const approvedAssetUrlOnly = creativeSelectionPriority({
+      status: "approved",
+      sourceType: "generated",
+      assetUrl: "data:image/jpeg;base64,abc",
+      sourceUrl: null,
+      storagePath: null,
+      altText: "alt",
+      prompt: "p",
+      license: null,
+      attribution: null,
+    });
+    expect(rejectedStorage).toBeGreaterThan(approvedAssetUrlOnly);
   });
 
-  it("returns 2 for rejected + storage-backed (selectable but below other asset-backed)", () => {
-    expect(
-      creativeSelectionPriority({
-        status: "rejected",
-        sourceType: "uploaded",
-        assetUrl: "https://cdn.example.com/a.jpg",
-        sourceUrl: null,
-        storagePath: "ws-1/item-1/a.jpg",
-        altText: null,
-        prompt: null,
-        license: null,
-        attribution: null,
-      }),
-    ).toBe(2);
-  });
-
-  it("returns 1 for rejected + source_url only", () => {
-    expect(
-      creativeSelectionPriority({
-        status: "rejected",
-        sourceType: "manual_url",
-        assetUrl: null,
-        sourceUrl: "https://example.com/img.png",
-        storagePath: null,
-        altText: null,
-        prompt: null,
-        license: null,
-        attribution: null,
-      }),
-    ).toBe(1);
+  it("asset_url-only tier (any status) always outranks source_url-only tier (any status)", () => {
+    const rejectedAssetUrl = creativeSelectionPriority({
+      status: "rejected",
+      sourceType: "generated",
+      assetUrl: "https://gen.example.com/r.png",
+      sourceUrl: null,
+      storagePath: null,
+      altText: null,
+      prompt: "p",
+      license: null,
+      attribution: null,
+    });
+    const approvedSourceUrl = creativeSelectionPriority({
+      status: "approved",
+      sourceType: "wikimedia",
+      assetUrl: null,
+      sourceUrl: "https://commons.wikimedia.org/foo.jpg",
+      storagePath: null,
+      altText: "alt",
+      license: "CC-BY-4.0",
+      attribution: "Photo: Anon",
+      prompt: null,
+    });
+    expect(rejectedAssetUrl).toBeGreaterThan(approvedSourceUrl);
   });
 });
 
@@ -870,5 +996,131 @@ describe("selectPrimaryCreative", () => {
     expect(candidates).toHaveLength(2);
     expect(candidates[0].id).toBe("planned-1");
     expect(candidates[1].id).toBe("uploaded-1");
+  });
+
+  // -------------------------------------------------------------------
+  // Bluesky edge case (plan_item 41354be5): a legacy
+  // generated/approved row with a base64 `data:` asset_url (no
+  // storage_path) was beating the newer uploaded/pending_review row
+  // with a real workspace storage_path. Presence must dominate status.
+  // -------------------------------------------------------------------
+
+  it("REGRESSION: generated/approved with data: asset_url (no storage_path) loses to uploaded/pending_review with storage_path", () => {
+    // Mirrors plan_item 41354be5 verbatim:
+    //   95695e78 (older, 2026-05-26 12:33) — generated/approved,
+    //     asset_url = data:image/jpeg;base64,..., no storage_path.
+    //   dc03ca25 (newer, 2026-05-27 13:43) — uploaded/pending_review,
+    //     asset_url = Supabase public URL, storage_path present.
+    // Expected: dc03ca25 wins because storage_path tier dominates
+    // status — even though the legacy row is "approved" it has no
+    // canonical workspace storage backing.
+    const legacyApproved = selectable("95695e78", "2026-05-26T12:33:07Z", {
+      status: "approved",
+      sourceType: "generated",
+      assetUrl: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAA...",
+      prompt: "A landscape photo",
+      altText: "alt",
+    });
+    const newUpload = selectable("dc03ca25", "2026-05-27T13:43:12Z", {
+      status: "pending_review",
+      sourceType: "uploaded",
+      assetUrl:
+        "https://kcaxqzbnrxzqisewbdkf.supabase.co/storage/v1/object/public/weekly-plan-creatives/3ae3ff71/41354be5/dde690.png",
+      storagePath: "3ae3ff71/41354be5/dde690.png",
+      altText: "alt",
+      prompt: "A landscape photo",
+    });
+    expect(
+      selectPrimaryCreative([legacyApproved, newUpload])?.id,
+    ).toBe("dc03ca25");
+    // Order-independent.
+    expect(
+      selectPrimaryCreative([newUpload, legacyApproved])?.id,
+    ).toBe("dc03ca25");
+  });
+
+  it("REGRESSION: uploaded/pending_review with storage_path beats source_url-only generated/approved", () => {
+    // A `generated/approved` row that only has source_url (no
+    // storage_path, no asset_url) is even more degenerate than the
+    // data-URL case — it sits in the source_url-only presence tier
+    // and must lose to any storage-backed uploaded row.
+    const legacySourceUrlOnly = selectable("legacy-1", "2026-05-26T12:00:00Z", {
+      status: "approved",
+      sourceType: "generated",
+      sourceUrl: "https://gen.example.com/r.png",
+      prompt: "p",
+      altText: "alt",
+    });
+    const newUpload = selectable("upload-1", "2026-05-27T13:43:12Z", {
+      status: "pending_review",
+      sourceType: "uploaded",
+      assetUrl: "https://cdn.example.com/a.png",
+      storagePath: "ws-1/item-1/a.png",
+      altText: "alt",
+    });
+    expect(
+      selectPrimaryCreative([legacySourceUrlOnly, newUpload])?.id,
+    ).toBe("upload-1");
+  });
+
+  it("approved uploaded with storage_path still wins over pending_review uploaded with storage_path", () => {
+    // Within the storage-backed presence tier, status still wins.
+    // Normal happy path: approved beats pending_review.
+    const olderApproved = selectable("approved-1", "2026-05-27T12:00:00Z", {
+      status: "approved",
+      sourceType: "uploaded",
+      assetUrl: "https://cdn.example.com/older.jpg",
+      storagePath: "ws-1/item-1/older.jpg",
+      altText: "alt",
+    });
+    const newerPending = selectable("pending-1", "2026-05-27T13:00:00Z", {
+      status: "pending_review",
+      sourceType: "uploaded",
+      assetUrl: "https://cdn.example.com/newer.jpg",
+      storagePath: "ws-1/item-1/newer.jpg",
+      altText: "alt",
+    });
+    expect(
+      selectPrimaryCreative([olderApproved, newerPending])?.id,
+    ).toBe("approved-1");
+  });
+
+  it("existing normal approved uploaded creative is still selected (no regression)", () => {
+    // The simplest happy path: one approved uploaded creative with
+    // the canonical storage tuple alongside a planned placeholder.
+    // The uploaded creative wins as before.
+    const planned = selectable("planned-1", "2026-05-27T12:00:00Z", {
+      status: "planned",
+      sourceType: "planned",
+    });
+    const approvedUpload = selectable("upload-1", "2026-05-27T13:00:00Z", {
+      status: "approved",
+      sourceType: "uploaded",
+      assetUrl: "https://cdn.example.com/a.jpg",
+      storagePath: "ws-1/item-1/a.jpg",
+      altText: "alt",
+    });
+    expect(
+      selectPrimaryCreative([planned, approvedUpload])?.id,
+    ).toBe("upload-1");
+  });
+
+  it("planned placeholders still lose to asset-backed creatives (incl. legacy data: URL rows)", () => {
+    // Sanity: even the most degenerate asset-backed row (data: URL
+    // with no storage_path) outranks the prompt-only placeholder.
+    const planned = selectable("planned-1", "2026-05-27T12:00:00Z", {
+      status: "planned",
+      sourceType: "planned",
+    });
+    const legacyDataUrl = selectable("legacy-1", "2026-05-27T13:00:00Z", {
+      status: "approved",
+      sourceType: "generated",
+      assetUrl: "data:image/jpeg;base64,/9j/4AAQ...",
+      prompt: "p",
+      altText: "alt",
+    });
+    expect(
+      selectPrimaryCreative([planned, legacyDataUrl])?.id,
+    ).toBe("legacy-1");
   });
 });
