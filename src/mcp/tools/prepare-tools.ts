@@ -19,6 +19,7 @@ import {
   validateIdentitySourceUrl,
 } from "@/core/identity-sources/url-validation";
 import { requiresCreative } from "@/core/platform-native/approval-policy";
+import { validateAttachInput } from "@/core/publishing/creative-readiness";
 
 /**
  * Phase F0 — prepare/write-pending tools.
@@ -469,6 +470,38 @@ export async function weeklyPlanAttachCreative(
       summary: "weekly_plan_item not found in this workspace",
     });
   }
+
+  // Hard refusal for the false-ready state: source_type='generated'
+  // with no real asset reference (asset_url AND source_url both
+  // null/empty) is a prompt-only creative pretending to be media.
+  // The operator should attach it as `source_type='planned'`
+  // instead and upgrade once an asset actually exists. The schema
+  // parser already requires `prompt` for generated; this layer
+  // adds the asset-presence requirement.
+  const attachRefusal = validateAttachInput({
+    sourceType: args.source_type,
+    assetUrl: args.asset_url ?? null,
+    sourceUrl: args.source_url ?? null,
+    prompt: args.prompt ?? null,
+  });
+  if (attachRefusal !== null) {
+    return failed({
+      tool: "signal.weekly_plan.attach_creative",
+      summary:
+        attachRefusal === "generated_requires_asset_use_planned"
+          ? "Prompt-only creatives must be attached as source_type='planned' (no asset_url + no source_url present). Generated source_type requires a real asset reference."
+          : attachRefusal === "generated_requires_prompt"
+            ? "Generated creatives require a prompt."
+            : "External-source creatives require a source_url.",
+    });
+  }
+
+  // Status mapping is derived from source_type:
+  //   - "planned"  → status='planned'  (placeholder; no asset)
+  //   - others     → status='pending_review' once the asset is
+  //                  attached. The attach guard above ensures a
+  //                  real asset reference exists before reaching
+  //                  this line for any non-planned source.
   const status = args.source_type === "planned" ? "planned" : "pending_review";
   const { data, error } = await ctx.db
     .from("weekly_plan_item_creatives")
