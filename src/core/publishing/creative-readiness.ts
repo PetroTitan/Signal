@@ -223,6 +223,119 @@ export interface AttachValidationInput {
   prompt: string | null;
 }
 
+/**
+ * Read-model selector — pick THE primary creative for a plan_item
+ * when more than one row exists.
+ *
+ * Multiple rows happen in production:
+ *   - the prepare_item flow drops a `planned` placeholder (no asset)
+ *   - then `signal.upload_creative_asset` adds the real asset-backed
+ *     row later
+ *   - operators / Codex may upload a replacement, leaving the
+ *     earlier asset-backed row in place for audit
+ *
+ * Pre-fix the read tool returned the first row by `created_at ASC`,
+ * which kept surfacing the planned placeholder even after a real
+ * asset was uploaded. This helper encodes the operator-facing rule:
+ *
+ *   Asset-backed > not asset-backed.
+ *   Within asset-backed: approved > pending_review > planned
+ *     (derived asset_ready) > rejected.
+ *   Within the same status tier: storage-backed (storage_path or
+ *     asset_url present) > source-url-only.
+ *   Within the same combined tier: newest `createdAt` wins.
+ *
+ * Planned placeholders are only chosen when NO asset-backed row
+ * exists for the item. Historical placeholders are never deleted
+ * or mutated by this selector — it only picks the "current" one.
+ *
+ * Pure. Exported for tests.
+ */
+export interface SelectableCreative extends CreativeReadinessInput {
+  /** Stable identifier used by the caller's projection. */
+  id: string;
+  /** ISO timestamp used to break ties within the same tier. */
+  createdAt: string;
+}
+
+/**
+ * Numeric priority for a creative row. Higher = preferred. Pure.
+ *
+ * Two signals are encoded into one score:
+ *
+ *   - Status tier (primary): approved > pending_review > planned
+ *     (asset_ready) > rejected > no asset.
+ *   - Storage sub-tier (secondary, within the same status tier):
+ *     storage-backed (storage_path OR asset_url set) outranks
+ *     source-url-only.
+ *
+ *   no asset (or source_type='planned')           → 0
+ *   rejected + source_url only                    → 1
+ *   rejected + storage-backed                     → 2
+ *   planned (asset_ready) + source_url only       → 3
+ *   planned (asset_ready) + storage-backed        → 4
+ *   pending_review + source_url only              → 5
+ *   pending_review + storage-backed               → 6
+ *   approved + source_url only                    → 7
+ *   approved + storage-backed                     → 8
+ *
+ * Storage sub-tier rationale: a properly uploaded creative carries
+ * `storage_path` (workspace bucket key) and the derived `asset_url`.
+ * A `source_url`-only row for `source_type='uploaded'` is a
+ * degenerate re-attach where the canonical storage tuple is missing
+ * — we surface the storage-backed row instead so the UI / publishers
+ * see the operator's actual upload, not a partial second row.
+ * External-source creatives (`wikimedia`, `manual_url`) legitimately
+ * carry only `source_url`; they still win against tier 0 and against
+ * other source-url-only rows by recency.
+ */
+export function creativeSelectionPriority(
+  creative: CreativeReadinessInput,
+): 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 {
+  if (!hasRealMediaAsset(creative)) return 0;
+  if (creative.sourceType === "planned") return 0;
+  const storageBoost: 0 | 1 =
+    nonEmpty(creative.assetUrl) || nonEmpty(creative.storagePath) ? 1 : 0;
+  if (creative.status === "approved") return (7 + storageBoost) as 7 | 8;
+  if (creative.status === "pending_review") return (5 + storageBoost) as 5 | 6;
+  // status === "planned" + asset present → derived "asset_ready"
+  if (creative.status === "planned") return (3 + storageBoost) as 3 | 4;
+  // status === "rejected" + asset present — kept selectable so the
+  // operator can see the rejection state, but ranked below every
+  // other asset-backed row.
+  return (1 + storageBoost) as 1 | 2;
+}
+
+/**
+ * Pick the primary creative for one plan_item from a candidate list.
+ * Returns null when the list is empty.
+ *
+ * Two-key ordering: (priority DESC, createdAt DESC).
+ */
+export function selectPrimaryCreative<T extends SelectableCreative>(
+  candidates: ReadonlyArray<T>,
+): T | null {
+  if (candidates.length === 0) return null;
+  let best: T = candidates[0];
+  let bestPriority = creativeSelectionPriority(best);
+  for (let i = 1; i < candidates.length; i += 1) {
+    const candidate = candidates[i];
+    const priority = creativeSelectionPriority(candidate);
+    if (priority > bestPriority) {
+      best = candidate;
+      bestPriority = priority;
+      continue;
+    }
+    if (priority === bestPriority) {
+      // Tie-breaker: newest createdAt wins.
+      if (candidate.createdAt > best.createdAt) {
+        best = candidate;
+      }
+    }
+  }
+  return best;
+}
+
 export function validateAttachInput(
   input: AttachValidationInput,
 ): AttachRefusal | null {

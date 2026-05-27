@@ -5,6 +5,8 @@ import type { ToolContext } from "../tool-context";
 import {
   deriveCreativeReadinessState,
   hasRealMediaAsset,
+  selectPrimaryCreative,
+  type SelectableCreative,
 } from "@/core/publishing/creative-readiness";
 
 /**
@@ -144,9 +146,22 @@ export async function weeklyPlanCurrent(
 }
 
 /**
- * Internal helper for `signal.weekly_plan.current`. Loads the
- * creative row (one primary per plan_item, the first by insertion
- * order) and projects the readiness fields the review flow needs.
+ * Internal helper for `signal.weekly_plan.current`. Loads every
+ * creative row for the given plan items and picks ONE primary per
+ * item using the asset-aware selector. Projects the readiness fields
+ * the review flow needs.
+ *
+ * Selector rule (see `selectPrimaryCreative`):
+ *   - asset-backed rows outrank prompt-only planned placeholders;
+ *   - within asset-backed: approved > pending_review > asset_ready >
+ *     rejected;
+ *   - ties broken by newest `created_at`.
+ *
+ * Pre-fix behavior was "first row by `created_at ASC`", which kept
+ * surfacing the older planned placeholder even after a real upload
+ * landed. Historical placeholders are still RETURNED by the DB
+ * query and left in place — the selector only chooses the current
+ * primary; nothing is deleted or mutated.
  *
  * Source-of-truth contract: every field returned here comes from a
  * persisted column. The derived `readiness_state` is the single
@@ -165,15 +180,14 @@ async function loadCreativeReadinessByItem(
       "id, weekly_plan_item_id, creative_type, source_type, status, asset_url, source_url, storage_path, prompt, alt_text, license, attribution, metadata, created_at",
     )
     .eq("workspace_id", ctx.workspaceId)
-    .in("weekly_plan_item_id", planItemIds)
-    .order("created_at", { ascending: true });
+    .in("weekly_plan_item_id", planItemIds);
   if (error) {
     // Best-effort surface: read failure here must not break the
     // read tool. Return what we have so far; callers will see
     // `creative: null` and fall back to existing UX.
     return out;
   }
-  for (const row of (data ?? []) as Array<{
+  type CreativeRow = {
     id: string;
     weekly_plan_item_id: string;
     creative_type: string;
@@ -186,11 +200,19 @@ async function loadCreativeReadinessByItem(
     alt_text: string | null;
     license: string | null;
     attribution: string | null;
-    metadata: Record<string, unknown>;
-  }>) {
-    // Keep insertion order — first creative is the primary.
-    if (out.has(row.weekly_plan_item_id)) continue;
-    const readinessInput = {
+    metadata: Record<string, unknown> | null;
+    created_at: string;
+  };
+  // Group all rows by plan_item, then pick the winner with the
+  // asset-aware selector. Keep the originating row alongside the
+  // selectable projection so the response can carry creative_type
+  // and metadata (not part of CreativeReadinessInput).
+  type Candidate = SelectableCreative & { row: CreativeRow };
+  const byItem = new Map<string, Candidate[]>();
+  for (const row of (data ?? []) as CreativeRow[]) {
+    const candidate: Candidate = {
+      id: row.id,
+      createdAt: row.created_at,
       status: row.status,
       sourceType: row.source_type,
       assetUrl: row.asset_url,
@@ -200,24 +222,35 @@ async function loadCreativeReadinessByItem(
       prompt: row.prompt,
       license: row.license,
       attribution: row.attribution,
+      row,
     };
-    const readinessState = deriveCreativeReadinessState(readinessInput);
-    const assetPresent = hasRealMediaAsset(readinessInput);
+    const bucket = byItem.get(row.weekly_plan_item_id);
+    if (bucket) {
+      bucket.push(candidate);
+    } else {
+      byItem.set(row.weekly_plan_item_id, [candidate]);
+    }
+  }
+  for (const [itemId, candidates] of byItem) {
+    const winner = selectPrimaryCreative(candidates);
+    if (!winner) continue;
+    const readinessState = deriveCreativeReadinessState(winner);
+    const assetPresent = hasRealMediaAsset(winner);
     const aspectRatio =
-      typeof row.metadata?.aspect_ratio === "string"
-        ? (row.metadata.aspect_ratio as string)
+      typeof winner.row.metadata?.aspect_ratio === "string"
+        ? (winner.row.metadata.aspect_ratio as string)
         : null;
-    out.set(row.weekly_plan_item_id, {
-      id: row.id,
-      creative_type: row.creative_type,
-      source_type: row.source_type,
-      status: row.status,
+    out.set(itemId, {
+      id: winner.id,
+      creative_type: winner.row.creative_type,
+      source_type: winner.sourceType,
+      status: winner.status,
       readiness_state: readinessState,
       asset_present: assetPresent,
-      asset_url_present: nonEmpty(row.asset_url),
-      source_url_present: nonEmpty(row.source_url),
-      storage_path_present: nonEmpty(row.storage_path),
-      alt_text: row.alt_text,
+      asset_url_present: nonEmpty(winner.assetUrl),
+      source_url_present: nonEmpty(winner.sourceUrl),
+      storage_path_present: nonEmpty(winner.storagePath),
+      alt_text: winner.altText,
       aspect_ratio: aspectRatio,
       ready_for_publish: readinessState === "approved" && assetPresent,
     });
