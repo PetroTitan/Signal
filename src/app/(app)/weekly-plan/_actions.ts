@@ -35,6 +35,7 @@ import {
 } from "@/repositories/weekly-plan-creative-repository";
 import { parseScheduledAtField } from "./parse-scheduled-at-field";
 import { assessItemApprovalReadiness } from "./approval-readiness.server";
+import { selectPrimaryCreativeFromList } from "./_primary-creative-selector";
 import {
   emitScheduleParseInvalid,
   emitScheduleSaveRejected,
@@ -340,7 +341,7 @@ export async function approveWeeklyPlanAction(
         return false;
       }
       const itemCreatives = creativesByItem.get(it.id) ?? [];
-      const primaryCreative = itemCreatives[0] ?? null;
+      const primaryCreative = selectPrimaryCreativeFromList(itemCreatives);
       const reason = creativeReadinessReason(primaryCreative);
       if (reason) {
         warnings.push(
@@ -686,7 +687,7 @@ export async function approveAndHoldAction(
         return false;
       }
       const itemCreatives = creativesByItem.get(it.id) ?? [];
-      const primaryCreative = itemCreatives[0] ?? null;
+      const primaryCreative = selectPrimaryCreativeFromList(itemCreatives);
       const reason = creativeReadinessReason(primaryCreative);
       if (reason) {
         warnings.push(
@@ -965,7 +966,7 @@ export async function approvePlanItemAndHoldAction(
     // execution_items doesn't apply. Bulk hold and immediate
     // scheduling still gate on contract.
     const allCreatives = await listCreativesForItems(workspaceId, [itemId]);
-    const primaryCreative = allCreatives[0] ?? null;
+    const primaryCreative = selectPrimaryCreativeFromList(allCreatives);
 
     const readiness = assessItemApprovalReadiness({
       item,
@@ -1170,7 +1171,7 @@ export async function approvePlanItemAndScheduleAction(
     // execution queue (or create one).
     const contract = await getActiveContract(workspaceId);
     const allCreatives = await listCreativesForItems(workspaceId, [itemId]);
-    const primaryCreative = allCreatives[0] ?? null;
+    const primaryCreative = selectPrimaryCreativeFromList(allCreatives);
 
     const readiness = assessItemApprovalReadiness({
       item,
@@ -1684,7 +1685,7 @@ export async function scheduleApprovedItemAction(
     const item = await getPlanItemById(workspaceId, itemId);
     const contract = await getActiveContract(workspaceId);
     const allCreatives = await listCreativesForItems(workspaceId, [itemId]);
-    const primaryCreative = allCreatives[0] ?? null;
+    const primaryCreative = selectPrimaryCreativeFromList(allCreatives);
 
     const readiness = assessItemApprovalReadiness({
       item,
