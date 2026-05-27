@@ -188,8 +188,10 @@ export async function updateCreative(input: {
  *   2. status='approved' — operator approval is explicit.
  *   3. source_type !== 'planned' (placeholder is not enough).
  *   4. alt_text is non-empty (accessibility).
- *   5. asset_url OR source_url exists — a real reference, not just a
- *      prompt or a vague note.
+ *   5. asset_url OR source_url OR storage_path exists — a REAL
+ *      persisted asset reference, not just a prompt, alt text, or
+ *      metadata note. Source-of-truth rule: prompts / metadata /
+ *      aspect ratios are NEVER treated as proof of a media asset.
  *   6. For external sources (wikimedia / manual_url): license AND
  *      attribution.
  *   7. For generated sources: prompt is non-empty (the audit trail
@@ -207,27 +209,37 @@ export type CreativeReadinessReason =
   | "creative_missing_prompt"
   | "creative_not_approved";
 
+function nonEmpty(s: string | null | undefined): boolean {
+  return typeof s === "string" && s.trim().length > 0;
+}
+
 export function creativeReadinessReason(
   creative: WeeklyPlanItemCreative | null,
 ): CreativeReadinessReason | null {
   if (!creative) return "creative_missing";
   if (creative.status === "rejected") return "creative_rejected";
   if (creative.sourceType === "planned") return "creative_only_planned";
-  if (!creative.assetUrl && !creative.sourceUrl)
+  // Real asset presence: asset_url OR source_url OR storage_path.
+  // storage_path covers the upload flow where the signed URL hasn't
+  // been minted yet — refusing on its absence would block legitimate
+  // uploaded creatives. The check matches `hasRealMediaAsset` in
+  // `creative-readiness.ts` (single source of truth).
+  if (
+    !nonEmpty(creative.assetUrl) &&
+    !nonEmpty(creative.sourceUrl) &&
+    !nonEmpty(creative.storagePath)
+  ) {
     return "creative_missing_asset";
-  if (!creative.altText || creative.altText.trim().length === 0)
-    return "creative_missing_alt_text";
+  }
+  if (!nonEmpty(creative.altText)) return "creative_missing_alt_text";
   if (
     (creative.sourceType === "wikimedia" ||
       creative.sourceType === "manual_url") &&
-    (!creative.license || !creative.attribution)
+    (!nonEmpty(creative.license) || !nonEmpty(creative.attribution))
   ) {
     return "creative_missing_license_or_attribution";
   }
-  if (
-    creative.sourceType === "generated" &&
-    (!creative.prompt || creative.prompt.trim().length === 0)
-  ) {
+  if (creative.sourceType === "generated" && !nonEmpty(creative.prompt)) {
     return "creative_missing_prompt";
   }
   if (creative.status !== "approved") return "creative_not_approved";

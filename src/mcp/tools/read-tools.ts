@@ -2,6 +2,10 @@ import "server-only";
 import type { McpToolResponse } from "../responses";
 import { ok, failed } from "../responses";
 import type { ToolContext } from "../tool-context";
+import {
+  deriveCreativeReadinessState,
+  hasRealMediaAsset,
+} from "@/core/publishing/creative-readiness";
 
 /**
  * Phase F0 — read-only tools. Each handler:
@@ -109,11 +113,144 @@ export async function weeklyPlanCurrent(
     .order("scheduled_at", { ascending: true });
   if (itemsErr)
     return failed({ tool: "signal.weekly_plan.current", summary: itemsErr.message });
+
+  // Surface creative readiness per item so review surfaces see the
+  // derived state without re-implementing the rule. Readiness is
+  // derived from PERSISTED columns only (asset_url / source_url /
+  // storage_path / status / source_type) — never inferred from
+  // prompt, metadata, alt text, or aspect ratio. Existing items
+  // continue to be returned unchanged; the new `creative` field is
+  // additive and `null` for items without any creative row.
+  const planItemIds = (
+    (items ?? []) as Array<{ id: string }>
+  ).map((i) => i.id);
+  const creativesByItem = await loadCreativeReadinessByItem(
+    ctx,
+    planItemIds,
+  );
+  const enrichedItems = ((items ?? []) as Array<Record<string, unknown>>).map(
+    (row) => {
+      const id = row.id as string;
+      const creative = creativesByItem.get(id) ?? null;
+      return { ...row, creative };
+    },
+  );
+
   return ok({
     tool: "signal.weekly_plan.current",
     summary: `Plan ${(plan as { title: string }).title} · ${items?.length ?? 0} item(s)`,
-    data: { plan, items: items ?? [] },
+    data: { plan, items: enrichedItems },
   });
+}
+
+/**
+ * Internal helper for `signal.weekly_plan.current`. Loads the
+ * creative row (one primary per plan_item, the first by insertion
+ * order) and projects the readiness fields the review flow needs.
+ *
+ * Source-of-truth contract: every field returned here comes from a
+ * persisted column. The derived `readiness_state` is the single
+ * answer the UI / Codex must read; do NOT infer from prompt /
+ * metadata / alt text / aspect ratio.
+ */
+async function loadCreativeReadinessByItem(
+  ctx: ToolContext,
+  planItemIds: string[],
+): Promise<Map<string, CreativeReadinessProjection>> {
+  const out = new Map<string, CreativeReadinessProjection>();
+  if (planItemIds.length === 0) return out;
+  const { data, error } = await ctx.db
+    .from("weekly_plan_item_creatives")
+    .select(
+      "id, weekly_plan_item_id, creative_type, source_type, status, asset_url, source_url, storage_path, prompt, alt_text, license, attribution, metadata, created_at",
+    )
+    .eq("workspace_id", ctx.workspaceId)
+    .in("weekly_plan_item_id", planItemIds)
+    .order("created_at", { ascending: true });
+  if (error) {
+    // Best-effort surface: read failure here must not break the
+    // read tool. Return what we have so far; callers will see
+    // `creative: null` and fall back to existing UX.
+    return out;
+  }
+  for (const row of (data ?? []) as Array<{
+    id: string;
+    weekly_plan_item_id: string;
+    creative_type: string;
+    source_type: import("@/lib/supabase/types").CreativeSourceType;
+    status: import("@/lib/supabase/types").CreativeStatus;
+    asset_url: string | null;
+    source_url: string | null;
+    storage_path: string | null;
+    prompt: string | null;
+    alt_text: string | null;
+    license: string | null;
+    attribution: string | null;
+    metadata: Record<string, unknown>;
+  }>) {
+    // Keep insertion order — first creative is the primary.
+    if (out.has(row.weekly_plan_item_id)) continue;
+    const readinessInput = {
+      status: row.status,
+      sourceType: row.source_type,
+      assetUrl: row.asset_url,
+      sourceUrl: row.source_url,
+      storagePath: row.storage_path,
+      altText: row.alt_text,
+      prompt: row.prompt,
+      license: row.license,
+      attribution: row.attribution,
+    };
+    const readinessState = deriveCreativeReadinessState(readinessInput);
+    const assetPresent = hasRealMediaAsset(readinessInput);
+    const aspectRatio =
+      typeof row.metadata?.aspect_ratio === "string"
+        ? (row.metadata.aspect_ratio as string)
+        : null;
+    out.set(row.weekly_plan_item_id, {
+      id: row.id,
+      creative_type: row.creative_type,
+      source_type: row.source_type,
+      status: row.status,
+      readiness_state: readinessState,
+      asset_present: assetPresent,
+      asset_url_present: nonEmpty(row.asset_url),
+      source_url_present: nonEmpty(row.source_url),
+      storage_path_present: nonEmpty(row.storage_path),
+      alt_text: row.alt_text,
+      aspect_ratio: aspectRatio,
+      ready_for_publish: readinessState === "approved" && assetPresent,
+    });
+  }
+  return out;
+}
+
+interface CreativeReadinessProjection {
+  id: string;
+  creative_type: string;
+  source_type: import("@/lib/supabase/types").CreativeSourceType;
+  status: import("@/lib/supabase/types").CreativeStatus;
+  /** Derived readiness state — single answer the UI/Codex must read. */
+  readiness_state: import(
+    "@/core/publishing/creative-readiness"
+  ).CreativeReadinessState;
+  /** True iff at least one of asset_url / source_url / storage_path
+   *  is a non-empty string. NEVER inferred from prompt or metadata. */
+  asset_present: boolean;
+  asset_url_present: boolean;
+  source_url_present: boolean;
+  storage_path_present: boolean;
+  alt_text: string | null;
+  /** Platform-compatibility hint from metadata (when set by upload
+   *  flow). Read-only — not used for any gating decision. */
+  aspect_ratio: string | null;
+  /** True only when readiness_state='approved' AND asset is present.
+   *  Mirrors the scheduler/publisher's hard gate. */
+  ready_for_publish: boolean;
+}
+
+function nonEmpty(s: string | null | undefined): boolean {
+  return typeof s === "string" && s.trim().length > 0;
 }
 
 export async function contractsActive(
