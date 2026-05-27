@@ -22,6 +22,7 @@ import {
   parseReportsSubmit,
   parseVerificationRunCheck,
   parseWeeklyPlanAttachCreative,
+  parseUploadCreativeAsset,
   parseWeeklyPlanPrepareItem,
   type Parse,
 } from "./schemas";
@@ -42,6 +43,7 @@ import {
   productsPrepare,
   reportsSubmit,
   weeklyPlanAttachCreative,
+  uploadCreativeAsset,
   weeklyPlanPrepareItem,
 } from "./tools/prepare-tools";
 import {
@@ -229,6 +231,18 @@ export const TOOLS: ToolDefinition[] = [
     touchesProduction: false,
     parseArgs: parseWeeklyPlanAttachCreative,
     handler: wrap(weeklyPlanAttachCreative),
+  },
+  {
+    name: "signal.upload_creative_asset",
+    description:
+      "Ingest an already-generated creative file (created OUTSIDE Signal by Codex / Claude / external tool) and attach it to a weekly_plan_item. Accepts the binary as `file_base64`; stores in the `weekly-plan-creatives` Supabase Storage bucket; persists the row as `pending_review` (NEVER auto-approves). Allowed MIME: jpeg / png / webp / gif / mp4 / webm. Size caps: 10 MB image / 100 MB video. source_type is always `uploaded` (Signal does not generate; reject at boundary if caller sends `generated`). Does NOT schedule, publish, or create execution_items. Operator review on /weekly-plan still required.",
+    requiredScopes: ["weekly_plans:write_pending"],
+    riskLevel: "remote_write",
+    approvalMode: "no_approval_needed",
+    writesDatabase: true,
+    touchesProduction: false,
+    parseArgs: parseUploadCreativeAsset,
+    handler: wrap(uploadCreativeAsset),
   },
   {
     name: "signal.imports.prepare_mapping",
