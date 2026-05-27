@@ -29,6 +29,25 @@ interface ConnectionControlsProps {
    * the Manage panel.
    */
   hashnodePublicationId?: string | null;
+  /**
+   * Telegram-specific: the persisted target type for this identity.
+   * Read from `platform_connections.metadata.telegram_target_type`
+   * by the page. Defaults to "channel" for legacy rows that
+   * predate the group/supergroup support.
+   */
+  telegramTargetType?: "channel" | "group" | "supergroup" | null;
+  /**
+   * Telegram-specific: the persisted target label (chat.title or
+   * @username) for this identity. Read from connection metadata.
+   * Falls back to identity.handle in UI rendering when null.
+   */
+  telegramTargetLabel?: string | null;
+  /**
+   * Telegram-specific: chat id from `provider_account_id` of the
+   * connection row. Operator-visible (Telegram shows it in admin
+   * UIs); not a secret. Used in the debug area only.
+   */
+  telegramChatId?: string | null;
   connectionStatus:
     | "not_connected"
     | "connected"
@@ -195,13 +214,17 @@ export function ConnectionControls(props: ConnectionControlsProps) {
     }
   }
 
-  async function verifyApiKey(verifyUrl: string) {
+  async function verifyApiKey(
+    verifyUrl: string,
+    body?: Record<string, unknown>,
+  ) {
     setBusy("connect");
     setMessage(null);
     try {
       const res = await fetch(verifyUrl, {
         method: "POST",
         headers: { "content-type": "application/json" },
+        body: body ? JSON.stringify(body) : undefined,
       });
       const json = (await res.json()) as {
         ok?: boolean;
@@ -209,19 +232,21 @@ export function ConnectionControls(props: ConnectionControlsProps) {
         error?: string;
         message?: string;
         authenticated_handle?: string;
+        telegram_target_type?: string;
+        telegram_target_label?: string;
       };
-      if (json.code === "bot_not_admin") {
-        // Telegram-specific clear setup instruction. The route
-        // already provides operator-facing copy; we surface it.
-        setMessage(
-          json.message ??
-            "Add the Signal Telegram bot as an admin to this channel, then try again.",
-        );
-      } else if (json.code === "chat_not_found") {
-        setMessage(
-          json.message ??
-            "The channel was not found or isn't accessible to the bot.",
-        );
+      // Telegram-aware error mapping. The route already provides
+      // actionable operator copy; the UI surfaces it verbatim.
+      if (
+        json.code === "bot_not_admin" ||
+        json.code === "bot_not_member" ||
+        json.code === "bot_cannot_send" ||
+        json.code === "chat_not_found" ||
+        json.code === "chat_type_mismatch" ||
+        json.code === "target_invalid" ||
+        json.code === "target_type_invalid"
+      ) {
+        setMessage(json.message ?? "Verification failed.");
       } else if (json.code === "handle_mismatch") {
         setMessage(
           json.message ??
@@ -231,8 +256,14 @@ export function ConnectionControls(props: ConnectionControlsProps) {
         setMessage(json.error ?? json.message ?? "Verification failed.");
       } else {
         const handle = json.authenticated_handle;
+        const label = json.telegram_target_label;
+        const typeLabel = json.telegram_target_type ?? "target";
         setMessage(
-          handle ? `Signed in as @${handle}.` : "Verification succeeded.",
+          label
+            ? `Verified ${typeLabel}: ${label}.`
+            : handle
+              ? `Signed in as @${handle}.`
+              : "Verification succeeded.",
         );
         router.refresh();
       }
@@ -255,6 +286,36 @@ export function ConnectionControls(props: ConnectionControlsProps) {
   // cleared from component state regardless of outcome.
   const [apiKeyFormOpen, setApiKeyFormOpen] = useState(false);
   const [apiKeyValue, setApiKeyValue] = useState("");
+
+  // Telegram target form (api_key_verify variant for Telegram).
+  // The form lets the operator pick channel / group / supergroup
+  // and optionally paste a numeric private chat id. No secrets
+  // pass through this form — the bot token stays on the workspace
+  // env. The initial target_type defaults to whatever's already
+  // persisted on the connection (legacy rows → "channel").
+  const [telegramFormOpen, setTelegramFormOpen] = useState(false);
+  const [telegramTargetType, setTelegramTargetType] = useState<
+    "channel" | "group" | "supergroup"
+  >(props.telegramTargetType ?? "channel");
+  const [telegramTargetInput, setTelegramTargetInput] = useState("");
+
+  async function submitTelegramVerify(
+    e: FormEvent<HTMLFormElement>,
+    verifyUrl: string,
+  ) {
+    e.preventDefault();
+    if (inCooldown) return;
+    const trimmed = telegramTargetInput.trim();
+    const body: Record<string, unknown> = {
+      target_type: telegramTargetType,
+    };
+    // Only forward `target` when the operator filled it in; empty
+    // string defaults to identity.handle on the server.
+    if (trimmed.length > 0) body.target = trimmed;
+    await verifyApiKey(verifyUrl, body);
+    setTelegramFormOpen(false);
+    setTelegramTargetInput("");
+  }
 
   async function submitPersonalApiKey(
     e: FormEvent<HTMLFormElement>,
@@ -550,11 +611,13 @@ export function ConnectionControls(props: ConnectionControlsProps) {
 
         {/*
           api_key_verify is the workspace-credential + per-identity-
-          verify shape (Telegram today). The UI is state-aware so
-          operators get clear setup instructions when not yet
-          verified, and a Sign out button after verification.
+          verify shape. For Telegram, the inline form (below) carries
+          target-type-aware copy; the static setup-instructions list
+          here is only rendered for non-Telegram platforms whose
+          plan still carries the legacy `setupInstructions` field.
         */}
         {plan?.kind === "api_key_verify" &&
+        plan.platform !== "telegram" &&
         plan.setupInstructions &&
         props.publishState !== "connected" ? (
           <ul className="basis-full text-[10px] text-ink-600 leading-relaxed list-disc pl-4 space-y-0.5">
@@ -564,7 +627,175 @@ export function ConnectionControls(props: ConnectionControlsProps) {
           </ul>
         ) : null}
 
+        {/*
+          Telegram api_key_verify — target-type-aware form.
+          One identity = one Telegram target. Operator picks
+          channel / group / supergroup at verify time. Target field
+          accepts @username OR a numeric chat id like
+          "-1001234567890" (private groups/supergroups). Empty
+          target falls back to identity.handle on the server.
+          The bot token is NEVER passed through this form — it
+          stays on the workspace env.
+        */}
+        {plan?.kind === "api_key_verify" && plan.platform === "telegram" ? (
+          <div className="basis-full space-y-2">
+            {props.publishState === "connected" ? (
+              <div className="text-[11px] text-ink-700">
+                Connected as{" "}
+                <span className="badge-neutral text-[10px]">
+                  {telegramTargetType}
+                </span>{" "}
+                <span className="font-mono">
+                  {props.telegramTargetLabel ??
+                    (props.handle
+                      ? `@${(props.handle ?? "").replace(/^@/, "")}`
+                      : "this target")}
+                </span>
+                .
+                {props.telegramChatId ? (
+                  <span className="block text-[10px] text-ink-500 font-mono mt-0.5">
+                    chat id: {props.telegramChatId}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+
+            {!telegramFormOpen ? (
+              <div className="flex gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTelegramFormOpen(true);
+                    setMessage(null);
+                    setTelegramTargetInput("");
+                    setTelegramTargetType(
+                      props.telegramTargetType ?? "channel",
+                    );
+                  }}
+                  disabled={busy !== null || inCooldown}
+                  className={
+                    props.publishState === "connected"
+                      ? "btn-secondary text-[11px]"
+                      : "btn-primary text-[11px]"
+                  }
+                >
+                  {props.publishState === "connected"
+                    ? "Re-verify target"
+                    : props.publishState === "mismatched"
+                      ? "Verify with correct target"
+                      : "Verify Telegram target"}
+                </button>
+                {plan.signOutUrl &&
+                (props.publishState === "connected" ||
+                  props.publishState === "mismatched") ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      signOutPersonalApiKey(plan.signOutUrl!)
+                    }
+                    disabled={busy !== null}
+                    className="btn-secondary text-[11px]"
+                  >
+                    {busy === "disconnect"
+                      ? "…"
+                      : "Sign out of this account"}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+
+            {telegramFormOpen ? (
+              <form
+                onSubmit={(e) => submitTelegramVerify(e, plan.verifyUrl)}
+                className="rounded-md border border-ink-200 bg-ink-50/30 p-3 space-y-2"
+              >
+                <div className="text-[11px] font-semibold text-ink-900">
+                  Verify Telegram target
+                </div>
+                <label className="block">
+                  <span className="text-[10px] font-medium text-ink-600">
+                    Target type
+                  </span>
+                  <select
+                    value={telegramTargetType}
+                    onChange={(e) =>
+                      setTelegramTargetType(
+                        e.target.value as
+                          | "channel"
+                          | "group"
+                          | "supergroup",
+                      )
+                    }
+                    className="mt-1 w-full rounded border border-ink-200 px-2 py-1 text-[11px]"
+                  >
+                    <option value="channel">Channel</option>
+                    <option value="group">Group</option>
+                    <option value="supergroup">Supergroup</option>
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-[10px] font-medium text-ink-600">
+                    Target (optional)
+                  </span>
+                  <input
+                    type="text"
+                    value={telegramTargetInput}
+                    onChange={(e) =>
+                      setTelegramTargetInput(e.target.value)
+                    }
+                    placeholder="@channel or -1001234567890"
+                    className="mt-1 w-full rounded border border-ink-200 px-2 py-1 text-[11px] font-mono"
+                  />
+                  <span className="mt-1 block text-[10px] text-ink-500">
+                    Leave empty to use this identity&apos;s handle
+                    {props.handle ? ` (@${(props.handle ?? "").replace(/^@/, "")})` : ""}.
+                    For private groups/supergroups, paste the numeric
+                    chat id from Telegram&apos;s admin UI.
+                  </span>
+                </label>
+                <p className="text-[10px] text-ink-600 leading-relaxed">
+                  {telegramTargetType === "channel"
+                    ? "Add the bot as a channel admin with permission to post messages, then click Verify."
+                    : "Add the bot to the group and allow it to send messages, then click Verify."}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="submit"
+                    disabled={busy === "connect" || inCooldown}
+                    className="btn-primary text-[11px]"
+                  >
+                    {busy === "connect" ? "…" : "Verify"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTelegramFormOpen(false);
+                      setTelegramTargetInput("");
+                      setMessage(null);
+                    }}
+                    className="btn-secondary text-[11px]"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                {inCooldown ? (
+                  <p className="text-[10px] text-amber-700 mt-1">
+                    Recent verify failed. Wait briefly before retrying.
+                  </p>
+                ) : null}
+              </form>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/*
+          Non-Telegram api_key_verify (legacy fallback for any
+          future workspace-credential platform that ships its own
+          /verify route). Kept narrow — no other platform uses this
+          shape today.
+        */}
         {plan?.kind === "api_key_verify" &&
+        plan.platform !== "telegram" &&
         props.publishState === "connected" ? (
           <div className="basis-full space-y-2">
             <div className="text-[11px] text-ink-700">
@@ -600,6 +831,7 @@ export function ConnectionControls(props: ConnectionControlsProps) {
         ) : null}
 
         {plan?.kind === "api_key_verify" &&
+        plan.platform !== "telegram" &&
         props.publishState === "mismatched" ? (
           <div className="basis-full space-y-2">
             <div className="flex gap-2 flex-wrap">
@@ -626,6 +858,7 @@ export function ConnectionControls(props: ConnectionControlsProps) {
         ) : null}
 
         {plan?.kind === "api_key_verify" &&
+        plan.platform !== "telegram" &&
         props.publishState !== "connected" &&
         props.publishState !== "mismatched" ? (
           <button

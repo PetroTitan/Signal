@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildTelegramVerifyPlan } from "./telegram-persistence";
+import {
+  buildTelegramVerifyPlan,
+  readTelegramTargetType,
+} from "./telegram-persistence";
 import {
   narrowConnectionAuthStatus,
   resolveIdentityPublishState,
@@ -11,17 +14,20 @@ const WS = "ws-1";
 const ID = "id-1";
 
 // =====================================================================
-// connected — happy path
+// connected — happy path (channel)
 // Telegram is unique: NO encryption, NO per-identity secret stored.
 // The bot token stays on env. The connection row holds only the
-// channel binding (chat_id + username).
+// target binding (chat_id + username + target_type + label).
 // =====================================================================
 
-describe("buildTelegramVerifyPlan — connected", () => {
+describe("buildTelegramVerifyPlan — connected (channel)", () => {
   const result: TelegramVerifierResult = {
     outcome: "connected",
     providerAccountId: "-1001234567890",
     authenticatedHandle: "webmasterid",
+    targetType: "channel",
+    targetLabel: "@webmasterid",
+    canPost: true,
   };
 
   it("upsert targets the right workspace + identity + platform", () => {
@@ -88,7 +94,7 @@ describe("buildTelegramVerifyPlan — connected", () => {
     expect(serialized).not.toContain("authorization");
   });
 
-  it("metadata stores diagnostic info only — verification_method + last_message", () => {
+  it("metadata stores verification + target-type diagnostic keys (no secrets)", () => {
     const plan = buildTelegramVerifyPlan({
       result,
       workspaceId: WS,
@@ -97,8 +103,21 @@ describe("buildTelegramVerifyPlan — connected", () => {
     });
     const meta = plan.upsert!.metadata as Record<string, unknown>;
     const keys = Object.keys(meta).sort();
-    expect(keys).toEqual(["last_message", "verification_method"].sort());
+    expect(keys).toEqual(
+      [
+        "last_message",
+        "telegram_can_post",
+        "telegram_target_label",
+        "telegram_target_type",
+        "telegram_verified_at",
+        "verification_method",
+      ].sort(),
+    );
     expect(meta.verification_method).toContain("telegram");
+    expect(meta.telegram_target_type).toBe("channel");
+    expect(meta.telegram_target_label).toBe("@webmasterid");
+    expect(meta.telegram_can_post).toBe(true);
+    expect(typeof meta.telegram_verified_at).toBe("string");
     const serialized = JSON.stringify(meta).toLowerCase();
     expect(serialized).not.toContain("token");
     expect(serialized).not.toContain("authorization");
@@ -358,6 +377,235 @@ describe("buildTelegramVerifyPlan — error outcomes", () => {
 // safety: serialized plan never contains the bot token under any outcome
 // =====================================================================
 
+// =====================================================================
+// connected — group + supergroup variants
+// =====================================================================
+
+describe("buildTelegramVerifyPlan — connected (group)", () => {
+  it("stores telegram_target_type='group' + label + verified_at + can_post", () => {
+    const result: TelegramVerifierResult = {
+      outcome: "connected",
+      providerAccountId: "-987654321",
+      authenticatedHandle: "hackuac",
+      targetType: "group",
+      targetLabel: "Hack UA Group",
+      canPost: true,
+    };
+    const plan = buildTelegramVerifyPlan({
+      result,
+      workspaceId: WS,
+      identityId: ID,
+      declaredHandle: "hackuac",
+    });
+    const meta = plan.upsert!.metadata as Record<string, unknown>;
+    expect(meta.telegram_target_type).toBe("group");
+    expect(meta.telegram_target_label).toBe("Hack UA Group");
+    expect(meta.telegram_can_post).toBe(true);
+    expect(typeof meta.telegram_verified_at).toBe("string");
+  });
+
+  it("response body surfaces telegram_target_type + label", () => {
+    const result: TelegramVerifierResult = {
+      outcome: "connected",
+      providerAccountId: "-987654321",
+      authenticatedHandle: "hackuac",
+      targetType: "group",
+      targetLabel: "Hack UA Group",
+      canPost: true,
+    };
+    const plan = buildTelegramVerifyPlan({
+      result,
+      workspaceId: WS,
+      identityId: ID,
+      declaredHandle: "hackuac",
+    });
+    expect(plan.response.status).toBe(200);
+    expect(plan.response.body.telegram_target_type).toBe("group");
+    expect(plan.response.body.telegram_target_label).toBe("Hack UA Group");
+  });
+
+  it("group last_message uses group-shaped copy ('Bot is a member of …')", () => {
+    const result: TelegramVerifierResult = {
+      outcome: "connected",
+      providerAccountId: "-987654321",
+      authenticatedHandle: "hackuac",
+      targetType: "group",
+      targetLabel: "Hack UA Group",
+      canPost: true,
+    };
+    const plan = buildTelegramVerifyPlan({
+      result,
+      workspaceId: WS,
+      identityId: ID,
+      declaredHandle: "hackuac",
+    });
+    const meta = plan.upsert!.metadata as Record<string, unknown>;
+    expect(meta.last_message).toContain("member");
+    expect(meta.last_message).toContain("Hack UA Group");
+  });
+});
+
+describe("buildTelegramVerifyPlan — connected (supergroup)", () => {
+  it("stores telegram_target_type='supergroup'", () => {
+    const result: TelegramVerifierResult = {
+      outcome: "connected",
+      providerAccountId: "-1001234567890",
+      authenticatedHandle: "webmasterid",
+      targetType: "supergroup",
+      targetLabel: "WebmasterID Supergroup",
+      canPost: true,
+    };
+    const plan = buildTelegramVerifyPlan({
+      result,
+      workspaceId: WS,
+      identityId: ID,
+      declaredHandle: "webmasterid",
+    });
+    const meta = plan.upsert!.metadata as Record<string, unknown>;
+    expect(meta.telegram_target_type).toBe("supergroup");
+  });
+});
+
+// =====================================================================
+// existingMetadata preservation — unrelated keys survive the upsert
+// =====================================================================
+
+describe("buildTelegramVerifyPlan — preserves existing metadata", () => {
+  const result: TelegramVerifierResult = {
+    outcome: "connected",
+    providerAccountId: "-1001234567890",
+    authenticatedHandle: "webmasterid",
+    targetType: "channel",
+    targetLabel: "@webmasterid",
+    canPost: true,
+  };
+
+  it("preserves operator-set notes and other unknown keys", () => {
+    const plan = buildTelegramVerifyPlan({
+      result,
+      workspaceId: WS,
+      identityId: ID,
+      declaredHandle: "webmasterid",
+      existingMetadata: {
+        operator_note: "Test channel for staging",
+        future_key: { nested: true },
+      },
+    });
+    const meta = plan.upsert!.metadata as Record<string, unknown>;
+    expect(meta.operator_note).toBe("Test channel for staging");
+    expect(meta.future_key).toEqual({ nested: true });
+    // Verify-specific keys still overwrite their previous values
+    expect(meta.verification_method).toContain("telegram");
+    expect(meta.telegram_target_type).toBe("channel");
+  });
+
+  it("overwrites stale telegram_target_type when the operator re-verifies under a different type", () => {
+    const plan = buildTelegramVerifyPlan({
+      result,
+      workspaceId: WS,
+      identityId: ID,
+      declaredHandle: "webmasterid",
+      existingMetadata: {
+        telegram_target_type: "group", // stale — the new verify result says "channel"
+        telegram_target_label: "Old Group Label",
+      },
+    });
+    const meta = plan.upsert!.metadata as Record<string, unknown>;
+    expect(meta.telegram_target_type).toBe("channel");
+    expect(meta.telegram_target_label).toBe("@webmasterid");
+  });
+
+  it("does NOT clobber unrelated keys on a mismatched outcome", () => {
+    const mismatch: TelegramVerifierResult = {
+      outcome: "mismatched",
+      declaredHandle: "webmasterid",
+      authenticatedHandle: "OtherChannel",
+      providerAccountId: "-100999",
+    };
+    const plan = buildTelegramVerifyPlan({
+      result: mismatch,
+      workspaceId: WS,
+      identityId: ID,
+      declaredHandle: "webmasterid",
+      existingMetadata: { operator_note: "Important note" },
+    });
+    const meta = plan.upsert!.metadata as Record<string, unknown>;
+    expect(meta.operator_note).toBe("Important note");
+    expect(meta.handle_mismatch).toBeDefined();
+  });
+});
+
+// =====================================================================
+// readTelegramTargetType — back-compat reader for legacy rows
+// =====================================================================
+
+describe("readTelegramTargetType", () => {
+  it("defaults to 'channel' for legacy rows without telegram_target_type", () => {
+    expect(readTelegramTargetType(null)).toBe("channel");
+    expect(readTelegramTargetType(undefined)).toBe("channel");
+    expect(readTelegramTargetType({})).toBe("channel");
+    expect(
+      readTelegramTargetType({
+        verification_method: "telegram.bot.getChat+getChatMember",
+        last_message: "Bot has admin access to @webmasterid.",
+      }),
+    ).toBe("channel");
+  });
+
+  it("returns the persisted target type when set", () => {
+    expect(
+      readTelegramTargetType({ telegram_target_type: "channel" }),
+    ).toBe("channel");
+    expect(
+      readTelegramTargetType({ telegram_target_type: "group" }),
+    ).toBe("group");
+    expect(
+      readTelegramTargetType({ telegram_target_type: "supergroup" }),
+    ).toBe("supergroup");
+  });
+
+  it("falls back to 'channel' for malformed values", () => {
+    expect(
+      readTelegramTargetType({ telegram_target_type: "private" }),
+    ).toBe("channel");
+    expect(readTelegramTargetType({ telegram_target_type: 42 })).toBe(
+      "channel",
+    );
+    expect(
+      readTelegramTargetType({ telegram_target_type: null }),
+    ).toBe("channel");
+  });
+});
+
+// =====================================================================
+// new error codes — bot_not_member / bot_cannot_send /
+// chat_type_mismatch / target_invalid / target_type_invalid
+// =====================================================================
+
+describe("buildTelegramVerifyPlan — new error codes", () => {
+  it.each([
+    "bot_not_member" as const,
+    "bot_cannot_send" as const,
+    "chat_type_mismatch" as const,
+    "target_invalid" as const,
+    "target_type_invalid" as const,
+  ])("%s → 400, no upsert", (code) => {
+    const plan = buildTelegramVerifyPlan({
+      result: {
+        outcome: "error",
+        code,
+        message: "Operator-facing message.",
+      },
+      workspaceId: WS,
+      identityId: ID,
+      declaredHandle: "webmasterid",
+    });
+    expect(plan.upsert).toBeNull();
+    expect(plan.response.status).toBe(400);
+    expect(plan.response.body.code).toBe(code);
+  });
+});
+
 describe("buildTelegramVerifyPlan — safety", () => {
   it("no outcome introduces a Telegram bot token shape into the serialized plan", () => {
     const outcomes: TelegramVerifierResult[] = [
@@ -365,6 +613,9 @@ describe("buildTelegramVerifyPlan — safety", () => {
         outcome: "connected",
         providerAccountId: "-100123",
         authenticatedHandle: "webmasterid",
+        targetType: "channel",
+        targetLabel: "@webmasterid",
+        canPost: true,
       },
       {
         outcome: "mismatched",

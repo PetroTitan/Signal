@@ -490,16 +490,26 @@ export function resolveConnectIdentityPlan(
     isApiKeyVerifyPlatform(platform)
   ) {
     if (platform === "telegram") {
+      // One Telegram identity = one Telegram target (channel, group,
+      // or supergroup). The UI form lets the operator pick the
+      // target type at verify time and optionally paste a numeric
+      // chat id for private targets — see _connection-controls.tsx
+      // Telegram branch. The plan's `setupInstructions` are
+      // intentionally not consumed by the Telegram UI (the form
+      // carries target-type-aware copy inline); they remain here
+      // for the legacy fallback / non-Telegram api_key_verify
+      // platforms.
       return {
         kind: "api_key_verify",
         platform,
         verifyUrl: buildTelegramVerifyUrl(input),
         signOutUrl: buildTelegramSignOutUrl(input),
-        buttonLabel: "Verify Telegram channel access",
+        buttonLabel: "Verify Telegram target",
         setupInstructions: [
           "Telegram uses the workspace bot.",
-          "Add the bot as an admin to the channel first.",
-          "This identity should use the channel username, e.g. @webmasterid.",
+          "For channels: add the bot as a channel admin with permission to post messages.",
+          "For groups/supergroups: add the bot to the group and allow it to send messages.",
+          "This identity should use the target's @username, or paste the numeric chat id in the form for private targets.",
         ],
       };
     }

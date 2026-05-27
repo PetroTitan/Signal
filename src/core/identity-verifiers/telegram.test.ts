@@ -637,3 +637,347 @@ describe("verifyTelegramIdentity — idempotency", () => {
     expect(a).toEqual(b);
   });
 });
+
+// =====================================================================
+// Target type — channel happy-path returns the new fields
+// =====================================================================
+
+describe("verifyTelegramIdentity — connected result shape", () => {
+  it("connected outcome carries targetType / targetLabel / canPost", async () => {
+    const fetchImpl = makeFetch(defaultResponder);
+    const result = await verifyTelegramIdentity({
+      ...BASE,
+      targetType: "channel",
+      fetchImpl,
+    });
+    if (result.outcome !== "connected") throw new Error("expected connected");
+    expect(result.targetType).toBe("channel");
+    // chat.title from defaultResponder is "WebmasterID"
+    expect(result.targetLabel).toBe("WebmasterID");
+    expect(result.canPost).toBe(true);
+  });
+
+  it("targetType defaults to 'channel' when omitted (back-compat path)", async () => {
+    const fetchImpl = makeFetch(defaultResponder);
+    const result = await verifyTelegramIdentity({ ...BASE, fetchImpl });
+    if (result.outcome !== "connected") throw new Error("expected connected");
+    expect(result.targetType).toBe("channel");
+  });
+
+  it("falls back to @username label when chat.title is missing", async () => {
+    const fetchImpl = makeFetch((url) => {
+      // Check /getChatMember BEFORE /getChat (substring trap — see
+      // defaultResponder comment).
+      if (url.includes("/getChatMember")) return defaultResponder(url);
+      if (url.includes("/getChat")) {
+        return {
+          status: 200,
+          body: {
+            ok: true,
+            result: {
+              id: -1001234567890,
+              username: "webmasterid",
+              type: "channel",
+              // no title
+            },
+          },
+        };
+      }
+      return defaultResponder(url);
+    });
+    const result = await verifyTelegramIdentity({ ...BASE, fetchImpl });
+    if (result.outcome !== "connected") throw new Error("expected connected");
+    expect(result.targetLabel).toBe("@webmasterid");
+  });
+});
+
+// =====================================================================
+// Groups / supergroups — new target types
+// =====================================================================
+
+function groupResponder(opts: {
+  chatType?: "channel" | "group" | "supergroup";
+  status?: string;
+  canSendMessages?: boolean | undefined;
+  hasUsername?: boolean;
+  chatId?: number;
+}): (url: string) => { status: number; body: unknown } {
+  const chatType = opts.chatType ?? "group";
+  const status = opts.status ?? "member";
+  return (url: string) => {
+    if (url.includes("/getChatMember")) {
+      const result: Record<string, unknown> = {
+        user: { id: BOT_USER_ID, is_bot: true },
+        status,
+      };
+      if (opts.canSendMessages !== undefined) {
+        result.can_send_messages = opts.canSendMessages;
+      }
+      return { status: 200, body: { ok: true, result } };
+    }
+    if (url.includes("/getMe")) {
+      return defaultResponder(url);
+    }
+    if (url.includes("/getChat")) {
+      const result: Record<string, unknown> = {
+        id: opts.chatId ?? -123456789,
+        type: chatType,
+        title: chatType === "group" ? "Test Group" : "Test Supergroup",
+      };
+      if (opts.hasUsername !== false) {
+        result.username = "webmasterid";
+      }
+      return { status: 200, body: { ok: true, result } };
+    }
+    return { status: 404, body: { ok: false } };
+  };
+}
+
+describe("verifyTelegramIdentity — group target type", () => {
+  it("group + bot is plain member + no can_send flag → connected", async () => {
+    const fetchImpl = makeFetch(
+      groupResponder({ chatType: "group", status: "member" }),
+    );
+    const result = await verifyTelegramIdentity({
+      ...BASE,
+      targetType: "group",
+      fetchImpl,
+    });
+    if (result.outcome !== "connected") {
+      throw new Error(
+        `expected connected, got ${JSON.stringify(result)}`,
+      );
+    }
+    expect(result.targetType).toBe("group");
+    expect(result.targetLabel).toBe("Test Group");
+    expect(result.canPost).toBe(true);
+  });
+
+  it("group + bot is admin → connected", async () => {
+    const fetchImpl = makeFetch(
+      groupResponder({ chatType: "group", status: "administrator" }),
+    );
+    const result = await verifyTelegramIdentity({
+      ...BASE,
+      targetType: "group",
+      fetchImpl,
+    });
+    expect(result.outcome).toBe("connected");
+  });
+
+  it("group + bot status='left' → bot_not_member", async () => {
+    const fetchImpl = makeFetch(
+      groupResponder({ chatType: "group", status: "left" }),
+    );
+    const result = await verifyTelegramIdentity({
+      ...BASE,
+      targetType: "group",
+      fetchImpl,
+    });
+    expect(result.outcome).toBe("error");
+    if (result.outcome !== "error") return;
+    expect(result.code).toBe("bot_not_member");
+  });
+
+  it("group + bot status='kicked' → bot_not_member", async () => {
+    const fetchImpl = makeFetch(
+      groupResponder({ chatType: "group", status: "kicked" }),
+    );
+    const result = await verifyTelegramIdentity({
+      ...BASE,
+      targetType: "group",
+      fetchImpl,
+    });
+    expect(result.outcome).toBe("error");
+    if (result.outcome !== "error") return;
+    expect(result.code).toBe("bot_not_member");
+  });
+
+  it("group + can_send_messages=false → bot_cannot_send", async () => {
+    const fetchImpl = makeFetch(
+      groupResponder({
+        chatType: "group",
+        status: "member",
+        canSendMessages: false,
+      }),
+    );
+    const result = await verifyTelegramIdentity({
+      ...BASE,
+      targetType: "group",
+      fetchImpl,
+    });
+    expect(result.outcome).toBe("error");
+    if (result.outcome !== "error") return;
+    expect(result.code).toBe("bot_cannot_send");
+  });
+
+  it("group + status='restricted' + can_send !== true → bot_cannot_send", async () => {
+    const fetchImpl = makeFetch(
+      groupResponder({
+        chatType: "group",
+        status: "restricted",
+        canSendMessages: false,
+      }),
+    );
+    const result = await verifyTelegramIdentity({
+      ...BASE,
+      targetType: "group",
+      fetchImpl,
+    });
+    expect(result.outcome).toBe("error");
+    if (result.outcome !== "error") return;
+    expect(result.code).toBe("bot_cannot_send");
+  });
+
+  it("group + status='restricted' + can_send_messages=true → connected", async () => {
+    const fetchImpl = makeFetch(
+      groupResponder({
+        chatType: "group",
+        status: "restricted",
+        canSendMessages: true,
+      }),
+    );
+    const result = await verifyTelegramIdentity({
+      ...BASE,
+      targetType: "group",
+      fetchImpl,
+    });
+    expect(result.outcome).toBe("connected");
+  });
+});
+
+describe("verifyTelegramIdentity — supergroup target type", () => {
+  it("supergroup + bot is admin → connected", async () => {
+    const fetchImpl = makeFetch(
+      groupResponder({ chatType: "supergroup", status: "administrator" }),
+    );
+    const result = await verifyTelegramIdentity({
+      ...BASE,
+      targetType: "supergroup",
+      fetchImpl,
+    });
+    if (result.outcome !== "connected") throw new Error("expected connected");
+    expect(result.targetType).toBe("supergroup");
+  });
+});
+
+// =====================================================================
+// chat_type_mismatch — operator declared the wrong target type
+// =====================================================================
+
+describe("verifyTelegramIdentity — chat_type_mismatch", () => {
+  it("declared 'channel' but Telegram returns 'group' → chat_type_mismatch", async () => {
+    const fetchImpl = makeFetch(
+      groupResponder({ chatType: "group", status: "member" }),
+    );
+    const result = await verifyTelegramIdentity({
+      ...BASE,
+      targetType: "channel",
+      fetchImpl,
+    });
+    expect(result.outcome).toBe("error");
+    if (result.outcome !== "error") return;
+    expect(result.code).toBe("chat_type_mismatch");
+  });
+
+  it("declared 'group' but Telegram returns 'channel' → chat_type_mismatch", async () => {
+    // The default responder returns chat.type='channel'.
+    const fetchImpl = makeFetch(defaultResponder);
+    const result = await verifyTelegramIdentity({
+      ...BASE,
+      targetType: "group",
+      fetchImpl,
+    });
+    expect(result.outcome).toBe("error");
+    if (result.outcome !== "error") return;
+    expect(result.code).toBe("chat_type_mismatch");
+  });
+
+  it("rejects target_type values outside the allowed set", async () => {
+    const fetchImpl = makeFetch(defaultResponder);
+    const result = await verifyTelegramIdentity({
+      ...BASE,
+      // @ts-expect-error — exercise the runtime guard
+      targetType: "private",
+      fetchImpl,
+    });
+    expect(result.outcome).toBe("error");
+    if (result.outcome !== "error") return;
+    expect(result.code).toBe("target_type_invalid");
+  });
+});
+
+// =====================================================================
+// target input — accept @username AND numeric chat ids
+// =====================================================================
+
+describe("verifyTelegramIdentity — target override", () => {
+  it("accepts a numeric chat id in the target field for private groups", async () => {
+    const captures: CapturedCall[] = [];
+    const fetchImpl = makeFetch(
+      groupResponder({
+        chatType: "supergroup",
+        status: "administrator",
+        hasUsername: false,
+        chatId: -1009876543210,
+      }),
+      captures,
+    );
+    const result = await verifyTelegramIdentity({
+      ...BASE,
+      targetType: "supergroup",
+      target: "-1009876543210",
+      fetchImpl,
+    });
+    if (result.outcome !== "connected") {
+      throw new Error(
+        `expected connected, got ${JSON.stringify(result)}`,
+      );
+    }
+    // getChat call should use the numeric chat id verbatim
+    const getChatCall = captures.find((c) => c.url.includes("/getChat?"));
+    expect(getChatCall?.url).toContain("chat_id=-1009876543210");
+  });
+
+  it("private target without a Telegram @username → connected without handle-mismatch (no username to compare)", async () => {
+    const fetchImpl = makeFetch(
+      groupResponder({
+        chatType: "supergroup",
+        status: "administrator",
+        hasUsername: false,
+      }),
+    );
+    const result = await verifyTelegramIdentity({
+      ...BASE,
+      targetType: "supergroup",
+      target: "-1001234567890",
+      fetchImpl,
+    });
+    expect(result.outcome).toBe("connected");
+  });
+
+  it("empty target falls back to declaredHandle", async () => {
+    const captures: CapturedCall[] = [];
+    const fetchImpl = makeFetch(defaultResponder, captures);
+    const result = await verifyTelegramIdentity({
+      ...BASE,
+      target: null,
+      fetchImpl,
+    });
+    expect(result.outcome).toBe("connected");
+    const getChatCall = captures.find((c) => c.url.includes("/getChat?"));
+    expect(getChatCall?.url).toContain("chat_id=%40webmasterid");
+  });
+
+  it("malformed target → target_invalid (no network call)", async () => {
+    const fetchImpl = makeFetch(defaultResponder);
+    const result = await verifyTelegramIdentity({
+      ...BASE,
+      target: "not a handle or chat id!",
+      fetchImpl,
+    });
+    expect(result.outcome).toBe("error");
+    if (result.outcome !== "error") return;
+    expect(result.code).toBe("target_invalid");
+  });
+});

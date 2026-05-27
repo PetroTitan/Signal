@@ -21,6 +21,7 @@ import "server-only";
  */
 
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
+import { readTelegramTargetType } from "@/core/identity-verifiers";
 import { runPublish } from "./publishing-runner";
 import type {
   PublishMode,
@@ -457,20 +458,26 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
       ((prod as { review_status?: string } | null)?.review_status) ?? null;
   }
 
-  // Platform connection + stored encrypted token + provider account id.
+  // Platform connection + stored encrypted token + provider account
+  // id + metadata.
   //
   // `provider_account_id` is read so we can thread it into
   // `request.target` for workspace-credential platforms whose
   // publisher needs an identity-scoped target id (Telegram: chat_id,
-  // persisted at verify time). The select stays narrow — no token
-  // fields beyond what we already read.
+  // persisted at verify time). `metadata` is read so Telegram
+  // outcomes can be tagged with `telegram_target_type` for
+  // diagnostics. The select stays narrow — no token fields beyond
+  // what we already read.
   let connectionStatus: string | null = null;
   let accessTokenEncrypted: string | null = null;
   let providerAccountId: string | null = null;
+  let connectionMetadata: Record<string, unknown> | null = null;
   if (item.account_id) {
     const { data: conn } = await supabase
       .from("platform_connections")
-      .select("connection_status, access_token_encrypted, provider_account_id")
+      .select(
+        "connection_status, access_token_encrypted, provider_account_id, metadata",
+      )
       .eq("workspace_id", item.workspace_id)
       .eq("account_id", item.account_id)
       .eq("platform", platform)
@@ -484,6 +491,11 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
       providerAccountId =
         (conn as { provider_account_id?: string | null })
           .provider_account_id ?? null;
+      const rawMeta = (
+        conn as { metadata?: Record<string, unknown> | null }
+      ).metadata;
+      connectionMetadata =
+        rawMeta && typeof rawMeta === "object" ? rawMeta : null;
     }
   }
 
@@ -600,17 +612,33 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
     db: supabase as never,
   });
 
-  // Tag Telegram outcomes with the scheduler-side target source so
-  // execution_logs / publish_history record which path resolved the
-  // chat_id (operator-visible `metadata.target` override, or
-  // `provider_account_id` from the verified connection). Useful for
-  // diagnosing missing_identifier regressions. Not emitted for other
-  // platforms — they have their own target conventions.
+  // Tag Telegram outcomes with the scheduler-side target diagnostics
+  // so execution_logs / publish_history record:
+  //   - `target_source`: which path resolved the chat_id
+  //     (operator-visible `metadata.target` override, or
+  //     `provider_account_id` from the verified connection).
+  //   - `telegram_target_type`: "channel" | "group" | "supergroup"
+  //     from `connection.metadata.telegram_target_type`. Defaults
+  //     to "channel" for legacy rows that predate the
+  //     group/supergroup support (matches `readTelegramTargetType`).
+  //   - `chat_id_present`: whether the scheduler actually resolved
+  //     a non-empty target for this attempt. False = upstream
+  //     `missing_identifier` regression.
+  // Operator-visible diagnostics only; the chat id itself is NOT
+  // emitted in metadata (it lives in execution_items.metadata.target
+  // upstream when set).
   const taggedOutcome =
     platform === "telegram"
       ? {
           ...outcome,
-          metadata: { ...outcome.metadata, target_source: targetSource },
+          metadata: {
+            ...outcome.metadata,
+            target_source: targetSource,
+            telegram_target_type:
+              readTelegramTargetType(connectionMetadata),
+            chat_id_present:
+              typeof target === "string" && target.length > 0,
+          },
         }
       : outcome;
 
@@ -779,10 +807,10 @@ async function applyOutcome(input: ApplyOutcomeInput): Promise<void> {
         "string"
           ? ((item.metadata as { contract_mode: string }).contract_mode)
           : null;
-      // Telegram-only diagnostic: which path resolved request.target.
-      // The taggedOutcome metadata wrote this above only for Telegram;
-      // for other platforms the field is undefined and the repository
-      // helper omits it from the metadata bag.
+      // Telegram-only diagnostics. The taggedOutcome metadata wrote
+      // these above only for Telegram; for other platforms the
+      // fields are undefined and the repository helper omits them
+      // from the metadata bag.
       const targetSourceMeta = meta.target_source;
       const targetSource:
         | "metadata"
@@ -793,6 +821,21 @@ async function applyOutcome(input: ApplyOutcomeInput): Promise<void> {
         targetSourceMeta === "platform_connection.provider_account_id" ||
         targetSourceMeta === null
           ? targetSourceMeta
+          : undefined;
+      const telegramTargetTypeMeta = meta.telegram_target_type;
+      const telegramTargetType:
+        | "channel"
+        | "group"
+        | "supergroup"
+        | undefined =
+        telegramTargetTypeMeta === "channel" ||
+        telegramTargetTypeMeta === "group" ||
+        telegramTargetTypeMeta === "supergroup"
+          ? telegramTargetTypeMeta
+          : undefined;
+      const chatIdPresent =
+        typeof meta.chat_id_present === "boolean"
+          ? meta.chat_id_present
           : undefined;
       // Provider boundary: we reached the platform iff a structured
       // endpoint (and therefore an HTTP status) made it back. Pre-
@@ -829,6 +872,8 @@ async function applyOutcome(input: ApplyOutcomeInput): Promise<void> {
         atprotoMessage,
         contractMode,
         targetSource,
+        telegramTargetType,
+        chatIdPresent,
         db: supabase as never,
       });
     } catch (err) {
