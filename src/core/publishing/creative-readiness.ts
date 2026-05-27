@@ -238,11 +238,16 @@ export interface AttachValidationInput {
  * which kept surfacing the planned placeholder even after a real
  * asset was uploaded. This helper encodes the operator-facing rule:
  *
- *   Asset-backed > not asset-backed.
- *   Within asset-backed: approved > pending_review > planned
- *     (derived asset_ready) > rejected.
- *   Within the same status tier: storage-backed (storage_path or
- *     asset_url present) > source-url-only.
+ *   Presence dominates status. A row with `storage_path` (canonical
+ *   workspace upload) outranks an `asset_url`-only row regardless
+ *   of status — including legacy `generated/approved` rows whose
+ *   `asset_url` is a `data:` URL with no workspace storage backing.
+ *
+ *     storage_path present       > asset_url only > source_url only.
+ *
+ *   Within the same presence tier: approved > pending_review >
+ *   planned (derived asset_ready) > rejected.
+ *
  *   Within the same combined tier: newest `createdAt` wins.
  *
  * Planned placeholders are only chosen when NO asset-backed row
@@ -263,47 +268,62 @@ export interface SelectableCreative extends CreativeReadinessInput {
  *
  * Two signals are encoded into one score:
  *
- *   - Status tier (primary): approved > pending_review > planned
- *     (asset_ready) > rejected > no asset.
- *   - Storage sub-tier (secondary, within the same status tier):
- *     storage-backed (storage_path OR asset_url set) outranks
- *     source-url-only.
+ *   - Presence tier (PRIMARY): which of the persisted asset
+ *     columns is set. `storage_path` is the canonical workspace
+ *     bucket key; `asset_url` without `storage_path` is a legacy
+ *     pattern (data: URLs from the old generated flow, or
+ *     externally hosted URLs); `source_url`-only is a degenerate
+ *     re-attach or an external-source reference.
  *
- *   no asset (or source_type='planned')           → 0
- *   rejected + source_url only                    → 1
- *   rejected + storage-backed                     → 2
- *   planned (asset_ready) + source_url only       → 3
- *   planned (asset_ready) + storage-backed        → 4
- *   pending_review + source_url only              → 5
- *   pending_review + storage-backed               → 6
- *   approved + source_url only                    → 7
- *   approved + storage-backed                     → 8
+ *       storage_path present (uploaded canonical)        → tier 12
+ *       asset_url only       (legacy generated / hosted) → tier  8
+ *       source_url only      (external / degenerate)     → tier  4
+ *       no asset or source_type='planned'                → tier  0
  *
- * Storage sub-tier rationale: a properly uploaded creative carries
- * `storage_path` (workspace bucket key) and the derived `asset_url`.
- * A `source_url`-only row for `source_type='uploaded'` is a
- * degenerate re-attach where the canonical storage tuple is missing
- * — we surface the storage-backed row instead so the UI / publishers
- * see the operator's actual upload, not a partial second row.
- * External-source creatives (`wikimedia`, `manual_url`) legitimately
- * carry only `source_url`; they still win against tier 0 and against
- * other source-url-only rows by recency.
+ *   - Status sub-rank (SECONDARY, within the same presence tier):
+ *
+ *       approved        → +3
+ *       pending_review  → +2
+ *       planned status  → +1  (asset_ready)
+ *       rejected        → +0
+ *
+ * Resulting values: 0, then 4..15 in the asset-present band.
+ *
+ * Why presence dominates status: a "real" upload (storage_path)
+ * MUST outrank a legacy `generated/approved` row whose `asset_url`
+ * is a `data:` URL with no workspace storage backing. This is the
+ * concrete production state for plan_item 41354be5: row
+ * `95695e78` is generated/approved with a base64 data URL; row
+ * `dc03ca25` is uploaded/pending_review with `storage_path`. The
+ * uploaded row is the operator's actual current asset; the
+ * legacy approved row is stale.
+ *
+ * Within the storage-backed tier (12+) status still wins, so a
+ * normal `approved-uploaded-with-storage_path` continues to
+ * outrank a `pending_review-uploaded-with-storage_path`.
  */
 export function creativeSelectionPriority(
   creative: CreativeReadinessInput,
-): 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 {
+): number {
   if (!hasRealMediaAsset(creative)) return 0;
   if (creative.sourceType === "planned") return 0;
-  const storageBoost: 0 | 1 =
-    nonEmpty(creative.assetUrl) || nonEmpty(creative.storagePath) ? 1 : 0;
-  if (creative.status === "approved") return (7 + storageBoost) as 7 | 8;
-  if (creative.status === "pending_review") return (5 + storageBoost) as 5 | 6;
-  // status === "planned" + asset present → derived "asset_ready"
-  if (creative.status === "planned") return (3 + storageBoost) as 3 | 4;
-  // status === "rejected" + asset present — kept selectable so the
-  // operator can see the rejection state, but ranked below every
-  // other asset-backed row.
-  return (1 + storageBoost) as 1 | 2;
+  let presenceTier: number;
+  if (nonEmpty(creative.storagePath)) {
+    presenceTier = 12;
+  } else if (nonEmpty(creative.assetUrl)) {
+    presenceTier = 8;
+  } else {
+    // hasRealMediaAsset returned true, so source_url must be set.
+    presenceTier = 4;
+  }
+  let statusBoost: number;
+  if (creative.status === "approved") statusBoost = 3;
+  else if (creative.status === "pending_review") statusBoost = 2;
+  else if (creative.status === "planned") statusBoost = 1;
+  // status === "rejected" — kept selectable but ranked below other
+  // statuses in the same presence tier.
+  else statusBoost = 0;
+  return presenceTier + statusBoost;
 }
 
 /**

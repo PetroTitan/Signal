@@ -152,10 +152,18 @@ export async function weeklyPlanCurrent(
  * the review flow needs.
  *
  * Selector rule (see `selectPrimaryCreative`):
- *   - asset-backed rows outrank prompt-only planned placeholders;
- *   - within asset-backed: approved > pending_review > asset_ready >
- *     rejected;
+ *   - presence dominates status: storage_path-backed rows outrank
+ *     asset_url-only rows, which outrank source_url-only rows, which
+ *     outrank prompt-only planned placeholders;
+ *   - within the same presence tier: approved > pending_review >
+ *     asset_ready > rejected;
  *   - ties broken by newest `created_at`.
+ *
+ * Why presence dominates status: a legacy `generated/approved` row
+ * whose `asset_url` is a `data:` URL with no `storage_path` must
+ * NOT win against a newer `uploaded/pending_review` row with the
+ * canonical `storage_path` — the uploaded row is the operator's
+ * actual current asset.
  *
  * Pre-fix behavior was "first row by `created_at ASC`", which kept
  * surfacing the older planned placeholder even after a real upload
