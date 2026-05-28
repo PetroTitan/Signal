@@ -9,4 +9,5 @@ export * from "./token-cipher";
 export * from "./token-encryption";
 export * from "./token-storage";
 export * from "./reddit-client";
+export * from "./x-client";
 export * from "./connection-health";

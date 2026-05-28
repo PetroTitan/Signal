@@ -3,9 +3,15 @@ import {
   OAuthError,
   encryptTokenResponse,
   exchangeCodeForToken,
+  exchangeXCode,
   fetchMe,
+  fetchXMe,
   getTokenCipher,
   isStateExpired,
+} from "@/core/platform-oauth";
+import type {
+  OAuthPlatform,
+  OAuthProviderRuntimeConfig,
 } from "@/core/platform-oauth";
 import { readOAuthProviderRuntime } from "@/lib/oauth/env";
 import {
@@ -26,6 +32,149 @@ import {
   buildHandleMismatchMetadata,
   verifyIdentityHandle,
 } from "./handle-verify";
+
+/**
+ * Per-platform OAuth dispatch. The callback flow is mostly
+ * platform-agnostic (state validation, cipher gate, encrypt, upsert,
+ * handle verify, activity record); only the token-exchange call and
+ * the profile call differ. This dispatcher keeps that surface small.
+ *
+ * The returned profile shape carries:
+ *   - `id`     → persisted as `platform_connections.provider_account_id`
+ *   - `handle` → persisted as `platform_connections.handle` and used
+ *                in the handle-mismatch check
+ *   - `displayName` → persisted as `platform_connections.display_name`
+ *
+ * The `mention` prefix is the founder-facing convention each platform
+ * uses: Reddit `u/`, X `@`. It's used in activity titles + the
+ * connection metadata.last_message text only — NEVER in token paths.
+ */
+
+type CallbackPlatform = Extract<OAuthPlatform, "reddit" | "x">;
+
+interface CallbackTokenData {
+  access_token: string;
+  refresh_token?: string;
+  expires_in: number;
+  scope: string;
+}
+
+type CallbackTokenResult =
+  | { ok: true; data: CallbackTokenData; httpStatus: number }
+  | { ok: false; httpStatus: number; code: string; detail: string };
+
+interface CallbackProfile {
+  id: string;
+  handle: string;
+  displayName: string;
+  /** Founder-facing prefix used in activity titles, e.g. "u/" for Reddit, "@" for X. */
+  mentionPrefix: string;
+}
+
+type CallbackProfileResult =
+  | { ok: true; data: CallbackProfile; httpStatus: number }
+  | { ok: false; httpStatus: number; code: string; detail: string };
+
+function assertCallbackPlatform(
+  platform: OAuthPlatform,
+): asserts platform is CallbackPlatform {
+  if (platform !== "reddit" && platform !== "x") {
+    throw new OAuthError(
+      "provider_not_configured",
+      `${platform} OAuth callback is not implemented.`,
+      501,
+    );
+  }
+}
+
+async function dispatchExchangeCode(input: {
+  platform: CallbackPlatform;
+  runtime: OAuthProviderRuntimeConfig;
+  code: string;
+  codeVerifier: string | null;
+}): Promise<CallbackTokenResult> {
+  if (input.platform === "reddit") {
+    const r = await exchangeCodeForToken({
+      runtime: input.runtime,
+      code: input.code,
+    });
+    return r.ok
+      ? {
+          ok: true,
+          httpStatus: r.httpStatus,
+          data: {
+            access_token: r.data.access_token,
+            refresh_token: r.data.refresh_token,
+            expires_in: r.data.expires_in,
+            scope: r.data.scope,
+          },
+        }
+      : { ok: false, httpStatus: r.httpStatus, code: r.code, detail: r.detail };
+  }
+  // X — PKCE is required. The OAuth start route persists the
+  // code_verifier in oauth_state_tokens; if it isn't there the
+  // callback can't complete (X will reject with invalid_request).
+  if (!input.codeVerifier) {
+    return {
+      ok: false,
+      httpStatus: 400,
+      code: "pkce_verifier_missing",
+      detail: "OAuth state row had no code_verifier; PKCE handshake cannot complete.",
+    };
+  }
+  const r = await exchangeXCode({
+    runtime: input.runtime,
+    code: input.code,
+    codeVerifier: input.codeVerifier,
+  });
+  return r.ok
+    ? {
+        ok: true,
+        httpStatus: r.httpStatus,
+        data: {
+          access_token: r.data.access_token,
+          refresh_token: r.data.refresh_token,
+          expires_in: r.data.expires_in,
+          scope: r.data.scope,
+        },
+      }
+    : { ok: false, httpStatus: r.httpStatus, code: r.code, detail: r.detail };
+}
+
+async function dispatchFetchProfile(input: {
+  platform: CallbackPlatform;
+  accessToken: string;
+}): Promise<CallbackProfileResult> {
+  if (input.platform === "reddit") {
+    const r = await fetchMe({ accessToken: input.accessToken });
+    return r.ok
+      ? {
+          ok: true,
+          httpStatus: r.httpStatus,
+          data: {
+            id: r.data.name,
+            handle: r.data.name,
+            displayName: r.data.name,
+            mentionPrefix: "u/",
+          },
+        }
+      : { ok: false, httpStatus: r.httpStatus, code: r.code, detail: r.detail };
+  }
+  // X
+  const r = await fetchXMe({ accessToken: input.accessToken });
+  return r.ok
+    ? {
+        ok: true,
+        httpStatus: r.httpStatus,
+        data: {
+          id: r.data.id,
+          handle: r.data.username,
+          displayName: r.data.name,
+          mentionPrefix: "@",
+        },
+      }
+    : { ok: false, httpStatus: r.httpStatus, code: r.code, detail: r.detail };
+}
 
 /**
  * GET /api/oauth/:platform/callback
@@ -125,16 +274,14 @@ export async function GET(
     }
 
     // ── Gate 2: exchange code → tokens.
-    if (platform !== "reddit") {
-      // F2 only ships Reddit live exchange. X / LinkedIn keep the
-      // "not implemented" error path.
-      throw new OAuthError(
-        "provider_not_configured",
-        `${platform} OAuth callback is not implemented in F2.`,
-        501,
-      );
-    }
-    const tokenResult = await exchangeCodeForToken({ runtime, code });
+    // Reddit + X have live exchange paths. LinkedIn remains gated.
+    assertCallbackPlatform(platform);
+    const tokenResult = await dispatchExchangeCode({
+      platform,
+      runtime,
+      code,
+      codeVerifier: stateRow.code_verifier ?? null,
+    });
     if (!tokenResult.ok) {
       const conn = await upsertPlatformConnection({
         workspaceId: stateRow.workspace_id,
@@ -216,7 +363,10 @@ export async function GET(
     }
 
     // ── Gate 4: confirm the token works and harvest handle.
-    const meResult = await fetchMe({ accessToken: tokens.access_token });
+    const meResult = await dispatchFetchProfile({
+      platform,
+      accessToken: tokens.access_token,
+    });
     if (!meResult.ok) {
       const conn = await upsertPlatformConnection({
         workspaceId: stateRow.workspace_id,
@@ -278,8 +428,8 @@ export async function GET(
           accountId: stateRow.account_id,
           platform,
           providerAccountId: meResult.data.id,
-          handle: meResult.data.name,
-          displayName: meResult.data.name,
+          handle: meResult.data.handle,
+          displayName: meResult.data.displayName,
           scopes,
           accessTokenEncrypted: enc.accessTokenEncrypted,
           refreshTokenEncrypted: enc.refreshTokenEncrypted,
@@ -308,7 +458,7 @@ export async function GET(
 
     const verify = verifyIdentityHandle({
       declaredHandle,
-      authenticatedHandle: meResult.data.name,
+      authenticatedHandle: meResult.data.handle,
     });
 
     if (verify.outcome === "mismatch") {
@@ -317,8 +467,8 @@ export async function GET(
         accountId: stateRow.account_id ?? null,
         platform,
         providerAccountId: meResult.data.id,
-        handle: meResult.data.name,
-        displayName: meResult.data.name,
+        handle: meResult.data.handle,
+        displayName: meResult.data.displayName,
         scopes,
         accessTokenEncrypted: enc.accessTokenEncrypted,
         refreshTokenEncrypted: enc.refreshTokenEncrypted,
@@ -329,7 +479,7 @@ export async function GET(
         connectionStatus: "error",
         metadata: {
           token_storage: cipher.describe(),
-          last_message: `Authenticated as u/${meResult.data.name}, but identity expected ${verify.declaredHandle}.`,
+          last_message: `Authenticated as ${meResult.data.mentionPrefix}${meResult.data.handle}, but identity expected ${verify.declaredHandle}.`,
           handle_mismatch: buildHandleMismatchMetadata(verify),
         },
       });
@@ -385,8 +535,8 @@ export async function GET(
       accountId: stateRow.account_id ?? null,
       platform,
       providerAccountId: meResult.data.id,
-      handle: meResult.data.name,
-      displayName: meResult.data.name,
+      handle: meResult.data.handle,
+      displayName: meResult.data.displayName,
       scopes,
       accessTokenEncrypted: enc.accessTokenEncrypted,
       refreshTokenEncrypted: enc.refreshTokenEncrypted,
@@ -394,7 +544,7 @@ export async function GET(
       connectionStatus: "connected",
       metadata: {
         token_storage: cipher.describe(),
-        last_message: `Connected as u/${meResult.data.name}.`,
+        last_message: `Connected as ${meResult.data.mentionPrefix}${meResult.data.handle}.`,
       },
     });
 
@@ -414,7 +564,7 @@ export async function GET(
       workspaceId: stateRow.workspace_id,
       connectionId: conn.id,
       type: "platform_connection.connected",
-      title: `${platform} connected as u/${meResult.data.name}`,
+      title: `${platform} connected as ${meResult.data.mentionPrefix}${meResult.data.handle}`,
       description: scopes.length > 0 ? `Scopes: ${scopes.join(", ")}` : null,
     });
 
