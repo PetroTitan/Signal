@@ -182,6 +182,191 @@ describe("publishXForIdentity — publisher failures are tagged", () => {
   });
 });
 
+describe("publishXForIdentity — media upload path", () => {
+  function setupIdentity() {
+    vi.mocked(getAccountById).mockResolvedValueOnce({
+      id: "acct-1",
+      workspaceId: "ws-1",
+      platform: "x",
+      handle: "u",
+    } as never);
+    vi.mocked(getConnectionForAccount).mockResolvedValueOnce({
+      id: "conn-1",
+      handle: "u",
+    } as never);
+  }
+
+  function pngResp(): Response {
+    return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), {
+      status: 200,
+      headers: { "Content-Type": "image/png" },
+    });
+  }
+
+  it("approved creative + successful media upload → tweet POST carries media_ids, outcome tagged media_mode=x_image + creative_id", async () => {
+    setupIdentity();
+    const fetchMock = vi
+      .fn()
+      // image fetch
+      .mockResolvedValueOnce(pngResp())
+      // /2/media/upload
+      .mockResolvedValueOnce(jsonResp(201, { data: { id: "media_77" } }))
+      // /2/tweets
+      .mockResolvedValueOnce(jsonResp(201, { data: { id: "42", text: "x" } }));
+    globalThis.fetch = fetchMock;
+
+    const out = await publishXForIdentity({
+      request: baseRequest({
+        creative: {
+          id: "creative-1",
+          creativeType: "image",
+          sourceType: "uploaded",
+          assetUrl: "https://cdn.example.com/a.png",
+          sourceUrl: null,
+          altText: "alt",
+        },
+      }),
+      accessToken: "atk",
+    });
+
+    expect(out.status).toBe("published");
+    expect(out.metadata).toMatchObject({
+      x_publish_path: "identity",
+      mode: "automated_media",
+      media_mode: "x_image",
+      media_url_present: true,
+      x_media_id_present: true,
+      x_media_id: "media_77",
+      creative_id: "creative-1",
+    });
+
+    // tweet body carries media.media_ids
+    const [, tweetInit] = fetchMock.mock.calls[2] as [string, RequestInit];
+    const tweetBody = JSON.parse(tweetInit.body as string);
+    expect(tweetBody.media).toEqual({ media_ids: ["media_77"] });
+  });
+
+  it("approved creative + 403 from /2/media/upload → x_media_upload_unavailable (NO silent downgrade to text-only)", async () => {
+    setupIdentity();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(pngResp())
+      .mockResolvedValueOnce(
+        jsonResp(403, { detail: "tier not enabled" }),
+      );
+    globalThis.fetch = fetchMock;
+
+    const out = await publishXForIdentity({
+      request: baseRequest({
+        creative: {
+          id: "creative-1",
+          creativeType: "image",
+          sourceType: "uploaded",
+          assetUrl: "https://cdn.example.com/a.png",
+          sourceUrl: null,
+          altText: "alt",
+        },
+      }),
+      accessToken: "atk",
+    });
+
+    expect(out.status).toBe("failed");
+    expect(out.reasonCode).toBe("x_media_upload_unavailable");
+    expect(out.metadata).toMatchObject({
+      x_publish_path: "identity",
+      endpoint: "media/upload",
+      media_mode: "x_image",
+      creative_id: "creative-1",
+      media_url_present: true,
+      x_media_id_present: false,
+      http_status: 403,
+    });
+
+    // /2/tweets must NOT be called — no silent downgrade.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [imgUrl] = fetchMock.mock.calls[0] as [string];
+    const [uploadUrl] = fetchMock.mock.calls[1] as [string];
+    expect(imgUrl).toBe("https://cdn.example.com/a.png");
+    expect(uploadUrl).toBe("https://api.twitter.com/2/media/upload");
+  });
+
+  it("approved creative + transient upload failure → x_media_upload_failed (NO silent downgrade)", async () => {
+    setupIdentity();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(pngResp())
+      .mockResolvedValueOnce(new Response("down", { status: 503 }));
+    globalThis.fetch = fetchMock;
+    const out = await publishXForIdentity({
+      request: baseRequest({
+        creative: {
+          id: "creative-1",
+          creativeType: "image",
+          sourceType: "uploaded",
+          assetUrl: "https://cdn.example.com/a.png",
+          sourceUrl: null,
+          altText: "alt",
+        },
+      }),
+      accessToken: "atk",
+    });
+    expect(out.status).toBe("failed");
+    expect(out.reasonCode).toBe("x_media_upload_failed");
+    expect(out.metadata).toMatchObject({
+      x_publish_path: "identity",
+      creative_id: "creative-1",
+      x_media_id_present: false,
+    });
+    // /2/tweets must NOT be called.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("approved creative with no fetchable URL → x_media_upload_failed (no upload attempt)", async () => {
+    setupIdentity();
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock;
+    const out = await publishXForIdentity({
+      request: baseRequest({
+        creative: {
+          id: "creative-1",
+          creativeType: "image",
+          sourceType: "uploaded",
+          assetUrl: null,
+          sourceUrl: null,
+          altText: "alt",
+        },
+      }),
+      accessToken: "atk",
+    });
+    expect(out.status).toBe("failed");
+    expect(out.reasonCode).toBe("x_media_upload_failed");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("creative=null → text-only path (no upload, no media_ids in tweet body)", async () => {
+    setupIdentity();
+    const fetchMock = vi
+      .fn()
+      // /2/tweets (no image fetch, no media upload)
+      .mockResolvedValueOnce(jsonResp(201, { data: { id: "42", text: "ok" } }));
+    globalThis.fetch = fetchMock;
+    const out = await publishXForIdentity({
+      request: baseRequest({ creative: null }),
+      accessToken: "atk",
+    });
+    expect(out.status).toBe("published");
+    expect(out.metadata).toMatchObject({
+      x_publish_path: "identity",
+      mode: "automated",
+      media_mode: "text_only",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect("media" in body).toBe(false);
+  });
+});
+
 describe("publishXForIdentity — secret hygiene", () => {
   it("access token never appears in any returned outcome", async () => {
     const TOKEN = "atk_top_secret_value_42";

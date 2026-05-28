@@ -298,11 +298,10 @@ function buildTelegramSignOutUrl(input: ConnectIdentityInput): string {
 
 /**
  * Platforms where Signal currently has a usable per-identity OAuth
- * flow. Today: Reddit only. Future flows (X, LinkedIn with their own
- * OAuth) flip to true here once the start/callback routes are
- * wired up for them.
+ * flow. Today: Reddit + X. LinkedIn keeps its read-only stub until
+ * the publisher lands (out of scope for this PR).
  */
-const OAUTH_PLATFORMS: ReadonlyArray<FounderPlatform> = ["reddit"];
+const OAUTH_PLATFORMS: ReadonlyArray<FounderPlatform> = ["reddit", "x"];
 
 /**
  * Platforms that authenticate identities through a per-identity app

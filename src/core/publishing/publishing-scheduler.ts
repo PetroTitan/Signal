@@ -639,6 +639,7 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
     "bluesky",
     "devto",
     "telegram",
+    "x",
   ]);
   if (PLATFORMS_THAT_RESOLVE_CREATIVE.has(platform) && planItemId) {
     const { listCreativesForItem } = await import(
@@ -654,7 +655,10 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
     );
     const decision = resolvePublishCreative(creatives);
     if (decision.kind === "blocked") {
-      if (platform === "bluesky") {
+      // Strict-block platforms: bluesky + x. The operator approved a
+      // creative for these; publishing text-only would diverge from
+      // intent. Block with the resolver's reason code.
+      if (platform === "bluesky" || platform === "x") {
         return {
           status: "blocked",
           reasonCode: decision.reasonCode,
@@ -688,6 +692,11 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
             ? "telegram_photo"
             : "text_only";
       }
+      // For X, the orchestrator's `uploadXMedia` decides the final
+      // media_mode (depending on whether the upload to /2/media/upload
+      // succeeds). The scheduler-side mediaMode stays "text_only" here
+      // and the publisher's per-call metadata.media_mode is the
+      // source of truth in publish_history.
     }
   }
 

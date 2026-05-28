@@ -36,6 +36,7 @@ import { publishFail, publishOk } from "./publishing-result";
 import type { PublishOutcome, PublishRequest } from "./publishing-types";
 
 const X_TWEETS_URL = "https://api.twitter.com/2/tweets";
+const X_MEDIA_UPLOAD_URL = "https://api.twitter.com/2/media/upload";
 
 /**
  * Per-post hard limit. The platform-native adapter
@@ -237,6 +238,211 @@ export async function publishToX(
       ...(mediaId ? { x_media_id: mediaId } : {}),
     },
   });
+}
+
+/**
+ * Upload an image to X's v2 media endpoint and return the resulting
+ * media id, which the caller attaches to a tweet via `media_ids`.
+ *
+ * Scope (v1 — Phase F9):
+ *   - SINGLE image per tweet
+ *   - OAuth 2.0 user-context auth (`media.write` scope required)
+ *   - No OAuth 1.0a fallback (out of scope per the implementation
+ *     plan; if X's account tier doesn't support v2 media upload, the
+ *     call returns `x_media_upload_unavailable` and the publish
+ *     fails with a clear operator-facing reason)
+ *
+ * NEVER:
+ *   - falls back to OAuth 1.0a
+ *   - retries on failure
+ *   - silently drops media when upload fails
+ *   - logs the access token
+ *
+ * The caller MUST hand the returned `mediaId` to `publishToX`. We do
+ * not attach media here; that lives in `/2/tweets` and the publisher
+ * separates the two phases so a successful upload + failed tweet
+ * still surfaces a clean failure.
+ */
+export type UploadXMediaResult =
+  | { ok: true; mediaId: string }
+  | {
+      ok: false;
+      reasonCode: "x_media_upload_failed" | "x_media_upload_unavailable";
+      reasonDetail: string;
+      httpStatus?: number;
+    };
+
+export async function uploadXMedia(input: {
+  accessToken: string;
+  /** Public URL (Supabase storage public-bucket URL or external CDN). */
+  photoUrl: string;
+}): Promise<UploadXMediaResult> {
+  const { accessToken, photoUrl } = input;
+
+  if (!accessToken || accessToken.trim().length === 0) {
+    return {
+      ok: false,
+      reasonCode: "x_media_upload_failed",
+      reasonDetail: "uploadXMedia called without an access token.",
+    };
+  }
+  if (!photoUrl || photoUrl.trim().length === 0) {
+    return {
+      ok: false,
+      reasonCode: "x_media_upload_failed",
+      reasonDetail: "uploadXMedia called without a photo URL.",
+    };
+  }
+
+  // 1. Fetch image bytes. The caller is responsible for picking the
+  //    URL from `creative.assetUrl ?? creative.sourceUrl`; we treat
+  //    fetch failures as upload failures with a clear reason.
+  let imgResp: Response;
+  try {
+    imgResp = await fetchWithTimeout(photoUrl, {
+      method: "GET",
+      timeoutMs: 20_000,
+    });
+  } catch (err) {
+    if (isTimeoutError(err)) {
+      return {
+        ok: false,
+        reasonCode: "x_media_upload_failed",
+        reasonDetail: "Image fetch timed out (20s) before upload to X.",
+      };
+    }
+    return {
+      ok: false,
+      reasonCode: "x_media_upload_failed",
+      reasonDetail: `Image fetch network error: ${
+        err instanceof Error ? err.message : "unknown"
+      }`,
+    };
+  }
+  if (!imgResp.ok) {
+    return {
+      ok: false,
+      reasonCode: "x_media_upload_failed",
+      reasonDetail: `Image fetch returned ${imgResp.status} from creative asset URL.`,
+      httpStatus: imgResp.status,
+    };
+  }
+  const mimeType = imgResp.headers.get("content-type") ?? "application/octet-stream";
+  let blob: Blob;
+  try {
+    blob = await imgResp.blob();
+  } catch (err) {
+    return {
+      ok: false,
+      reasonCode: "x_media_upload_failed",
+      reasonDetail: `Image body read failed: ${
+        err instanceof Error ? err.message : "unknown"
+      }`,
+    };
+  }
+  if (blob.size === 0) {
+    return {
+      ok: false,
+      reasonCode: "x_media_upload_failed",
+      reasonDetail: "Image fetch returned empty body.",
+    };
+  }
+
+  // 2. POST /2/media/upload as multipart/form-data with the bytes.
+  //    `media_category=tweet_image` tells X this is a single-image
+  //    attach to an upcoming tweet (not a profile banner, etc.).
+  const form = new FormData();
+  form.append("media", blob, "image");
+  form.append("media_category", "tweet_image");
+
+  let uploadResp: Response;
+  try {
+    uploadResp = await fetchWithTimeout(X_MEDIA_UPLOAD_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: form,
+      timeoutMs: 30_000,
+    });
+  } catch (err) {
+    if (isTimeoutError(err)) {
+      return {
+        ok: false,
+        reasonCode: "x_media_upload_failed",
+        reasonDetail: "X /2/media/upload timed out (30s).",
+      };
+    }
+    return {
+      ok: false,
+      reasonCode: "x_media_upload_failed",
+      reasonDetail: `X /2/media/upload network error: ${
+        err instanceof Error ? err.message : "unknown"
+      }`,
+    };
+  }
+
+  // X v2 media upload is gated by API tier on some apps. We surface
+  // the tier-gated case (403) with a distinct reason code so the
+  // operator-facing copy can guide them to upgrade tier or attach
+  // without media. Other failures collapse into x_media_upload_failed.
+  if (uploadResp.status === 403) {
+    const detail = await safeReadXErrorDetail(uploadResp);
+    return {
+      ok: false,
+      reasonCode: "x_media_upload_unavailable",
+      reasonDetail:
+        `X /2/media/upload returned 403 — the app's API tier may not include media upload, or the access token is missing the media.write scope. ${detail}`.trim(),
+      httpStatus: 403,
+    };
+  }
+  if (uploadResp.status === 401) {
+    return {
+      ok: false,
+      reasonCode: "x_media_upload_failed",
+      reasonDetail: "X /2/media/upload returned 401 (token invalid).",
+      httpStatus: 401,
+    };
+  }
+  if (uploadResp.status === 413) {
+    return {
+      ok: false,
+      reasonCode: "x_media_upload_failed",
+      reasonDetail: `Image is too large for X (mime=${mimeType}). Try a smaller asset.`,
+      httpStatus: 413,
+    };
+  }
+  if (!uploadResp.ok) {
+    const detail = await safeReadXErrorDetail(uploadResp);
+    return {
+      ok: false,
+      reasonCode: "x_media_upload_failed",
+      reasonDetail: `X /2/media/upload returned HTTP ${uploadResp.status}. ${detail}`.trim(),
+      httpStatus: uploadResp.status,
+    };
+  }
+
+  let json: { data?: { id?: unknown } };
+  try {
+    json = (await uploadResp.json()) as { data?: { id?: unknown } };
+  } catch (err) {
+    return {
+      ok: false,
+      reasonCode: "x_media_upload_failed",
+      reasonDetail: `X /2/media/upload response was not JSON: ${
+        err instanceof Error ? err.message : "unknown"
+      }`,
+    };
+  }
+  const id = json.data?.id;
+  if (typeof id !== "string" || id.trim().length === 0) {
+    return {
+      ok: false,
+      reasonCode: "x_media_upload_failed",
+      reasonDetail: "X /2/media/upload response missing data.id.",
+    };
+  }
+  return { ok: true, mediaId: id };
 }
 
 /**

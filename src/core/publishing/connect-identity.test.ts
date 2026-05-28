@@ -389,10 +389,10 @@ describe("resolveConnectIdentityPlan — unsupported platforms", () => {
 });
 
 describe("isOAuthCapablePlatform / isAppPasswordPlatform / isApiKeyVerifyPlatform", () => {
-  it("Reddit is OAuth-capable; nothing else (yet)", () => {
+  it("Reddit and X are OAuth-capable today; Bluesky + LinkedIn are not (Bluesky is app-password; LinkedIn has no live publisher yet)", () => {
     expect(isOAuthCapablePlatform("reddit")).toBe(true);
+    expect(isOAuthCapablePlatform("x")).toBe(true);
     expect(isOAuthCapablePlatform("bluesky")).toBe(false);
-    expect(isOAuthCapablePlatform("x")).toBe(false);
     expect(isOAuthCapablePlatform("linkedin")).toBe(false);
   });
 
@@ -413,9 +413,8 @@ describe("isOAuthCapablePlatform / isAppPasswordPlatform / isApiKeyVerifyPlatfor
     expect(isPersonalApiKeyPlatform("telegram")).toBe(false);
   });
 
-  it("Distribution and manual-only platforms belong to none of the four groups", () => {
+  it("Distribution and manual-only platforms belong to none of the four groups (X excluded — now OAuth-capable)", () => {
     for (const p of [
-      "x",
       "linkedin",
       "youtube",
       "threads",

@@ -32,7 +32,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { getAccountById } from "@/repositories/account-repository";
 import { getConnectionForAccount } from "@/repositories/platform-connection-repository";
-import { publishToX } from "./publish-x";
+import { publishToX, uploadXMedia } from "./publish-x";
 import { publishFail } from "./publishing-result";
 import type { PublishOutcome, PublishRequest } from "./publishing-types";
 
@@ -104,14 +104,74 @@ export async function publishXForIdentity(
   // back to `https://x.com/i/status/<id>` which X resolves correctly.
   const username = conn?.handle ?? null;
 
-  // 3. Hand to the pure publisher.
+  // 3. Optional media upload. The scheduler's resolvePublishCreative
+  //    only attaches a creative when an approved row exists with a
+  //    fetchable asset URL — so a non-null `request.creative` here is
+  //    an operator-approved attach. We upload it via /2/media/upload
+  //    BEFORE the tweet POST so the tweet either goes out with the
+  //    image or fails clearly with the upload reason.
+  //
+  //    No silent downgrade: if upload fails, the publisher does NOT
+  //    fall back to a text-only tweet. The operator approved the
+  //    image; surfacing the failure (x_media_upload_unavailable for
+  //    tier-gated 403; x_media_upload_failed for other errors) is
+  //    safer than publishing a different post than they approved.
+  let mediaId: string | null = null;
+  if (request.creative) {
+    const photoUrl =
+      request.creative.assetUrl ?? request.creative.sourceUrl ?? null;
+    if (!photoUrl || photoUrl.trim().length === 0) {
+      return tagPublishPath(
+        publishFail(
+          "x_media_upload_failed",
+          "Approved creative has no fetchable URL (assetUrl/sourceUrl both empty).",
+          {
+            endpoint: "media/upload",
+            media_mode: "x_image",
+            creative_id: request.creative.id,
+            media_url_present: false,
+            x_media_id_present: false,
+          },
+        ),
+      );
+    }
+    const upload = await uploadXMedia({ accessToken, photoUrl });
+    if (!upload.ok) {
+      return tagPublishPath(
+        publishFail(upload.reasonCode, upload.reasonDetail, {
+          endpoint: "media/upload",
+          media_mode: "x_image",
+          creative_id: request.creative.id,
+          media_url_present: true,
+          x_media_id_present: false,
+          ...(upload.httpStatus ? { http_status: upload.httpStatus } : {}),
+        }),
+      );
+    }
+    mediaId = upload.mediaId;
+  }
+
+  // 4. Hand to the pure publisher.
   const outcome = await publishToX({
     request,
     accessToken,
     username,
+    mediaId,
   });
 
-  return tagPublishPath(outcome);
+  // Tag the creative_id on success so publish_history records which
+  // approved creative was actually attached.
+  const withCreativeTag = request.creative
+    ? {
+        ...outcome,
+        metadata: {
+          ...outcome.metadata,
+          creative_id: request.creative.id,
+        },
+      }
+    : outcome;
+
+  return tagPublishPath(withCreativeTag);
 }
 
 function tagPublishPath(outcome: PublishOutcome): PublishOutcome {
