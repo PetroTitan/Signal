@@ -29,6 +29,7 @@ export default function PublishingPlatformsPage() {
     tier1,
     redditProviderConfigured: isOAuthProviderConfigured("reddit"),
     redditBlocked: isRedditOauthBlocked(),
+    xProviderConfigured: isOAuthProviderConfigured("x"),
     encryptionOn: hasTokenEncryptionKey(),
   });
 

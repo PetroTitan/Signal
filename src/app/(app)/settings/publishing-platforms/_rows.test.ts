@@ -29,6 +29,7 @@ function baseInputs(
     },
     redditProviderConfigured: false,
     redditBlocked: false,
+    xProviderConfigured: false,
     encryptionOn: false,
     ...over,
   };
@@ -36,7 +37,7 @@ function baseInputs(
 
 function rowFor(
   inputs: PublishingPlatformsInputs,
-  key: "reddit" | "devto" | "hashnode" | "bluesky" | "telegram",
+  key: "reddit" | "x" | "devto" | "hashnode" | "bluesky" | "telegram",
 ) {
   const row = buildPublishingPlatformRows(inputs).find((r) => r.key === key);
   if (!row) throw new Error(`expected row ${key}`);
@@ -48,10 +49,11 @@ function rowFor(
 // =====================================================================
 
 describe("buildPublishingPlatformRows — presence", () => {
-  it("returns rows for reddit, devto, hashnode, bluesky, telegram (5 in total)", () => {
+  it("returns rows for reddit, x, devto, hashnode, bluesky, telegram (6 in total)", () => {
     const rows = buildPublishingPlatformRows(baseInputs());
     expect(rows.map((r) => r.key)).toEqual([
       "reddit",
+      "x",
       "devto",
       "hashnode",
       "bluesky",
@@ -64,6 +66,47 @@ describe("buildPublishingPlatformRows — presence", () => {
     const telegram = rows.find((r) => r.key === "telegram");
     expect(telegram).toBeDefined();
     expect(telegram?.label).toBe("Telegram");
+  });
+
+  it("X is rendered as a row (Phase F9 — was hidden before X OAuth landed)", () => {
+    const rows = buildPublishingPlatformRows(baseInputs());
+    const x = rows.find((r) => r.key === "x");
+    expect(x).toBeDefined();
+    expect(x?.label).toBe("X");
+  });
+});
+
+// =====================================================================
+// X gating (Phase F9 — OAuth 2.0 with PKCE; no API-approval hold)
+// =====================================================================
+
+describe("X row — missing/ready branching", () => {
+  it("missing X_CLIENT_ID/SECRET/REDIRECT_URI → missing (Setup needed)", () => {
+    const row = rowFor(
+      baseInputs({ xProviderConfigured: false, encryptionOn: true }),
+      "x",
+    );
+    expect(row.status.kind).toBe("missing");
+    expect(row.status.detail).toContain("X_CLIENT_ID");
+  });
+
+  it("provider env set but TOKEN_ENCRYPTION_KEY missing → missing (token storage)", () => {
+    const row = rowFor(
+      baseInputs({ xProviderConfigured: true, encryptionOn: false }),
+      "x",
+    );
+    expect(row.status.kind).toBe("missing");
+    expect(row.status.detail).toContain("TOKEN_ENCRYPTION_KEY");
+  });
+
+  it("provider env + encryption → ready ('Connect X through OAuth ...')", () => {
+    const row = rowFor(
+      baseInputs({ xProviderConfigured: true, encryptionOn: true }),
+      "x",
+    );
+    expect(row.status.kind).toBe("ready");
+    expect(row.status.detail).toContain("OAuth");
+    expect(row.status.detail).toContain("approved post publishing");
   });
 });
 

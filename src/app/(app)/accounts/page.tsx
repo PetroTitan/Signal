@@ -229,6 +229,12 @@ export default async function AccountsPage() {
     // Reddit-specific helperNote separately in the blocked case.
     reddit:
       providerConfigured.reddit && !redditOauthBlocked && encryptionOn,
+    // Phase F9 — X joins Reddit as an OAuth-capable platform. Same
+    // gate shape: provider env (X_CLIENT_ID + X_CLIENT_SECRET +
+    // X_REDIRECT_URI) AND encryption configured. X has no
+    // API-approval hold equivalent to Reddit's REDDIT_OAUTH_STATUS,
+    // so the gate is just env + encryption.
+    x: providerConfigured.x && encryptionOn,
   };
 
   const identityPublishStateById = new Map<string, IdentityPublishState>();
@@ -323,14 +329,18 @@ export default async function AccountsPage() {
       platform: platformKey,
       publishingMode: guidance?.publishingMode ?? "not_implemented",
       distributionOnly: guidance?.distributionOnly ?? false,
-      // Reddit is the only OAuth-capable platform that is also
-      // currently runnable: providerConfigured says env-var clientId
-      // is set, and redditOauthBlocked says the API approval isn't
-      // live. Both must be true for the oauth plan to be useful.
+      // OAuth-capable platforms today:
+      //   - Reddit: provider env + encryption + !blocked
+      //   - X     : provider env + encryption (no API-approval hold)
+      // For any other platform the resolver still falls through to
+      // its app_password / personal_api_key / api_key_verify /
+      // manual branch, so the default is false.
       oauthAvailable:
         platformKey === "reddit"
           ? providerConfigured.reddit && !redditOauthBlocked && encryptionOn
-          : false,
+          : platformKey === "x"
+            ? providerConfigured.x && encryptionOn
+            : false,
       redirectAfter: "/accounts",
     });
     connectPlanByIdentity.set(account.id, plan);
