@@ -18,7 +18,7 @@ import {
   type PolicyContext,
 } from "./publishing-policy";
 import { publishToReddit } from "./publish-reddit";
-import { publishToX } from "./publish-x";
+import { publishXForIdentity } from "./x-publish-orchestrator";
 import { publishToLinkedIn } from "./publish-linkedin";
 import { publishDevtoForIdentity } from "./devto-publish-orchestrator";
 import { publishHashnodeForIdentity } from "./hashnode-publish-orchestrator";
@@ -169,7 +169,11 @@ export async function runPublish(input: RunnerInput): Promise<PublishOutcome> {
         subreddit: input.target,
       });
     case "x":
-      return publishToX();
+      return publishXForIdentity({
+        request: input.request,
+        accessToken: input.accessToken,
+        db: input.db,
+      });
     case "linkedin":
       return publishToLinkedIn();
   }

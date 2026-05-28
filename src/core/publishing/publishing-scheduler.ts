@@ -73,7 +73,17 @@ export function nextExecutionStatusForOutcome(
   if (outcome.status === "blocked") return "blocked";
   if (outcome.status === "failed") return "failed";
   if (outcome.status === "skipped") {
-    if (outcome.reasonCode === "scheduled_in_future") return "scheduled";
+    // Transient skips keep the row in `scheduled` so the next tick
+    // re-fetches it.
+    //   - scheduled_in_future: time-based gate; clears on its own.
+    //   - x_token_refresh_transient: network / 5xx during X token
+    //     refresh; next tick reattempts the refresh.
+    if (
+      outcome.reasonCode === "scheduled_in_future" ||
+      outcome.reasonCode === "x_token_refresh_transient"
+    ) {
+      return "scheduled";
+    }
     return "blocked";
   }
   // outcome.status === "not_implemented" or any future addition →
@@ -468,26 +478,35 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
   // outcomes can be tagged with `telegram_target_type` for
   // diagnostics. The select stays narrow — no token fields beyond
   // what we already read.
+  let connectionId: string | null = null;
   let connectionStatus: string | null = null;
   let accessTokenEncrypted: string | null = null;
+  let refreshTokenEncrypted: string | null = null;
+  let connectionExpiresAt: string | null = null;
   let providerAccountId: string | null = null;
   let connectionMetadata: Record<string, unknown> | null = null;
   if (item.account_id) {
     const { data: conn } = await supabase
       .from("platform_connections")
       .select(
-        "connection_status, access_token_encrypted, provider_account_id, metadata",
+        "id, connection_status, access_token_encrypted, refresh_token_encrypted, expires_at, provider_account_id, metadata",
       )
       .eq("workspace_id", item.workspace_id)
       .eq("account_id", item.account_id)
       .eq("platform", platform)
       .maybeSingle();
     if (conn) {
+      connectionId = (conn as { id?: string }).id ?? null;
       connectionStatus =
         (conn as { connection_status?: string }).connection_status ?? null;
       accessTokenEncrypted =
         (conn as { access_token_encrypted?: string | null })
           .access_token_encrypted ?? null;
+      refreshTokenEncrypted =
+        (conn as { refresh_token_encrypted?: string | null })
+          .refresh_token_encrypted ?? null;
+      connectionExpiresAt =
+        (conn as { expires_at?: string | null }).expires_at ?? null;
       providerAccountId =
         (conn as { provider_account_id?: string | null })
           .provider_account_id ?? null;
@@ -497,6 +516,67 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
       connectionMetadata =
         rawMeta && typeof rawMeta === "object" ? rawMeta : null;
     }
+  }
+
+  // X-only proactive token refresh.
+  //
+  // Other OAuth platforms either refresh inside their adapter
+  // (Reddit) or use non-OAuth credentials (Bluesky / dev.to /
+  // Hashnode app passwords or personal API keys; Telegram
+  // workspace bot token). X is the only platform where the scheduler
+  // currently holds the OAuth refresh and the publisher has no
+  // built-in retry-with-refresh path.
+  //
+  // The helper rotates tokens, persists the new blobs, and decides
+  // whether to publish, skip (transient), or block (reauth required).
+  if (
+    platform === "x" &&
+    mode === "live" &&
+    connectionId !== null
+  ) {
+    const { ensureFreshXAccessToken } = await import("@/core/platform-oauth");
+    const refresh = await ensureFreshXAccessToken({
+      db: supabase as never,
+      workspaceId: item.workspace_id,
+      connectionId,
+      currentAccessTokenEncrypted: accessTokenEncrypted,
+      currentRefreshTokenEncrypted: refreshTokenEncrypted,
+      currentExpiresAt: connectionExpiresAt,
+      nowIso,
+    });
+    if (refresh.outcome.kind === "reauthorization_required") {
+      return {
+        status: "blocked",
+        reasonCode: "oauth_reauthorization_required",
+        reasonDetail: `X refresh failed (${refresh.outcome.reason}); operator must reconnect this identity from /accounts.`,
+        externalId: null,
+        externalUrl: null,
+        metadata: {
+          x_token_refresh: "reauthorization_required",
+          x_token_refresh_reason: refresh.outcome.reason,
+          plan_item_id:
+            (item.metadata as { plan_item_id?: string })?.plan_item_id ?? "",
+        },
+      };
+    }
+    if (refresh.outcome.kind === "transient_error") {
+      return {
+        status: "skipped",
+        reasonCode: "x_token_refresh_transient",
+        reasonDetail: `X token refresh hit a transient error (${refresh.outcome.reason}); item will retry next tick.`,
+        externalId: null,
+        externalUrl: null,
+        metadata: {
+          x_token_refresh: "transient_error",
+          x_token_refresh_reason: refresh.outcome.reason,
+          plan_item_id:
+            (item.metadata as { plan_item_id?: string })?.plan_item_id ?? "",
+        },
+      };
+    }
+    // no_refresh_needed or refreshed → use the (possibly rotated)
+    // encrypted access token for the decrypt step below.
+    accessTokenEncrypted = refresh.accessTokenEncrypted;
   }
 
   // Phase F2 — decrypt at the last possible moment, only when:
@@ -559,6 +639,7 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
     "bluesky",
     "devto",
     "telegram",
+    "x",
   ]);
   if (PLATFORMS_THAT_RESOLVE_CREATIVE.has(platform) && planItemId) {
     const { listCreativesForItem } = await import(
@@ -574,7 +655,10 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
     );
     const decision = resolvePublishCreative(creatives);
     if (decision.kind === "blocked") {
-      if (platform === "bluesky") {
+      // Strict-block platforms: bluesky + x. The operator approved a
+      // creative for these; publishing text-only would diverge from
+      // intent. Block with the resolver's reason code.
+      if (platform === "bluesky" || platform === "x") {
         return {
           status: "blocked",
           reasonCode: decision.reasonCode,
@@ -608,6 +692,11 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
             ? "telegram_photo"
             : "text_only";
       }
+      // For X, the orchestrator's `uploadXMedia` decides the final
+      // media_mode (depending on whether the upload to /2/media/upload
+      // succeeds). The scheduler-side mediaMode stays "text_only" here
+      // and the publisher's per-call metadata.media_mode is the
+      // source of truth in publish_history.
     }
   }
 

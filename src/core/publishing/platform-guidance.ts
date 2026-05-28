@@ -115,8 +115,13 @@ const GUIDANCE: Record<FounderPlatform, FounderPlatformGuidance> = {
     short: "X",
     voiceHint:
       "Threads work better than long posts. Short, specific, technical or operational. No hashtag spam, no engagement bait, max one external link per thread.",
-    publishingMode: "manual",
-    distributionOnly: true,
+    // Phase F9 — X is automated. The OAuth flow + identity-scoped
+    // orchestrator + scheduler routing are in place; the publisher
+    // posts single-post text and optional single-image creative
+    // through the official v2 endpoints. Threads, replies, quotes,
+    // and DMs are NOT implemented and remain manual fallbacks via
+    // `recordManualDistributionAction` until a future PR.
+    publishingMode: "api",
   },
   linkedin: {
     label: "LinkedIn",
