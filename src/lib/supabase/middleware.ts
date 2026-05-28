@@ -22,6 +22,28 @@ const PUBLIC_PATH_PREFIXES = [
   // shared secret. The route handler enforces the secret; the
   // middleware must not redirect to /login.
   "/api/scheduler",
+  // Phase F9 — OAuth callback path. The OAuth handshake has its own
+  // security model:
+  //   - PKCE code_verifier persisted server-side at /start; the
+  //     callback recovers it via the one-shot state token and sends
+  //     it to the provider in the token exchange body.
+  //   - `state` is a 32-byte cryptographically-random base64url
+  //     token, bound at insertion to (workspace_id, user_id,
+  //     platform), time-limited (10 minutes), and deleted on first
+  //     read.
+  // The middleware's session-cookie check is REDUNDANT against this
+  // model and FRAGILE across the cross-site provider redirect (e.g.,
+  // when a browser strips the SSR cookie during the X / Reddit
+  // round-trip, the callback would otherwise be redirected to
+  // /login?next=/api/oauth/x/callback and the OAuth flow would
+  // silently fail — `oauth_state_tokens` rows pile up uncosumed and
+  // `platform_connections` never gets a row). Adding `/api/oauth`
+  // to the public set lets the OAuth route handler execute its own
+  // state validation. The /start route (which DOES need an
+  // authenticated session to bind state to user_id) is unaffected —
+  // it's reached via in-app navigation while signed in, not from a
+  // cross-site redirect.
+  "/api/oauth",
 ];
 
 const PUBLIC_EXACT_PATHS = new Set<string>([
@@ -34,7 +56,7 @@ const PUBLIC_EXACT_PATHS = new Set<string>([
   "/signup",
 ]);
 
-function isPublicPath(pathname: string): boolean {
+export function isPublicPath(pathname: string): boolean {
   if (PUBLIC_EXACT_PATHS.has(pathname)) return true;
   for (const prefix of PUBLIC_PATH_PREFIXES) {
     if (prefix === "/") continue;

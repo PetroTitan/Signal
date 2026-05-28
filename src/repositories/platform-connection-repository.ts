@@ -1,6 +1,7 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase";
+import { createSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
 import type {
   OAuthStateTokenInsert,
   OAuthStateTokenRow,
@@ -463,7 +464,37 @@ export async function persistOAuthState(input: {
 export async function consumeOAuthState(
   state: string,
 ): Promise<OAuthStateTokenRow | null> {
-  const supabase = createSupabaseServerClient();
+  // Phase F9 — the OAuth callback runs after a cross-site provider
+  // redirect (X / Reddit / LinkedIn). The Supabase session cookie may
+  // not be present at this point (some browsers strip SameSite=Lax
+  // cookies on certain cross-site redirects, or the session may have
+  // expired during the round-trip). If we relied on the cookie-aware
+  // client, `auth.uid()` would be null and the RLS policy on
+  // oauth_state_tokens (`user_id = auth.uid() and is_workspace_member
+  // (workspace_id)`) would silently return zero rows. The callback
+  // would then throw `state_mismatch`, no platform_connections row
+  // would be written, and operators would see "Not signed in" with
+  // no diagnostic trail.
+  //
+  // The state token's intrinsic secrecy is the actual auth boundary:
+  //   - 32-byte cryptographically-random base64url value
+  //   - bound at insertion to (workspace_id, user_id, platform,
+  //     account_id) by the /start route
+  //   - time-limited to 10 minutes (the table default)
+  //   - one-shot: deleted on first read, so even a leaked state
+  //     value can't be replayed.
+  //
+  // We use the service-role client to read by state value (RLS
+  // bypass), then return the row. The caller still validates
+  // platform + expiry. The state's secrecy + one-shot semantics
+  // remain the security boundary; RLS is redundant here.
+  //
+  // Fallback to the cookie-aware client preserves the previous
+  // behavior in environments where SUPABASE_SERVICE_ROLE_KEY is
+  // unset (e.g., local dev without the service key); RLS still
+  // applies in that branch.
+  const serviceRole = createSupabaseServiceRoleClient();
+  const supabase = serviceRole ?? createSupabaseServerClient();
   const { data, error } = await supabase
     .from("oauth_state_tokens")
     .select("*")
