@@ -84,6 +84,36 @@ export default async function SetupPage() {
       />
 
       <div className="px-6 lg:px-10 py-8 max-w-3xl space-y-6">
+        {/* ───────────── News ───────────── */}
+        <section className="card p-5">
+          <div className="flex items-baseline justify-between gap-3">
+            <h2 className="text-sm font-semibold text-ink-900">News</h2>
+            <span className="text-[10px] uppercase tracking-wide text-ink-400">
+              Platform &amp; infrastructure updates
+            </span>
+          </div>
+          <ul className="mt-3 space-y-3">
+            {NEWS_ENTRIES.map((entry) => (
+              <li
+                key={entry.date + entry.title}
+                className="border-t border-ink-100 pt-3 first:border-t-0 first:pt-0"
+              >
+                <div className="flex items-baseline justify-between gap-3">
+                  <h3 className="text-sm font-medium text-ink-900">
+                    {entry.title}
+                  </h3>
+                  <time className="text-[10px] text-ink-400 whitespace-nowrap">
+                    {entry.date}
+                  </time>
+                </div>
+                <p className="text-xs text-ink-600 mt-1 leading-relaxed">
+                  {entry.body}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </section>
+
         {/* ───────────── Overview ───────────── */}
         <section className="card p-5">
           <h2 className="text-sm font-semibold text-ink-900">Overview</h2>
@@ -590,6 +620,59 @@ export default async function SetupPage() {
     </>
   );
 }
+
+// =====================================================================
+// News entries
+// =====================================================================
+//
+// Static, typed, deliberately small. New entries land here as a code
+// change so the news surface has the same review + audit trail as
+// the rest of the operator-facing copy. No DB, no fetch, no CMS, no
+// notification infrastructure — just a typed const array rendered
+// at the top of the Setup page.
+//
+// Add new entries at the TOP. Older entries can be trimmed by hand
+// when the list grows beyond ~6 items.
+
+interface NewsEntry {
+  /** ISO date (YYYY-MM-DD) — operator-readable, not parsed. */
+  date: string;
+  title: string;
+  body: string;
+}
+
+const NEWS_ENTRIES: ReadonlyArray<NewsEntry> = [
+  {
+    date: "2026-05-28",
+    title: "X publishing is now automated",
+    body:
+      "Connect X through OAuth on the Accounts page to enable approved single-post text publishing and approved image creative publishing. Existing X identities that connected with read-only scopes need to reconnect to pick up tweet.write + media.write.",
+  },
+  {
+    date: "2026-05-28",
+    title: "X OAuth callback path hardened",
+    body:
+      "The OAuth callback no longer requires an active Supabase session cookie — the flow's own PKCE + one-shot state token is the security boundary. Cross-host redirects from the X login page no longer drop the authorize context.",
+  },
+  {
+    date: "2026-05-27",
+    title: "Telegram media publishing wired through",
+    body:
+      "Approved image creatives are now sent to Telegram via sendPhoto with a caption. Caption is trimmed to Telegram's 1024-char limit and the truncation is recorded in publish_history metadata. Text-only Telegram posts behave exactly as before.",
+  },
+  {
+    date: "2026-05-27",
+    title: "dev.to cover images wired through",
+    body:
+      "When an approved creative is attached to a dev.to plan_item, the scheduler now sets coverImageUrl on the publish request so the article ships with article.main_image populated. No approved creative = text-only article, unchanged.",
+  },
+  {
+    date: "2026-05-27",
+    title: "Weekly-plan current-creative selector aligned with MCP",
+    body:
+      "The /weekly-plan UI and approval server actions now use the same primary-creative selector as the MCP read tool. Storage-backed uploaded creatives outrank legacy data: URL / planned-placeholder rows.",
+  },
+];
 
 // =====================================================================
 // Helpers

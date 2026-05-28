@@ -11,9 +11,13 @@ import {
 } from "@/app/(app)/weekly-plan/_undo-rewrite-action";
 import {
   REWRITE_ACTION_LABELS,
-  REWRITE_ACTIONS,
   type RewriteAction,
 } from "@/core/generation/rewrite-types";
+import {
+  FOUNDER_PLATFORMS,
+  resolveIdentityPlatformGuidance,
+  type FounderPlatform,
+} from "@/core/publishing/platform-guidance";
 
 interface RewriteChipsProps {
   itemId: string | null;
@@ -37,6 +41,79 @@ interface LastReceipt {
   undoAvailable: boolean;
   mode: "ai" | "deterministic";
   detail: string | null;
+}
+
+/**
+ * Compact destination chip label per platform. The Adapt-for chips
+ * keep their underlying rewrite action ids (REWRITE_ACTION_LABELS
+ * stays unchanged for the receipt copy + analytics keys) but the
+ * compose-sheet surface presents them as destination names instead
+ * of "Adapt for X" — Signal is publishing infrastructure, not an AI
+ * rewrite tool.
+ */
+const DESTINATION_CHIP_LABEL: Record<FounderPlatform, string> = {
+  reddit: "Reddit",
+  bluesky: "Bluesky",
+  devto: "dev.to",
+  hashnode: "Hashnode",
+  telegram: "Telegram",
+  x: "X",
+  linkedin: "LinkedIn",
+  youtube: "YouTube",
+  threads: "Threads",
+  instagram: "Instagram",
+  indie_hackers: "Indie Hackers",
+};
+
+/**
+ * Mapping from FounderPlatform → existing rewrite action (when one
+ * exists). Click on a destination chip with a mapped action triggers
+ * the existing draft-adapt flow; click on a chip without a mapping
+ * is display-only.
+ *
+ * The 4 destinations without an adapt action (Telegram, Hashnode,
+ * Reddit, Indie Hackers) intentionally render as display-only chips
+ * — they appear in the destination row so the operator sees the
+ * full publishing surface, but Signal does not "rewrite for
+ * Telegram" today.
+ */
+const DESTINATION_REWRITE_ACTION: Partial<Record<FounderPlatform, RewriteAction>> = {
+  bluesky: "to_bluesky_thread",
+  devto: "to_devto_article",
+  x: "to_x_thread",
+  linkedin: "to_linkedin_post",
+  youtube: "to_youtube_description",
+  threads: "to_threads_post",
+  instagram: "to_instagram_caption",
+};
+
+/**
+ * Editorial polish actions — kept inline in the chips panel but
+ * presented under a small secondary heading so destinations lead.
+ */
+const POLISH_ACTIONS: ReadonlyArray<RewriteAction> = [
+  "rewrite",
+  "shorter",
+  "more_technical",
+  "more_founder",
+  "less_promotional",
+  "improve_headline",
+];
+
+/**
+ * Capability badge text per platform — derived from
+ * `platform-guidance.publishingMode`. Static, truthful, and matches
+ * what the /settings/publishing-platforms and /accounts capabilities
+ * panel show. We do NOT fabricate per-identity connection state
+ * here — that's resolved on /accounts, not the compose sheet.
+ */
+function capabilityBadge(platform: FounderPlatform): string {
+  const meta = resolveIdentityPlatformGuidance(platform);
+  if (!meta) return "Manual";
+  if (meta.publishingMode === "api") return "API";
+  // distributionOnly + manual platforms (LinkedIn / YouTube / Threads
+  // / Instagram / Indie Hackers) — manual until the publisher lands.
+  return "Manual";
 }
 
 /**
@@ -131,39 +208,99 @@ export function RewriteChips(props: RewriteChipsProps) {
     }
   }
 
+  const globalDisabled =
+    pendingAction !== null || undoPending || !!disabledReason;
+
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
-          Editorial rewrites
-        </span>
-        {disabledReason ? (
-          <span className="text-[10px] text-ink-400">{disabledReason}</span>
-        ) : providerHint ? (
-          <span className="text-[10px] text-ink-400">{providerHint}</span>
-        ) : null}
+    <div className="space-y-3">
+      {/* ─────────────── Publish destinations ─────────────── */}
+      <div className="space-y-1.5">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
+            Publish destinations
+          </span>
+          {disabledReason ? (
+            <span className="text-[10px] text-ink-400">{disabledReason}</span>
+          ) : providerHint ? (
+            <span className="text-[10px] text-ink-400">{providerHint}</span>
+          ) : null}
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {FOUNDER_PLATFORMS.map((platform) => {
+            const label = DESTINATION_CHIP_LABEL[platform];
+            const action = DESTINATION_REWRITE_ACTION[platform];
+            const badge = capabilityBadge(platform);
+            const pending = action !== undefined && pendingAction === action;
+            // Chips without a rewrite action render as display-only —
+            // they show the destination + capability so the operator
+            // sees the full publishing surface without misleading them
+            // into expecting a "rewrite for Telegram" or
+            // "rewrite for Indie Hackers" affordance Signal doesn't
+            // ship today.
+            if (!action) {
+              return (
+                <span
+                  key={platform}
+                  className="text-[11px] px-2.5 py-1 rounded-full border border-ink-200 bg-white text-ink-700 inline-flex items-center gap-1.5 select-none cursor-default"
+                  title={`${label} · ${badge}`}
+                >
+                  <span>{label}</span>
+                  <span className="text-[9px] uppercase tracking-wide text-ink-400">
+                    {badge}
+                  </span>
+                </span>
+              );
+            }
+            return (
+              <button
+                key={platform}
+                type="button"
+                onClick={() => fire(action)}
+                disabled={globalDisabled}
+                title={`Adapt draft for ${label} (${badge})`}
+                className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors inline-flex items-center gap-1.5 ${
+                  pending
+                    ? "bg-signal-100 border-signal-300 text-signal-800"
+                    : "bg-white border-ink-200 text-ink-700 hover:bg-ink-50"
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                <span>{pending ? "Working…" : label}</span>
+                {!pending ? (
+                  <span className="text-[9px] uppercase tracking-wide text-ink-400">
+                    {badge}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
       </div>
-      <div className="flex flex-wrap gap-1.5">
-        {REWRITE_ACTIONS.map((action) => {
-          const pending = pendingAction === action;
-          const disabled =
-            pendingAction !== null || undoPending || !!disabledReason;
-          return (
-            <button
-              key={action}
-              type="button"
-              onClick={() => fire(action)}
-              disabled={disabled}
-              className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${
-                pending
-                  ? "bg-signal-100 border-signal-300 text-signal-800"
-                  : "bg-white border-ink-200 text-ink-700 hover:bg-ink-50"
-              } disabled:opacity-50 disabled:cursor-not-allowed`}
-            >
-              {pending ? "Working…" : REWRITE_ACTION_LABELS[action]}
-            </button>
-          );
-        })}
+
+      {/* ─────────────── Polish (editorial actions) ─────────────── */}
+      <div className="space-y-1.5">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
+          Polish
+        </span>
+        <div className="flex flex-wrap gap-1.5">
+          {POLISH_ACTIONS.map((action) => {
+            const pending = pendingAction === action;
+            return (
+              <button
+                key={action}
+                type="button"
+                onClick={() => fire(action)}
+                disabled={globalDisabled}
+                className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${
+                  pending
+                    ? "bg-signal-100 border-signal-300 text-signal-800"
+                    : "bg-white border-ink-200 text-ink-700 hover:bg-ink-50"
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {pending ? "Working…" : REWRITE_ACTION_LABELS[action]}
+              </button>
+            );
+          })}
+        </div>
       </div>
       {receipt ? (
         <p className="text-[10px] text-emerald-700 leading-relaxed flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
