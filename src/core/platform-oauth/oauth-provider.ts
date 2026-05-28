@@ -56,6 +56,11 @@ export const OAUTH_PROVIDERS: Record<OAuthPlatform, OAuthProviderConfig> = {
     pkce: true,
     revokeUrl: "https://api.twitter.com/2/oauth2/revoke",
     profileUrl: "https://api.twitter.com/2/users/me",
+    // Phase F9 — X publishing scopes. `tweet.write` and `media.write`
+    // are gated by SAFE_TEST_MODE through `allRequestedScopes` (same
+    // pattern as Reddit's `submit`). Operators that have not opted
+    // into the controlled-publish flow continue to request the
+    // read-only scope set.
     scopes: [
       {
         scope: "users.read",
@@ -77,6 +82,22 @@ export const OAUTH_PROVIDERS: Record<OAuthPlatform, OAuthProviderConfig> = {
         required: true,
         rationale: "Required to receive a refresh token from X.",
         isPublishingScope: false,
+      },
+      {
+        scope: "tweet.write",
+        label: "Publish posts",
+        required: true,
+        rationale:
+          "Publish approved single-post X content under the controlled-publish workflow (SAFE_TEST_MODE).",
+        isPublishingScope: true,
+      },
+      {
+        scope: "media.write",
+        label: "Upload media",
+        required: true,
+        rationale:
+          "Attach approved creative images to X posts via /2/media/upload. Required only when SAFE_TEST_MODE enables publishing.",
+        isPublishingScope: true,
       },
     ],
   },

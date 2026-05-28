@@ -33,6 +33,7 @@ export async function runOAuthSafetyCheck(): Promise<CheckResult> {
   } else {
     const publishingScopes = [
       "tweet.write",
+      "media.write",
       "submit",
       "w_member_social",
       "w_organization_social",
@@ -272,25 +273,41 @@ export async function runOAuthTokenSecurityCheck(): Promise<CheckResult> {
     details.push("MCP read tool does not reference encrypted columns.");
   }
 
-  // 4. Provider scope sanity. `submit` is allowed iff SAFE_TEST_MODE
-  //    is on; otherwise it must not appear in the runtime request.
+  // 4. Provider scope sanity. Publishing scopes (`submit`,
+  //    `tweet.write`, `media.write`) are allowed in the provider
+  //    config iff SAFE_TEST_MODE is on at runtime, because
+  //    `allRequestedScopes` filters by `isPublishingScope` and only
+  //    requests them when the workspace has opted into the
+  //    controlled-publish flow. The check flags the misconfiguration
+  //    (scope present + SAFE_TEST_MODE off → publishing scope would
+  //    leak into the authorize URL).
   const providers = await readSource(
     "src/core/platform-oauth/oauth-provider.ts",
   );
   const safeTestOn =
     (process.env.SAFE_TEST_MODE ?? "").trim().toLowerCase() === "true";
-  const submitInConfig =
-    providers !== null && /scope:\s*["']submit["']/.test(providers);
-  if (submitInConfig && !safeTestOn) {
-    findings.push(
-      "Reddit `submit` scope is in oauth-provider.ts but SAFE_TEST_MODE is not 'true' — publishing scope must be gated.",
-    );
-  } else if (submitInConfig && safeTestOn) {
-    details.push(
-      "Reddit `submit` scope is requested (SAFE_TEST_MODE=true).",
-    );
-  } else if (providers) {
-    details.push("Reddit provider does not request the `submit` scope.");
+  const publishingScopeChecks: Array<{
+    scope: string;
+    label: string;
+  }> = [
+    { scope: "submit", label: "Reddit `submit`" },
+    { scope: "tweet.write", label: "X `tweet.write`" },
+    { scope: "media.write", label: "X `media.write`" },
+  ];
+  for (const entry of publishingScopeChecks) {
+    const escaped = entry.scope.replace(".", "\\.");
+    const present =
+      providers !== null &&
+      new RegExp(`scope:\\s*["']${escaped}["']`).test(providers);
+    if (present && !safeTestOn) {
+      findings.push(
+        `${entry.label} scope is in oauth-provider.ts but SAFE_TEST_MODE is not 'true' — publishing scope must be gated.`,
+      );
+    } else if (present && safeTestOn) {
+      details.push(`${entry.label} scope is requested (SAFE_TEST_MODE=true).`);
+    } else if (providers) {
+      details.push(`Provider does not request the ${entry.label} scope.`);
+    }
   }
 
   if (findings.length > 0) {
