@@ -51,7 +51,19 @@ export const OAUTH_PROVIDERS: Record<OAuthPlatform, OAuthProviderConfig> = {
   x: {
     platform: "x",
     label: "X",
-    authorizeUrl: "https://twitter.com/i/oauth2/authorize",
+    // The authorize endpoint MUST be served on x.com (not the legacy
+    // twitter.com host). Post-rebrand, an unauthenticated user hitting
+    // `twitter.com/i/oauth2/authorize?...` gets cross-host-redirected
+    // to `x.com/login` for credential entry; the OAuth authorize
+    // context is lost on that hop in some browser/cookie shapes, and
+    // the user lands on `x.com/home` after login instead of the
+    // consent screen. Using `x.com` directly keeps the flow on a
+    // single host (login → consent → callback), so no context is
+    // dropped. Token / revoke / profile / tweets / media endpoints
+    // remain on api.twitter.com — those are server-to-server API
+    // calls with no user-facing browser hop, and the API hosts are
+    // aliased.
+    authorizeUrl: "https://x.com/i/oauth2/authorize",
     tokenUrl: "https://api.twitter.com/2/oauth2/token",
     pkce: true,
     revokeUrl: "https://api.twitter.com/2/oauth2/revoke",
