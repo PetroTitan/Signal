@@ -135,6 +135,17 @@ export const PUBLISH_REASON_CODES = [
   "hashnode_provider_unavailable",
   "hashnode_api_error",
   "hashnode_network_error",
+  // Phase F9 — X automated publishing.
+  //
+  // X-prefixed reason codes added alongside the OAuth + publishing
+  // surface. `oauth_reauthorization_required` is shared (Reddit may
+  // surface it in the future) — the scheduler produces it when X's
+  // refresh path returns `invalid_grant` (refresh token revoked).
+  // `x_token_refresh_transient` is a recoverable network / 5xx
+  // outcome that keeps the item in `scheduled` for the next tick.
+  // Publisher-specific codes (text + media) ship in later commits.
+  "oauth_reauthorization_required",
+  "x_token_refresh_transient",
 ] as const;
 export type PublishReasonCode = (typeof PUBLISH_REASON_CODES)[number];
 
