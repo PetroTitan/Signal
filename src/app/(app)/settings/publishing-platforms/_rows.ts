@@ -23,6 +23,12 @@ export interface PublishingPlatformsInputs {
   redditProviderConfigured: boolean;
   /** isRedditOauthBlocked() — REDDIT_OAUTH_STATUS=blocked_… */
   redditBlocked: boolean;
+  /**
+   * isOAuthProviderConfigured('x') — X_CLIENT_ID + X_CLIENT_SECRET +
+   * X_REDIRECT_URI are all set. Phase F9: X joins Reddit as an
+   * OAuth-capable workspace integration.
+   */
+  xProviderConfigured: boolean;
   /** hasTokenEncryptionKey() — TOKEN_ENCRYPTION_KEY is set. */
   encryptionOn: boolean;
 }
@@ -36,6 +42,7 @@ export interface PublishingPlatformRow {
   /** Stable identifier used by tests and keyed list rendering. */
   key:
     | "reddit"
+    | "x"
     | "devto"
     | "hashnode"
     | "bluesky"
@@ -65,6 +72,7 @@ export function buildPublishingPlatformRows(
     tier1,
     redditProviderConfigured,
     redditBlocked,
+    xProviderConfigured,
     encryptionOn,
   } = input;
 
@@ -106,6 +114,42 @@ export function buildPublishingPlatformRows(
       key: "reddit",
       label: "Reddit",
       status: { kind: "ready", detail: "Connected via OAuth." },
+    });
+  }
+
+  // X — OAuth 2.0 (PKCE). Phase F9. Same gate shape as Reddit, minus
+  // the API-approval hold: X dev apps don't require a separate
+  // approval step. Connect X through OAuth to enable approved post
+  // publishing.
+  if (!xProviderConfigured) {
+    rows.push({
+      key: "x",
+      label: "X",
+      status: {
+        kind: "missing",
+        detail:
+          "Configure X_CLIENT_ID, X_CLIENT_SECRET, and X_REDIRECT_URI in your environment to enable OAuth sign-in.",
+      },
+    });
+  } else if (!encryptionOn) {
+    rows.push({
+      key: "x",
+      label: "X",
+      status: {
+        kind: "missing",
+        detail:
+          "Configure TOKEN_ENCRYPTION_KEY in your environment before connecting X OAuth.",
+      },
+    });
+  } else {
+    rows.push({
+      key: "x",
+      label: "X",
+      status: {
+        kind: "ready",
+        detail:
+          "Connect X through OAuth to enable approved post publishing. Each identity authorizes its own X account.",
+      },
     });
   }
 

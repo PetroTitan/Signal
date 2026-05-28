@@ -5,7 +5,11 @@ import {
   type FounderPlatform,
 } from "@/core/publishing/platform-guidance";
 import { readTierOneConfigStatus } from "@/core/publishing/platform-credentials";
-import { isRedditOauthBlocked } from "@/lib/oauth/env";
+import {
+  hasTokenEncryptionKey,
+  isOAuthProviderConfigured,
+  isRedditOauthBlocked,
+} from "@/lib/oauth/env";
 
 /**
  * Phase F4.4.1 — "Where Signal can publish today".
@@ -74,6 +78,11 @@ export function PublishingCapabilitiesPanel({
 }: PublishingCapabilitiesPanelProps = {}) {
   const tier1 = readTierOneConfigStatus();
   const redditBlocked = isRedditOauthBlocked();
+  // Phase F9 — X OAuth readiness is the AND of provider env +
+  // encryption. Used by the X row to decide between
+  // "Workspace ready · no identity connected" and "Setup needed".
+  const xConfigured =
+    isOAuthProviderConfigured("x") && hasTokenEncryptionKey();
   const counts = identityAuthCounts ?? {};
 
   const rows: PlatformRow[] = FOUNDER_PLATFORMS.map((p) => {
@@ -132,8 +141,16 @@ export function PublishingCapabilitiesPanel({
         rowKind: "manual_first",
       };
     }
+    if (p === "x") {
+      // Phase F9 — X is automated via OAuth 2.0 + /2/tweets.
+      // Capabilities row mirrors the dev.to / Bluesky pattern: shows
+      // "Setup needed" when env is missing, "Workspace ready · no
+      // identity connected" once env is in place but no identity has
+      // signed in yet, and "Connected" once at least one identity
+      // has completed OAuth.
+      return apiRow(xConfigured);
+    }
     if (
-      p === "x" ||
       p === "linkedin" ||
       p === "youtube" ||
       p === "threads" ||

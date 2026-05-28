@@ -52,6 +52,33 @@ describe("resolveConnectIdentityPlan — OAuth platforms", () => {
     );
     expect(plan.kind).toBe("manual");
   });
+
+  it("returns an oauth plan for X with /api/oauth/x/start authorize URL (Phase F9)", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "x",
+        publishingMode: "api",
+        oauthAvailable: true,
+      }),
+    );
+    expect(plan.kind).toBe("oauth");
+    if (plan.kind !== "oauth") return;
+    expect(plan.authorizeUrl).toBe("/api/oauth/x/start?account_id=id-1");
+    expect(plan.buttonLabel).toBe("Sign in to this account");
+  });
+
+  it("X falls back to manual when oauthAvailable is false (env not configured)", () => {
+    const plan = resolveConnectIdentityPlan(
+      input({
+        platform: "x",
+        publishingMode: "api",
+        oauthAvailable: false,
+      }),
+    );
+    // No OAuth path → no app_password / personal_api_key / api_key_verify
+    // match either → manual plan.
+    expect(plan.kind).toBe("manual");
+  });
 });
 
 describe("resolveConnectIdentityPlan — app-password platforms", () => {
