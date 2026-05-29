@@ -201,12 +201,18 @@ export default function SettingsPage() {
               {accounts.length} account{accounts.length === 1 ? "" : "s"} defined
             </div>
           </div>
-          <div className="mt-3 text-[11px]">
+          <div className="mt-3 text-[11px] flex flex-wrap gap-x-3 gap-y-1">
             <Link
               href="/settings/network"
               className="text-signal-700 underline"
             >
-              Configure region & network →
+              Configure region &amp; network →
+            </Link>
+            <Link
+              href="/settings/team"
+              className="text-signal-700 underline"
+            >
+              Manage team access →
             </Link>
           </div>
         </section>
