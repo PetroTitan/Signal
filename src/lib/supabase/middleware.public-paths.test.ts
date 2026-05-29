@@ -52,6 +52,20 @@ describe("isPublicPath — existing public paths still public (regression)", () 
   });
 });
 
+/**
+ * Password recovery — /forgot-password is public so anyone can request
+ * a recovery email; /reset-password is gated so the user must hold the
+ * short-lived recovery session the callback minted from the email link.
+ */
+describe("isPublicPath — password recovery paths", () => {
+  it("treats /forgot-password as public", () => {
+    expect(isPublicPath("/forgot-password")).toBe(true);
+  });
+  it("treats /reset-password as gated (requires session minted by /auth/callback)", () => {
+    expect(isPublicPath("/reset-password")).toBe(false);
+  });
+});
+
 describe("isPublicPath — gated app routes stay gated (regression)", () => {
   it.each([
     "/accounts",

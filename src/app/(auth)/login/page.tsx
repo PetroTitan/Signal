@@ -6,11 +6,12 @@ import { SupabaseConfigNotice } from "../_config-notice";
 export const metadata: Metadata = { title: "Sign in" };
 
 interface LoginPageProps {
-  searchParams?: { next?: string };
+  searchParams?: { next?: string; password_updated?: string };
 }
 
 export default function LoginPage({ searchParams }: LoginPageProps) {
   const next = searchParams?.next;
+  const passwordUpdated = searchParams?.password_updated === "1";
   return (
     <main className="min-h-screen flex items-center justify-center px-6 py-12 bg-ink-50/40">
       <div className="w-full max-w-md space-y-6">
@@ -23,7 +24,23 @@ export default function LoginPage({ searchParams }: LoginPageProps) {
           </div>
         </div>
         <SupabaseConfigNotice />
+        {passwordUpdated ? (
+          <div
+            role="status"
+            className="text-xs leading-relaxed rounded-md px-3 py-2 bg-emerald-50 text-emerald-800"
+          >
+            Password updated. You can now sign in with your new password.
+          </div>
+        ) : null}
         <AuthForm mode="signin" next={next} />
+        <div className="text-xs text-center">
+          <Link
+            href="/forgot-password"
+            className="text-signal-700 underline"
+          >
+            Forgot your password?
+          </Link>
+        </div>
       </div>
     </main>
   );
