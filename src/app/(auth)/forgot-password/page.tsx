@@ -1,0 +1,25 @@
+import type { Metadata } from "next";
+import Link from "next/link";
+import { ForgotPasswordForm } from "../_forgot-form";
+import { SupabaseConfigNotice } from "../_config-notice";
+
+export const metadata: Metadata = { title: "Reset password" };
+
+export default function ForgotPasswordPage() {
+  return (
+    <main className="min-h-screen flex items-center justify-center px-6 py-12 bg-ink-50/40">
+      <div className="w-full max-w-md space-y-6">
+        <div className="text-center">
+          <Link href="/" className="text-sm font-semibold text-ink-900">
+            Signal
+          </Link>
+          <div className="text-xs text-ink-500 mt-1">
+            Calm operational growth infrastructure.
+          </div>
+        </div>
+        <SupabaseConfigNotice />
+        <ForgotPasswordForm />
+      </div>
+    </main>
+  );
+}

@@ -13,6 +13,7 @@ const PUBLIC_PATH_PREFIXES = [
   "/how-it-works",
   "/login",
   "/signup",
+  "/forgot-password",
   "/auth",
   // Phase F0: external operators reach the MCP HTTP bridge via bearer
   // token, not a Supabase cookie. The route handler does its own
@@ -54,6 +55,11 @@ const PUBLIC_EXACT_PATHS = new Set<string>([
   "/how-it-works",
   "/login",
   "/signup",
+  // Anyone can request a recovery email; sending the email never reveals
+  // whether the address is registered. /reset-password is intentionally
+  // NOT public — the middleware's session check is what guarantees only
+  // the user who clicked a valid recovery link can submit the form.
+  "/forgot-password",
 ]);
 
 export function isPublicPath(pathname: string): boolean {
