@@ -79,11 +79,22 @@ function fd(entries: Record<string, string>): FormData {
   return f;
 }
 
-function withHost(host: string, proto: string | null = "https") {
+interface HostOpts {
+  host?: string | null;
+  forwardedHost?: string | null;
+  proto?: string | null;
+}
+
+function withHost(hostOrOpts: string | HostOpts, proto: string | null = "https") {
+  const opts: HostOpts =
+    typeof hostOrOpts === "string"
+      ? { host: hostOrOpts, proto }
+      : hostOrOpts;
   hoisted.headersMock.mockReturnValue({
     get(name: string) {
-      if (name === "host") return host;
-      if (name === "x-forwarded-proto") return proto;
+      if (name === "host") return opts.host ?? null;
+      if (name === "x-forwarded-host") return opts.forwardedHost ?? null;
+      if (name === "x-forwarded-proto") return opts.proto ?? null;
       return null;
     },
   });
@@ -101,7 +112,7 @@ describe("requestPasswordRecoveryAction", () => {
     expect(hoisted.resetPasswordForEmailMock).not.toHaveBeenCalled();
   });
 
-  it("sends the email with a redirectTo pointing at /auth/callback?type=recovery", async () => {
+  it("sends the email with a redirectTo of /auth/callback?type=recovery (no extra query params)", async () => {
     withHost("app.example.com");
     hoisted.resetPasswordForEmailMock.mockResolvedValue({ error: null });
     const res = await requestPasswordRecoveryAction(
@@ -114,8 +125,9 @@ describe("requestPasswordRecoveryAction", () => {
     const [email, opts] = hoisted.resetPasswordForEmailMock.mock.calls[0];
     expect(email).toBe("worker@example.com");
     expect(opts.redirectTo).toBe(
-      "https://app.example.com/auth/callback?type=recovery&next=/reset-password",
+      "https://app.example.com/auth/callback?type=recovery",
     );
+    expect(opts.redirectTo).not.toContain("next=");
   });
 
   it("uses x-forwarded-proto when present (so deploys behind TLS terminators get https URLs)", async () => {
@@ -129,7 +141,24 @@ describe("requestPasswordRecoveryAction", () => {
     expect(opts.redirectTo).toMatch(/^https:\/\//);
   });
 
-  it("fails closed (no email sent) if the host header is missing", async () => {
+  it("prefers x-forwarded-host over host (so Vercel-style proxies use the public hostname)", async () => {
+    withHost({
+      host: "internal-runtime.vercel.app",
+      forwardedHost: "signal.webmasterid.com",
+      proto: "https",
+    });
+    hoisted.resetPasswordForEmailMock.mockResolvedValue({ error: null });
+    await requestPasswordRecoveryAction(
+      { ok: false, error: null },
+      fd({ email: "w@example.com" }),
+    );
+    const [, opts] = hoisted.resetPasswordForEmailMock.mock.calls[0];
+    expect(opts.redirectTo).toBe(
+      "https://signal.webmasterid.com/auth/callback?type=recovery",
+    );
+  });
+
+  it("fails closed (no email sent) if neither host nor x-forwarded-host is present", async () => {
     hoisted.headersMock.mockReturnValue({ get: () => null });
     const res = await requestPasswordRecoveryAction(
       { ok: false, error: null },

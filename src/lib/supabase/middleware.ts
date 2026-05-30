@@ -14,6 +14,18 @@ const PUBLIC_PATH_PREFIXES = [
   "/login",
   "/signup",
   "/forgot-password",
+  // /reset-password is intentionally public at the middleware layer.
+  // The page does its own server-side session check via getUser() and
+  // renders the "expired link" panel when no recovery session exists;
+  // updatePasswordAction re-checks getUser() as defense-in-depth. We
+  // make this path public so the middleware doesn't bounce the user
+  // to /login during the very narrow window after /auth/callback
+  // attaches Set-Cookie but before the browser propagates the cookies
+  // to the next navigation — that bounce was sending users into a
+  // normal sign-in flow, which created a non-recovery session, which
+  // then made updateUser({ password }) fail with "Current password
+  // required" under Supabase's Secure-Password-Change policy.
+  "/reset-password",
   "/auth",
   // Phase F0: external operators reach the MCP HTTP bridge via bearer
   // token, not a Supabase cookie. The route handler does its own
@@ -56,10 +68,12 @@ const PUBLIC_EXACT_PATHS = new Set<string>([
   "/login",
   "/signup",
   // Anyone can request a recovery email; sending the email never reveals
-  // whether the address is registered. /reset-password is intentionally
-  // NOT public — the middleware's session check is what guarantees only
-  // the user who clicked a valid recovery link can submit the form.
+  // whether the address is registered.
   "/forgot-password",
+  // /reset-password: see PUBLIC_PATH_PREFIXES comment above. Page +
+  // action enforce the recovery-session requirement; middleware would
+  // only get in the way.
+  "/reset-password",
 ]);
 
 export function isPublicPath(pathname: string): boolean {

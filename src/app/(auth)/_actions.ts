@@ -142,13 +142,34 @@ export interface RequestRecoveryActionState {
 
 /**
  * Sends a password recovery email via Supabase. The link delivered to
- * the user lands on /auth/callback?type=recovery&next=/reset-password,
- * which after `exchangeCodeForSession` redirects to /reset-password.
+ * the user lands on /auth/callback?type=recovery, which exchanges the
+ * code (PKCE) or verifies the token_hash (OTP), then redirects to
+ * /reset-password.
  *
  * Never reveals whether the email is registered: on a successful
  * Supabase call we return `ok: true` regardless of whether a user with
  * that email exists. (Supabase itself rate-limits + does not error on
  * unknown emails for this RPC.)
+ *
+ * Required Supabase project configuration:
+ *
+ *   1. Authentication → URL Configuration → Redirect URLs must include
+ *      `https://<your-host>/auth/callback` (no query string). Supabase
+ *      ignores query params when matching but the path must be on the
+ *      allowlist or the email link falls back to the Site URL.
+ *
+ *   2. Authentication → Email Templates → "Reset Password" should use
+ *      the token_hash format so the link works across browsers (the
+ *      PKCE flow only works if the user clicks the link in the same
+ *      browser session that requested recovery):
+ *
+ *        <a href="{{ .SiteURL }}/auth/callback?token_hash={{ .TokenHash }}&type=recovery">
+ *          Reset password
+ *        </a>
+ *
+ *      The default `{{ .ConfirmationURL }}` template uses PKCE and
+ *      fails for users who click the link from a different device or
+ *      after their browser cleared cookies.
  */
 export async function requestPasswordRecoveryAction(
   _prevState: RequestRecoveryActionState,
@@ -162,7 +183,7 @@ export async function requestPasswordRecoveryAction(
   try {
     const supabase = createSupabaseServerClient();
     const h = headers();
-    const host = h.get("host");
+    const host = h.get("x-forwarded-host") ?? h.get("host");
     if (!host) {
       return {
         ok: false,
@@ -171,7 +192,12 @@ export async function requestPasswordRecoveryAction(
     }
     const proto = h.get("x-forwarded-proto") ?? "https";
     const origin = `${proto}://${host}`;
-    const redirectTo = `${origin}/auth/callback?type=recovery&next=/reset-password`;
+    // The `type=recovery` marker is what /auth/callback uses to force-
+    // redirect to /reset-password. We deliberately omit `next` here:
+    // the callback ignores `next` on recovery anyway, and a simpler
+    // URL is less likely to collide with Supabase's redirect-URL
+    // allowlist matching.
+    const redirectTo = `${origin}/auth/callback?type=recovery`;
 
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo,
