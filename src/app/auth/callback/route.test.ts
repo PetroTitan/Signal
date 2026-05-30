@@ -18,12 +18,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const hoisted = vi.hoisted(() => ({
   exchangeCodeForSessionMock: vi.fn(),
+  verifyOtpMock: vi.fn(),
 }));
 
 vi.mock("@/lib/supabase", () => ({
   createSupabaseServerClient: () => ({
     auth: {
       exchangeCodeForSession: hoisted.exchangeCodeForSessionMock,
+      verifyOtp: hoisted.verifyOtpMock,
     },
   }),
 }));
@@ -32,13 +34,14 @@ import { GET } from "./route";
 
 afterEach(() => {
   hoisted.exchangeCodeForSessionMock.mockReset();
+  hoisted.verifyOtpMock.mockReset();
 });
 
 function req(url: string): Request {
   return new Request(url);
 }
 
-describe("/auth/callback — password recovery flow", () => {
+describe("/auth/callback — password recovery flow (PKCE `?code=`)", () => {
   it("forces redirect to /reset-password when type=recovery, ignoring `next`", async () => {
     hoisted.exchangeCodeForSessionMock.mockResolvedValue({ error: null });
     const res = await GET(
@@ -51,6 +54,7 @@ describe("/auth/callback — password recovery flow", () => {
     expect(location).not.toBeNull();
     expect(new URL(location!).pathname).toBe("/reset-password");
     expect(hoisted.exchangeCodeForSessionMock).toHaveBeenCalledWith("abc");
+    expect(hoisted.verifyOtpMock).not.toHaveBeenCalled();
   });
 
   it("forces redirect to /reset-password when type=recovery even if `next` is attacker-controlled", async () => {
@@ -79,6 +83,72 @@ describe("/auth/callback — password recovery flow", () => {
     const parsed = new URL(location!);
     expect(parsed.pathname).toBe("/login");
     expect(parsed.searchParams.get("error")).toBe("recovery_link_invalid");
+  });
+});
+
+/**
+ * The Supabase-recommended Next.js email template uses
+ * `?token_hash={{ .TokenHash }}&type=recovery`, which does NOT rely on
+ * a PKCE code_verifier cookie. This is the path that lets users open
+ * the recovery link from a different browser or device.
+ */
+describe("/auth/callback — password recovery flow (OTP `?token_hash=`)", () => {
+  it("verifies the token hash and redirects to /reset-password on success", async () => {
+    hoisted.verifyOtpMock.mockResolvedValue({ error: null });
+    const res = await GET(
+      req(
+        "https://app.example.com/auth/callback?token_hash=ABC123&type=recovery",
+      ),
+    );
+    expect(res.status).toBe(307);
+    expect(new URL(res.headers.get("location")!).pathname).toBe(
+      "/reset-password",
+    );
+    expect(hoisted.verifyOtpMock).toHaveBeenCalledWith({
+      type: "recovery",
+      token_hash: "ABC123",
+    });
+    expect(hoisted.exchangeCodeForSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("redirects to /login?error=recovery_link_invalid when verifyOtp fails", async () => {
+    hoisted.verifyOtpMock.mockResolvedValue({
+      error: { message: "Token has expired or is invalid" },
+    });
+    const res = await GET(
+      req(
+        "https://app.example.com/auth/callback?token_hash=ABC123&type=recovery",
+      ),
+    );
+    const parsed = new URL(res.headers.get("location")!);
+    expect(parsed.pathname).toBe("/login");
+    expect(parsed.searchParams.get("error")).toBe("recovery_link_invalid");
+  });
+
+  it("prefers token_hash over code when both are present", async () => {
+    hoisted.verifyOtpMock.mockResolvedValue({ error: null });
+    await GET(
+      req(
+        "https://app.example.com/auth/callback?token_hash=H&code=C&type=recovery",
+      ),
+    );
+    expect(hoisted.verifyOtpMock).toHaveBeenCalledTimes(1);
+    expect(hoisted.exchangeCodeForSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("handles non-recovery OTP types (e.g., signup confirmation) with /dashboard fallback", async () => {
+    hoisted.verifyOtpMock.mockResolvedValue({ error: null });
+    const res = await GET(
+      req(
+        "https://app.example.com/auth/callback?token_hash=ABC&type=signup&next=/onboarding",
+      ),
+    );
+    const parsed = new URL(res.headers.get("location")!);
+    expect(parsed.pathname).toBe("/onboarding");
+    expect(hoisted.verifyOtpMock).toHaveBeenCalledWith({
+      type: "signup",
+      token_hash: "ABC",
+    });
   });
 });
 
