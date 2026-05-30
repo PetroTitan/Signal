@@ -53,16 +53,28 @@ describe("isPublicPath — existing public paths still public (regression)", () 
 });
 
 /**
- * Password recovery — /forgot-password is public so anyone can request
- * a recovery email; /reset-password is gated so the user must hold the
- * short-lived recovery session the callback minted from the email link.
+ * Password recovery — both /forgot-password and /reset-password are
+ * public at the middleware layer.
+ *
+ * /forgot-password: anyone can request a recovery email; the action
+ * never reveals whether the address is registered.
+ *
+ * /reset-password: the page does its own server-side session check via
+ * getUser() and renders an "expired link" panel when no recovery
+ * session exists; updatePasswordAction re-checks getUser() as
+ * defense-in-depth. The path is public at the middleware so the
+ * /auth/callback → /reset-password redirect is not gated by a freshly
+ * minted cookie that the middleware has not yet observed — that race
+ * was bouncing users into the normal sign-in flow, creating a non-
+ * recovery session, and tripping Supabase's Secure-Password-Change
+ * policy with "Current password required".
  */
 describe("isPublicPath — password recovery paths", () => {
   it("treats /forgot-password as public", () => {
     expect(isPublicPath("/forgot-password")).toBe(true);
   });
-  it("treats /reset-password as gated (requires session minted by /auth/callback)", () => {
-    expect(isPublicPath("/reset-password")).toBe(false);
+  it("treats /reset-password as public (page + action enforce recovery session)", () => {
+    expect(isPublicPath("/reset-password")).toBe(true);
   });
 });
 
