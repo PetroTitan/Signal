@@ -299,9 +299,19 @@ See [docs/safety/account-health-first.md](docs/safety/account-health-first.md), 
 
 ## Signal MCP server
 
-Phase F0 inverts the integration. Signal is **not** the agent — Signal exposes a workspace-scoped MCP HTTP bridge at `/api/mcp` so external operators (Claude Code, Codex, Claude Opus) can call a narrow, audited tool surface.
+Phase F0 inverts the integration. Signal is **not** the agent — Signal exposes a workspace-scoped MCP tool surface so external operators (Claude Code, Codex, Claude Opus) can call a narrow, audited set of tools.
 
-The bridge ships with:
+There are two transports over one internal dispatcher:
+
+- **`/api/mcp/http` — real MCP** (Streamable HTTP / JSON-RPC 2.0). Use this with Claude Code / `mcp-remote`. Supports `initialize`, `notifications/initialized`, `tools/list`, `tools/call`:
+  ```bash
+  claude mcp add --transport http signal \
+    https://signal.webmasterid.com/api/mcp/http \
+    --header "Authorization: Bearer <SIGNAL_TOKEN>"
+  ```
+- **`/api/mcp` — internal custom HTTP API** (the original `{ "tool": "...", "args": {} }` bridge). **Not** MCP; do not use it with `mcp-remote`.
+
+The tool surface ships with:
 
 - 17 tools (8 read + 5 prepare/write-pending + 4 verification/dry-run).
 - 11 explicitly blocked names that always return a structured `blocked` response.

@@ -16,7 +16,36 @@ The operator's assistant remains the agent. Signal never reaches into it.
 
 ## Transport
 
-`signal-mcp-http-bridge`. Single POST endpoint, JSON request, JSON response:
+Two endpoints share one internal dispatcher (auth → scopes → deny-list →
+audit → approval). Pick by client:
+
+### `/api/mcp/http` — real MCP (use this for Claude Code / mcp-remote)
+
+MCP Streamable HTTP / JSON-RPC 2.0. Supports `initialize`,
+`notifications/initialized`, `tools/list`, and `tools/call`:
+
+```
+POST https://<your-signal-host>/api/mcp/http
+Authorization: Bearer <operator_token>
+Content-Type: application/json
+
+{ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+  "params": { "name": "signal.products.list", "arguments": {} } }
+```
+
+`initialize` returns `protocolVersion`, `serverInfo`, and
+`capabilities.tools`. `tools/list` returns every supported tool with `name`,
+`description`, and `inputSchema`. `tools/call` forwards to the same dispatcher
+and returns the Signal envelope as MCP result `content` + `structuredContent`.
+A missing/invalid token is a JSON-RPC `-32001` auth error (HTTP 401). `GET`
+returns 405 (POST-only; no server-initiated SSE stream). Wiring instructions:
+[./claude-code-config.md](./claude-code-config.md).
+
+### `/api/mcp` — internal custom HTTP API (NOT MCP)
+
+Single POST, custom envelope. This is **not** an MCP server and must **not**
+be used with `mcp-remote` or `claude mcp add` — a JSON-RPC `initialize` body
+is rejected with `Request must include a 'tool' string.`:
 
 ```
 POST https://<your-signal-host>/api/mcp
@@ -30,8 +59,6 @@ Content-Type: application/json
 ```
 
 `GET /api/mcp` is a public discovery endpoint that returns the tool registry, allowed scopes, blocked scopes, and the explicit deny-list. It never requires authentication.
-
-Phase F0 does **not** implement the native MCP streaming protocol. The HTTP bridge is documented honestly as such. A future phase can wrap each tool call in the MCP stdio / SSE envelopes; the dispatcher is shape-compatible.
 
 ## Response envelope
 
