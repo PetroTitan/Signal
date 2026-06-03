@@ -4,6 +4,7 @@ import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import {
   getCurrentWeeklyPlan,
   listPlanItems,
+  type WeeklyPlanItem,
 } from "@/repositories/weekly-plan-repository";
 import { listProducts } from "@/repositories/product-repository";
 import { listAccounts } from "@/repositories/account-repository";
@@ -53,10 +54,41 @@ import {
   formatScheduleDisplay,
   type ScheduleDisplay,
 } from "@/core/scheduling/format-schedule-display";
+import { creativeReadinessBadge } from "@/repositories/weekly-plan-creative-repository";
+import { WorkflowTabs } from "@/components/dashboard/workflow-tabs";
+import {
+  PublishedTable,
+  type PublishedTableRow,
+} from "@/components/publishing/published-table";
+import {
+  WORKFLOW_TABS,
+  resolveWorkflowTab,
+  parsePageParam,
+  parseSearchQuery,
+  paginate,
+  searchPublishedRows,
+  summaryCounts,
+  isQueueItem,
+  isScheduledItem,
+  isPublishedItem,
+  isPausedItem,
+  isFailedItem,
+  isPlanBoardItem,
+  compareOldestFirst,
+  compareScheduledAsc,
+  comparePublishedDesc,
+  DEFAULT_PAGE_SIZE,
+  type WorkflowItemView,
+  type WorkflowTab,
+} from "@/core/dashboard/workflow-filters";
 
 export const dynamic = "force-dynamic";
 
-export default async function WeeklyPlanPage() {
+export default async function WeeklyPlanPage({
+  searchParams,
+}: {
+  searchParams?: Record<string, string | string[] | undefined>;
+}) {
   if (!isSupabaseConfigured()) {
     return (
       <>
@@ -247,9 +279,6 @@ export default async function WeeklyPlanPage() {
     aiProviderAvailable: aiProviderStatus.available,
   };
 
-  // ---- Day grouping ----
-  const groups = groupByDay(items, scheduleDisplayByItem, workspaceTimezone);
-
   // ---- Recently published (last 5 successful) ----
   const subredditByItem = new Map<string, string | null>();
   for (const it of items) {
@@ -413,6 +442,287 @@ export default async function WeeklyPlanPage() {
       },
     }));
 
+  // ===================================================================
+  // Dashboard Organization Pass — workflow tabs + compact views
+  // ===================================================================
+  //
+  // We slice the SAME plan items into operator-facing workflow buckets
+  // so published history stops dominating the editorial stream. NO
+  // derived/fake statuses: every bucket keys off the real
+  // weekly_plan_items.status, the real risk_level, the real creative
+  // review badge, and real failed execution / publish outcomes.
+
+  // Failed / blocked execution + publish state (real source-of-truth).
+  // There is no `failed` weekly_plan_items status, so the Failed view is
+  // derived purely from execution_items / publish_history outcomes.
+  const failedPlanItemIds = new Set<string>();
+  const failureAtByItem = new Map<string, string>();
+  for (const ei of execItems) {
+    if (!ei.sourceEntityId) continue;
+    if (ei.status === "failed" || ei.status === "blocked") {
+      failedPlanItemIds.add(ei.sourceEntityId);
+    }
+  }
+  for (const p of recentPublishes) {
+    if (p.outcome !== "failed" && p.outcome !== "blocked") continue;
+    const pid = planItemByExecItem.get(p.executionItemId);
+    if (!pid) continue;
+    failedPlanItemIds.add(pid);
+    if (!failureAtByItem.has(pid)) failureAtByItem.set(pid, p.finishedAt);
+  }
+
+  // Real publish time + permalink per item (for the compact Published table).
+  const publishedAtByItem = new Map<string, string>();
+  const permalinkByItem = new Map<string, string | null>();
+  for (const p of recentPublishes) {
+    const pid = planItemByExecItem.get(p.executionItemId);
+    if (!pid) continue;
+    if (p.outcome === "published" && !publishedAtByItem.has(pid)) {
+      publishedAtByItem.set(pid, p.finishedAt);
+    }
+    if (p.providerPermalink && !permalinkByItem.has(pid)) {
+      permalinkByItem.set(pid, p.providerPermalink);
+    }
+  }
+
+  const itemById = new Map(items.map((it) => [it.id, it] as const));
+  const workflowViews: WorkflowItemView[] = items.map((it) => {
+    const sd = scheduleDisplayByItem.get(it.id) ?? null;
+    const creative = creativeByItem.get(it.id) ?? null;
+    return {
+      id: it.id,
+      status: it.status,
+      riskLevel: it.riskLevel,
+      scheduledAt: it.scheduledAt,
+      effectiveAt:
+        publishedAtByItem.get(it.id) ??
+        sd?.effectiveScheduledAt ??
+        it.scheduledAt,
+      createdAt: it.createdAt,
+      needsCreativeReview: creativeReadinessBadge(creative) === "needs_review",
+      // A published item that had an earlier failed attempt is a
+      // terminal success — never surface it as "failed".
+      hasFailure: failedPlanItemIds.has(it.id) && it.status !== "published",
+    };
+  });
+  const viewById = new Map(workflowViews.map((v) => [v.id, v] as const));
+
+  const queueViews = workflowViews.filter(isQueueItem);
+  const scheduledViews = workflowViews.filter(isScheduledItem);
+  const publishedViews = workflowViews.filter(isPublishedItem);
+  const pausedViews = workflowViews.filter(isPausedItem);
+  const failedViews = workflowViews.filter(isFailedItem);
+
+  const tabCounts: Partial<Record<WorkflowTab, number>> = {
+    queue: queueViews.length,
+    scheduled: scheduledViews.length,
+    published: publishedViews.length,
+    paused: pausedViews.length,
+    failed: failedViews.length,
+  };
+
+  // Failed tab only renders when failed data actually exists.
+  const visibleTabs = WORKFLOW_TABS.filter(
+    (t) => t.id !== "failed" || failedViews.length > 0,
+  );
+  const requestedTab = resolveWorkflowTab(searchParams?.tab);
+  const activeTab: WorkflowTab =
+    requestedTab === "failed" && failedViews.length === 0
+      ? "plan"
+      : requestedTab;
+  const activeTabMeta = WORKFLOW_TABS.find((t) => t.id === activeTab) ?? null;
+
+  const searchQuery = parseSearchQuery(searchParams?.q);
+  const pageParam = parsePageParam(searchParams?.page);
+
+  // Ordered card lists for the focused card tabs.
+  const queueCardItems = queueViews
+    .slice()
+    .sort(compareOldestFirst)
+    .map((v) => itemById.get(v.id))
+    .filter((it): it is WeeklyPlanItem => Boolean(it));
+  const scheduledCardItems = scheduledViews
+    .slice()
+    .sort(compareScheduledAsc)
+    .map((v) => itemById.get(v.id))
+    .filter((it): it is WeeklyPlanItem => Boolean(it));
+  const pausedCardItems = pausedViews
+    .slice()
+    .sort(compareOldestFirst)
+    .map((v) => itemById.get(v.id))
+    .filter((it): it is WeeklyPlanItem => Boolean(it));
+
+  // Compact table rows (Published + Failed share the same component).
+  const toRow = (
+    v: WorkflowItemView,
+    opts: {
+      statusLabel: string;
+      statusTone: PublishedTableRow["statusTone"];
+      date: string | null;
+    },
+  ): PublishedTableRow => {
+    const it = itemById.get(v.id);
+    const exec = execByPlanItem.get(v.id) ?? null;
+    return {
+      id: v.id,
+      title: it?.title ?? null,
+      platform: it?.platform ?? "unknown",
+      subreddit: subredditByItem.get(v.id) ?? null,
+      date: opts.date,
+      statusLabel: opts.statusLabel,
+      statusTone: opts.statusTone,
+      permalink: permalinkByItem.get(v.id) ?? null,
+      detailHref: exec ? `/execution/items/${exec.id}` : null,
+    };
+  };
+
+  const publishedRows: PublishedTableRow[] = publishedViews
+    .slice()
+    .sort(comparePublishedDesc)
+    .map((v) =>
+      toRow(v, {
+        statusLabel: "Published",
+        statusTone: "success",
+        date: publishedAtByItem.get(v.id) ?? v.effectiveAt,
+      }),
+    );
+  const failedRows: PublishedTableRow[] = failedViews
+    .slice()
+    .sort(comparePublishedDesc)
+    .map((v) =>
+      toRow(v, {
+        statusLabel: "Failed",
+        statusTone: "danger",
+        date: failureAtByItem.get(v.id) ?? v.effectiveAt,
+      }),
+    );
+
+  const publishedPage = paginate(
+    searchPublishedRows(publishedRows, searchQuery),
+    pageParam,
+    DEFAULT_PAGE_SIZE,
+  );
+  const failedPage = paginate(
+    searchPublishedRows(failedRows, searchQuery),
+    pageParam,
+    DEFAULT_PAGE_SIZE,
+  );
+
+  // Plan board — in-flight items only. Published / terminal items drop
+  // out of the editorial stream (they live in the Published tab), which
+  // is the core fix for "published history dominates the workflow".
+  const planBoardItems = items.filter((it) => {
+    const v = viewById.get(it.id);
+    return v ? isPlanBoardItem(v) : true;
+  });
+  const planGroups = groupByDay(
+    planBoardItems,
+    scheduleDisplayByItem,
+    workspaceTimezone,
+  );
+
+  // Single source for a plan-item card so the day-grouped board and the
+  // flat focused tabs (Queue / Scheduled / Paused) render identically.
+  const renderPlanItemCard = (it: WeeklyPlanItem) => {
+    const isPost = it.contentType === "post";
+    // Phase F7.4 — `isApprovable` drives the approve / hold / schedule /
+    // cancel-approval button gates.
+    const parsedIntent =
+      it.platform && it.platformPublishIntent
+        ? parsePlatformNativeShape(
+            it.platformPublishIntent,
+            it.platform as PublishPlatform,
+          )?.intent ?? null
+        : null;
+    const isApprovable = isApprovablePublishObject({
+      platform: it.platform,
+      contentType: it.contentType,
+      intent: parsedIntent,
+    });
+    const creative = creativeByItem.get(it.id) ?? null;
+    // Policy-aware creative gate — same intent parse as `isApprovable`.
+    const warnings = computePlanItemWarnings({
+      contentType: it.contentType,
+      scheduledAt: it.scheduledAt,
+      platform: it.platform,
+      intent: parsedIntent,
+      creativeAttached: creative !== null,
+      creativeReason: creativeReadinessReason(creative),
+    });
+    const exec = execByPlanItem.get(it.id) ?? null;
+    const subreddit =
+      typeof it.metadata?.target === "string"
+        ? (it.metadata.target as string)
+        : null;
+    const notes =
+      typeof it.metadata?.operator_notes === "string"
+        ? (it.metadata.operator_notes as string)
+        : null;
+    const scheduleSource =
+      typeof it.metadata?.schedule_source === "string"
+        ? (it.metadata.schedule_source as string)
+        : null;
+    return (
+      <PlanItemCard
+        key={it.id}
+        id={it.id}
+        title={it.title}
+        body={it.body}
+        platform={it.platform}
+        contentType={it.contentType}
+        productId={it.productId}
+        accountId={it.accountId}
+        scheduledAt={it.scheduledAt}
+        scheduleDisplay={
+          scheduleDisplayByItem.get(it.id) ??
+          formatScheduleDisplay({
+            planItem: { scheduledAt: it.scheduledAt },
+            workspaceTimezone,
+            serverNow,
+          })
+        }
+        scheduleSource={scheduleSource}
+        status={it.status}
+        riskScore={it.riskScore}
+        notes={notes}
+        isPost={isPost}
+        isApprovable={isApprovable}
+        warnings={warnings}
+        timezoneLabel={timezoneLabel}
+        subreddit={subreddit}
+        products={productOptions}
+        accounts={accountOptions}
+        allowedSubreddits={allowedSubreddits}
+        hasActiveContract={hasActiveContract}
+        executionItemId={exec?.id ?? null}
+        executionItemStatus={exec?.status ?? null}
+        platformPublishIntent={it.platformPublishIntent}
+        aiAssistedKind={deriveAiAssistedKind(
+          it.metadata as Record<string, unknown> | null,
+        )}
+        creative={
+          creative
+            ? {
+                id: creative.id,
+                creativeType: creative.creativeType,
+                sourceType: creative.sourceType,
+                status: creative.status,
+                assetUrl: creative.assetUrl,
+                sourceUrl: creative.sourceUrl,
+                altText: creative.altText,
+                license: creative.license,
+                attribution: creative.attribution,
+                prompt: creative.prompt,
+                mimeType: creative.mimeType,
+                sizeBytes: creative.sizeBytes,
+                uploadedAt: creative.uploadedAt,
+              }
+            : null
+        }
+      />
+    );
+  };
+
   return (
     <>
       {/*
@@ -448,7 +758,6 @@ export default async function WeeklyPlanPage() {
       />
       <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-3xl space-y-5">
         <NeedsAttentionStrip entries={needsAttention} />
-        <RecentlyPublishedStrip entries={recentlyPublished} />
         {!plan || items.length === 0 ? (
           <section className="rounded-2xl border border-dashed border-ink-300 bg-ink-50/40 p-8 text-center">
             <h2 className="text-base font-semibold text-ink-900">
@@ -464,160 +773,155 @@ export default async function WeeklyPlanPage() {
           </section>
         ) : (
           <>
-            {pendingCount > 0 ? (
-              <ApprovePlanForm
-                planId={plan.id}
-                pendingCount={pendingCount}
-              />
+            <WorkflowTabs
+              tabs={visibleTabs}
+              active={activeTab}
+              basePath="/weekly-plan"
+              counts={tabCounts}
+            />
+
+            {activeTabMeta ? (
+              <p className="text-xs text-ink-500 leading-relaxed">
+                {activeTabMeta.hint}
+              </p>
             ) : null}
 
-            {continueWritingDrafts.length > 0 ? (
-              <ContinueWritingStrip
-                drafts={continueWritingDrafts}
-                defaults={composeDefaults}
-              />
-            ) : null}
+            {/* ---- Plan tab — the editorial board (in-flight only) ---- */}
+            {activeTab === "plan" ? (
+              <>
+                <RecentlyPublishedStrip entries={recentlyPublished} />
+                {pendingCount > 0 ? (
+                  <ApprovePlanForm planId={plan.id} pendingCount={pendingCount} />
+                ) : null}
 
-            {/* Lightweight progress strip — no card, no border noise */}
-            <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-              <span className="text-ink-500">
-                {items.length} item{items.length === 1 ? "" : "s"} this week:
-              </span>
-              {Object.entries(counts).map(([status, n]) => (
-                <span
-                  key={status}
-                  className="inline-flex items-center gap-1.5"
-                >
-                  <ExecutionStateBadge
-                    status={status as Parameters<typeof ExecutionStateBadge>[0]["status"]}
+                {continueWritingDrafts.length > 0 ? (
+                  <ContinueWritingStrip
+                    drafts={continueWritingDrafts}
+                    defaults={composeDefaults}
                   />
-                  <span className="text-ink-500">{n}</span>
-                </span>
-              ))}
-            </div>
+                ) : null}
 
-            {/* Day-grouped cards */}
-            <div className="space-y-6">
-              {groups.map((group) => (
-                <section key={group.bucket} className="space-y-2">
-                  <DayHeader group={group} />
-                  <div className="space-y-2">
-                    {group.items.map((it) => {
-                      const isPost = it.contentType === "post";
-                      // Phase F7.4 — `isApprovable` drives the approve /
-                      // hold / schedule / cancel-approval button gates.
-                      // Articles, threads, link posts, etc. all become
-                      // approvable through the centralized policy.
-                      const parsedIntent =
-                        it.platform && it.platformPublishIntent
-                          ? parsePlatformNativeShape(
-                              it.platformPublishIntent,
-                              it.platform as PublishPlatform,
-                            )?.intent ?? null
-                          : null;
-                      const isApprovable = isApprovablePublishObject({
-                        platform: it.platform,
-                        contentType: it.contentType,
-                        intent: parsedIntent,
-                      });
-                      const creative = creativeByItem.get(it.id) ?? null;
-                      // Policy-aware creative gate. Same intent parse
-                      // as `isApprovable` above; the central
-                      // `requiresCreative` decides whether a missing
-                      // creative is a warning for this (platform,
-                      // intent) tuple. A malformed attached creative
-                      // still warns regardless of policy — see
-                      // `_plan-item-warnings.ts`.
-                      const warnings = computePlanItemWarnings({
-                        contentType: it.contentType,
-                        scheduledAt: it.scheduledAt,
-                        platform: it.platform,
-                        intent: parsedIntent,
-                        creativeAttached: creative !== null,
-                        creativeReason: creativeReadinessReason(creative),
-                      });
-                      const exec = execByPlanItem.get(it.id) ?? null;
-                      const subreddit =
-                        typeof it.metadata?.target === "string"
-                          ? (it.metadata.target as string)
-                          : null;
-                      const notes =
-                        typeof it.metadata?.operator_notes === "string"
-                          ? (it.metadata.operator_notes as string)
-                          : null;
-                      const scheduleSource =
-                        typeof it.metadata?.schedule_source === "string"
-                          ? (it.metadata.schedule_source as string)
-                          : null;
-                      return (
-                        <PlanItemCard
-                          key={it.id}
-                          id={it.id}
-                          title={it.title}
-                          body={it.body}
-                          platform={it.platform}
-                          contentType={it.contentType}
-                          productId={it.productId}
-                          accountId={it.accountId}
-                          scheduledAt={it.scheduledAt}
-                          scheduleDisplay={
-                            scheduleDisplayByItem.get(it.id) ??
-                            formatScheduleDisplay({
-                              planItem: { scheduledAt: it.scheduledAt },
-                              workspaceTimezone,
-                              serverNow,
-                            })
-                          }
-                          scheduleSource={scheduleSource}
-                          status={it.status}
-                          riskScore={it.riskScore}
-                          notes={notes}
-                          isPost={isPost}
-                          isApprovable={isApprovable}
-                          warnings={warnings}
-                          timezoneLabel={timezoneLabel}
-                          subreddit={subreddit}
-                          products={productOptions}
-                          accounts={accountOptions}
-                          allowedSubreddits={allowedSubreddits}
-                          hasActiveContract={hasActiveContract}
-                          executionItemId={exec?.id ?? null}
-                          executionItemStatus={exec?.status ?? null}
-                          platformPublishIntent={it.platformPublishIntent}
-                          aiAssistedKind={deriveAiAssistedKind(
-                            it.metadata as Record<string, unknown> | null,
-                          )}
-                          creative={
-                            creative
-                              ? {
-                                  id: creative.id,
-                                  creativeType: creative.creativeType,
-                                  sourceType: creative.sourceType,
-                                  status: creative.status,
-                                  assetUrl: creative.assetUrl,
-                                  sourceUrl: creative.sourceUrl,
-                                  altText: creative.altText,
-                                  license: creative.license,
-                                  attribution: creative.attribution,
-                                  prompt: creative.prompt,
-                                  mimeType: creative.mimeType,
-                                  sizeBytes: creative.sizeBytes,
-                                  uploadedAt: creative.uploadedAt,
-                                }
-                              : null
-                          }
-                        />
-                      );
-                    })}
+                {/* Lightweight progress strip — no card, no border noise */}
+                <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                  <span className="text-ink-500">
+                    {items.length} item{items.length === 1 ? "" : "s"} this week:
+                  </span>
+                  {Object.entries(counts).map(([status, n]) => (
+                    <span
+                      key={status}
+                      className="inline-flex items-center gap-1.5"
+                    >
+                      <ExecutionStateBadge
+                        status={
+                          status as Parameters<
+                            typeof ExecutionStateBadge
+                          >[0]["status"]
+                        }
+                      />
+                      <span className="text-ink-500">{n}</span>
+                    </span>
+                  ))}
+                </div>
+
+                {planBoardItems.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-ink-200 bg-ink-50/40 p-8 text-center text-sm text-ink-500">
+                    Nothing in flight. Published posts live in the Published
+                    tab.
                   </div>
-                </section>
-              ))}
-            </div>
+                ) : (
+                  <div className="space-y-6">
+                    {planGroups.map((group) => (
+                      <section key={group.bucket} className="space-y-2">
+                        <DayHeader group={group} />
+                        <div className="space-y-2">
+                          {group.items.map(renderPlanItemCard)}
+                        </div>
+                      </section>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : null}
+
+            {/* ---- Queue tab — work requiring an operator decision ---- */}
+            {activeTab === "queue" ? (
+              <WorkflowCardList
+                items={queueCardItems}
+                renderItem={renderPlanItemCard}
+                emptyLabel="Nothing waiting for approval, blocked, or needing creative review."
+              />
+            ) : null}
+
+            {/* ---- Scheduled tab — approved + lined up ---- */}
+            {activeTab === "scheduled" ? (
+              <WorkflowCardList
+                items={scheduledCardItems}
+                renderItem={renderPlanItemCard}
+                emptyLabel="No scheduled posts yet."
+              />
+            ) : null}
+
+            {/* ---- Published tab — compact, paginated table ---- */}
+            {activeTab === "published" ? (
+              <PublishedTable
+                page={publishedPage}
+                basePath="/weekly-plan"
+                baseParams={{ tab: "published" }}
+                query={searchQuery}
+                caption="Published posts"
+                emptyLabel="No published posts yet."
+              />
+            ) : null}
+
+            {/* ---- Paused tab ---- */}
+            {activeTab === "paused" ? (
+              <WorkflowCardList
+                items={pausedCardItems}
+                renderItem={renderPlanItemCard}
+                emptyLabel="Nothing paused."
+              />
+            ) : null}
+
+            {/* ---- Failed tab — only present when failed data exists ---- */}
+            {activeTab === "failed" ? (
+              <PublishedTable
+                page={failedPage}
+                basePath="/weekly-plan"
+                baseParams={{ tab: "failed" }}
+                query={searchQuery}
+                caption="Failed posts"
+                emptyLabel="No failed posts."
+              />
+            ) : null}
           </>
         )}
       </div>
     </>
   );
+}
+
+/**
+ * Flat list of plan-item cards used by the focused Queue / Scheduled /
+ * Paused tabs. Ordering is decided by the caller; this only handles the
+ * empty state + spacing so the focused views stay consistent.
+ */
+function WorkflowCardList({
+  items,
+  renderItem,
+  emptyLabel,
+}: {
+  items: WeeklyPlanItem[];
+  renderItem: (it: WeeklyPlanItem) => React.ReactNode;
+  emptyLabel: string;
+}) {
+  if (items.length === 0) {
+    return (
+      <div className="rounded-2xl border border-dashed border-ink-200 bg-ink-50/40 p-8 text-center text-sm text-ink-500">
+        {emptyLabel}
+      </div>
+    );
+  }
+  return <div className="space-y-2">{items.map(renderItem)}</div>;
 }
 
 // =====================================================================
