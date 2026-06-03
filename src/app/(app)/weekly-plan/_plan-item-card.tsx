@@ -40,6 +40,7 @@ import {
   toCreativeStatusToken,
 } from "./_creative-approval-controls";
 import type { ScheduleDisplay } from "@/core/scheduling/format-schedule-display";
+import { shouldShowDueCountdown } from "@/core/dashboard/workflow-filters";
 
 const updateInitial: UpdatePlanItemResult = { ok: false, error: "" };
 const duplicateInitial: DuplicatePlanItemResult = { ok: false, error: "" };
@@ -235,28 +236,41 @@ export function PlanItemCard(props: PlanItemCardProps) {
                 </span>
               ) : null}
               {props.scheduleDisplay.effectiveScheduledAt ? (
-                <span
-                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${
-                    props.scheduleDisplay.dueState === "overdue"
-                      ? "border-amber-300 bg-amber-50 text-amber-800"
-                      : props.scheduleDisplay.dueState === "due"
-                        ? "border-signal-200 bg-signal-50 text-signal-800"
-                        : "border-ink-200 text-ink-700"
-                  }`}
-                  title={`${props.scheduleDisplay.utc ?? ""} · ${props.scheduleDisplay.sourceLabel}`}
-                >
-                  <span>{props.scheduleDisplay.local}</span>
-                  <span className="text-ink-400">·</span>
-                  <span className="text-ink-500">
-                    {props.scheduleDisplay.timezone}
-                  </span>
-                  {props.scheduleDisplay.relative ? (
-                    <>
+                // Audit fix (Published + Overdue): the "Due in / Overdue
+                // by" countdown is only meaningful while an item is still
+                // waiting to publish. For terminal statuses (published,
+                // rejected, backlog, skipped) the scheduled_at is the
+                // historical publish/editorial time, NOT a deadline — so
+                // we still show WHEN it published but drop the deadline
+                // framing and the amber "overdue" tint. The timestamp is
+                // unchanged real DB state; only the derived chip is gated.
+                (() => {
+                  const showCountdown = shouldShowDueCountdown(props.status);
+                  return (
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${
+                        showCountdown && props.scheduleDisplay.dueState === "overdue"
+                          ? "border-amber-300 bg-amber-50 text-amber-800"
+                          : showCountdown && props.scheduleDisplay.dueState === "due"
+                            ? "border-signal-200 bg-signal-50 text-signal-800"
+                            : "border-ink-200 text-ink-700"
+                      }`}
+                      title={`${props.scheduleDisplay.utc ?? ""} · ${props.scheduleDisplay.sourceLabel}`}
+                    >
+                      <span>{props.scheduleDisplay.local}</span>
                       <span className="text-ink-400">·</span>
-                      <span>{props.scheduleDisplay.relative}</span>
-                    </>
-                  ) : null}
-                </span>
+                      <span className="text-ink-500">
+                        {props.scheduleDisplay.timezone}
+                      </span>
+                      {showCountdown && props.scheduleDisplay.relative ? (
+                        <>
+                          <span className="text-ink-400">·</span>
+                          <span>{props.scheduleDisplay.relative}</span>
+                        </>
+                      ) : null}
+                    </span>
+                  );
+                })()
               ) : (
                 <span className="inline-flex items-center rounded-full border border-dashed border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">
                   unscheduled
