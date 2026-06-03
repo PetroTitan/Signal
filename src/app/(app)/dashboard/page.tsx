@@ -9,11 +9,30 @@ import { listAccounts } from "@/repositories/account-repository";
 import {
   getCurrentWeeklyPlan,
   listPlanItems,
+  type WeeklyPlanItem,
 } from "@/repositories/weekly-plan-repository";
 import { listRecentPublishes } from "@/repositories/publish-history-repository";
 import { listPlatformConnections } from "@/repositories/platform-connection-repository";
-import { listCreativesForItems } from "@/repositories/weekly-plan-creative-repository";
+import {
+  listCreativesForItems,
+  creativeReadinessBadge,
+} from "@/repositories/weekly-plan-creative-repository";
 import { listExecutionItemsByPlanItemIds } from "@/repositories/execution-item-repository";
+import { listRecentActivity } from "@/repositories/activity-repository";
+import {
+  ActivityFeed,
+  type ActivityFeedItem,
+} from "@/components/dashboard/activity-feed";
+import {
+  summaryCounts,
+  isAwaitingApprovalItem,
+  isScheduledItem,
+  compareOldestFirst,
+  compareScheduledAsc,
+  type WorkflowItemView,
+  type SummaryCounts,
+} from "@/core/dashboard/workflow-filters";
+import { ExecutionStateBadge } from "@/components/publishing/execution-state";
 import { readAllowedTestSubreddits } from "@/core/publishing/safe-test-env";
 import { isRedditOauthBlocked } from "@/lib/oauth/env";
 import {
@@ -61,13 +80,14 @@ export default async function DashboardPage() {
   }
 
   const workspaceId = membership.workspace.id;
-  const [products, accounts, plan, recentPublishes, connections] =
+  const [products, accounts, plan, recentPublishes, connections, activityEvents] =
     await Promise.all([
       listProducts(workspaceId),
       listAccounts(workspaceId),
       getCurrentWeeklyPlan(workspaceId),
       listRecentPublishes(workspaceId, 30),
       listPlatformConnections(workspaceId),
+      listRecentActivity(workspaceId, 12),
     ]);
 
   const items = plan ? await listPlanItems(workspaceId, plan.id) : [];
@@ -194,38 +214,12 @@ export default async function DashboardPage() {
     allowedSubreddits,
   };
 
-  // ---- This week: today + tomorrow + a few upcoming ----
   const now = new Date();
   const startOfToday = new Date(now);
   startOfToday.setHours(0, 0, 0, 0);
   const dayMs = 24 * 60 * 60 * 1000;
-  const scheduled = items
-    .filter((it) => !!it.scheduledAt)
-    .filter((it) => it.contentType === "post")
-    .sort((a, b) => {
-      const ta = new Date(a.scheduledAt as string).getTime();
-      const tb = new Date(b.scheduledAt as string).getTime();
-      return ta - tb;
-    });
-  const todayPosts = scheduled.filter((it) => {
-    const t = new Date(it.scheduledAt as string).getTime();
-    return t >= startOfToday.getTime() && t < startOfToday.getTime() + dayMs;
-  });
-  const tomorrowPosts = scheduled.filter((it) => {
-    const t = new Date(it.scheduledAt as string).getTime();
-    return (
-      t >= startOfToday.getTime() + dayMs &&
-      t < startOfToday.getTime() + 2 * dayMs
-    );
-  });
-  const upcomingPosts = scheduled
-    .filter((it) => {
-      const t = new Date(it.scheduledAt as string).getTime();
-      return t >= startOfToday.getTime() + 2 * dayMs;
-    })
-    .slice(0, 5);
 
-  // ---- Continue writing — drafts missing pieces ----
+  // ---- Creatives (thumbnails + the real creative-review signal) ----
   const creatives = items.length
     ? await listCreativesForItems(
         workspaceId,
@@ -238,6 +232,50 @@ export default async function DashboardPage() {
       creativeByItem.set(c.weeklyPlanItemId, c);
     }
   }
+
+  // ---- Workflow buckets — sliced from REAL weekly_plan_items.status ----
+  // No derived/fake statuses: each bucket keys off the real status,
+  // real risk_level, and the real creative-review badge.
+  const itemById = new Map(items.map((it) => [it.id, it] as const));
+  const workflowViews: WorkflowItemView[] = items.map((it) => ({
+    id: it.id,
+    status: it.status,
+    riskLevel: it.riskLevel,
+    scheduledAt: it.scheduledAt,
+    effectiveAt: it.scheduledAt,
+    createdAt: it.createdAt,
+    needsCreativeReview:
+      creativeReadinessBadge(creativeByItem.get(it.id) ?? null) ===
+      "needs_review",
+    hasFailure: false,
+  }));
+  const counts = summaryCounts(workflowViews);
+
+  // Awaiting approval — oldest first (the operator action queue).
+  const awaitingApprovalItems = workflowViews
+    .filter(isAwaitingApprovalItem)
+    .sort(compareOldestFirst)
+    .map((v) => itemById.get(v.id))
+    .filter((it): it is WeeklyPlanItem => Boolean(it));
+
+  // Scheduled soon — nearest publish time first, next 20.
+  const scheduledItems = workflowViews
+    .filter(isScheduledItem)
+    .sort(compareScheduledAsc)
+    .map((v) => itemById.get(v.id))
+    .filter((it): it is WeeklyPlanItem => Boolean(it));
+  const scheduledSoon = scheduledItems.slice(0, 20);
+
+  // Nothing scheduled for tomorrow? (calm cadence prompt).
+  const tomorrowStart = startOfToday.getTime() + dayMs;
+  const tomorrowEnd = tomorrowStart + dayMs;
+  const nothingTomorrow = !scheduledItems.some((it) => {
+    if (!it.scheduledAt) return false;
+    const t = new Date(it.scheduledAt).getTime();
+    return t >= tomorrowStart && t < tomorrowEnd;
+  });
+
+  // ---- Continue writing — drafts that still need finishing ----
   const drafts = items
     .filter((it) => it.status === "draft" || it.status === "skipped")
     .slice(0, 4);
@@ -309,7 +347,7 @@ export default async function DashboardPage() {
     });
   }
 
-  // ---- Recently published — 5 most recent successful publishes ----
+  // ---- Recent activity — most recent successful publishes (last 20) ----
   const planItemByExecItem = new Map<string, string>();
   const execItems = items.length
     ? await listExecutionItemsByPlanItemIds(
@@ -324,7 +362,7 @@ export default async function DashboardPage() {
   for (const it of items) titleByPlanItem.set(it.id, it.title);
   const recentlyPublished: RecentlyPublishedEntry[] = recentPublishes
     .filter((p) => p.outcome === "published")
-    .slice(0, 5)
+    .slice(0, 20)
     .map((p) => {
       const planItemId = planItemByExecItem.get(p.executionItemId) ?? null;
       const creative = planItemId
@@ -357,8 +395,17 @@ export default async function DashboardPage() {
     publishesThisWeek,
     lastPublishAgeDays,
     draftsCount: drafts.length,
-    nothingTomorrow: tomorrowPosts.length === 0,
+    nothingTomorrow,
   });
+
+  // Compact activity-feed rows from the existing activity_events audit.
+  const activityFeed: ActivityFeedItem[] = activityEvents.map((e) => ({
+    id: e.id,
+    eventType: e.eventType,
+    title: e.title,
+    metadata: e.metadata,
+    createdAt: e.createdAt,
+  }));
 
   return (
     <>
@@ -392,41 +439,36 @@ export default async function DashboardPage() {
         {/* Needs attention — only when there's something to attend to */}
         <NeedsAttentionStrip entries={needsAttention} />
 
-        {/* This week */}
-        <section className="rounded-2xl border border-ink-200 bg-white p-5 space-y-4">
-          <div className="flex items-baseline justify-between">
-            <h2 className="text-sm font-semibold text-ink-900">This week</h2>
-            <Link
-              href="/weekly-plan"
-              className="text-xs text-signal-700 hover:text-signal-800"
-            >
-              Open weekly plan →
-            </Link>
-          </div>
-          <WeekBlock
-            label="Today"
-            posts={todayPosts}
-            emptyHint="Nothing scheduled for today."
-            timezone={timezoneLabel ?? "UTC"}
-          />
-          <WeekBlock
-            label="Tomorrow"
-            posts={tomorrowPosts}
-            emptyHint="Nothing scheduled for tomorrow."
-            timezone={timezoneLabel ?? "UTC"}
-          />
-          {upcomingPosts.length > 0 ? (
-            <WeekBlock
-              label="Upcoming"
-              posts={upcomingPosts}
-              emptyHint={null}
-              timezone={timezoneLabel ?? "UTC"}
-            />
-          ) : null}
-        </section>
+        {/* Summary cards — direct counts of the real plan statuses */}
+        <SummaryCards counts={counts} />
 
-        {/* Recently published */}
-        <RecentlyPublishedStrip entries={recentlyPublished} />
+        {/* Awaiting approval — work requiring action, oldest first */}
+        <AwaitingApprovalSection items={awaitingApprovalItems} />
+
+        {/* Scheduled soon — next 20, nearest publish time first */}
+        <ScheduledSoonSection
+          posts={scheduledSoon}
+          total={scheduledItems.length}
+          timezone={timezoneLabel ?? "UTC"}
+        />
+
+        {/* Recent activity — recently published (last 20) */}
+        {recentlyPublished.length > 0 ? (
+          <div className="space-y-1.5">
+            <RecentlyPublishedStrip entries={recentlyPublished} />
+            <div className="text-right">
+              <Link
+                href="/weekly-plan?tab=published"
+                className="text-xs font-medium text-signal-700 hover:text-signal-800"
+              >
+                View all published →
+              </Link>
+            </div>
+          </div>
+        ) : null}
+
+        {/* Operator activity feed — from the existing audit events */}
+        <ActivityFeed events={activityFeed} />
 
         {/* Quick capture */}
         {drafts.length > 0 ? (
@@ -490,56 +532,191 @@ export default async function DashboardPage() {
   );
 }
 
-function WeekBlock({
-  label,
+/**
+ * Summary cards — direct counts of the REAL weekly_plan_items.status
+ * (Awaiting approval / Scheduled / Published / Paused). Each card links
+ * to its focused Weekly Plan tab. No derived arithmetic.
+ */
+function SummaryCards({ counts }: { counts: SummaryCounts }) {
+  const cards: {
+    label: string;
+    value: number;
+    href: string;
+    valueClass: string;
+  }[] = [
+    {
+      label: "Awaiting approval",
+      value: counts.awaitingApproval,
+      href: "/weekly-plan?tab=queue",
+      valueClass: "text-amber-700",
+    },
+    {
+      label: "Scheduled",
+      value: counts.scheduled,
+      href: "/weekly-plan?tab=scheduled",
+      valueClass: "text-signal-700",
+    },
+    {
+      label: "Published",
+      value: counts.published,
+      href: "/weekly-plan?tab=published",
+      valueClass: "text-emerald-700",
+    },
+    {
+      label: "Paused",
+      value: counts.paused,
+      href: "/weekly-plan?tab=paused",
+      valueClass: "text-ink-500",
+    },
+  ];
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      {cards.map((c) => (
+        <Link
+          key={c.label}
+          href={c.href}
+          className="card p-4 hover:bg-ink-50/60 transition-colors focus:outline-none focus:ring-2 focus:ring-signal-300 focus:ring-offset-1"
+        >
+          <div className={`text-2xl font-semibold tabular-nums ${c.valueClass}`}>
+            {c.value}
+          </div>
+          <div className="stat-label mt-0.5">{c.label}</div>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Awaiting approval — the operator action list, oldest first. Shows up
+ * to 6 rows with a "+N more" affordance into the Queue tab. Renders a
+ * calm "all caught up" line when empty so the dashboard never shows a
+ * hollow card.
+ */
+function AwaitingApprovalSection({ items }: { items: WeeklyPlanItem[] }) {
+  const MAX = 6;
+  const shown = items.slice(0, MAX);
+  return (
+    <section className="card p-5 space-y-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="text-sm font-semibold text-ink-900">Awaiting approval</h2>
+        {items.length > 0 ? (
+          <Link
+            href="/weekly-plan?tab=queue"
+            className="text-xs font-medium text-signal-700 hover:text-signal-800"
+          >
+            Open queue →
+          </Link>
+        ) : null}
+      </div>
+      {items.length === 0 ? (
+        <p className="text-sm text-ink-500">
+          All caught up — nothing waiting for your approval.
+        </p>
+      ) : (
+        <>
+          <ul className="space-y-1.5">
+            {shown.map((it) => (
+              <li key={it.id}>
+                <Link
+                  href="/weekly-plan?tab=queue"
+                  className="flex items-center justify-between gap-3 rounded-md border border-ink-200 bg-white px-3 py-2 hover:bg-ink-50"
+                >
+                  <span className="min-w-0 flex-1 flex items-center gap-2">
+                    <ExecutionStateBadge status={it.status} />
+                    <span className="text-sm text-ink-800 truncate">
+                      {it.title?.trim() || "Untitled post"}
+                    </span>
+                  </span>
+                  <span className="text-[10px] text-ink-400 shrink-0">
+                    {formatLastEdited(it.createdAt)}
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+          {items.length > MAX ? (
+            <Link
+              href="/weekly-plan?tab=queue"
+              className="text-xs font-medium text-signal-700 hover:text-signal-800"
+            >
+              + {items.length - MAX} more in the queue →
+            </Link>
+          ) : null}
+        </>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Scheduled soon — the next 20 scheduled posts, nearest publish time
+ * first, with a "View all scheduled" link into the Scheduled tab.
+ */
+function ScheduledSoonSection({
   posts,
-  emptyHint,
+  total,
   timezone,
 }: {
-  label: string;
-  posts: Awaited<ReturnType<typeof listPlanItems>>;
-  emptyHint: string | null;
+  posts: WeeklyPlanItem[];
+  total: number;
   timezone: string;
 }) {
   return (
-    <div>
-      <div className="text-[10px] uppercase tracking-wider text-ink-500 font-semibold mb-1.5">
-        {label}
+    <section className="card p-5 space-y-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="text-sm font-semibold text-ink-900">Scheduled soon</h2>
+        {total > 0 ? (
+          <Link
+            href="/weekly-plan?tab=scheduled"
+            className="text-xs font-medium text-signal-700 hover:text-signal-800"
+          >
+            View all scheduled →
+          </Link>
+        ) : null}
       </div>
       {posts.length === 0 ? (
-        emptyHint ? (
-          <p className="text-xs text-ink-400 italic">{emptyHint}</p>
-        ) : null
+        <p className="text-sm text-ink-500">Nothing scheduled yet.</p>
       ) : (
-        <ul className="space-y-1.5">
-          {posts.map((p) => (
-            <li
-              key={p.id}
-              className="flex items-baseline justify-between gap-3 text-xs"
+        <>
+          <ul className="space-y-1.5">
+            {posts.map((p) => (
+              <li
+                key={p.id}
+                className="flex items-baseline justify-between gap-3 text-xs"
+              >
+                <Link
+                  href="/weekly-plan?tab=scheduled"
+                  className="text-ink-800 truncate hover:text-signal-700 min-w-0 flex-1"
+                >
+                  {p.title?.trim() || "Untitled post"}
+                </Link>
+                <span
+                  className="text-[11px] text-ink-500 shrink-0"
+                  title={
+                    p.scheduledAt
+                      ? `${formatUtcForOperatorDebug(p.scheduledAt as string)} · ${timezone}`
+                      : undefined
+                  }
+                >
+                  {p.scheduledAt
+                    ? formatUtcForWorkspace(p.scheduledAt as string, timezone).local
+                    : "—"}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {total > posts.length ? (
+            <Link
+              href="/weekly-plan?tab=scheduled"
+              className="text-xs font-medium text-signal-700 hover:text-signal-800"
             >
-              <Link
-                href="/weekly-plan"
-                className="text-ink-800 truncate hover:text-signal-700 min-w-0 flex-1"
-              >
-                {p.title?.trim() || "Untitled post"}
-              </Link>
-              <span
-                className="text-[11px] text-ink-500 shrink-0"
-                title={
-                  p.scheduledAt
-                    ? `${formatUtcForOperatorDebug(p.scheduledAt as string)} · ${timezone}`
-                    : undefined
-                }
-              >
-                {p.scheduledAt
-                  ? formatUtcForWorkspace(p.scheduledAt as string, timezone).local
-                  : ""}
-              </span>
-            </li>
-          ))}
-        </ul>
+              + {total - posts.length} more scheduled →
+            </Link>
+          ) : null}
+        </>
       )}
-    </div>
+    </section>
   );
 }
 
