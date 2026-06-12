@@ -67,6 +67,7 @@ import {
 import { publishBlocked, publishFail } from "./publishing-result";
 import type { PublishOutcome, PublishRequest } from "./publishing-types";
 import { decideBlueskyPublishGate } from "@/core/platform-native/adapters/bluesky/shape-binding";
+import { resolveProviderMediaForPublish } from "@/core/creatives/resolve-provider-derivative";
 
 export interface OrchestratorInput {
   request: PublishRequest;
@@ -235,9 +236,34 @@ export async function publishBlueskyForIdentity(
   // metadata stable for downstream consumers.
   void gate.payloadHash;
 
+  // Provider-media preparation (Phase 2). Runs AFTER the shape gate so
+  // the gate compares the operator-approved original. If the approved
+  // image is too large for Bluesky, a provider-safe derivative is
+  // generated + stored and the publish payload is rewritten to point at
+  // it; the original creative is never mutated. A block here (oversized
+  // GIF, transform failure, video, etc.) short-circuits BEFORE any
+  // uploadBlob / createRecord — no text-only downgrade.
+  const media = await resolveProviderMediaForPublish({
+    platform: "bluesky",
+    request,
+    db,
+  });
+  if (media.kind === "blocked") return media.outcome;
+  const effectiveRequest: PublishRequest =
+    media.kind === "derivative"
+      ? { ...request, creative: media.creative }
+      : request;
+  const mediaMetadata = media.metadata;
+  // Merge media-prep metadata last so the derivative status wins over
+  // the publisher's own (original-creative) preflight metadata.
+  const tagMedia = (o: PublishOutcome): PublishOutcome => ({
+    ...o,
+    metadata: { ...o.metadata, ...mediaMetadata },
+  });
+
   // First publish attempt.
   const firstOutcome = await publishToBlueskyAsIdentity({
-    request,
+    request: effectiveRequest,
     accessJwt,
     did,
     handle,
@@ -248,7 +274,7 @@ export async function publishBlueskyForIdentity(
     firstOutcome.status === "published" ||
     firstOutcome.reasonCode !== "session_expired"
   ) {
-    return firstOutcome;
+    return tagMedia(firstOutcome);
   }
 
   // 4. Refresh path. Exactly one attempt.
@@ -363,7 +389,7 @@ export async function publishBlueskyForIdentity(
   // pure publisher receives the new accessJwt; no recursion, no
   // further retry.
   const retry = await publishToBlueskyAsIdentity({
-    request,
+    request: effectiveRequest,
     accessJwt: refreshResult.accessJwt,
     did: refreshResult.did,
     handle: refreshResult.handle,
@@ -372,7 +398,7 @@ export async function publishBlueskyForIdentity(
   // If the retry also fails, the refresh path didn't help —
   // Bluesky is rejecting both tokens. Return whatever outcome the
   // retry produced and stop. No second refresh, no recursion.
-  return retry;
+  return tagMedia(retry);
 }
 
 async function markIdentityExpired(

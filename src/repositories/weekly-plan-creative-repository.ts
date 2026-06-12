@@ -181,6 +181,58 @@ export async function updateCreative(input: {
 }
 
 /**
+ * Phase 2 — record a provider-safe derivative descriptor on the
+ * creative's existing `metadata` JSONB under
+ * `provider_derivatives[platform]`. Smallest-possible additive helper:
+ * it touches ONLY the metadata column (no schema change), merges into
+ * the existing bag (never clobbers other platforms / keys), and accepts
+ * an injected client so the cron scheduler tick (service-role, no
+ * cookie) can persist under RLS.
+ *
+ * Best-effort by contract: callers wrap this so a metadata write hiccup
+ * never blocks or rolls back a publish.
+ */
+export async function recordProviderDerivative(input: {
+  workspaceId: string;
+  creativeId: string;
+  platform: string;
+  descriptor: Record<string, unknown>;
+  db?: SupabaseClient;
+}): Promise<void> {
+  const supabase = input.db ?? createSupabaseServerClient();
+  // Read the current metadata so we merge rather than replace.
+  const { data: row, error: readError } = await supabase
+    .from("weekly_plan_item_creatives")
+    .select("metadata")
+    .eq("workspace_id", input.workspaceId)
+    .eq("id", input.creativeId)
+    .maybeSingle();
+  if (readError) {
+    throw fromPostgres(readError, "Failed to read creative metadata.");
+  }
+  const current =
+    ((row as { metadata?: Record<string, unknown> | null } | null)?.metadata ??
+      {}) as Record<string, unknown>;
+  const existingDerivatives =
+    (current.provider_derivatives as Record<string, unknown> | undefined) ?? {};
+  const nextMetadata = {
+    ...current,
+    provider_derivatives: {
+      ...existingDerivatives,
+      [input.platform]: input.descriptor,
+    },
+  };
+  const { error: writeError } = await supabase
+    .from("weekly_plan_item_creatives")
+    .update({ metadata: nextMetadata } as never)
+    .eq("workspace_id", input.workspaceId)
+    .eq("id", input.creativeId);
+  if (writeError) {
+    throw fromPostgres(writeError, "Failed to record provider derivative.");
+  }
+}
+
+/**
  * Phase F2.5 publish-readiness check (tightened).
  *
  * A creative is publish-ready when EVERY rule passes:

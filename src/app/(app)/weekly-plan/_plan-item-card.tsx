@@ -117,6 +117,11 @@ export interface PlanItemCardProps {
    *  for backwards-compatible branching (popover open default, button
    *  visibility, etc.). */
   scheduleDisplay: ScheduleDisplay;
+  /** Phase 2 — true when a provider-safe image derivative already
+   *  exists for this item's target platform (recorded on the creative
+   *  metadata). Shows a calm "…-safe image ready" badge instead of the
+   *  "needs a platform-safe version" advisory. */
+  providerDerivativeReady?: boolean;
 }
 
 export function PlanItemCard(props: PlanItemCardProps) {
@@ -441,6 +446,21 @@ export function PlanItemCard(props: PlanItemCardProps) {
             {(() => {
               if (!props.isPost || !props.creative || !props.platform) {
                 return null;
+              }
+              const platformName =
+                props.platform === "bluesky"
+                  ? "Bluesky"
+                  : props.platform === "x"
+                    ? "X"
+                    : props.platform;
+              // A provider-safe derivative already exists → calm
+              // success badge; the original stays preserved.
+              if (props.providerDerivativeReady) {
+                return (
+                  <p className="mt-2 text-[11px] leading-relaxed text-emerald-700">
+                    ✓ {platformName}-safe image ready
+                  </p>
+                );
               }
               const readiness = describeProviderMediaReadiness({
                 platform: props.platform as PublishPlatform,
