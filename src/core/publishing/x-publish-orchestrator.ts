@@ -33,8 +33,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAccountById } from "@/repositories/account-repository";
 import { getConnectionForAccount } from "@/repositories/platform-connection-repository";
 import { publishToX, uploadXMedia } from "./publish-x";
-import { publishFail } from "./publishing-result";
+import { publishBlocked, publishFail } from "./publishing-result";
 import type { PublishOutcome, PublishRequest } from "./publishing-types";
+import { prepareProviderMedia } from "@/core/creatives/provider-media-prep";
 
 export interface XOrchestratorInput {
   request: PublishRequest;
@@ -117,6 +118,10 @@ export async function publishXForIdentity(
   //    tier-gated 403; x_media_upload_failed for other errors) is
   //    safer than publishing a different post than they approved.
   let mediaId: string | null = null;
+  // Provider-media preparation metadata recorded on the eventual
+  // outcome (→ execution_logs) so the operator can see how the
+  // creative was prepared for X.
+  let mediaPrepMetadata: Record<string, unknown> = {};
   if (request.creative) {
     const photoUrl =
       request.creative.assetUrl ?? request.creative.sourceUrl ?? null;
@@ -135,7 +140,56 @@ export async function publishXForIdentity(
         ),
       );
     }
+
+    // Provider-media preflight (size/format/kind) BEFORE /2/media/upload
+    // and BEFORE the tweet. An oversized / unsupported creative is
+    // blocked here with an actionable reason — no silent text-only
+    // downgrade, and the X media + tweet APIs are never called.
+    const prep = await prepareProviderMedia({
+      platform: "x",
+      mimeType: request.creative.mimeType ?? null,
+      sizeBytes: request.creative.sizeBytes ?? null,
+      creativeType: request.creative.creativeType,
+      originalCreativeId: request.creative.id,
+    });
+    if (prep.status === "blocked") {
+      return tagPublishPath(
+        publishBlocked(
+          prep.reasonCode ?? "x_media_upload_failed",
+          prep.reasonDetail ?? "Creative cannot be prepared for X.",
+          {
+            endpoint: "media/upload",
+            media_mode: "x_image",
+            creative_id: request.creative.id,
+            media_url_present: true,
+            x_media_id_present: false,
+            ...prep.metadata,
+          },
+        ),
+      );
+    }
+
     const upload = await uploadXMedia({ accessToken, photoUrl });
+    if (!upload.ok && upload.tooLarge) {
+      // In-flight provider-media block (oversized image). Surface as a
+      // clean "replace the creative" block — no text-only downgrade,
+      // tweet never sent.
+      return tagPublishPath(
+        publishBlocked(
+          "media_too_large_for_platform",
+          upload.reasonDetail,
+          {
+            endpoint: "media/upload",
+            media_mode: "x_image",
+            media_preparation_status: "blocked",
+            provider_media_limit_bytes: prep.providerLimitBytes,
+            creative_id: request.creative.id,
+            media_url_present: true,
+            x_media_id_present: false,
+          },
+        ),
+      );
+    }
     if (!upload.ok) {
       return tagPublishPath(
         publishFail(upload.reasonCode, upload.reasonDetail, {
@@ -149,6 +203,7 @@ export async function publishXForIdentity(
       );
     }
     mediaId = upload.mediaId;
+    mediaPrepMetadata = prep.metadata;
   }
 
   // 4. Hand to the pure publisher.
@@ -167,6 +222,7 @@ export async function publishXForIdentity(
         metadata: {
           ...outcome.metadata,
           creative_id: request.creative.id,
+          ...mediaPrepMetadata,
         },
       }
     : outcome;

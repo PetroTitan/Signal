@@ -38,6 +38,10 @@ import {
   type BlueskyPayloadMedia,
   type BlueskyPayloadResult,
 } from "./bluesky-payload";
+import {
+  prepareProviderMedia,
+  getProviderImageLimitBytes,
+} from "@/core/creatives/provider-media-prep";
 
 export interface PublishBlueskyInput {
   request: PublishRequest;
@@ -301,6 +305,11 @@ interface UploadBlobFailure {
   status: number;
   detail: string;
   errorBody: BlueskyErrorBody | null;
+  /** Set when the failure is "image exceeds Bluesky's blob limit",
+   *  detected in-flight from the fetched bytes BEFORE the uploadBlob
+   *  POST. The caller maps this to `media_too_large_for_platform`
+   *  (a provider-prep block) rather than a generic upload failure. */
+  tooLarge?: boolean;
 }
 
 /**
@@ -410,6 +419,24 @@ async function uploadImageToBlueskyBlob(input: {
     };
   }
 
+  // 1b. In-flight provider-media guard. Bluesky's uploadBlob rejects
+  //     images over 2,000,000 bytes with "blob too big". We check the
+  //     fetched byte length against the provider-safe ceiling (1.9 MB)
+  //     BEFORE the uploadBlob POST, so an oversized creative is blocked
+  //     with an actionable reason instead of an opaque PDS 400 — and
+  //     crucially before any createRecord call. This catches creatives
+  //     whose stored size_bytes was unknown/stale at scheduler time.
+  const blueskyImageLimit = getProviderImageLimitBytes("bluesky");
+  if (blueskyImageLimit !== null && bytes.byteLength > blueskyImageLimit) {
+    return {
+      ok: false,
+      status: 0,
+      detail: `Image is ${(bytes.byteLength / (1024 * 1024)).toFixed(2)} MB; Bluesky's per-image limit is ${(blueskyImageLimit / (1024 * 1024)).toFixed(2)} MB. Replace it with a smaller / more compressed image, then re-approve.`,
+      errorBody: null,
+      tooLarge: true,
+    };
+  }
+
   // 2. Upload the blob to the PDS.
   let uploadResp: Response;
   try {
@@ -504,6 +531,54 @@ function atUriToBskyPermalink(uri: string, handle: string): string | null {
   return `https://bsky.app/profile/${handle}/post/${rkey}`;
 }
 
+/**
+ * Metadata-based provider-media preflight for Bluesky.
+ *
+ * Runs BEFORE any blob fetch/upload using the creative's STORED
+ * mime/size (carried on `request.creative`). When the stored size is
+ * known and over Bluesky's per-image ceiling — or the type/kind isn't
+ * publishable (e.g. video) — the publish is blocked with an actionable
+ * reason and the provider API is never called. When size is unknown
+ * (manual-URL creatives), this passes and the in-flight byte guard in
+ * `uploadImageToBlueskyBlob` is the backstop.
+ *
+ * Returns the prep metadata to attach to the eventual publish so
+ * execution_logs records the preparation outcome.
+ */
+async function blueskyMediaPreflight(
+  request: PublishRequest,
+): Promise<
+  | { kind: "ok"; metadata: Record<string, unknown> }
+  | { kind: "blocked"; outcome: PublishOutcome }
+> {
+  if (!request.creative) return { kind: "ok", metadata: {} };
+  const prep = await prepareProviderMedia({
+    platform: "bluesky",
+    mimeType: request.creative.mimeType ?? null,
+    sizeBytes: request.creative.sizeBytes ?? null,
+    creativeType: request.creative.creativeType,
+    originalCreativeId: request.creative.id,
+  });
+  if (prep.status === "blocked") {
+    return {
+      kind: "blocked",
+      outcome: publishBlocked(
+        prep.reasonCode ?? "media_upload_failed",
+        `Bluesky: ${prep.reasonDetail ?? "Creative cannot be prepared for Bluesky."}`,
+        {
+          creative_id: request.creative.id,
+          media_mode: "bluesky_image",
+          ...prep.metadata,
+        },
+      ),
+    };
+  }
+  return {
+    kind: "ok",
+    metadata: { media_mode: "bluesky_image", ...prep.metadata },
+  };
+}
+
 export async function publishToBluesky(
   input: PublishBlueskyInput,
 ): Promise<PublishOutcome> {
@@ -564,6 +639,10 @@ export async function publishToBluesky(
       { creative_id: request.creative?.id ?? null },
     );
   }
+
+  // 2a. Provider-media preflight (size/format/kind) BEFORE any upload.
+  const mediaPreflight = await blueskyMediaPreflight(request);
+  if (mediaPreflight.kind === "blocked") return mediaPreflight.outcome;
 
   // 2b. Upload the blob now if the payload calls for media. Embed
   // metadata is added at record-build time using the AT Proto blob
@@ -643,6 +722,7 @@ export async function publishToBluesky(
       thread_length: payload.parts.length,
       root_uri: rootUri,
       media_attached: uploaded.kind === "embed",
+      ...mediaPreflight.metadata,
     },
   });
 }
@@ -712,6 +792,10 @@ export async function publishToBlueskyAsIdentity(
       { creative_id: request.creative?.id ?? null },
     );
   }
+
+  // Provider-media preflight (size/format/kind) BEFORE any upload.
+  const mediaPreflight = await blueskyMediaPreflight(request);
+  if (mediaPreflight.kind === "blocked") return mediaPreflight.outcome;
 
   // Upload the approved creative (if any) before the thread loop.
   // First post gets the embed; subsequent posts are reply records.
@@ -795,6 +879,7 @@ export async function publishToBlueskyAsIdentity(
       thread_length: payload.parts.length,
       root_uri: rootUri,
       media_attached: uploaded.kind === "embed",
+      ...mediaPreflight.metadata,
       // No tokens, no app passwords. DID is public and useful for
       // operator audit ("which exact account did this post under?").
       did,
@@ -841,6 +926,25 @@ async function maybeUploadMediaForPayload(input: {
     accessJwt: input.accessJwt,
     imageUrl: media.imageUrl,
   });
+  if (!upload.ok && upload.tooLarge) {
+    // Provider-media block: the image exceeds Bluesky's blob limit.
+    // This is NOT a token / network failure — surface it as a clean
+    // "replace the creative" block (no silent text-only downgrade).
+    return {
+      kind: "failed",
+      outcome: publishBlocked(
+        "media_too_large_for_platform",
+        `Bluesky: ${upload.detail}`,
+        {
+          endpoint: "uploadBlob",
+          media_mode: "bluesky_image",
+          media_preparation_status: "blocked",
+          provider_media_limit_bytes: getProviderImageLimitBytes("bluesky"),
+          creative_id: media.creativeId,
+        },
+      ),
+    };
+  }
   if (!upload.ok) {
     // Body error trumps HTTP status — bsky.social returns
     // ExpiredToken / InvalidToken on HTTP 400 in the wild for

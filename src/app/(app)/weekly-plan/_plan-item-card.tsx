@@ -41,6 +41,8 @@ import {
 } from "./_creative-approval-controls";
 import type { ScheduleDisplay } from "@/core/scheduling/format-schedule-display";
 import { shouldShowDueCountdown } from "@/core/dashboard/workflow-filters";
+import { describeProviderMediaReadiness } from "@/core/creatives/provider-media-prep";
+import type { PublishPlatform } from "@/core/publishing/publishing-types";
 
 const updateInitial: UpdatePlanItemResult = { ok: false, error: "" };
 const duplicateInitial: DuplicatePlanItemResult = { ok: false, error: "" };
@@ -430,6 +432,29 @@ export function PlanItemCard(props: PlanItemCardProps) {
                 Creative not required for comments
               </div>
             )}
+            {/* Non-blocking provider-readiness advisory. The creative
+                may be approved in Signal yet need a platform-safe
+                version for this post's target (e.g. Bluesky's 2 MB
+                image cap). This NEVER blocks approval — it's a heads-up
+                so the operator can swap in a smaller image before the
+                scheduled publish would otherwise be blocked. */}
+            {(() => {
+              if (!props.isPost || !props.creative || !props.platform) {
+                return null;
+              }
+              const readiness = describeProviderMediaReadiness({
+                platform: props.platform as PublishPlatform,
+                mimeType: props.creative.mimeType,
+                sizeBytes: props.creative.sizeBytes,
+                creativeType: props.creative.creativeType,
+              });
+              if (!readiness.needsProviderSafeVersion) return null;
+              return (
+                <p className="mt-2 text-[11px] leading-relaxed text-amber-700">
+                  {readiness.message}
+                </p>
+              );
+            })()}
           </div>
         </div>
       </article>

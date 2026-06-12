@@ -67,6 +67,19 @@ describe("resolvePublishCreative — approved + valid → ready", () => {
     }
   });
 
+  it("threads stored mimeType + sizeBytes so provider-media-prep can size-check", () => {
+    const r = resolvePublishCreative([
+      creative({ mimeType: "image/png", sizeBytes: 2_070_497 } as never),
+    ]);
+    expect(r.kind).toBe("ready");
+    if (r.kind === "ready") {
+      // The original row is unchanged; the wire shape simply CARRIES
+      // the stored media metadata for the per-platform prep layer.
+      expect(r.creative.mimeType).toBe("image/png");
+      expect(r.creative.sizeBytes).toBe(2_070_497);
+    }
+  });
+
   it("manual_url creative with sourceUrl only → ready (sourceUrl falls back to assetUrl)", () => {
     const r = resolvePublishCreative([
       creative({

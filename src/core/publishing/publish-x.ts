@@ -34,6 +34,7 @@ import "server-only";
 import { fetchWithTimeout, isTimeoutError } from "./fetch-with-timeout";
 import { publishFail, publishOk } from "./publishing-result";
 import type { PublishOutcome, PublishRequest } from "./publishing-types";
+import { getProviderImageLimitBytes } from "@/core/creatives/provider-media-prep";
 
 const X_TWEETS_URL = "https://api.twitter.com/2/tweets";
 const X_MEDIA_UPLOAD_URL = "https://api.twitter.com/2/media/upload";
@@ -270,6 +271,11 @@ export type UploadXMediaResult =
       reasonCode: "x_media_upload_failed" | "x_media_upload_unavailable";
       reasonDetail: string;
       httpStatus?: number;
+      /** Set when the fetched image exceeds X's per-image byte limit,
+       *  detected in-flight BEFORE the /2/media/upload POST. The
+       *  orchestrator maps this to `media_too_large_for_platform`
+       *  (a provider-prep block) rather than a generic upload failure. */
+      tooLarge?: boolean;
     };
 
 export async function uploadXMedia(input: {
@@ -345,6 +351,21 @@ export async function uploadXMedia(input: {
       ok: false,
       reasonCode: "x_media_upload_failed",
       reasonDetail: "Image fetch returned empty body.",
+    };
+  }
+
+  // 1b. In-flight provider-media guard. Check the fetched byte length
+  //     against X's per-image ceiling BEFORE the /2/media/upload POST,
+  //     so an oversized creative is blocked with an actionable reason
+  //     and the tweet is never sent. Catches creatives whose stored
+  //     size_bytes was unknown at scheduler time.
+  const xImageLimit = getProviderImageLimitBytes("x");
+  if (xImageLimit !== null && blob.size > xImageLimit) {
+    return {
+      ok: false,
+      reasonCode: "x_media_upload_failed",
+      reasonDetail: `Image is ${(blob.size / (1024 * 1024)).toFixed(2)} MB; X's per-image limit is ${(xImageLimit / (1024 * 1024)).toFixed(2)} MB. Replace it with a smaller / more compressed image, then re-approve.`,
+      tooLarge: true,
     };
   }
 

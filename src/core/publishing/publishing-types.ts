@@ -80,6 +80,25 @@ export const PUBLISH_REASON_CODES = [
   // unsupported type, network error). Surfaces as a real publish
   // failure rather than letting the orchestrator publish text-only.
   "media_upload_failed",
+  // Provider-aware media preparation codes (provider-media-prep).
+  // Produced BEFORE the provider media API is called so the operator
+  // gets an actionable reason instead of an opaque platform 4xx. All
+  // additive TS-side widenings (reason_code is free-text in
+  // publish_history; no DB CHECK).
+  //   - media_too_large_for_platform: the creative exceeds the target
+  //     platform's per-image byte limit (e.g. Bluesky 2 MB). The
+  //     original is preserved; the operator must supply a smaller
+  //     image (or, once a transformer is wired, a derivative is used).
+  //   - media_format_unsupported_for_platform: the creative MIME type
+  //     is not accepted by the target platform.
+  //   - media_video_unsupported: a video creative was attached to a
+  //     platform whose adapter does not publish video yet.
+  //   - media_not_supported_for_platform: the platform does not
+  //     support automated media publishing yet.
+  "media_too_large_for_platform",
+  "media_format_unsupported_for_platform",
+  "media_video_unsupported",
+  "media_not_supported_for_platform",
   // Phase F6.2 — Bluesky shape-binding enforcement (Bluesky-only).
   //
   // approved_shape_stale: at publish time, the freshly-rendered
@@ -239,6 +258,20 @@ export interface PublishCreative {
    *  publish if missing rather than letting the publisher silently
    *  upload a no-alt image. */
   altText: string | null;
+  /**
+   * Stored MIME type from the creative row (e.g. "image/png"). Used by
+   * the provider-media-prep layer to pick the right per-platform
+   * limits. Optional/null for legacy rows or manual-URL creatives
+   * where the type wasn't recorded.
+   */
+  mimeType?: string | null;
+  /**
+   * Stored byte size from the creative row. Lets provider-media-prep
+   * block oversized media BEFORE the provider upload, without a
+   * network round-trip. Null when unknown (manual-URL creatives); the
+   * publisher's in-flight byte guard catches those after the fetch.
+   */
+  sizeBytes?: number | null;
 }
 
 export interface PublishOutcome {
