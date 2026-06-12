@@ -101,6 +101,11 @@ export function resolvePublishCreative(
       assetUrl: primary.assetUrl,
       sourceUrl: primary.sourceUrl,
       altText: alt,
+      // Carry the stored media metadata so the provider-media-prep
+      // layer can size-check against the target platform's limits
+      // without a network round-trip. Null on legacy / manual-URL rows.
+      mimeType: primary.mimeType,
+      sizeBytes: primary.sizeBytes,
     },
   };
 }
