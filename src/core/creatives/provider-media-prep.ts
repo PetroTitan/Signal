@@ -223,6 +223,22 @@ export type MediaPreparationStatus = "ready" | "derivative" | "blocked";
 export type MediaKind = "image" | "animation" | "video" | "unknown";
 
 /**
+ * The transform settings used to produce a derivative — recorded in
+ * metadata so a future run can decide whether a cached derivative is
+ * still valid for the current target.
+ */
+export interface DerivativeTransform {
+  /** Output MIME, e.g. "image/webp" | "image/jpeg". */
+  outputFormat: string;
+  /** Encoder quality (1-100) or null when not applicable. */
+  quality: number | null;
+  maxWidth: number | null;
+  maxHeight: number | null;
+  /** The byte ceiling the derivative was produced to fit under. */
+  targetBytes: number;
+}
+
+/**
  * Descriptor for a generated provider-safe derivative. Returned only
  * when `status === "derivative"` (requires an injected transformer).
  * The shape is future-proof: video derivatives slot in with the same
@@ -235,8 +251,14 @@ export interface PreparedDerivative {
   sizeBytes: number;
   width: number | null;
   height: number | null;
-  /** Where the derivative bytes live (storage path or data ref). */
+  /** Storage object name (path within the creatives bucket). */
   storageRef: string;
+  /** Public URL the publisher fetches to upload the derivative bytes. */
+  publicUrl?: string | null;
+  /** Byte size of the ORIGINAL the derivative was produced from. */
+  sourceSizeBytes?: number | null;
+  /** The transform settings used (recorded for cache-validity checks). */
+  transform?: DerivativeTransform | null;
   generatedAt: string;
 }
 
@@ -468,7 +490,20 @@ export async function prepareProviderMedia(
       return ready("ready");
     }
 
-    // Oversized. Try a derivative if a transformer is available;
+    // Oversized GIF: do NOT attempt a derivative. Re-encoding a single
+    // frame would silently drop the animation, and frame-aware GIF
+    // optimization is out of scope for v1. Block with a clear reason
+    // (under-limit GIFs already returned `ready` above, unchanged).
+    if (kind === "animation") {
+      return blocked(
+        "media_animated_gif_unsupported",
+        `Animated GIF optimization is not supported yet for ${input.platform}. The GIF is ${bytesToMb(
+          input.sizeBytes,
+        )}, over the ${bytesToMb(policy.maxImageBytes)} limit — replace it with a smaller GIF or a static image.`,
+      );
+    }
+
+    // Oversized image. Try a derivative if a transformer is available;
     // otherwise block with a clear, actionable reason.
     const transformer = options.transformer;
     if (
@@ -481,13 +516,28 @@ export async function prepareProviderMedia(
         maxBytes: policy.maxImageBytes,
       })
     ) {
-      const derivative = await transformer.prepareImage({
-        platform: input.platform,
-        mimeType: input.mimeType,
-        sizeBytes: input.sizeBytes,
-        maxBytes: policy.maxImageBytes,
-        originalCreativeId: input.originalCreativeId ?? null,
-      });
+      // A transformer is wired (Phase 2). Ask it for a provider-safe
+      // derivative. If it CANNOT produce one (fetch / transcode /
+      // upload error), block before the provider call — never publish
+      // text-only.
+      let derivative: PreparedDerivative;
+      try {
+        derivative = await transformer.prepareImage({
+          platform: input.platform,
+          mimeType: input.mimeType,
+          sizeBytes: input.sizeBytes,
+          maxBytes: policy.maxImageBytes,
+          originalCreativeId: input.originalCreativeId ?? null,
+        });
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : "unknown error";
+        return blocked(
+          "media_derivative_failed",
+          `Could not prepare a ${input.platform}-safe image (${detail}). The original is ${bytesToMb(
+            input.sizeBytes,
+          )}, over the ${bytesToMb(policy.maxImageBytes)} limit. Replace it with a smaller image, then re-approve.`,
+        );
+      }
       return {
         status: "derivative",
         mediaKind: kind,
@@ -500,6 +550,7 @@ export async function prepareProviderMedia(
           ...baseMetadata(input, kind, "derivative", policy.maxImageBytes),
           derivative_used: true,
           derivative_size_bytes: derivative.sizeBytes,
+          derivative_storage_path: derivative.storageRef,
         },
       };
     }
@@ -575,11 +626,23 @@ export function describeProviderMediaReadiness(input: {
       policy.maxImageBytes !== null &&
       input.sizeBytes > policy.maxImageBytes
     ) {
+      // Oversized GIF can't be auto-optimized (animation) — tell the
+      // operator to swap it rather than implying a derivative is coming.
+      if (kind === "animation") {
+        return {
+          needsProviderSafeVersion: true,
+          message: `Animated GIF is too large for ${input.platform} (${bytesToMb(
+            input.sizeBytes,
+          )}, limit ${bytesToMb(policy.maxImageBytes)}) and can't be auto-optimized — use a smaller GIF or a static image.`,
+        };
+      }
+      // Oversized still image: Signal generates a provider-safe
+      // derivative automatically at publish time.
       return {
         needsProviderSafeVersion: true,
-        message: `Creative is approved, but needs a platform-safe version for ${input.platform} — it's ${bytesToMb(
+        message: `Creative is approved — a ${input.platform}-safe version will be generated automatically (original is ${bytesToMb(
           input.sizeBytes,
-        )}, over the ${bytesToMb(policy.maxImageBytes)} limit.`,
+        )}, over the ${bytesToMb(policy.maxImageBytes)} limit).`,
       };
     }
   }

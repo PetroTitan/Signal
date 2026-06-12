@@ -99,6 +99,17 @@ export const PUBLISH_REASON_CODES = [
   "media_format_unsupported_for_platform",
   "media_video_unsupported",
   "media_not_supported_for_platform",
+  //   - media_animated_gif_unsupported: an oversized GIF was attached.
+  //     Phase 2 does not optimize animated GIFs (re-encoding a single
+  //     frame would silently drop the animation), so an oversized GIF
+  //     is blocked rather than mangled. Under-limit GIFs publish as the
+  //     original unchanged.
+  //   - media_derivative_failed: a provider-safe derivative was needed
+  //     but could not be produced (fetch/transcode/upload error). The
+  //     publish is blocked before the provider call — never downgraded
+  //     to text-only.
+  "media_animated_gif_unsupported",
+  "media_derivative_failed",
   // Phase F6.2 — Bluesky shape-binding enforcement (Bluesky-only).
   //
   // approved_shape_stale: at publish time, the freshly-rendered

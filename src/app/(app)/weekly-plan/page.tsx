@@ -662,6 +662,18 @@ export default async function WeeklyPlanPage({
       typeof it.metadata?.schedule_source === "string"
         ? (it.metadata.schedule_source as string)
         : null;
+    // Phase 2 — a provider-safe derivative already exists for this
+    // item's target platform (recorded on the creative metadata after a
+    // prior publish/preflight). Drives the calm "…-safe image ready"
+    // badge on the card.
+    const providerDerivativeReady = Boolean(
+      it.platform &&
+        creative &&
+        ((creative.metadata as Record<string, unknown> | undefined)
+          ?.provider_derivatives as Record<string, unknown> | undefined)?.[
+          it.platform
+        ],
+    );
     return (
       <PlanItemCard
         key={it.id}
@@ -700,6 +712,7 @@ export default async function WeeklyPlanPage({
         aiAssistedKind={deriveAiAssistedKind(
           it.metadata as Record<string, unknown> | null,
         )}
+        providerDerivativeReady={providerDerivativeReady}
         creative={
           creative
             ? {

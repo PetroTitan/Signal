@@ -136,6 +136,107 @@ describe("prepareProviderMedia — Bluesky images", () => {
   });
 });
 
+describe("prepareProviderMedia — GIF handling (Phase 2)", () => {
+  it("blocks an OVERSIZED animated GIF with the GIF-specific reason (no frame-dropping)", async () => {
+    const result = await prepareProviderMedia({
+      platform: "bluesky",
+      mimeType: "image/gif",
+      sizeBytes: 3 * MB,
+      creativeType: "animation",
+    });
+    expect(result.status).toBe("blocked");
+    expect(result.reasonCode).toBe("media_animated_gif_unsupported");
+    expect(result.reasonDetail).toMatch(/animated gif/i);
+  });
+
+  it("does NOT attempt a derivative for an oversized GIF even with a transformer", async () => {
+    let called = false;
+    const transformer: MediaTransformer = {
+      canPrepareImage: () => {
+        called = true;
+        return true;
+      },
+      prepareImage: async () => {
+        throw new Error("should never be called for GIF");
+      },
+    };
+    const result = await prepareProviderMedia(
+      { platform: "bluesky", mimeType: "image/gif", sizeBytes: 3 * MB },
+      { transformer },
+    );
+    expect(result.status).toBe("blocked");
+    expect(result.reasonCode).toBe("media_animated_gif_unsupported");
+    expect(called).toBe(false);
+  });
+
+  it("a within-limit GIF still passes as the original (unchanged)", async () => {
+    const result = await prepareProviderMedia({
+      platform: "bluesky",
+      mimeType: "image/gif",
+      sizeBytes: 500_000,
+    });
+    expect(result.status).toBe("ready");
+  });
+});
+
+describe("prepareProviderMedia — derivative generation failure (Phase 2)", () => {
+  it("blocks with media_derivative_failed when the transformer throws", async () => {
+    const transformer: MediaTransformer = {
+      canPrepareImage: () => true,
+      prepareImage: async () => {
+        throw new Error("sharp exploded");
+      },
+    };
+    const result = await prepareProviderMedia(
+      {
+        platform: "bluesky",
+        mimeType: "image/jpeg",
+        sizeBytes: 5 * MB,
+        originalCreativeId: "cr-x",
+      },
+      { transformer },
+    );
+    expect(result.status).toBe("blocked");
+    expect(result.reasonCode).toBe("media_derivative_failed");
+    expect(result.reasonDetail).toMatch(/sharp exploded/);
+    // Still records the original creative id for audit.
+    expect(result.metadata.original_creative_id).toBe("cr-x");
+  });
+
+  it("records derivative_storage_path in metadata on success", async () => {
+    const transformer: MediaTransformer = {
+      canPrepareImage: () => true,
+      prepareImage: async () => ({
+        platform: "bluesky",
+        originalCreativeId: "cr-y",
+        mimeType: "image/webp",
+        sizeBytes: 1_400_000,
+        width: 1600,
+        height: 900,
+        storageRef: "ws/derivatives/bluesky/cr-y/abc.webp",
+        publicUrl: "https://cdn/derivatives/abc.webp",
+        sourceSizeBytes: 5 * MB,
+        transform: {
+          outputFormat: "image/webp",
+          quality: 72,
+          maxWidth: 1600,
+          maxHeight: null,
+          targetBytes: 1_900_000,
+        },
+        generatedAt: "2026-06-12T00:00:00.000Z",
+      }),
+    };
+    const result = await prepareProviderMedia(
+      { platform: "bluesky", mimeType: "image/jpeg", sizeBytes: 5 * MB },
+      { transformer },
+    );
+    expect(result.status).toBe("derivative");
+    expect(result.metadata.derivative_storage_path).toBe(
+      "ws/derivatives/bluesky/cr-y/abc.webp",
+    );
+  });
+});
+
 describe("prepareProviderMedia — X images", () => {
   it("passes an X image under the limit", async () => {
     const result = await prepareProviderMedia({
@@ -219,7 +320,9 @@ describe("describeProviderMediaReadiness — non-blocking approval messaging", (
       sizeBytes: 2_070_497,
     });
     expect(note.needsProviderSafeVersion).toBe(true);
-    expect(note.message).toMatch(/platform-safe version for bluesky/i);
+    // Phase 2: an oversized still image now advertises that a
+    // provider-safe derivative is generated automatically.
+    expect(note.message).toMatch(/bluesky-safe version will be generated/i);
   });
 
   it("says nothing for a within-limit image", () => {

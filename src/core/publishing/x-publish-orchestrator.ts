@@ -35,7 +35,7 @@ import { getConnectionForAccount } from "@/repositories/platform-connection-repo
 import { publishToX, uploadXMedia } from "./publish-x";
 import { publishBlocked, publishFail } from "./publishing-result";
 import type { PublishOutcome, PublishRequest } from "./publishing-types";
-import { prepareProviderMedia } from "@/core/creatives/provider-media-prep";
+import { resolveProviderMediaForPublish } from "@/core/creatives/resolve-provider-derivative";
 
 export interface XOrchestratorInput {
   request: PublishRequest;
@@ -141,39 +141,32 @@ export async function publishXForIdentity(
       );
     }
 
-    // Provider-media preflight (size/format/kind) BEFORE /2/media/upload
-    // and BEFORE the tweet. An oversized / unsupported creative is
-    // blocked here with an actionable reason — no silent text-only
-    // downgrade, and the X media + tweet APIs are never called.
-    const prep = await prepareProviderMedia({
+    // Provider-media preparation (Phase 2) BEFORE /2/media/upload and
+    // BEFORE the tweet. If the approved image is too large for X, a
+    // provider-safe derivative is generated + stored and we upload THAT
+    // instead of the original (original row untouched). An unpreparable
+    // creative (oversized GIF, transform failure, video) blocks here —
+    // no silent text-only downgrade, X media + tweet APIs never called.
+    const media = await resolveProviderMediaForPublish({
       platform: "x",
-      mimeType: request.creative.mimeType ?? null,
-      sizeBytes: request.creative.sizeBytes ?? null,
-      creativeType: request.creative.creativeType,
-      originalCreativeId: request.creative.id,
+      request,
+      db,
     });
-    if (prep.status === "blocked") {
-      return tagPublishPath(
-        publishBlocked(
-          prep.reasonCode ?? "x_media_upload_failed",
-          prep.reasonDetail ?? "Creative cannot be prepared for X.",
-          {
-            endpoint: "media/upload",
-            media_mode: "x_image",
-            creative_id: request.creative.id,
-            media_url_present: true,
-            x_media_id_present: false,
-            ...prep.metadata,
-          },
-        ),
-      );
+    if (media.kind === "blocked") {
+      return tagPublishPath(media.outcome);
     }
+    const effectiveCreative =
+      media.kind === "derivative" ? media.creative : request.creative;
+    mediaPrepMetadata = media.metadata;
+    // Use the derivative URL when one was produced; otherwise the
+    // original (which prep confirmed is within X's limit).
+    const uploadUrl =
+      effectiveCreative.assetUrl ?? effectiveCreative.sourceUrl ?? photoUrl;
 
-    const upload = await uploadXMedia({ accessToken, photoUrl });
+    const upload = await uploadXMedia({ accessToken, photoUrl: uploadUrl });
     if (!upload.ok && upload.tooLarge) {
-      // In-flight provider-media block (oversized image). Surface as a
-      // clean "replace the creative" block — no text-only downgrade,
-      // tweet never sent.
+      // In-flight provider-media block (oversized image — only reachable
+      // when the stored size was unknown so no derivative was made).
       return tagPublishPath(
         publishBlocked(
           "media_too_large_for_platform",
@@ -182,7 +175,6 @@ export async function publishXForIdentity(
             endpoint: "media/upload",
             media_mode: "x_image",
             media_preparation_status: "blocked",
-            provider_media_limit_bytes: prep.providerLimitBytes,
             creative_id: request.creative.id,
             media_url_present: true,
             x_media_id_present: false,
@@ -203,7 +195,6 @@ export async function publishXForIdentity(
       );
     }
     mediaId = upload.mediaId;
-    mediaPrepMetadata = prep.metadata;
   }
 
   // 4. Hand to the pure publisher.
