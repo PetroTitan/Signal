@@ -14,6 +14,9 @@ export interface WorkspaceSessionValue {
   workspace: Workspace;
   settings: WorkspaceSettings | null;
   role: "owner" | "admin" | "editor" | "reviewer" | "viewer";
+  /** Phase C2 — unread notifications for the sidebar badge. Refreshes
+   *  on navigation (the app layout is dynamic). */
+  unreadNotifications: number;
 }
 
 const WorkspaceSessionContext = createContext<WorkspaceSessionValue | null>(

@@ -259,6 +259,21 @@ export async function listPublishHistoryPage(
   };
 }
 
+export async function getPublishHistoryById(
+  workspaceId: string,
+  id: string,
+): Promise<PublishHistoryEntry | null> {
+  const supabase = createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("publish_history")
+    .select("*")
+    .eq("workspace_id", workspaceId)
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw fromPostgres(error, "Failed to load publish history row.");
+  return data ? toEntry(data as unknown as PublishHistoryRow) : null;
+}
+
 export async function getPublishHistoryForItem(
   workspaceId: string,
   executionItemId: string,

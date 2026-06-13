@@ -373,6 +373,131 @@ export async function addWorkspaceMember(input: {
  * Callers must verify owner-invariant guards (don't remove the last
  * owner) before calling. This repo function is intentionally low-level.
  */
+/**
+ * C1.2 — change a member's role. RLS gates this to owners
+ * (`members: owners can update`). Callers must enforce role-specific
+ * invariants (e.g. never demote the last owner) before calling.
+ */
+/**
+ * C1.4 — per-member activity derived from REAL audit data only
+ * (activity_events). One query, aggregated in memory by actor; no
+ * invented metrics. `invitedBy` is resolved from the accepted
+ * invitation the member came in on (when present).
+ */
+export interface MemberActivity {
+  lastActivityAt: string | null;
+  approvalCount: number;
+  publishCount: number;
+  totalEvents: number;
+  invitedBy: string | null;
+}
+
+const APPROVAL_EVENT = /approved|approval/i;
+const PUBLISH_EVENT = /(item\.completed|post_published|manual_publish\.recorded)/i;
+
+export async function getWorkspaceMemberActivity(
+  workspaceId: string,
+): Promise<Map<string, MemberActivity>> {
+  const supabase = createSupabaseServerClient();
+  const out = new Map<string, MemberActivity>();
+
+  // Recent audit events (one bounded query, newest first).
+  const { data: events, error } = await supabase
+    .from("activity_events")
+    .select("actor_user_id, event_type, created_at")
+    .eq("workspace_id", workspaceId)
+    .not("actor_user_id", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(2000);
+  if (error) throw fromPostgres(error, "Failed to read member activity.");
+
+  for (const e of (events ?? []) as Array<{
+    actor_user_id: string | null;
+    event_type: string;
+    created_at: string;
+  }>) {
+    const uid = e.actor_user_id;
+    if (!uid) continue;
+    const cur = out.get(uid) ?? {
+      lastActivityAt: null,
+      approvalCount: 0,
+      publishCount: 0,
+      totalEvents: 0,
+      invitedBy: null,
+    };
+    cur.totalEvents += 1;
+    if (!cur.lastActivityAt) cur.lastActivityAt = e.created_at; // first = newest
+    if (APPROVAL_EVENT.test(e.event_type)) cur.approvalCount += 1;
+    if (PUBLISH_EVENT.test(e.event_type)) cur.publishCount += 1;
+    out.set(uid, cur);
+  }
+
+  // Resolve invited_by from accepted invitations (best-effort).
+  const { data: invites } = await supabase
+    .from("workspace_invitations")
+    .select("accepted_by, invited_by")
+    .eq("workspace_id", workspaceId)
+    .eq("status", "accepted");
+  for (const inv of (invites ?? []) as Array<{
+    accepted_by: string | null;
+    invited_by: string | null;
+  }>) {
+    if (!inv.accepted_by) continue;
+    const cur = out.get(inv.accepted_by) ?? {
+      lastActivityAt: null,
+      approvalCount: 0,
+      publishCount: 0,
+      totalEvents: 0,
+      invitedBy: null,
+    };
+    cur.invitedBy = inv.invited_by;
+    out.set(inv.accepted_by, cur);
+  }
+
+  return out;
+}
+
+export async function updateMemberRole(input: {
+  workspaceId: string;
+  userId: string;
+  role: WorkspaceRole;
+}): Promise<void> {
+  const supabase = createSupabaseServerClient();
+  const { error } = await supabase
+    .from("workspace_members")
+    .update({ role: input.role } as never)
+    .eq("workspace_id", input.workspaceId)
+    .eq("user_id", input.userId);
+  if (error) throw fromPostgres(error, "Failed to update member role.");
+}
+
+/**
+ * C1.3 — transfer ownership. The target (an existing member) becomes
+ * `owner`; the previous owner is demoted to `admin`. Ordering promotes
+ * the target FIRST so the workspace is never momentarily owner-less
+ * (the zero-owner invariant holds even if the second update fails).
+ * Caller verifies the target is a member and confirms intent.
+ */
+export async function transferOwnership(input: {
+  workspaceId: string;
+  fromUserId: string;
+  toUserId: string;
+}): Promise<void> {
+  if (input.fromUserId === input.toUserId) return;
+  // Promote the successor first (now there are two owners — never zero).
+  await updateMemberRole({
+    workspaceId: input.workspaceId,
+    userId: input.toUserId,
+    role: "owner",
+  });
+  // Then step the previous owner down to admin.
+  await updateMemberRole({
+    workspaceId: input.workspaceId,
+    userId: input.fromUserId,
+    role: "admin",
+  });
+}
+
 export async function removeWorkspaceMember(input: {
   workspaceId: string;
   userId: string;

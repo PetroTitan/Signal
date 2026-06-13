@@ -8,6 +8,7 @@ import {
   getPrimaryWorkspace,
 } from "@/repositories/workspace-repository";
 import { getSettings } from "@/repositories/settings-repository";
+import { countUnreadNotifications } from "@/repositories/notification-repository";
 import { RepositoryError } from "@/repositories/errors";
 import { WorkspaceSessionProvider } from "@/core/workspace-session";
 import { SignalShell } from "@/components/signal-shell";
@@ -71,6 +72,11 @@ export default async function AppLayout({
   }
 
   const settings = await getSettings(membership.workspace.id);
+  // Best-effort: a notification-count failure must never block the shell.
+  const unreadNotifications = await countUnreadNotifications(
+    membership.workspace.id,
+    user.id,
+  ).catch(() => 0);
 
   return (
     <WorkspaceSessionProvider
@@ -79,6 +85,7 @@ export default async function AppLayout({
         workspace: membership.workspace,
         settings,
         role: membership.role,
+        unreadNotifications,
       }}
     >
       <SignalShell>{children}</SignalShell>
