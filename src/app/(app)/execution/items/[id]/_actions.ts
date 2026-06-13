@@ -5,6 +5,7 @@ import { createSupabaseServerClient } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import {
   getExecutionItemById,
+  requeueFailedExecutionItem,
   updateItemStatus,
 } from "@/repositories/execution-item-repository";
 import { recordLog } from "@/repositories/execution-log-repository";
@@ -28,6 +29,75 @@ export type PublishItemResult = ActionResult<{
   permalink: string | null;
   providerPostId: string | null;
 }>;
+
+/**
+ * A3/A4 — manual "Try again" for a FAILED scheduled item.
+ *
+ * After the operator fixes the underlying cause (or retries an
+ * exhausted transient failure), this requeues the item for the
+ * scheduler with a fresh attempt budget. Safe + approval-preserving:
+ * the repository guard only moves a row still in `failed` back to
+ * `scheduled` (the same state it held when approved); it never
+ * publishes inline and never re-approves. The next scheduler tick
+ * claims + publishes it through the normal gated path.
+ */
+export async function retryFailedExecutionItemAction(
+  _prev: ActionResult,
+  formData: FormData,
+): Promise<ActionResult> {
+  const executionItemId = String(formData.get("execution_item_id") ?? "").trim();
+  if (!executionItemId) return actionFail("Missing execution_item_id.");
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    const item = await getExecutionItemById(workspaceId, executionItemId);
+    if (item.status !== "failed") {
+      return actionFail(
+        `Only failed items can be retried (this one is "${item.status}").`,
+      );
+    }
+
+    const nowIso = new Date().toISOString();
+    const requeued = await requeueFailedExecutionItem({
+      workspaceId,
+      itemId: executionItemId,
+      nowIso,
+      currentMetadata: item.metadata,
+    });
+    if (!requeued) {
+      return actionFail("Item is no longer in a failed state; nothing to retry.");
+    }
+
+    await recordLog({
+      workspaceId,
+      queueId: item.queueId,
+      executionItemId,
+      eventType: "item.queued",
+      severity: "info",
+      message: "[operator] Manual retry — item requeued for the scheduler.",
+      metadata: { source: "manual_retry" },
+    });
+    await recordActivity({
+      workspaceId,
+      eventType: "item.queued",
+      entityType: "execution_item",
+      entityId: executionItemId,
+      title: "Item requeued for retry",
+      description: "Operator retried a failed publish; the scheduler will reattempt it.",
+    });
+
+    revalidatePath(`/execution/items/${executionItemId}`);
+    revalidatePath("/dashboard");
+    revalidatePath("/weekly-plan");
+    return actionOk();
+  } catch (err) {
+    if (err instanceof RepositoryError) return actionFail(err.message);
+    console.error("[retryFailedExecutionItemAction] failed", err);
+    return actionFail("Could not retry the item. Try again.");
+  }
+}
 
 /**
  * Phase F2.5 — controlled-publish server action.
