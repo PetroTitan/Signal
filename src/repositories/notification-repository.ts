@@ -150,6 +150,34 @@ export async function countUnreadNotifications(
   return count ?? 0;
 }
 
+/**
+ * C2.1 — unread notification counts grouped by type for one recipient.
+ * Source of truth for the scheduled digest. Accepts an injected client
+ * (the cron digest job has no operator cookie, so it passes the
+ * service-role client; RLS would otherwise hide every row). Read-only.
+ */
+export async function countUnreadNotificationsByType(
+  workspaceId: string,
+  userId: string,
+  db?: SupabaseClient,
+): Promise<{ byType: Partial<Record<NotificationType, number>>; total: number }> {
+  const supabase = db ?? createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("notifications")
+    .select("type")
+    .eq("workspace_id", workspaceId)
+    .eq("user_id", userId)
+    .eq("status", "unread");
+  if (error) throw fromPostgres(error, "Failed to count unread notifications by type.");
+  const byType: Partial<Record<NotificationType, number>> = {};
+  let total = 0;
+  for (const row of (data ?? []) as Array<{ type: NotificationType }>) {
+    byType[row.type] = (byType[row.type] ?? 0) + 1;
+    total += 1;
+  }
+  return { byType, total };
+}
+
 export async function markNotification(input: {
   id: string;
   status: NotificationStatus;

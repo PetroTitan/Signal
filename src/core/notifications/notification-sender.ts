@@ -17,9 +17,17 @@ import { fetchWithTimeout, isTimeoutError } from "@/core/publishing/fetch-with-t
 
 export type SendChannel = "email" | "telegram";
 
+/**
+ * `code` lets a delivery job distinguish a benign "no provider / no
+ * target configured" skip from a real send failure (network/HTTP), so
+ * a no-op email sender never marks a job failed.
+ */
+export type SendResultCode = "sent" | "not_configured" | "error";
+
 export interface SendResult {
   ok: boolean;
   channel: SendChannel;
+  code: SendResultCode;
   detail: string;
 }
 
@@ -36,6 +44,7 @@ export function createEmailSender(): NotificationSender {
       return {
         ok: false,
         channel: "email",
+        code: "not_configured",
         detail: "No email provider is configured. Email digests are not sent yet.",
       };
     },
@@ -54,12 +63,18 @@ export function createTelegramSender(chatId?: string | null): NotificationSender
       const creds = readTelegramCredentials();
       const target = chatId?.trim() || process.env.TELEGRAM_DIGEST_CHAT_ID?.trim() || "";
       if (!creds) {
-        return { ok: false, channel: "telegram", detail: "TELEGRAM_BOT_TOKEN is not configured." };
+        return {
+          ok: false,
+          channel: "telegram",
+          code: "not_configured",
+          detail: "TELEGRAM_BOT_TOKEN is not configured.",
+        };
       }
       if (!target) {
         return {
           ok: false,
           channel: "telegram",
+          code: "not_configured",
           detail: "No Telegram digest chat configured (set TELEGRAM_DIGEST_CHAT_ID).",
         };
       }
@@ -74,16 +89,22 @@ export function createTelegramSender(chatId?: string | null): NotificationSender
           },
         );
         if (!resp.ok) {
-          return { ok: false, channel: "telegram", detail: `Telegram returned ${resp.status}.` };
+          return {
+            ok: false,
+            channel: "telegram",
+            code: "error",
+            detail: `Telegram returned ${resp.status}.`,
+          };
         }
-        return { ok: true, channel: "telegram", detail: "Digest sent to Telegram." };
+        return { ok: true, channel: "telegram", code: "sent", detail: "Digest sent to Telegram." };
       } catch (err) {
         if (isTimeoutError(err)) {
-          return { ok: false, channel: "telegram", detail: "Telegram send timed out." };
+          return { ok: false, channel: "telegram", code: "error", detail: "Telegram send timed out." };
         }
         return {
           ok: false,
           channel: "telegram",
+          code: "error",
           detail: err instanceof Error ? err.message : "Telegram send failed.",
         };
       }

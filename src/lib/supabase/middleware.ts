@@ -35,6 +35,11 @@ const PUBLIC_PATH_PREFIXES = [
   // shared secret. The route handler enforces the secret; the
   // middleware must not redirect to /login.
   "/api/scheduler",
+  // C2.1: scheduled notification digest delivery is triggered by Vercel
+  // Cron / curl with the same shared secret as the scheduler tick. The
+  // route handler enforces the secret; the middleware must not redirect
+  // to /login. Only /api/notifications/digest exists under this prefix.
+  "/api/notifications",
   // Phase F9 — OAuth callback path. The OAuth handshake has its own
   // security model:
   //   - PKCE code_verifier persisted server-side at /start; the
