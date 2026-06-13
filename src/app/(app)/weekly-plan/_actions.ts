@@ -8,6 +8,7 @@ import {
   deletePlanItem,
   getCurrentWeeklyPlan,
   getPlanItemById,
+  movePlanItemToPlan,
   updatePlanItem,
 } from "@/repositories/weekly-plan-repository";
 import { decideBlueskyApprovalShape } from "@/core/platform-native/adapters/bluesky/shape-binding";
@@ -174,6 +175,89 @@ export async function createWeeklyPlanAction(
         : "Could not create weekly plan.";
     console.error("[createWeeklyPlanAction] failed", error);
     return actionFail(message);
+  }
+}
+
+/**
+ * A6 — carry an unfinished item from a previous week's plan into the
+ * current plan so it re-enters the main workflow.
+ *
+ * Safety contract (audited):
+ *   - Only unfinished items (draft / pending_approval / approved /
+ *     scheduled / paused) can be carried over; terminal items are
+ *     refused. Status is PRESERVED — approval is never bypassed.
+ *   - Relocates ONLY `weekly_plan_id` (movePlanItemToPlan). The linked
+ *     execution_item references the plan_item id (not the plan), so no
+ *     execution item is created or duplicated and any existing schedule
+ *     keeps firing exactly as before.
+ *   - Records an activity event for the audit trail.
+ */
+const CARRYABLE_STATUSES = new Set([
+  "draft",
+  "pending_approval",
+  "approved",
+  "scheduled",
+  "paused",
+]);
+
+export async function carryOverPlanItemAction(
+  _prev: ActionResult,
+  formData: FormData,
+): Promise<ActionResult> {
+  const itemId = String(formData.get("item_id") ?? "").trim();
+  if (!itemId) return actionFail("Item id is required.");
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    const item = await getPlanItemById(workspaceId, itemId);
+    if (!CARRYABLE_STATUSES.has(item.status)) {
+      return actionFail(
+        "Only unfinished items can be carried over; this one is already finished.",
+      );
+    }
+
+    let plan = await getCurrentWeeklyPlan(workspaceId);
+    if (!plan) {
+      plan = await createWeeklyPlan({
+        workspaceId,
+        title: "This week",
+        weekStart: isoMonday(new Date()),
+      });
+      await logActivityBestEffort({
+        workspaceId,
+        eventType: "weekly_plan.created",
+        entityType: "weekly_plan",
+        entityId: plan.id,
+        title: "Weekly plan created",
+        description: `Week of ${plan.weekStart}.`,
+      });
+    }
+    if (item.weeklyPlanId === plan.id) {
+      // Already in the current plan — nothing to do (idempotent).
+      return actionOk();
+    }
+
+    await movePlanItemToPlan({ workspaceId, itemId, weeklyPlanId: plan.id });
+    await logActivityBestEffort({
+      workspaceId,
+      eventType: "weekly_plan_item.carried_over",
+      entityType: "weekly_plan_item",
+      entityId: itemId,
+      title: "Item carried over to the current week",
+      description: `Moved into "${plan.title}" from a previous plan; status preserved (${item.status}).`,
+    });
+
+    revalidatePath("/weekly-plan");
+    revalidatePath("/dashboard");
+    revalidatePath("/activity");
+    return actionOk();
+  } catch (error) {
+    if (error instanceof RepositoryError) return actionFail(error.message);
+    console.error("[carryOverPlanItemAction] failed", error);
+    return actionFail("Could not carry the item over. Try again.");
   }
 }
 

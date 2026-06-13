@@ -22,6 +22,26 @@ import { tickOnce } from "@/core/publishing";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * A2 — explicit scheduler-tick duration budget.
+ *
+ * A single tick can, per item, refresh OAuth/identity tokens, fetch +
+ * transcode media into a provider-safe derivative, make one or more
+ * provider publish calls (a Bluesky thread is several round-trips at
+ * up to 20–30s each), and write the outcome + history. The platform
+ * default (~10–15s) is far too low for a batch of up to 10 items and
+ * can kill the function MID-PUBLISH — exactly the crash window the A1
+ * claim mechanism protects against, but better avoided entirely.
+ *
+ * 300s is the Vercel Pro/Enterprise serverless ceiling. On Hobby
+ * (60s cap) the platform clamps this down; it does not break the
+ * build. We do NOT raise the batch size in this phase. The Node
+ * runtime is required (sharp + crypto + service-role client are not
+ * Edge-compatible).
+ */
+export const runtime = "nodejs";
+export const maxDuration = 300;
+
 export async function GET(request: Request) {
   const secret = process.env.SCHEDULER_TICK_TOKEN?.trim();
   if (!secret) {

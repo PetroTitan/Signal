@@ -23,6 +23,11 @@ import "server-only";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
 import { readTelegramTargetType } from "@/core/identity-verifiers";
 import { runPublish } from "./publishing-runner";
+import { claimExecutionItem } from "./execution-claim";
+import {
+  buildRetryMetadata,
+  decidePublishRetry,
+} from "./publish-retry-policy";
 import type {
   PublishMode,
   PublishOutcome,
@@ -252,6 +257,14 @@ export async function tickOnce(
 
   if (!items || items.length === 0) return empty;
 
+  // A1 — one run id per tick so every claim in this batch is
+  // attributable to the same scheduler run (audit + duplicate
+  // forensics). crypto.randomUUID is available in the Node runtime
+  // this route runs in.
+  const schedulerRunId =
+    (input.nowIso ? `tick-${input.nowIso}-` : "tick-") +
+    Math.random().toString(36).slice(2, 10);
+
   const results: SchedulerTickResult["results"] = [];
   for (const raw of items as Array<{
     id: string;
@@ -271,6 +284,48 @@ export async function tickOnce(
     metadata: Record<string, unknown>;
   }>) {
     const platform = (raw.platform ?? "") as PublishPlatform;
+
+    // A1 — atomic claim BEFORE any work. `scheduled → running` is a
+    // compare-and-set: only a row still in `scheduled` flips to
+    // `running`, and the tick query never selects `running` rows. If
+    // the claim affects zero rows, another tick (or a manual trigger)
+    // already owns this item, so we skip it entirely — we never make a
+    // provider call for an item we didn't claim. This closes the
+    // overlapping-tick double-publish window. A function that dies
+    // after the provider call leaves the row in `running` (a stale
+    // claim the operator is shown) rather than back in `scheduled`
+    // where it would be republished.
+    const claim = await claimExecutionItem({
+      supabase,
+      workspaceId: raw.workspace_id,
+      itemId: raw.id,
+      currentMetadata: raw.metadata,
+      schedulerRunId,
+      nowIso,
+    });
+    if (!claim.claimed) {
+      results.push({
+        execution_item_id: raw.id,
+        workspace_id: raw.workspace_id,
+        platform,
+        outcome: {
+          status: "skipped",
+          reasonCode: claim.reason === "claim_error" ? "scheduler_exception" : "ok",
+          reasonDetail:
+            claim.reason === "claim_error"
+              ? `Claim failed: ${claim.detail ?? "db error"}`
+              : "Item already claimed by another scheduler run; skipped to avoid double publish.",
+          externalId: null,
+          externalUrl: null,
+          metadata: { scheduler_claim_skipped: true, claim_reason: claim.reason },
+        },
+      });
+      continue;
+    }
+    // Downstream writers (applyOutcome / markItemReadyForPublish) merge
+    // on top of metadata; thread the claim-stamped metadata forward so
+    // the claim record survives the terminal write.
+    raw.metadata = claim.metadata;
 
     // Per-item iteration runs entirely inside this try/catch — any
     // exception (including from applyOutcome itself, the safe-test
@@ -829,6 +884,9 @@ interface ApplyOutcomeInput {
     title: string | null;
     body: string | null;
     link_url: string | null;
+    /** A3 — retry/backoff reads these to decide reschedule vs terminal. */
+    attempt_count: number;
+    max_attempts: number;
     metadata: Record<string, unknown>;
   };
   outcome: PublishOutcome;
@@ -836,22 +894,60 @@ interface ApplyOutcomeInput {
 
 async function applyOutcome(input: ApplyOutcomeInput): Promise<void> {
   const { supabase, item, outcome } = input;
-  const nextStatus = nextExecutionStatusForOutcome(outcome);
+  const baseStatus = nextExecutionStatusForOutcome(outcome);
+
+  // A3 — retry/backoff. A `failed` outcome is re-examined: if the
+  // failure is clearly transient (provider 5xx, rate limit, network)
+  // AND the attempt budget remains, the item is RESCHEDULED instead of
+  // terminalized — status flips back to `scheduled` with a future
+  // `scheduled_at`, attempt_count is incremented, and the plan item is
+  // NOT paused (it's still in flight). Non-transient failures and a
+  // spent budget stay terminal. Retry produces only `scheduled` — the
+  // exact state the operator already approved — so it can never bypass
+  // approval. blocked/published/skipped never enter this path.
+  const retry =
+    baseStatus === "failed"
+      ? decidePublishRetry({
+          outcome,
+          attemptCount: item.attempt_count ?? 0,
+          maxAttempts: item.max_attempts ?? 3,
+          now: new Date(),
+        })
+      : null;
+  const willRetry = retry?.retry === true;
+  const nextStatus: "completed" | "scheduled" | "blocked" | "failed" =
+    willRetry ? "scheduled" : baseStatus;
+
+  const retryMeta =
+    retry !== null ? buildRetryMetadata(retry, item.max_attempts ?? 3) : null;
+
+  const itemUpdate: Record<string, unknown> = {
+    status: nextStatus,
+    metadata: {
+      ...item.metadata,
+      publish_outcome: {
+        status: outcome.status,
+        reason_code: outcome.reasonCode,
+        reason_detail: outcome.reasonDetail,
+        external_id: outcome.externalId,
+        external_url: outcome.externalUrl,
+      },
+      ...(retryMeta ? { retry: retryMeta } : {}),
+    },
+  };
+  // Record the attempt + reschedule when retrying or terminalizing a
+  // (possibly transient) failure. attempt_count reflects the attempt
+  // that just ran; scheduled_at moves to the backoff time on retry.
+  if (retry !== null) {
+    itemUpdate.attempt_count = retry.nextAttemptCount;
+    if (willRetry) {
+      itemUpdate.scheduled_at = retry.nextRetryAtIso;
+    }
+  }
+
   await supabase
     .from("execution_items")
-    .update({
-      status: nextStatus,
-      metadata: {
-        ...item.metadata,
-        publish_outcome: {
-          status: outcome.status,
-          reason_code: outcome.reasonCode,
-          reason_detail: outcome.reasonDetail,
-          external_id: outcome.externalId,
-          external_url: outcome.externalUrl,
-        },
-      },
-    } as never)
+    .update(itemUpdate as never)
     .eq("workspace_id", item.workspace_id)
     .eq("id", item.id);
 

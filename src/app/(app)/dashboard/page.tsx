@@ -6,8 +6,11 @@ import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { normalizeWorkspaceTimezone } from "@/core/scheduling/workspace-time";
 import { listProducts } from "@/repositories/product-repository";
 import { listAccounts } from "@/repositories/account-repository";
+import { summarizeAttentionItems } from "@/core/publishing/attention-summary";
+import { isStaleClaim } from "@/core/publishing/execution-claim";
 import {
   getCurrentWeeklyPlan,
+  listUnfinishedItemsFromOlderPlans,
   listPlanItems,
   type WeeklyPlanItem,
 } from "@/repositories/weekly-plan-repository";
@@ -17,7 +20,10 @@ import {
   listCreativesForItems,
   creativeReadinessBadge,
 } from "@/repositories/weekly-plan-creative-repository";
-import { listExecutionItemsByPlanItemIds } from "@/repositories/execution-item-repository";
+import {
+  listExecutionItemsByPlanItemIds,
+  listExecutionItemsByStatus,
+} from "@/repositories/execution-item-repository";
 import { listRecentActivity } from "@/repositories/activity-repository";
 import {
   ActivityFeed,
@@ -280,63 +286,118 @@ export default async function DashboardPage() {
     .filter((it) => it.status === "draft" || it.status === "skipped")
     .slice(0, 4);
 
-  // ---- Needs attention — failures, expired connections, Reddit blocker ----
+  // ---- Needs attention (A4) — centralized through the pure
+  // summarizeAttentionItems digest over REAL pipeline state:
+  // terminal failures (with retry-exhausted flag), blocked items,
+  // automatic retries in flight, STALE CLAIMS (publishes that started
+  // but never finished — possible double-publish), expired
+  // connections, and carry-over from previous weeks. Everything is
+  // source-of-truth derived; no published/completed item can appear.
   const redditBlocked = isRedditOauthBlocked();
-  const needsAttention: NeedsAttentionEntry[] = [];
-  const weekAgo = Date.now() - 7 * dayMs;
-  for (const p of recentPublishes) {
-    if (p.outcome !== "failed") continue;
-    if (new Date(p.finishedAt).getTime() < weekAgo) continue;
-    const where = p.subreddit ? `r/${p.subreddit}` : p.platform;
-    needsAttention.push({
-      id: `fail-${p.id}`,
-      message: `A post to ${where} didn't publish. Open it to see what happened.`,
-      href: `/execution/items/${p.executionItemId}`,
-      cta: "Open post",
-      severity: "danger",
-    });
-    if (needsAttention.length >= 5) break;
-  }
-  for (const c of connections) {
-    if (!c.accountId) continue;
-    if (
-      c.connectionStatus === "expired" ||
-      c.connectionStatus === "reauthorization_required" ||
-      c.healthStatus === "expired" ||
-      c.healthStatus === "revoked"
-    ) {
-      const platformLabel =
-        c.platform === "reddit"
-          ? "Reddit"
-          : c.platform === "linkedin"
-            ? "LinkedIn"
-            : c.platform === "x"
-              ? "X"
-              : c.platform;
-      needsAttention.push({
-        id: `conn-${c.id}`,
-        message: `${platformLabel} connection expired. Reconnect to keep publishing.`,
-        href: "/accounts",
-        cta: `Reconnect ${platformLabel}`,
-        severity: "warn",
-      });
-      if (needsAttention.length >= 5) break;
+  const [
+    failedExecItems,
+    blockedExecItems,
+    runningExecItems,
+    retryingExecItems,
+    olderUnfinished,
+  ] = await Promise.all([
+    listExecutionItemsByStatus(workspaceId, ["failed"], { limit: 10 }),
+    listExecutionItemsByStatus(workspaceId, ["blocked"], { limit: 10 }),
+    listExecutionItemsByStatus(workspaceId, ["running"], { limit: 20 }),
+    listExecutionItemsByStatus(workspaceId, ["scheduled"], {
+      limit: 20,
+      minAttemptCount: 1,
+    }),
+    listUnfinishedItemsFromOlderPlans(workspaceId, plan?.id ?? null),
+  ]);
+
+  const metaStr = (m: Record<string, unknown>, path: string[]): string | null => {
+    let cur: unknown = m;
+    for (const k of path) {
+      if (cur && typeof cur === "object") cur = (cur as Record<string, unknown>)[k];
+      else return null;
     }
-  }
-  // Posts with pending approval as a soft prompt.
+    return typeof cur === "string" ? cur : null;
+  };
+  const metaBool = (m: Record<string, unknown>, path: string[]): boolean => {
+    let cur: unknown = m;
+    for (const k of path) {
+      if (cur && typeof cur === "object") cur = (cur as Record<string, unknown>)[k];
+      else return false;
+    }
+    return cur === true;
+  };
+  const platformLabelFor = (p: string | null): string =>
+    p === "reddit"
+      ? "Reddit"
+      : p === "linkedin"
+        ? "LinkedIn"
+        : p === "x"
+          ? "X"
+          : p ?? "Platform";
+
+  const attention = summarizeAttentionItems({
+    failedPublishes: failedExecItems.map((it) => {
+      const target = metaStr(it.metadata, ["target"]);
+      return {
+        id: it.id,
+        where: target ? `r/${target}` : platformLabelFor(it.platform),
+        executionItemId: it.id,
+        retryExhausted: metaBool(it.metadata, ["retry", "exhausted"]),
+      };
+    }),
+    blockedItems: blockedExecItems.map((it) => ({
+      id: it.id,
+      title: it.title,
+      reasonCode: metaStr(it.metadata, ["publish_outcome", "reason_code"]),
+      executionItemId: it.id,
+    })),
+    retryingItems: retryingExecItems
+      .filter((it) => metaStr(it.metadata, ["retry", "next_retry_at"]) !== null)
+      .map((it) => ({
+        id: it.id,
+        title: it.title,
+        nextRetryAtIso: metaStr(it.metadata, ["retry", "next_retry_at"]),
+        attemptCount: it.attemptCount,
+        maxAttempts: it.maxAttempts,
+      })),
+    staleClaims: runningExecItems
+      .filter((it) =>
+        isStaleClaim(metaStr(it.metadata, ["scheduler_claim", "claimed_at"]), now),
+      )
+      .map((it) => ({
+        id: it.id,
+        title: it.title,
+        claimedAtIso: metaStr(it.metadata, ["scheduler_claim", "claimed_at"]),
+      })),
+    expiredConnections: connections
+      .filter(
+        (c) =>
+          c.accountId &&
+          (c.connectionStatus === "expired" ||
+            c.connectionStatus === "reauthorization_required" ||
+            c.healthStatus === "expired" ||
+            c.healthStatus === "revoked"),
+      )
+      .map((c) => ({ id: c.id, platformLabel: platformLabelFor(c.platform) })),
+    carryOverCount: olderUnfinished.length,
+  });
+
+  const needsAttention: NeedsAttentionEntry[] = [...attention.entries];
+  // Soft prompts that aren't failures (kept as low-priority info).
   const pendingApproval = items.filter((it) => it.status === "pending_approval");
-  if (pendingApproval.length > 0 && needsAttention.length < 5) {
+  if (pendingApproval.length > 0) {
     needsAttention.push({
       id: "pending-approval",
       message: `${pendingApproval.length} post${
         pendingApproval.length === 1 ? "" : "s"
       } waiting for your approval.`,
-      href: "/weekly-plan",
+      href: "/weekly-plan?tab=queue",
       cta: "Review",
       severity: "info",
     });
   }
-  if (redditBlocked && needsAttention.length < 5) {
+  if (redditBlocked) {
     needsAttention.push({
       id: "reddit-blocker",
       message:

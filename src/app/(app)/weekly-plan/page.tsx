@@ -4,6 +4,7 @@ import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import {
   getCurrentWeeklyPlan,
   listPlanItems,
+  listUnfinishedItemsFromOlderPlans,
   type WeeklyPlanItem,
 } from "@/repositories/weekly-plan-repository";
 import { listProducts } from "@/repositories/product-repository";
@@ -19,6 +20,7 @@ import { listRecentPublishes } from "@/repositories/publish-history-repository";
 import { listPlatformConnections } from "@/repositories/platform-connection-repository";
 import { isRedditOauthBlocked } from "@/lib/oauth/env";
 import { ApprovePlanForm } from "./_approve-plan-form";
+import { CarryOverStrip, type CarryOverItem } from "./_carry-over-strip";
 import { PlanItemCard } from "./_plan-item-card";
 import { isApprovablePublishObject } from "@/core/platform-native/approval-policy";
 import { parsePlatformNativeShape } from "@/core/platform-native";
@@ -65,9 +67,6 @@ import {
   resolveWorkflowTab,
   parsePageParam,
   parseSearchQuery,
-  paginate,
-  searchPublishedRows,
-  summaryCounts,
   isQueueItem,
   isScheduledItem,
   isPublishedItem,
@@ -76,8 +75,8 @@ import {
   isPlanBoardItem,
   compareOldestFirst,
   compareScheduledAsc,
-  comparePublishedDesc,
   DEFAULT_PAGE_SIZE,
+  type Paginated,
   type WorkflowItemView,
   type WorkflowTab,
 } from "@/core/dashboard/workflow-filters";
@@ -149,6 +148,19 @@ export default async function WeeklyPlanPage({
   const hasActiveContract = activeContract !== null;
 
   const items = plan ? await listPlanItems(workspaceId, plan.id) : [];
+
+  // A6 — items still in flight in OLDER plans (hidden by the
+  // current-week view). Read-only; surfaced as a carry-over strip.
+  const carryOverRows = await listUnfinishedItemsFromOlderPlans(
+    workspaceId,
+    plan?.id ?? null,
+  );
+  const carryOverItems: CarryOverItem[] = carryOverRows.map((it) => ({
+    id: it.id,
+    title: it.title,
+    status: it.status,
+    platform: it.platform,
+  }));
 
   const creatives = items.length
     ? await listCreativesForItems(
@@ -552,61 +564,108 @@ export default async function WeeklyPlanPage({
     .map((v) => itemById.get(v.id))
     .filter((it): it is WeeklyPlanItem => Boolean(it));
 
-  // Compact table rows (Published + Failed share the same component).
-  const toRow = (
-    v: WorkflowItemView,
-    opts: {
-      statusLabel: string;
-      statusTone: PublishedTableRow["statusTone"];
-      date: string | null;
-    },
-  ): PublishedTableRow => {
-    const it = itemById.get(v.id);
-    const exec = execByPlanItem.get(v.id) ?? null;
-    return {
-      id: v.id,
-      title: it?.title ?? null,
-      platform: it?.platform ?? "unknown",
-      subreddit: subredditByItem.get(v.id) ?? null,
-      date: opts.date,
-      statusLabel: opts.statusLabel,
-      statusTone: opts.statusTone,
-      permalink: permalinkByItem.get(v.id) ?? null,
-      detailHref: exec ? `/execution/items/${exec.id}` : null,
-    };
+  // A5 — Published + Failed tabs read `publish_history` (the durable,
+  // workspace-WIDE source of truth across ALL weeks), server-paginated.
+  // We only run the query for the active history tab, so the other tabs
+  // pay nothing. Titles are hydrated from execution_items per page. We
+  // never invent history from plan status — a row exists iff a real
+  // publish attempt was recorded. (The tab badge counts above stay
+  // current-plan "this week" hints; the table header shows the
+  // authoritative all-time total.)
+  const historyPlatform =
+    typeof searchParams?.platform === "string" && searchParams.platform.trim()
+      ? searchParams.platform.trim()
+      : null;
+
+  const EMPTY_TABLE_PAGE: Paginated<PublishedTableRow> = {
+    page: 1,
+    pageSize: DEFAULT_PAGE_SIZE,
+    total: 0,
+    totalPages: 1,
+    items: [],
+    hasPrev: false,
+    hasNext: false,
+    startIndex: 0,
+    endIndex: 0,
   };
 
-  const publishedRows: PublishedTableRow[] = publishedViews
-    .slice()
-    .sort(comparePublishedDesc)
-    .map((v) =>
-      toRow(v, {
-        statusLabel: "Published",
-        statusTone: "success",
-        date: publishedAtByItem.get(v.id) ?? v.effectiveAt,
-      }),
+  async function buildHistoryPage(
+    outcomes: ("published" | "failed" | "blocked")[],
+  ): Promise<Paginated<PublishedTableRow>> {
+    const [
+      { listPublishHistoryPage },
+      { hydrateExecutionItemDisplay },
+      { friendlyFailure },
+    ] = await Promise.all([
+      import("@/repositories/publish-history-repository"),
+      import("@/repositories/execution-item-repository"),
+      import("@/core/publishing/founder-error"),
+    ]);
+    const result = await listPublishHistoryPage(
+      workspaceId,
+      { outcomes, platform: historyPlatform, query: searchQuery || null },
+      pageParam,
+      DEFAULT_PAGE_SIZE,
     );
-  const failedRows: PublishedTableRow[] = failedViews
-    .slice()
-    .sort(comparePublishedDesc)
-    .map((v) =>
-      toRow(v, {
-        statusLabel: "Failed",
-        statusTone: "danger",
-        date: failureAtByItem.get(v.id) ?? v.effectiveAt,
-      }),
+    const display = await hydrateExecutionItemDisplay(
+      workspaceId,
+      result.rows.map((r) => r.executionItemId),
     );
+    const items: PublishedTableRow[] = result.rows.map((r) => {
+      const d = display.get(r.executionItemId);
+      const isPublished = r.outcome === "published";
+      return {
+        id: r.id,
+        title: d?.title ?? null,
+        platform: r.platform || "unknown",
+        subreddit: r.subreddit,
+        date: r.finishedAt,
+        statusLabel: isPublished
+          ? "Published"
+          : r.outcome === "blocked"
+            ? "Blocked"
+            : "Failed",
+        statusTone: isPublished
+          ? "success"
+          : r.outcome === "blocked"
+            ? "warn"
+            : "danger",
+        // Failed/blocked rows show the operator-readable reason.
+        subtitle: isPublished
+          ? null
+          : friendlyFailure({
+              platform: r.platform,
+              reasonCode: r.reasonCode,
+              // publish_history stores reason_code, not free-text detail;
+              // friendlyFailure derives operator copy from the code.
+              reasonDetail: null,
+            }).title,
+        permalink: r.providerPermalink,
+        detailHref: `/execution/items/${r.executionItemId}`,
+      };
+    });
+    const from = (result.page - 1) * result.pageSize;
+    return {
+      page: result.page,
+      pageSize: result.pageSize,
+      total: result.total,
+      totalPages: result.totalPages,
+      items,
+      hasPrev: result.page > 1,
+      hasNext: result.page < result.totalPages,
+      startIndex: result.total === 0 ? 0 : from + 1,
+      endIndex: Math.min(from + result.pageSize, result.total),
+    };
+  }
 
-  const publishedPage = paginate(
-    searchPublishedRows(publishedRows, searchQuery),
-    pageParam,
-    DEFAULT_PAGE_SIZE,
-  );
-  const failedPage = paginate(
-    searchPublishedRows(failedRows, searchQuery),
-    pageParam,
-    DEFAULT_PAGE_SIZE,
-  );
+  const publishedPage =
+    activeTab === "published"
+      ? await buildHistoryPage(["published"])
+      : EMPTY_TABLE_PAGE;
+  const failedPage =
+    activeTab === "failed"
+      ? await buildHistoryPage(["failed", "blocked"])
+      : EMPTY_TABLE_PAGE;
 
   // Plan board — in-flight items only. Published / terminal items drop
   // out of the editorial stream (they live in the Published tab), which
@@ -802,6 +861,7 @@ export default async function WeeklyPlanPage({
             {/* ---- Plan tab — the editorial board (in-flight only) ---- */}
             {activeTab === "plan" ? (
               <>
+                <CarryOverStrip items={carryOverItems} />
                 <RecentlyPublishedStrip entries={recentlyPublished} />
                 {pendingCount > 0 ? (
                   <ApprovePlanForm planId={plan.id} pendingCount={pendingCount} />

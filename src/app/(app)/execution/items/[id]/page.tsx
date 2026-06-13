@@ -55,6 +55,8 @@ import {
 import { canonicalPostFromRequest } from "@/core/publishing/canonical-post";
 import { isRedditOauthBlocked } from "@/lib/oauth/env";
 import { ExecutionStateBadge } from "@/components/publishing/execution-state";
+import { friendlyFailure } from "@/core/publishing/founder-error";
+import { RetryFailedButton } from "./_retry-button";
 import { RedditPostPreview } from "@/components/platform-previews/reddit-post";
 import { listCreativesForItems } from "@/repositories/weekly-plan-creative-repository";
 import { getAccountById } from "@/repositories/account-repository";
@@ -362,6 +364,28 @@ export default async function ExecutionItemPage({ params }: PageProps) {
               {workspaceTimezone} ·{" "}
               {formatUtcForOperatorDebug(history.finishedAt)}
             </p>
+          </section>
+        ) : null}
+
+        {item.status === "failed" ? (
+          <section className="rounded-2xl border border-red-200 bg-red-50/40 p-5 space-y-3">
+            <div>
+              <h2 className="text-sm font-semibold text-red-800">
+                This post failed to publish
+              </h2>
+              <p className="text-xs text-ink-700 mt-1 leading-relaxed">
+                {friendlyFailure({
+                  platform: item.platform ?? "",
+                  reasonCode:
+                    ((item.metadata as { publish_outcome?: { reason_code?: string } })
+                      ?.publish_outcome?.reason_code ?? null) as string | null,
+                  reasonDetail:
+                    ((item.metadata as { publish_outcome?: { reason_detail?: string } })
+                      ?.publish_outcome?.reason_detail ?? null) as string | null,
+                }).title}
+              </p>
+            </div>
+            <RetryFailedButton executionItemId={item.id} />
           </section>
         ) : null}
 

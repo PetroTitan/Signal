@@ -1,4 +1,5 @@
 import "server-only";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase";
 import type {
   ExecutionItemInsert,
@@ -165,6 +166,126 @@ export async function listExecutionItemsByPlanItemIds(
     .order("scheduled_at", { ascending: true });
   if (error)
     throw fromPostgres(error, "Failed to list execution items by plan-item.");
+  return ((data ?? []) as unknown as ExecutionItemRow[]).map(toItem);
+}
+
+/**
+ * A5 — batch-resolve display fields for a page of publish-history rows.
+ *
+ * publish_history stores `execution_item_id` but no title text; the
+ * title + originating plan item live on execution_items. This returns a
+ * Map keyed by execution_item id → { title, sourceEntityId (plan item),
+ * accountId } for the (≤ page-size) ids on the current page, so the
+ * history table can show a human title + deep-link to the source
+ * without an N+1 query.
+ */
+export async function hydrateExecutionItemDisplay(
+  workspaceId: string,
+  executionItemIds: string[],
+  db?: SupabaseClient,
+): Promise<
+  Map<string, { title: string | null; sourceEntityId: string | null; accountId: string | null }>
+> {
+  const out = new Map<
+    string,
+    { title: string | null; sourceEntityId: string | null; accountId: string | null }
+  >();
+  const ids = Array.from(new Set(executionItemIds)).filter(Boolean);
+  if (ids.length === 0) return out;
+  const supabase = db ?? createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("execution_items")
+    .select("id, title, source_entity_id, account_id")
+    .eq("workspace_id", workspaceId)
+    .in("id", ids);
+  if (error)
+    throw fromPostgres(error, "Failed to hydrate execution-item display.");
+  for (const row of (data ?? []) as Array<{
+    id: string;
+    title: string | null;
+    source_entity_id: string | null;
+    account_id: string | null;
+  }>) {
+    out.set(row.id, {
+      title: row.title,
+      sourceEntityId: row.source_entity_id,
+      accountId: row.account_id,
+    });
+  }
+  return out;
+}
+
+/**
+ * A3/A4 — operator-initiated "try again" for a FAILED execution item.
+ *
+ * Guarded compare-and-set: only a row still in `failed` is requeued to
+ * `scheduled` (status machine allows failed → scheduled), so this is
+ * idempotent and races safely with the scheduler. It resets the
+ * attempt budget (the operator presumably fixed the cause), clears the
+ * stale retry/claim records, stamps a manual-retry marker, and sets
+ * `scheduled_at = now` so the next tick picks it up. It does NOT change
+ * approval state — `failed` items were already authorized, and
+ * `scheduled` is the same state they held at approval, so manual retry
+ * never bypasses approval. Returns false when no `failed` row matched.
+ */
+export async function requeueFailedExecutionItem(input: {
+  workspaceId: string;
+  itemId: string;
+  nowIso: string;
+  currentMetadata: Record<string, unknown>;
+}): Promise<boolean> {
+  const supabase = createSupabaseServerClient();
+  const { retry: _drop, scheduler_claim: _dropClaim, ...rest } =
+    input.currentMetadata as Record<string, unknown> & {
+      retry?: unknown;
+      scheduler_claim?: unknown;
+    };
+  const metadata = {
+    ...rest,
+    manual_retry: { requeued_at: input.nowIso },
+  };
+  const { data, error } = await supabase
+    .from("execution_items")
+    .update({
+      status: "scheduled",
+      scheduled_at: input.nowIso,
+      attempt_count: 0,
+      metadata,
+    } as never)
+    .eq("workspace_id", input.workspaceId)
+    .eq("id", input.itemId)
+    .eq("status", "failed")
+    .select("id");
+  if (error) throw fromPostgres(error, "Failed to requeue execution item.");
+  return Array.isArray(data) && data.length > 0;
+}
+
+/**
+ * A4 — generic status query for the operator-attention surface
+ * (failed / blocked / running [stale claims] / scheduled-with-retries).
+ * `minAttemptCount` lets the caller isolate "scheduled BUT already
+ * attempted" = currently retrying. Read-only.
+ */
+export async function listExecutionItemsByStatus(
+  workspaceId: string,
+  statuses: string[],
+  opts?: { limit?: number; minAttemptCount?: number },
+): Promise<ExecutionItem[]> {
+  if (statuses.length === 0) return [];
+  const supabase = createSupabaseServerClient();
+  let query = supabase
+    .from("execution_items")
+    .select("*")
+    .eq("workspace_id", workspaceId)
+    .in("status", statuses);
+  if (typeof opts?.minAttemptCount === "number") {
+    query = query.gte("attempt_count", opts.minAttemptCount);
+  }
+  const { data, error } = await query
+    .order("updated_at", { ascending: false })
+    .limit(opts?.limit ?? 20);
+  if (error)
+    throw fromPostgres(error, "Failed to list execution items by status.");
   return ((data ?? []) as unknown as ExecutionItemRow[]).map(toItem);
 }
 

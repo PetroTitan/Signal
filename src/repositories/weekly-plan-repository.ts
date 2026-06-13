@@ -218,6 +218,48 @@ export async function listPlanItemsByStatus(
   return ((data ?? []) as unknown as WeeklyPlanItemRow[]).map(toItem);
 }
 
+/**
+ * A6 — unfinished items that live in OLDER weekly plans (not the
+ * current one). The dashboard/weekly-plan focus on the newest plan, so
+ * once the week rolls over, in-flight items from prior plans vanish
+ * from the workflow. This surfaces them.
+ *
+ * "Unfinished" = the plan-item statuses that still represent work in
+ * flight: draft, pending_approval, approved (hold), scheduled, paused
+ * (the plan-item mirror parks failed/blocked execution items here).
+ * Terminal statuses (published, rejected, backlog, skipped) are
+ * excluded — they are NOT carry-over candidates. Read-only; never
+ * mutates rows.
+ */
+const UNFINISHED_PLAN_ITEM_STATUSES: WeeklyPlanItemStatus[] = [
+  "draft",
+  "pending_approval",
+  "approved",
+  "scheduled",
+  "paused",
+];
+
+export async function listUnfinishedItemsFromOlderPlans(
+  workspaceId: string,
+  currentPlanId: string | null,
+  limit = 50,
+): Promise<WeeklyPlanItem[]> {
+  const supabase = createSupabaseServerClient();
+  let query = supabase
+    .from("weekly_plan_items")
+    .select("*")
+    .eq("workspace_id", workspaceId)
+    .in("status", UNFINISHED_PLAN_ITEM_STATUSES);
+  // Exclude the current plan so this is strictly "from previous weeks".
+  if (currentPlanId) query = query.neq("weekly_plan_id", currentPlanId);
+  const { data, error } = await query
+    .order("created_at", { ascending: true })
+    .limit(limit);
+  if (error)
+    throw fromPostgres(error, "Failed to list unfinished older-plan items.");
+  return ((data ?? []) as unknown as WeeklyPlanItemRow[]).map(toItem);
+}
+
 export async function getPlanItemById(
   workspaceId: string,
   itemId: string,
@@ -314,6 +356,34 @@ export async function updatePlanItemStatus(input: {
     itemId: input.itemId,
     patch: { status: input.status },
   });
+}
+
+/**
+ * A6 — relocate a plan item into a different (current) weekly plan.
+ *
+ * Writes ONLY `weekly_plan_id` (an existing column). Status, schedule,
+ * approval, creatives, and any linked execution_item (which references
+ * the plan_item id, not the plan) are untouched — so carry-over never
+ * creates/duplicates an execution item and never changes approval
+ * state. A separate, narrow function (not the general `updatePlanItem`
+ * patch) so this stays auditable and the shared update shape is
+ * unchanged.
+ */
+export async function movePlanItemToPlan(input: {
+  workspaceId: string;
+  itemId: string;
+  weeklyPlanId: string;
+}): Promise<WeeklyPlanItem> {
+  const supabase = createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("weekly_plan_items")
+    .update({ weekly_plan_id: input.weeklyPlanId } as never)
+    .eq("workspace_id", input.workspaceId)
+    .eq("id", input.itemId)
+    .select("*")
+    .single();
+  if (error || !data) throw fromPostgres(error, "Failed to move plan item.");
+  return toItem(data as unknown as WeeklyPlanItemRow);
 }
 
 /**

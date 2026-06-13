@@ -29,6 +29,9 @@ export interface PublishedTableRow {
   /** Founder-readable status label, e.g. "Published" / "Failed". */
   statusLabel: string;
   statusTone: PublishedRowTone;
+  /** Optional second line under the title — e.g. the operator-readable
+   *  failure reason on the Failed view. */
+  subtitle?: string | null;
   /** External permalink (preferred Open target). */
   permalink: string | null;
   /** Internal detail href, used when there is no external permalink. */
@@ -179,6 +182,11 @@ export function PublishedTable({
                     <div className="text-ink-900 font-medium truncate max-w-[22rem]">
                       {row.title?.trim() || "Untitled"}
                     </div>
+                    {row.subtitle ? (
+                      <div className="text-[11px] text-ink-600 mt-0.5 truncate max-w-[22rem]">
+                        {row.subtitle}
+                      </div>
+                    ) : null}
                     <div className="text-[11px] text-ink-500 mt-0.5 flex items-center gap-1.5 sm:hidden">
                       <PlatformChip platform={row.platform} />
                       {row.subreddit ? (

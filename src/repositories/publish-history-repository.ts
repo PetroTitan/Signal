@@ -178,6 +178,87 @@ export async function listRecentPublishes(
   return ((data ?? []) as unknown as PublishHistoryRow[]).map(toEntry);
 }
 
+// =====================================================================
+// A5 — server-paginated publish-history reads for the history views.
+//
+// publish_history is the durable, workspace-wide source of truth for
+// what actually published (or failed) — independent of which weekly
+// plan an item belonged to. These reads NEVER mutate rows; they add
+// no derived/fake history (a row exists iff the scheduler/manual path
+// recorded a real attempt). Title text is not stored here (only
+// title_hash), so callers hydrate titles separately from
+// execution_items — see hydrateExecutionItemTitles.
+// =====================================================================
+
+export interface PublishHistoryPageFilter {
+  /** Which outcomes to include, e.g. ["published"] or ["failed","blocked"]. */
+  outcomes: PublishHistoryRow["outcome"][];
+  /** Optional exact platform filter. */
+  platform?: string | null;
+  /** Optional case-insensitive search across platform / subreddit /
+   *  permalink / reason_code. Title is NOT searchable here — the table
+   *  text isn't stored in publish_history (only title_hash). */
+  query?: string | null;
+  /** Optional finished_at lower/upper bounds (ISO). */
+  sinceIso?: string | null;
+  untilIso?: string | null;
+}
+
+export interface PublishHistoryPage {
+  rows: PublishHistoryEntry[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
+export async function listPublishHistoryPage(
+  workspaceId: string,
+  filter: PublishHistoryPageFilter,
+  page = 1,
+  pageSize = 20,
+  db?: SupabaseClient,
+): Promise<PublishHistoryPage> {
+  const supabase = db ?? createSupabaseServerClient();
+  const size = Math.max(1, Math.min(100, Math.floor(pageSize)));
+  const safePage = Math.max(1, Math.floor(page) || 1);
+  const from = (safePage - 1) * size;
+  const to = from + size - 1;
+
+  let q = supabase
+    .from("publish_history")
+    .select("*", { count: "exact" })
+    .eq("workspace_id", workspaceId)
+    .in("outcome", filter.outcomes as never);
+
+  if (filter.platform) q = q.eq("platform", filter.platform);
+  if (filter.sinceIso) q = q.gte("finished_at", filter.sinceIso);
+  if (filter.untilIso) q = q.lte("finished_at", filter.untilIso);
+  const term = filter.query?.trim();
+  if (term) {
+    // Escape PostgREST `or` reserved chars; match across the text
+    // columns publish_history actually stores.
+    const safe = term.replace(/[,()*]/g, " ");
+    q = q.or(
+      `platform.ilike.%${safe}%,subreddit.ilike.%${safe}%,provider_permalink.ilike.%${safe}%,reason_code.ilike.%${safe}%`,
+    );
+  }
+
+  const { data, error, count } = await q
+    .order("finished_at", { ascending: false })
+    .range(from, to);
+  if (error) throw fromPostgres(error, "Failed to page publish history.");
+
+  const total = count ?? 0;
+  return {
+    rows: ((data ?? []) as unknown as PublishHistoryRow[]).map(toEntry),
+    total,
+    page: safePage,
+    pageSize: size,
+    totalPages: Math.max(1, Math.ceil(total / size)),
+  };
+}
+
 export async function getPublishHistoryForItem(
   workspaceId: string,
   executionItemId: string,
