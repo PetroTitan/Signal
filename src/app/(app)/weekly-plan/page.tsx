@@ -58,6 +58,13 @@ import {
 } from "@/core/scheduling/format-schedule-display";
 import { creativeReadinessBadge } from "@/repositories/weekly-plan-creative-repository";
 import { WorkflowTabs } from "@/components/dashboard/workflow-tabs";
+import { CalendarView } from "@/components/dashboard/calendar-view";
+import {
+  buildCalendarGrid,
+  parseCalendarAnchor,
+  parseCalendarMode,
+  type CalendarEvent,
+} from "@/core/dashboard/calendar-grid";
 import {
   PublishedTable,
   type PublishedTableRow,
@@ -564,6 +571,36 @@ export default async function WeeklyPlanPage({
     .map((v) => itemById.get(v.id))
     .filter((it): it is WeeklyPlanItem => Boolean(it));
 
+  // B1 — Calendar grid over genuinely-scheduled items only (status
+  // 'scheduled'), placed by their EFFECTIVE publish time (execution
+  // item when active, else editorial). Published/failed/terminal items
+  // are excluded by construction (they're not in scheduledViews).
+  const calendarMode = parseCalendarMode(searchParams?.mode);
+  const calendarAnchor = parseCalendarAnchor(searchParams?.anchor, serverNow);
+  const calendarEvents: CalendarEvent[] = scheduledViews
+    .map((v): CalendarEvent | null => {
+      const it = itemById.get(v.id);
+      const at = v.effectiveAt;
+      if (!it || !at) return null;
+      const exec = execByPlanItem.get(v.id) ?? null;
+      return {
+        id: v.id,
+        scheduledAt: at,
+        title: it.title,
+        platform: it.platform,
+        status: "scheduled",
+        href: exec ? `/execution/items/${exec.id}` : `/weekly-plan?focus=${v.id}`,
+      };
+    })
+    .filter((e): e is CalendarEvent => e !== null);
+  const calendarGrid = buildCalendarGrid({
+    events: calendarEvents,
+    timezone: workspaceTimezone,
+    anchor: calendarAnchor,
+    mode: calendarMode,
+    now: serverNow,
+  });
+
   // A5 — Published + Failed tabs read `publish_history` (the durable,
   // workspace-WIDE source of truth across ALL weeks), server-paginated.
   // We only run the query for the active history tab, so the other tabs
@@ -914,6 +951,22 @@ export default async function WeeklyPlanPage({
                   </div>
                 )}
               </>
+            ) : null}
+
+            {/* ---- Calendar tab — read-only scheduling grid ---- */}
+            {activeTab === "calendar" ? (
+              calendarEvents.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-ink-200 bg-ink-50/40 p-8 text-center text-sm text-ink-500">
+                  Nothing scheduled to show on the calendar yet.
+                </div>
+              ) : (
+                <CalendarView
+                  grid={calendarGrid}
+                  timezone={workspaceTimezone}
+                  basePath="/weekly-plan"
+                  baseParams={{ tab: "calendar" }}
+                />
+              )
             ) : null}
 
             {/* ---- Queue tab — work requiring an operator decision ---- */}

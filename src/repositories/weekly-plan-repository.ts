@@ -260,6 +260,80 @@ export async function listUnfinishedItemsFromOlderPlans(
   return ((data ?? []) as unknown as WeeklyPlanItemRow[]).map(toItem);
 }
 
+/**
+ * B3/B4 — cross-plan Content Library page: every plan item across ALL
+ * weeks/plans for the workspace, server-side filtered + searched +
+ * paginated. Source of truth only (weekly_plan_items); no duplication,
+ * no derived rows. Title/body search is server-side ilike — never a
+ * client full-table scan.
+ *
+ * Permalink search is intentionally NOT here (permalinks live in
+ * publish_history) — the Results view owns that via
+ * listPublishHistoryPage.
+ */
+export interface PlanItemPageFilter {
+  q?: string | null;
+  platform?: string | null;
+  status?: WeeklyPlanItemStatus | string | null;
+  accountId?: string | null;
+  productId?: string | null;
+  /** created_at bounds (ISO). */
+  sinceIso?: string | null;
+  untilIso?: string | null;
+}
+
+export interface PlanItemPage {
+  rows: WeeklyPlanItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
+export async function listPlanItemsPage(
+  workspaceId: string,
+  filter: PlanItemPageFilter,
+  page = 1,
+  pageSize = 20,
+): Promise<PlanItemPage> {
+  const supabase = createSupabaseServerClient();
+  const size = Math.max(1, Math.min(100, Math.floor(pageSize)));
+  const safePage = Math.max(1, Math.floor(page) || 1);
+  const from = (safePage - 1) * size;
+  const to = from + size - 1;
+
+  let q = supabase
+    .from("weekly_plan_items")
+    .select("*", { count: "exact" })
+    .eq("workspace_id", workspaceId);
+
+  if (filter.platform) q = q.eq("platform", filter.platform);
+  if (filter.status) q = q.eq("status", filter.status);
+  if (filter.accountId) q = q.eq("account_id", filter.accountId);
+  if (filter.productId) q = q.eq("product_id", filter.productId);
+  if (filter.sinceIso) q = q.gte("created_at", filter.sinceIso);
+  if (filter.untilIso) q = q.lte("created_at", filter.untilIso);
+  const term = filter.q?.trim();
+  if (term) {
+    const safe = term.replace(/[,()*]/g, " ");
+    q = q.or(`title.ilike.%${safe}%,body.ilike.%${safe}%,platform.ilike.%${safe}%`);
+  }
+
+  const { data, error, count } = await q
+    .order("created_at", { ascending: false })
+    .range(from, to);
+  if (error) throw fromPostgres(error, "Failed to page plan items.");
+
+  const total = count ?? 0;
+  return {
+    rows: ((data ?? []) as unknown as WeeklyPlanItemRow[]).map(toItem),
+    total,
+    page: safePage,
+    pageSize: size,
+    totalPages: Math.max(1, Math.ceil(total / size)),
+  };
+}
+
 export async function getPlanItemById(
   workspaceId: string,
   itemId: string,

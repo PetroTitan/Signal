@@ -30,6 +30,7 @@ import type { RiskLevel, WeeklyPlanItemStatus } from "@/lib/supabase/types";
 
 export type WorkflowTab =
   | "plan"
+  | "calendar"
   | "queue"
   | "scheduled"
   | "published"
@@ -54,6 +55,11 @@ export const WORKFLOW_TABS: readonly WorkflowTabMeta[] = [
     id: "plan",
     label: "Plan",
     hint: "Everything in flight this week, grouped by day.",
+  },
+  {
+    id: "calendar",
+    label: "Calendar",
+    hint: "Scheduled posts on a month / week grid. Times in your workspace timezone.",
   },
   {
     id: "queue",
