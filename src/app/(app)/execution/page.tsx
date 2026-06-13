@@ -5,6 +5,10 @@ import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { getActiveContract } from "@/repositories/weekly-contract-repository";
 import { listExecutionQueues } from "@/repositories/execution-queue-repository";
 import { EXECUTION_QUEUE_STATUS_LABELS } from "@/core/execution-engine";
+import { countExecutionItemsByStatus } from "@/repositories/execution-item-repository";
+import { listRecentPublishes } from "@/repositories/publish-history-repository";
+import { computeSchedulerHealth } from "@/core/publishing/scheduler-health";
+import { SchedulerHealthCard } from "@/components/publishing/scheduler-health-card";
 import { CreateQueueForm } from "./_create-queue-form";
 
 export const dynamic = "force-dynamic";
@@ -36,10 +40,26 @@ export default async function ExecutionIndexPage() {
     );
   }
 
-  const [contract, queues] = await Promise.all([
-    getActiveContract(membership.workspace.id),
-    listExecutionQueues(membership.workspace.id),
-  ]);
+  const workspaceId = membership.workspace.id;
+  const [contract, queues, scheduledCount, retryQueueCount, runningNowCount, recentPublishes] =
+    await Promise.all([
+      getActiveContract(workspaceId),
+      listExecutionQueues(workspaceId),
+      countExecutionItemsByStatus(workspaceId, ["scheduled"]),
+      countExecutionItemsByStatus(workspaceId, ["scheduled"], { minAttemptCount: 1 }),
+      countExecutionItemsByStatus(workspaceId, ["running"]),
+      listRecentPublishes(workspaceId, 1),
+    ]);
+
+  // B7 — heartbeat from real, observable state only.
+  const lastPublished = recentPublishes.find((p) => p.outcome === "published");
+  const schedulerHealth = computeSchedulerHealth({
+    scheduledCount,
+    retryQueueCount,
+    runningNowCount,
+    lastObservedPublishAtIso: lastPublished?.finishedAt ?? null,
+    now: new Date(),
+  });
 
   return (
     <>
@@ -49,6 +69,8 @@ export default async function ExecutionIndexPage() {
       />
 
       <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-4xl space-y-5">
+        <SchedulerHealthCard health={schedulerHealth} />
+
         <section className="rounded-2xl border border-ink-200 bg-white p-5">
           <h2 className="text-sm font-semibold text-ink-900">
             Active publishing scope

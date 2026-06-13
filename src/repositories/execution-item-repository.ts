@@ -179,23 +179,26 @@ export async function listExecutionItemsByPlanItemIds(
  * history table can show a human title + deep-link to the source
  * without an N+1 query.
  */
+export interface ExecutionItemDisplay {
+  title: string | null;
+  sourceEntityId: string | null;
+  accountId: string | null;
+  attemptCount: number | null;
+  metadata: Record<string, unknown>;
+}
+
 export async function hydrateExecutionItemDisplay(
   workspaceId: string,
   executionItemIds: string[],
   db?: SupabaseClient,
-): Promise<
-  Map<string, { title: string | null; sourceEntityId: string | null; accountId: string | null }>
-> {
-  const out = new Map<
-    string,
-    { title: string | null; sourceEntityId: string | null; accountId: string | null }
-  >();
+): Promise<Map<string, ExecutionItemDisplay>> {
+  const out = new Map<string, ExecutionItemDisplay>();
   const ids = Array.from(new Set(executionItemIds)).filter(Boolean);
   if (ids.length === 0) return out;
   const supabase = db ?? createSupabaseServerClient();
   const { data, error } = await supabase
     .from("execution_items")
-    .select("id, title, source_entity_id, account_id")
+    .select("id, title, source_entity_id, account_id, attempt_count, metadata")
     .eq("workspace_id", workspaceId)
     .in("id", ids);
   if (error)
@@ -205,14 +208,43 @@ export async function hydrateExecutionItemDisplay(
     title: string | null;
     source_entity_id: string | null;
     account_id: string | null;
+    attempt_count: number | null;
+    metadata: Record<string, unknown> | null;
   }>) {
     out.set(row.id, {
       title: row.title,
       sourceEntityId: row.source_entity_id,
       accountId: row.account_id,
+      attemptCount: row.attempt_count,
+      metadata: row.metadata ?? {},
     });
   }
   return out;
+}
+
+/**
+ * B7 — accurate count of execution items in given statuses (head
+ * count, not capped). `minAttemptCount` isolates the retry queue.
+ */
+export async function countExecutionItemsByStatus(
+  workspaceId: string,
+  statuses: string[],
+  opts?: { minAttemptCount?: number },
+  db?: SupabaseClient,
+): Promise<number> {
+  if (statuses.length === 0) return 0;
+  const supabase = db ?? createSupabaseServerClient();
+  let query = supabase
+    .from("execution_items")
+    .select("id", { count: "exact", head: true })
+    .eq("workspace_id", workspaceId)
+    .in("status", statuses);
+  if (typeof opts?.minAttemptCount === "number") {
+    query = query.gte("attempt_count", opts.minAttemptCount);
+  }
+  const { count, error } = await query;
+  if (error) throw fromPostgres(error, "Failed to count execution items.");
+  return count ?? 0;
 }
 
 /**

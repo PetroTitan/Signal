@@ -2566,6 +2566,88 @@ export async function duplicatePlanItemAction(
 }
 
 // =====================================================================
+// Phase B6 — adaptPlanItemForPlatformAction (reuse / cross-post)
+// =====================================================================
+//
+// Reuse an existing post on a DIFFERENT platform: clone the content
+// into a NEW DRAFT targeting the chosen platform. The original is
+// untouched; the clone is status='draft' so it MUST go through the
+// normal approval flow — no auto-publish, no approval bypass. The
+// platform_publish_intent (the source platform's approved shape) is
+// deliberately NOT copied: the operator re-shapes + re-approves for
+// the new platform via the existing compose/preview/adapter surface.
+// Schedule + creative are also cleared (operator chooses fresh).
+const ADAPTABLE_TARGET_PLATFORMS = new Set([
+  "bluesky",
+  "x",
+  "linkedin",
+  "threads",
+  "devto",
+  "hashnode",
+  "telegram",
+  "reddit",
+]);
+
+export async function adaptPlanItemForPlatformAction(
+  _prev: DuplicatePlanItemResult,
+  formData: FormData,
+): Promise<DuplicatePlanItemResult> {
+  const sourceId = String(formData.get("item_id") ?? "").trim();
+  const targetPlatform = String(formData.get("target_platform") ?? "").trim();
+  if (!sourceId) return actionFail("Missing item id.");
+  if (!ADAPTABLE_TARGET_PLATFORMS.has(targetPlatform)) {
+    return actionFail("Choose a supported target platform.");
+  }
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    const source = await getPlanItemById(workspaceId, sourceId);
+    if (!source) return actionFail("Source item not found.");
+
+    const cloned = await createPlanItem({
+      workspaceId,
+      weeklyPlanId: source.weeklyPlanId,
+      title: source.title,
+      body: source.body,
+      platform: targetPlatform,
+      // Reset content_type to the platform default; the compose sheet's
+      // platform-native adapter re-derives the shape on open.
+      contentType: "post",
+      productId: source.productId,
+      // Account is platform-specific; clear so the operator picks an
+      // identity for the target platform.
+      accountId: null,
+      status: "draft",
+    });
+
+    await logActivityBestEffort({
+      workspaceId,
+      eventType: "weekly_plan_item.adapted_for_platform",
+      entityType: "weekly_plan_item",
+      entityId: cloned.id,
+      title: `Adapted "${source.title ?? "Untitled"}" for ${targetPlatform}`,
+      description: `Created as a draft for ${targetPlatform} from a ${source.platform ?? "—"} post. Re-approve before publishing.`,
+    });
+
+    revalidatePath("/weekly-plan");
+    revalidatePath("/library");
+    return actionOk({ itemId: cloned.id });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : "Could not adapt plan item.";
+    console.error("[adaptPlanItemForPlatformAction] failed", error);
+    return actionFail(message);
+  }
+}
+
+// =====================================================================
 // Phase F2.9 — composeUpsertDraftAction
 // =====================================================================
 //

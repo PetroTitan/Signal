@@ -39,6 +39,8 @@ const groups: NavGroup[] = [
       { href: "/dashboard", label: "Dashboard", icon: DashboardIcon },
       { href: "/weekly-plan", label: "Weekly plan", icon: PlanIcon },
       { href: "/execution", label: "Publishing", icon: SchedulerIcon },
+      { href: "/library", label: "Content library", icon: BacklogIcon },
+      { href: "/results", label: "Results", icon: InsightIcon },
     ],
   },
   {
