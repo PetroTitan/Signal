@@ -47,8 +47,21 @@ describe("isPublicPath — existing public paths still public (regression)", () 
     ["/api/mcp/tools", true],
     ["/api/scheduler", true],
     ["/api/scheduler/tick", true],
+    // C2.1 — scheduled digest cron route shares the scheduler's
+    // secret-gated public-path convention.
+    ["/api/notifications", true],
+    ["/api/notifications/digest", true],
   ])("isPublicPath(%s) === %s", (path, expected) => {
     expect(isPublicPath(path)).toBe(expected);
+  });
+});
+
+describe("isPublicPath — notification digest cron access", () => {
+  it("treats /api/notifications/digest as public (route enforces the cron secret)", () => {
+    expect(isPublicPath("/api/notifications/digest")).toBe(true);
+  });
+  it("does NOT treat a similar-prefix path as public", () => {
+    expect(isPublicPath("/api/notificationss")).toBe(false);
   });
 });
 

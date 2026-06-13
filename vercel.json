@@ -3,6 +3,14 @@
     {
       "path": "/api/scheduler/tick",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/notifications/digest?cadence=daily",
+      "schedule": "0 13 * * *"
+    },
+    {
+      "path": "/api/notifications/digest?cadence=weekly",
+      "schedule": "0 13 * * 1"
     }
   ]
 }

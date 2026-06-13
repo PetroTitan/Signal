@@ -147,6 +147,58 @@ export function buildOperationalDigest(
   return `${header}\n${lines.map((l) => `• ${l}`).join("\n")}`;
 }
 
+// =====================================================================
+// Scheduled digest (C2.1) — pure content builder over the notification
+// feed (the source of truth that already aggregates all 8 types).
+// =====================================================================
+
+/**
+ * Human label per notification type. Order is significant — most
+ * operationally-urgent first.
+ */
+const SCHEDULED_DIGEST_ORDER: { type: NotificationType; label: string }[] = [
+  { type: "retry_exhausted", label: "retries exhausted" },
+  { type: "publish_failed", label: "publish failed" },
+  { type: "publish_blocked", label: "blocked" },
+  { type: "stale_claim", label: "started but never finished" },
+  { type: "connection_expiring", label: "connection(s) expiring" },
+  { type: "invitation_received", label: "invitation(s) received" },
+  { type: "invitation_accepted", label: "invitation(s) accepted" },
+  { type: "ownership_transferred", label: "ownership transferred" },
+];
+
+export interface ScheduledDigestInput {
+  /** Counts per notification type — REAL unread rows only. */
+  unreadByType: Partial<Record<NotificationType, number>>;
+  /** Total unread (sum across types). */
+  total: number;
+  workspaceName?: string | null;
+  period?: "daily" | "weekly";
+}
+
+/**
+ * Build the scheduled digest text from the recipient's REAL unread
+ * notifications, grouped by type. Returns "" when there is nothing
+ * unread, so the delivery job can skip an empty digest. No fabricated
+ * counts, no estimated metrics, no AI-generated prose — every line maps
+ * to actual unread rows in the notifications table.
+ */
+export function buildScheduledDigest(input: ScheduledDigestInput): string {
+  const lines: string[] = [];
+  for (const { type, label } of SCHEDULED_DIGEST_ORDER) {
+    const n = input.unreadByType[type] ?? 0;
+    if (n > 0) lines.push(`• ${n} ${label}`);
+  }
+  if (lines.length === 0 || input.total <= 0) return "";
+  const name = input.workspaceName?.trim();
+  const header =
+    `Signal ${input.period ?? ""} digest${name ? ` — ${name}` : ""} · ${input.total} unread`.replace(
+      /\s+·/,
+      " ·",
+    );
+  return `${header.trim()}\n${lines.join("\n")}`;
+}
+
 /**
  * Is a connection within the operator's warning window? Pure check
  * shared by the sync service + UI.

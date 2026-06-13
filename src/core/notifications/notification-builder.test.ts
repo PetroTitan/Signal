@@ -5,6 +5,7 @@ import {
   buildFailedNotification,
   buildInvitationAcceptedNotification,
   buildOperationalDigest,
+  buildScheduledDigest,
   buildStaleClaimNotification,
   isConnectionExpiringSoon,
 } from "./notification-builder";
@@ -86,6 +87,40 @@ describe("buildOperationalDigest", () => {
     expect(text).toMatch(/2 connection/);
     expect(text).not.toMatch(/blocked/);
     expect(text).not.toMatch(/impression|reach|engagement/i);
+  });
+});
+
+describe("buildScheduledDigest", () => {
+  it("returns empty string when there are no unread notifications", () => {
+    expect(buildScheduledDigest({ unreadByType: {}, total: 0 })).toBe("");
+    expect(buildScheduledDigest({ unreadByType: { publish_failed: 0 }, total: 0 })).toBe("");
+  });
+
+  it("summarizes only the real unread types, with the total in the header", () => {
+    const text = buildScheduledDigest({
+      unreadByType: { publish_failed: 2, connection_expiring: 1 },
+      total: 3,
+      workspaceName: "Acme",
+      period: "daily",
+    });
+    expect(text).toMatch(/Acme/);
+    expect(text).toMatch(/3 unread/);
+    expect(text).toMatch(/daily/);
+    expect(text).toMatch(/2 publish failed/);
+    expect(text).toMatch(/1 connection/);
+    // Types with no unread rows are omitted.
+    expect(text).not.toMatch(/blocked|invitation|ownership/);
+    // No fabricated engagement metrics, no AI prose.
+    expect(text).not.toMatch(/impression|reach|engagement|estimated/i);
+  });
+
+  it("covers team-event types (invitation/ownership) when present", () => {
+    const text = buildScheduledDigest({
+      unreadByType: { invitation_received: 1, ownership_transferred: 1 },
+      total: 2,
+    });
+    expect(text).toMatch(/1 invitation\(s\) received/);
+    expect(text).toMatch(/ownership transferred/);
   });
 });
 
