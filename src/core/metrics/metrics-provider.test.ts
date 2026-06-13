@@ -2,32 +2,55 @@ import { describe, expect, it } from "vitest";
 import {
   coerceCount,
   describeMetrics,
+  engagementCount,
   metricCapability,
   metricSource,
+  unavailableReason,
   unavailableResult,
   unsupportedResult,
 } from "./metrics-provider";
 
-describe("metricCapability", () => {
-  it("bluesky + reddit are verified (public reads)", () => {
+describe("metricCapability (Phase D.1 audit)", () => {
+  it("bluesky + reddit + devto are verified (official public reads)", () => {
     expect(metricCapability("bluesky")).toBe("verified");
     expect(metricCapability("reddit")).toBe("verified");
+    expect(metricCapability("devto")).toBe("verified");
   });
-  it("x is unavailable (tier-gated)", () => {
+  it("x / hashnode / linkedin are unavailable (real API exists but not reachable here)", () => {
     expect(metricCapability("x")).toBe("unavailable");
+    expect(metricCapability("hashnode")).toBe("unavailable");
+    expect(metricCapability("linkedin")).toBe("unavailable");
   });
-  it("everything else is unsupported", () => {
-    for (const p of ["linkedin", "threads", "instagram", "youtube", "telegram", "devto", "hashnode", "unknown"]) {
+  it("telegram / threads / instagram / youtube / unknown are unsupported", () => {
+    for (const p of ["telegram", "threads", "instagram", "youtube", "unknown"]) {
       expect(metricCapability(p)).toBe("unsupported");
     }
   });
 });
 
 describe("metricSource", () => {
-  it("labels the verified sources", () => {
+  it("labels the verified + unavailable sources", () => {
     expect(metricSource("bluesky")).toBe("bluesky_getposts");
     expect(metricSource("reddit")).toBe("reddit_info");
+    expect(metricSource("devto")).toBe("devto_articles");
     expect(metricSource("x")).toBe("x_api_v2");
+  });
+});
+
+describe("unavailableReason", () => {
+  it("gives an honest, platform-specific explanation (no estimate)", () => {
+    expect(unavailableReason("x")).toMatch(/tier/i);
+    expect(unavailableReason("hashnode")).toMatch(/graphql/i);
+    expect(unavailableReason("linkedin")).toMatch(/marketing api/i);
+  });
+});
+
+describe("engagementCount", () => {
+  it("sums only the verified interaction counts present (views excluded)", () => {
+    expect(engagementCount({ likes: 3, reposts: 1, replies: 2, quotes: 1 })).toBe(7);
+    expect(engagementCount({ score: 12, comments: 4 })).toBe(16);
+    expect(engagementCount({ reactions: 5, comments: 2, views: 999 })).toBe(7);
+    expect(engagementCount({})).toBe(0);
   });
 });
 
@@ -65,6 +88,9 @@ describe("describeMetrics", () => {
     expect(describeMetrics({ status: "connected", metrics: { score: 12, comments: 4 } })).toBe(
       "score 12 · 4 comments",
     );
+    expect(
+      describeMetrics({ status: "connected", metrics: { reactions: 7, comments: 2 } }),
+    ).toBe("7 reactions · 2 comments");
   });
   it("uses honest copy for non-connected states (never fake values)", () => {
     expect(describeMetrics({ status: "unsupported", metrics: {} })).toMatch(/not supported/i);

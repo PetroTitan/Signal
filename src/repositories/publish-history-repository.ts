@@ -259,6 +259,54 @@ export async function listPublishHistoryPage(
   };
 }
 
+/**
+ * D.1E — flat list of published posts for Results Intelligence. Broader
+ * than the paged history view (up to `limit`, optionally since a date),
+ * minimal columns. Published outcomes only — the real source of truth.
+ */
+export interface PublishedResultRow {
+  id: string;
+  executionItemId: string;
+  platform: string;
+  providerPostId: string | null;
+  providerPermalink: string | null;
+  finishedAt: string;
+}
+
+export async function listPublishedForResults(
+  workspaceId: string,
+  opts: { sinceIso?: string | null; limit?: number } = {},
+  db?: SupabaseClient,
+): Promise<PublishedResultRow[]> {
+  const supabase = db ?? createSupabaseServerClient();
+  const limit = Math.max(1, Math.min(1000, opts.limit ?? 500));
+  let q = supabase
+    .from("publish_history")
+    .select("id, execution_item_id, platform, provider_post_id, provider_permalink, finished_at")
+    .eq("workspace_id", workspaceId)
+    .eq("outcome", "published");
+  if (opts.sinceIso) q = q.gte("finished_at", opts.sinceIso);
+  const { data, error } = await q
+    .order("finished_at", { ascending: false })
+    .limit(limit);
+  if (error) throw fromPostgres(error, "Failed to list published results.");
+  return ((data ?? []) as Array<{
+    id: string;
+    execution_item_id: string;
+    platform: string;
+    provider_post_id: string | null;
+    provider_permalink: string | null;
+    finished_at: string;
+  }>).map((r) => ({
+    id: r.id,
+    executionItemId: r.execution_item_id,
+    platform: r.platform,
+    providerPostId: r.provider_post_id,
+    providerPermalink: r.provider_permalink,
+    finishedAt: r.finished_at,
+  }));
+}
+
 export async function getPublishHistoryById(
   workspaceId: string,
   id: string,

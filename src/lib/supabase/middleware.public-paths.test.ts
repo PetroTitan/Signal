@@ -51,6 +51,9 @@ describe("isPublicPath — existing public paths still public (regression)", () 
     // secret-gated public-path convention.
     ["/api/notifications", true],
     ["/api/notifications/digest", true],
+    // D.1G — metrics refresh cron route, same convention.
+    ["/api/metrics", true],
+    ["/api/metrics/refresh", true],
   ])("isPublicPath(%s) === %s", (path, expected) => {
     expect(isPublicPath(path)).toBe(expected);
   });
@@ -62,6 +65,18 @@ describe("isPublicPath — notification digest cron access", () => {
   });
   it("does NOT treat a similar-prefix path as public", () => {
     expect(isPublicPath("/api/notificationss")).toBe(false);
+  });
+});
+
+describe("isPublicPath — metrics refresh cron access", () => {
+  it("treats /api/metrics/refresh as public (route enforces the cron secret)", () => {
+    expect(isPublicPath("/api/metrics/refresh")).toBe(true);
+  });
+  it("keeps the session-gated results export private (NOT public)", () => {
+    expect(isPublicPath("/api/results/export")).toBe(false);
+  });
+  it("does NOT treat a similar-prefix path as public", () => {
+    expect(isPublicPath("/api/metricss")).toBe(false);
   });
 });
 
