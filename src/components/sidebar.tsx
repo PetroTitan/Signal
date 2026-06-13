@@ -15,6 +15,7 @@ import {
   SettingsIcon,
   BacklogIcon,
   InsightIcon,
+  BellIcon,
 } from "./icons";
 import { BrandMark } from "./brand-mark";
 
@@ -41,6 +42,7 @@ const groups: NavGroup[] = [
       { href: "/execution", label: "Publishing", icon: SchedulerIcon },
       { href: "/library", label: "Content library", icon: BacklogIcon },
       { href: "/results", label: "Results", icon: InsightIcon },
+      { href: "/notifications", label: "Notifications", icon: BellIcon },
     ],
   },
   {
@@ -74,6 +76,7 @@ function isPathInGroup(pathname: string, group: NavGroup): boolean {
 export function Sidebar() {
   const pathname = usePathname();
   const session = useMaybeWorkspaceSession();
+  const unreadCount = session?.unreadNotifications ?? 0;
 
   // Advanced group collapsed by default; auto-open when the active route lives inside it.
   const advancedGroup = groups.find((g) => g.advanced);
@@ -185,7 +188,12 @@ export function Sidebar() {
                               : "text-ink-400 group-hover:text-ink-600"
                           }`}
                         />
-                        {label}
+                        <span className="flex-1">{label}</span>
+                        {href === "/notifications" && unreadCount > 0 ? (
+                          <span className="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-signal-600 px-1.5 text-[10px] font-semibold leading-5 text-white">
+                            {unreadCount > 99 ? "99+" : unreadCount}
+                          </span>
+                        ) : null}
                       </Link>
                     </li>
                   );

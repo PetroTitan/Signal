@@ -1530,9 +1530,181 @@ export interface McpToolCallInsert {
   error_summary?: string | null;
 }
 
+// =====================================================================
+// Phase C — Teams / Notifications / Metrics rows
+// =====================================================================
+
+export type InvitationStatus = "pending" | "accepted" | "expired" | "revoked";
+
+export interface WorkspaceInvitationRow {
+  id: string;
+  workspace_id: string;
+  email: string;
+  role: WorkspaceRole;
+  status: InvitationStatus;
+  token_hash: string;
+  invited_by: string | null;
+  accepted_by: string | null;
+  expires_at: string;
+  created_at: string;
+  accepted_at: string | null;
+}
+export interface WorkspaceInvitationInsert {
+  id?: string;
+  workspace_id: string;
+  email: string;
+  role?: WorkspaceRole;
+  status?: InvitationStatus;
+  token_hash: string;
+  invited_by?: string | null;
+  expires_at: string;
+}
+export interface WorkspaceInvitationUpdate {
+  status?: InvitationStatus;
+  accepted_by?: string | null;
+  accepted_at?: string | null;
+}
+
+export type NotificationType =
+  | "publish_failed"
+  | "publish_blocked"
+  | "retry_exhausted"
+  | "stale_claim"
+  | "connection_expiring"
+  | "invitation_received"
+  | "invitation_accepted"
+  | "ownership_transferred";
+export type NotificationStatus = "unread" | "read" | "archived";
+
+export interface NotificationRow {
+  id: string;
+  workspace_id: string;
+  user_id: string;
+  type: NotificationType;
+  status: NotificationStatus;
+  title: string;
+  body: string | null;
+  entity_type: string | null;
+  entity_id: string | null;
+  dedupe_key: string | null;
+  created_at: string;
+  read_at: string | null;
+}
+export interface NotificationInsert {
+  id?: string;
+  workspace_id: string;
+  user_id: string;
+  type: NotificationType;
+  status?: NotificationStatus;
+  title: string;
+  body?: string | null;
+  entity_type?: string | null;
+  entity_id?: string | null;
+  dedupe_key?: string | null;
+}
+export interface NotificationUpdate {
+  status?: NotificationStatus;
+  read_at?: string | null;
+}
+
+export type DigestCadence = "daily" | "weekly" | "disabled";
+
+export interface NotificationPreferencesRow {
+  workspace_id: string;
+  user_id: string;
+  email_enabled: boolean;
+  telegram_enabled: boolean;
+  digest_cadence: DigestCadence;
+  connection_warning_days: number;
+  updated_at: string;
+}
+export interface NotificationPreferencesInsert {
+  workspace_id: string;
+  user_id: string;
+  email_enabled?: boolean;
+  telegram_enabled?: boolean;
+  digest_cadence?: DigestCadence;
+  connection_warning_days?: number;
+}
+export interface NotificationPreferencesUpdate {
+  email_enabled?: boolean;
+  telegram_enabled?: boolean;
+  digest_cadence?: DigestCadence;
+  connection_warning_days?: number;
+  updated_at?: string;
+}
+
+export type PostMetricsStatus =
+  | "connected"
+  | "unavailable"
+  | "unsupported"
+  | "pending";
+
+export interface PostMetricsRow {
+  id: string;
+  workspace_id: string;
+  publish_history_id: string;
+  platform: string;
+  source: string;
+  external_post_id: string | null;
+  status: PostMetricsStatus;
+  metrics: Record<string, unknown>;
+  fetched_at: string | null;
+  next_refresh_at: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export interface PostMetricsInsert {
+  id?: string;
+  workspace_id: string;
+  publish_history_id: string;
+  platform: string;
+  source: string;
+  external_post_id?: string | null;
+  status?: PostMetricsStatus;
+  metrics?: Record<string, unknown>;
+  fetched_at?: string | null;
+  next_refresh_at?: string | null;
+  error?: string | null;
+}
+export interface PostMetricsUpdate {
+  external_post_id?: string | null;
+  status?: PostMetricsStatus;
+  metrics?: Record<string, unknown>;
+  fetched_at?: string | null;
+  next_refresh_at?: string | null;
+  error?: string | null;
+  updated_at?: string;
+}
+
 export interface Database {
   public: {
     Tables: {
+      workspace_invitations: {
+        Row: WorkspaceInvitationRow;
+        Insert: WorkspaceInvitationInsert;
+        Update: WorkspaceInvitationUpdate;
+        Relationships: [];
+      };
+      notifications: {
+        Row: NotificationRow;
+        Insert: NotificationInsert;
+        Update: NotificationUpdate;
+        Relationships: [];
+      };
+      notification_preferences: {
+        Row: NotificationPreferencesRow;
+        Insert: NotificationPreferencesInsert;
+        Update: NotificationPreferencesUpdate;
+        Relationships: [];
+      };
+      post_metrics: {
+        Row: PostMetricsRow;
+        Insert: PostMetricsInsert;
+        Update: PostMetricsUpdate;
+        Relationships: [];
+      };
       workspaces: {
         Row: WorkspaceRow;
         Insert: WorkspaceInsert;

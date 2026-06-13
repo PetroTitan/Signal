@@ -4,6 +4,14 @@ import { isSupabaseConfigured } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { listPublishHistoryPage } from "@/repositories/publish-history-repository";
 import { hydrateExecutionItemDisplay } from "@/repositories/execution-item-repository";
+import { listPostMetricsForPublishHistory } from "@/repositories/post-metrics-repository";
+import {
+  describeMetrics,
+  metricCapability,
+  type VerifiedMetrics,
+} from "@/core/metrics/metrics-provider";
+import type { PostMetricsStatus } from "@/lib/supabase/types";
+import { MetricsRefreshButton } from "./_metrics-refresh-button";
 import { listAccounts } from "@/repositories/account-repository";
 import { PlatformChip } from "@/components/publishing/platform-chip";
 import { parsePageParam, parseSearchQuery } from "@/core/dashboard/workflow-filters";
@@ -67,16 +75,56 @@ export default async function ResultsPage({
     page,
     20,
   );
-  const [display, accounts] = await Promise.all([
+  const [display, accounts, metricsCache] = await Promise.all([
     hydrateExecutionItemDisplay(
       workspaceId,
       result.rows.map((r) => r.executionItemId),
     ),
     listAccounts(workspaceId),
+    // C3 — verified metrics cache for this page (read-only; never faked).
+    listPostMetricsForPublishHistory(
+      workspaceId,
+      result.rows.map((r) => r.id),
+    ),
   ]);
   const accountLabel = new Map(
     accounts.map((a) => [a.id, a.displayName || a.handle || a.platform] as const),
   );
+
+  // Per-row metrics view: a cached verified record when present,
+  // otherwise the platform capability ('pending' for verifiable
+  // platforms not yet fetched, 'unavailable'/'unsupported' otherwise).
+  const metricsView = new Map<
+    string,
+    { status: PostMetricsStatus; text: string; canRefresh: boolean }
+  >();
+  for (const r of result.rows) {
+    const cached = metricsCache.get(r.id);
+    const capability = metricCapability(r.platform);
+    const canRefresh = capability === "verified";
+    if (cached) {
+      metricsView.set(r.id, {
+        status: cached.status,
+        text: describeMetrics({
+          status: cached.status,
+          metrics: cached.metrics as VerifiedMetrics,
+        }),
+        canRefresh,
+      });
+    } else {
+      const status: PostMetricsStatus =
+        capability === "verified"
+          ? "pending"
+          : capability === "unavailable"
+            ? "unavailable"
+            : "unsupported";
+      metricsView.set(r.id, {
+        status,
+        text: describeMetrics({ status, metrics: {} }),
+        canRefresh,
+      });
+    }
+  }
 
   const records: ResultRecord[] = result.rows.map((r) => {
     const d = display.get(r.executionItemId);
@@ -170,18 +218,25 @@ export default async function ResultsPage({
                       {r.identityLabel ? <span>· {r.identityLabel}</span> : null}
                       <span>· {r.mode === "manual" ? "manual" : "auto"}</span>
                       <span>· took {formatPublishDuration(r.publishDurationMs)}</span>
-                      {/* B5 metrics extension point — honest empty state. */}
-                      <span className="text-ink-400">
-                        ·{" "}
-                        {r.metricsStatus === "connected" && r.metrics
-                          ? [
-                              r.metrics.impressions != null ? `${r.metrics.impressions} views` : null,
-                              r.metrics.likes != null ? `${r.metrics.likes} likes` : null,
-                            ]
-                              .filter(Boolean)
-                              .join(" · ") || "metrics connected"
-                          : "Metrics not yet connected"}
-                      </span>
+                      {/* C3 — verified metrics only (or an honest state). */}
+                      {(() => {
+                        const mv = metricsView.get(r.id);
+                        if (!mv) return null;
+                        const connected = mv.status === "connected";
+                        return (
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className={connected ? "text-ink-600" : "text-ink-400"}>
+                              · {mv.text}
+                            </span>
+                            {mv.canRefresh ? (
+                              <>
+                                <span className="text-ink-300">·</span>
+                                <MetricsRefreshButton publishHistoryId={r.id} />
+                              </>
+                            ) : null}
+                          </span>
+                        );
+                      })()}
                     </div>
                     {r.operatorNotes ? (
                       <p className="text-[11px] text-ink-600 mt-1 line-clamp-2">
