@@ -30,18 +30,22 @@ export async function refreshPostMetrics(input: {
     permalink: input.permalink,
   });
 
-  const nextRefreshAt =
-    result.status === "connected"
-      ? new Date(Date.now() + CONNECTED_REFRESH_HOURS * 60 * 60 * 1000).toISOString()
-      : null;
+  // Connected → eligible to re-fetch after the cooldown. A non-connected
+  // fetch that PRESERVES prior verified data should also be retried, so
+  // we still pass a next_refresh_at; persistRefreshedMetrics decides
+  // whether it lands on a connected (or preserved-connected) row.
+  const nextRefreshAt = new Date(
+    Date.now() + CONNECTED_REFRESH_HOURS * 60 * 60 * 1000,
+  ).toISOString();
 
   // Persist best-effort — a cache write failure must not surface as a
-  // page error; the fetched result is still returned to the caller.
+  // page error; the fetched result is still returned to the caller. The
+  // persist layer never overwrites verified counts with empties.
   try {
-    const { upsertPostMetrics } = await import(
+    const { persistRefreshedMetrics } = await import(
       "@/repositories/post-metrics-repository"
     );
-    await upsertPostMetrics({
+    await persistRefreshedMetrics({
       workspaceId: input.workspaceId,
       publishHistoryId: input.publishHistoryId,
       platform: input.platform,

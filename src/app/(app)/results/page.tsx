@@ -20,8 +20,30 @@ import {
   formatPublishDuration,
   type ResultRecord,
 } from "@/core/publishing/results-view";
+import { loadResultPoints } from "@/core/results/load-result-points.server";
+import { computeResultsIntelligence } from "@/core/results/results-intelligence";
+import {
+  ResultsIntelligencePanel,
+  type PlatformStatusSummary,
+} from "./_intelligence";
 
 export const dynamic = "force-dynamic";
+
+/** Roll up per-platform metrics status from the assembled points. */
+function summarizeMetricsStatus(
+  points: Awaited<ReturnType<typeof loadResultPoints>>,
+): PlatformStatusSummary[] {
+  const map = new Map<string, PlatformStatusSummary>();
+  for (const p of points) {
+    const s =
+      map.get(p.platform) ??
+      { platform: p.platform, total: 0, connected: 0, pending: 0, unavailable: 0, unsupported: 0 };
+    s.total += 1;
+    s[p.metricsStatus] += 1;
+    map.set(p.platform, s);
+  }
+  return Array.from(map.values()).sort((a, b) => b.total - a.total || a.platform.localeCompare(b.platform));
+}
 
 function fmtDateTime(iso: string): string {
   const d = new Date(iso);
@@ -126,6 +148,16 @@ export default async function ResultsPage({
     }
   }
 
+  // D.1E/F — Results Intelligence over a broader window (verified data
+  // only). Independent of the paged list above; never blocks it.
+  const intelSinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+  const points = await loadResultPoints(workspaceId, {
+    sinceIso: intelSinceIso,
+    limit: 500,
+  });
+  const intel = computeResultsIntelligence(points);
+  const statusSummary = summarizeMetricsStatus(points);
+
   const records: ResultRecord[] = result.rows.map((r) => {
     const d = display.get(r.executionItemId);
     const notes =
@@ -172,7 +204,9 @@ export default async function ResultsPage({
         title="Results"
         description="What actually went out. Read from publish history — real permalinks, timings, and outcomes only."
       />
-      <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-5xl space-y-4">
+      <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-5xl space-y-6">
+        <ResultsIntelligencePanel intel={intel} statusSummary={statusSummary} />
+
         <form method="get" action="/results" className="flex items-center gap-2">
           <input
             type="search"
@@ -293,8 +327,10 @@ export default async function ResultsPage({
         </section>
 
         <p className="text-[11px] text-ink-500 leading-relaxed">
-          Metrics are intentionally empty until a verified provider source is
-          connected — Signal never estimates engagement or invents reach.
+          Every metric above comes from an official provider API or public
+          endpoint. Where a platform can&apos;t expose a metric it&apos;s shown as
+          Unavailable or Unsupported — Signal never estimates engagement or
+          invents reach.
         </p>
       </div>
     </>

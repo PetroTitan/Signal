@@ -40,6 +40,11 @@ const PUBLIC_PATH_PREFIXES = [
   // route handler enforces the secret; the middleware must not redirect
   // to /login. Only /api/notifications/digest exists under this prefix.
   "/api/notifications",
+  // D.1G: metrics refresh is triggered by Vercel Cron / curl with the
+  // same shared secret as the scheduler tick. The route handler enforces
+  // the secret; the middleware must not redirect to /login. Only
+  // /api/metrics/refresh exists under this prefix.
+  "/api/metrics",
   // Phase F9 — OAuth callback path. The OAuth handshake has its own
   // security model:
   //   - PKCE code_verifier persisted server-side at /start; the

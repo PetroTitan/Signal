@@ -22,6 +22,7 @@ import {
   coerceCount,
   metricCapability,
   metricSource,
+  unavailableReason,
   unavailableResult,
   unsupportedResult,
   type MetricsResult,
@@ -29,6 +30,7 @@ import {
 } from "./metrics-provider";
 
 const BLUESKY_PUBLIC_APPVIEW = "https://public.api.bsky.app";
+const DEVTO_API_BASE = "https://dev.to/api";
 const METRICS_UA = "SignalPublishing/1.0 (metrics; +https://signal.app)";
 
 export interface FetchMetricsInput {
@@ -48,13 +50,14 @@ export async function fetchVerifiedMetrics(
     return unavailableResult(
       input.platform,
       input.externalPostId,
-      "Metrics require an elevated API tier for this platform.",
+      unavailableReason(input.platform),
     );
   }
   // capability === "verified"
   try {
     if (input.platform === "bluesky") return await fetchBlueskyMetrics(input.externalPostId);
     if (input.platform === "reddit") return await fetchRedditMetrics(input.permalink);
+    if (input.platform === "devto") return await fetchDevtoMetrics(input.externalPostId);
     return unsupportedResult(input.platform);
   } catch (err) {
     return unavailableResult(
@@ -133,4 +136,44 @@ async function fetchRedditMetrics(permalink: string | null): Promise<MetricsResu
     comments: coerceCount(data.num_comments),
   };
   return { status: "connected", source, externalPostId: data.name ?? permalink, metrics };
+}
+
+/**
+ * dev.to public article endpoint (no auth):
+ *   GET https://dev.to/api/articles/{id}
+ *   → public_reactions_count + comments_count.
+ * `page_views_count` is author-only (requires the API key) and is NOT
+ * exposed publicly, so we never surface a view count here rather than
+ * fabricate one. The article id is the provider_post_id the publisher
+ * stored at publish time.
+ */
+async function fetchDevtoMetrics(articleId: string | null): Promise<MetricsResult> {
+  const source = metricSource("devto");
+  if (!articleId || !/^\d+$/.test(articleId.trim())) {
+    return { status: "unavailable", source, externalPostId: articleId, metrics: {}, error: "missing article id" };
+  }
+  let resp: Response;
+  try {
+    resp = await fetchWithTimeout(`${DEVTO_API_BASE}/articles/${articleId.trim()}`, {
+      method: "GET",
+      headers: { "User-Agent": METRICS_UA, Accept: "application/json" },
+      timeoutMs: 15_000,
+    });
+  } catch (err) {
+    if (isTimeoutError(err)) throw new Error("dev.to metrics timed out");
+    throw err;
+  }
+  if (!resp.ok) {
+    return { status: "unavailable", source, externalPostId: articleId, metrics: {}, error: `devto ${resp.status}` };
+  }
+  const json = (await resp.json()) as {
+    public_reactions_count?: number;
+    positive_reactions_count?: number;
+    comments_count?: number;
+  };
+  const metrics: VerifiedMetrics = {
+    reactions: coerceCount(json.public_reactions_count ?? json.positive_reactions_count),
+    comments: coerceCount(json.comments_count),
+  };
+  return { status: "connected", source, externalPostId: articleId, metrics };
 }

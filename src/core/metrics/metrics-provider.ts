@@ -19,23 +19,37 @@ import type { PostMetricsStatus } from "@/lib/supabase/types";
 export type MetricCapability = "verified" | "unavailable" | "unsupported";
 
 /**
- * Per-platform capability:
+ * Per-platform capability (Phase D.1 audit). Only platforms whose
+ * OFFICIAL API/endpoint returns real counts are 'verified':
  *   - bluesky: PUBLIC app-view getPosts → like/repost/reply/quote counts.
  *   - reddit:  PUBLIC permalink .json → score + num_comments.
- *   - x:       requires elevated/paid API tier → 'unavailable'.
- *   - everything else: not read by Signal → 'unsupported'.
+ *   - devto:   PUBLIC articles/{id} → public reactions + comments.
+ *   - x:        requires elevated/paid API tier → 'unavailable'.
+ *   - hashnode: analytics live behind a GraphQL query not integrated yet
+ *               → 'unavailable' (publishing IS supported).
+ *   - linkedin: post analytics require approved Marketing API access
+ *               → 'unavailable' (publishing IS supported).
+ *   - telegram: Bot API exposes no post view/reaction counts →
+ *               'unsupported'.
+ *   - threads/instagram/youtube: no publisher + no metrics read →
+ *               'unsupported'.
+ *
+ * 'verified' → real counts fetched & shown. 'unavailable' → the metric
+ * could exist but the current integration/tier can't reach it; we show
+ * "Unavailable", never an estimate. 'unsupported' → Signal does not read
+ * metrics for this platform at all.
  */
 export const PLATFORM_METRIC_CAPABILITY: Record<string, MetricCapability> = {
   bluesky: "verified",
   reddit: "verified",
+  devto: "verified",
   x: "unavailable",
-  linkedin: "unsupported",
+  hashnode: "unavailable",
+  linkedin: "unavailable",
+  telegram: "unsupported",
   threads: "unsupported",
   instagram: "unsupported",
   youtube: "unsupported",
-  telegram: "unsupported",
-  devto: "unsupported",
-  hashnode: "unsupported",
 };
 
 export function metricCapability(platform: string): MetricCapability {
@@ -49,10 +63,34 @@ export function metricSource(platform: string): string {
       return "bluesky_getposts";
     case "reddit":
       return "reddit_info";
+    case "devto":
+      return "devto_articles";
     case "x":
       return "x_api_v2";
+    case "hashnode":
+      return "hashnode_gql";
+    case "linkedin":
+      return "linkedin_api";
     default:
       return `${platform}_none`;
+  }
+}
+
+/**
+ * Honest, platform-specific explanation for an 'unavailable' capability.
+ * Shown verbatim in the UI — never an estimate, just why the real metric
+ * can't be read on the current integration.
+ */
+export function unavailableReason(platform: string): string {
+  switch (platform) {
+    case "x":
+      return "X metrics require an elevated/paid API tier this account doesn't have.";
+    case "hashnode":
+      return "Hashnode analytics require a GraphQL query not yet integrated.";
+    case "linkedin":
+      return "LinkedIn post analytics require approved Marketing API access.";
+    default:
+      return "Metrics aren't reachable for this platform on the current integration.";
   }
 }
 
@@ -68,6 +106,29 @@ export interface VerifiedMetrics {
   quotes?: number;
   score?: number;
   comments?: number;
+  /** dev.to public reaction count. */
+  reactions?: number;
+  /** Provider-reported view count (only when the API returns it). NOT
+   *  counted as engagement. */
+  views?: number;
+}
+
+/**
+ * Engagement = the SUM of the verified interaction counts the provider
+ * actually returned. This is an aggregate of real data, never an
+ * invented "score": views are excluded (a view is not an interaction),
+ * and a field absent from the provider response contributes nothing.
+ */
+export function engagementCount(metrics: VerifiedMetrics): number {
+  return (
+    (metrics.likes ?? 0) +
+    (metrics.reposts ?? 0) +
+    (metrics.replies ?? 0) +
+    (metrics.quotes ?? 0) +
+    (metrics.score ?? 0) +
+    (metrics.comments ?? 0) +
+    (metrics.reactions ?? 0)
+  );
 }
 
 export interface MetricsResult {
@@ -126,6 +187,8 @@ export function describeMetrics(result: {
   if (m.replies != null) parts.push(`${m.replies} replies`);
   if (m.quotes != null) parts.push(`${m.quotes} quotes`);
   if (m.score != null) parts.push(`score ${m.score}`);
+  if (m.reactions != null) parts.push(`${m.reactions} reactions`);
   if (m.comments != null) parts.push(`${m.comments} comments`);
+  if (m.views != null) parts.push(`${m.views} views`);
   return parts.length > 0 ? parts.join(" · ") : "No metrics yet.";
 }
