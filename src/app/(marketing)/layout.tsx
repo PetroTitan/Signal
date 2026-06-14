@@ -2,6 +2,7 @@ import Link from "next/link";
 import { BrandMark } from "@/components/brand-mark";
 
 const marketingLinks = [
+  { href: "/academy", label: "Docs" },
   { href: "/about", label: "About" },
   { href: "/philosophy", label: "Philosophy" },
   { href: "/how-it-works", label: "How it works" },
@@ -48,6 +49,9 @@ export default function MarketingLayout({
         <div className="max-w-5xl mx-auto px-6 py-6 text-xs text-ink-500 flex flex-wrap items-center justify-between gap-3">
           <div>Signal — sustainable growth operations.</div>
           <div className="flex items-center gap-3">
+            <Link href="/academy" className="hover:text-ink-700">
+              Docs
+            </Link>
             <Link href="/about" className="hover:text-ink-700">
               About
             </Link>
