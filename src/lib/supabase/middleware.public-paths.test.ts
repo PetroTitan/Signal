@@ -113,10 +113,36 @@ describe("isPublicPath — gated app routes stay gated (regression)", () => {
     "/settings",
     "/settings/publishing-platforms",
     "/weekly-plan",
+    "/library",
+    "/results",
+    "/notifications",
+    "/execution",
     "/execution/items/abc",
     "/api/mcps", // similar prefix but NOT under /api/mcp
     "/api/oauths", // similar prefix but NOT under /api/oauth
+    "/academyx", // similar prefix but NOT under /academy
   ])("isPublicPath(%s) === false (requires session)", (path) => {
     expect(isPublicPath(path)).toBe(false);
+  });
+});
+
+/**
+ * Public marketing + Academy visibility (the homepage/Academy/SEO fix).
+ * Logged-out visitors must reach the homepage, the whole Academy, and
+ * the SEO/AI-crawler files without being bounced to /login.
+ */
+describe("isPublicPath — public marketing + Academy + SEO files", () => {
+  it.each([
+    "/",
+    "/academy",
+    "/academy/what-is-signal",
+    "/academy/supported-metrics-by-platform",
+    "/sitemap.xml",
+    "/robots.txt",
+    "/llms.txt",
+    "/login",
+    "/signup",
+  ])("isPublicPath(%s) === true (no session required)", (path) => {
+    expect(isPublicPath(path)).toBe(true);
   });
 });

@@ -11,6 +11,10 @@ const PUBLIC_PATH_PREFIXES = [
   "/philosophy",
   "/security",
   "/how-it-works",
+  // Signal Academy — public documentation + SEO/AI-search cluster. Both
+  // /academy and /academy/[slug] must be reachable while logged out; the
+  // pages contain no workspace data and require no session.
+  "/academy",
   "/login",
   "/signup",
   "/forgot-password",
@@ -77,6 +81,12 @@ const PUBLIC_EXACT_PATHS = new Set<string>([
   "/how-it-works",
   "/login",
   "/signup",
+  // SEO / AI-crawler discovery files. These are generated routes that
+  // must be fetchable without a session (search engines, llms.txt
+  // readers). They expose only public marketing + Academy URLs.
+  "/sitemap.xml",
+  "/robots.txt",
+  "/llms.txt",
   // Anyone can request a recovery email; sending the email never reveals
   // whether the address is registered.
   "/forgot-password",
