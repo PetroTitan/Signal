@@ -2,11 +2,9 @@ import Link from "next/link";
 import { BrandMark } from "@/components/brand-mark";
 
 const marketingLinks = [
-  { href: "/academy", label: "Docs" },
-  { href: "/about", label: "About" },
-  { href: "/philosophy", label: "Philosophy" },
-  { href: "/how-it-works", label: "How it works" },
-  { href: "/security", label: "Security" },
+  { href: "/academy", label: "Academy" },
+  { href: "/academy/security-overview", label: "Trust" },
+  { href: "/academy/what-is-mcp", label: "MCP" },
 ];
 
 export default function MarketingLayout({
@@ -36,8 +34,14 @@ export default function MarketingLayout({
                 {link.label}
               </Link>
             ))}
-            <Link href="/dashboard" className="btn-primary ml-2">
-              Open app
+            <Link
+              href="/login"
+              className="ml-1 px-2.5 py-1.5 rounded-md text-ink-700 hover:bg-ink-50 hover:text-ink-900 transition-colors"
+            >
+              Sign in
+            </Link>
+            <Link href="/signup" className="btn-primary ml-1">
+              Sign up
             </Link>
           </nav>
         </div>

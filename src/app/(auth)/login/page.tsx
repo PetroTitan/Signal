@@ -64,6 +64,13 @@ export default function LoginPage({ searchParams }: LoginPageProps) {
             Forgot your password?
           </Link>
         </div>
+        <div className="text-xs text-center text-ink-500">
+          New to Signal?{" "}
+          <Link href="/academy" className="text-signal-700 underline">
+            Learn how it works in the Academy
+          </Link>
+          .
+        </div>
       </div>
     </main>
   );
