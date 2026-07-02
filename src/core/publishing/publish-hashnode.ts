@@ -128,19 +128,18 @@ export async function publishToHashnode(
       timeoutMs: 20_000,
     });
   } catch (err) {
-    if (isTimeoutError(err)) {
-      return publishFail(
-        "hashnode_network_error",
-        "Hashnode didn't respond in time (20s). The post wasn't sent — try again.",
-        { endpoint: "publishPost" },
-      );
-    }
+    // PR4: the publishPost mutation failed with no confirmed response. A
+    // timeout/network error does NOT prove the post wasn't created — the
+    // request may have reached Hashnode. Auto-retry could duplicate the
+    // post, so this is terminal (outcome unknown), not a retryable
+    // network error.
+    const reason = isTimeoutError(err)
+      ? "Hashnode didn't respond in time (20s)"
+      : `Hashnode network error: ${err instanceof Error ? err.message : "unknown"}`;
     return publishFail(
-      "hashnode_network_error",
-      `Hashnode network error: ${
-        err instanceof Error ? err.message : "unknown"
-      }`,
-      { endpoint: "publishPost" },
+      "publish_outcome_unknown",
+      `${reason}. Publish outcome is unknown — the post may or may not have been created. Check the platform before retrying to avoid duplicate posts.`,
+      { endpoint: "publishPost", outcome: "unknown", timed_out: isTimeoutError(err) },
     );
   }
 

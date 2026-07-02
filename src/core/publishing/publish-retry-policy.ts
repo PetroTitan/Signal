@@ -37,6 +37,22 @@ import type { PublishOutcome, PublishReasonCode } from "./publishing-types";
  * Reason codes that are transient REGARDLESS of metadata: rate limits
  * clear, networks heal, providers come back.
  */
+/**
+ * PR4 — outcomes where the publish MIGHT already have landed on the
+ * platform. Auto-retrying a non-idempotent create in this state can
+ * duplicate the post, so these are NEVER transient regardless of any
+ * metadata (http_status etc.). They are terminal: the item fails and
+ * the operator is told to check the platform before retrying by hand.
+ *
+ * Checked FIRST in isTransientPublishFailure so a future edit that adds
+ * one of these to a transient set below still can't make it auto-retry.
+ */
+const OUTCOME_UNCERTAIN: ReadonlySet<PublishReasonCode> =
+  new Set<PublishReasonCode>([
+    "publish_outcome_unknown",
+    "publish_partial_success",
+  ]);
+
 const ALWAYS_TRANSIENT: ReadonlySet<PublishReasonCode> = new Set<PublishReasonCode>([
   "platform_rate_limited",
   "x_rate_limited",
@@ -110,6 +126,10 @@ export function isTransientPublishFailure(
   metadata?: Record<string, unknown> | null,
 ): boolean {
   const code = reasonCode as PublishReasonCode;
+  // Outcome-uncertain codes can never auto-retry — a retry might
+  // duplicate a post that already published. This wins over every
+  // transient rule below.
+  if (OUTCOME_UNCERTAIN.has(code)) return false;
   if (ALWAYS_TRANSIENT.has(code)) return true;
   const httpStatus = readHttpStatus(metadata);
   if (TRANSIENT_WITH_5XX_OR_NETWORK.has(code)) {

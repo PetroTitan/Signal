@@ -96,15 +96,18 @@ export async function publishToDevto(
       timeoutMs: 20_000,
     });
   } catch (err) {
-    if (isTimeoutError(err)) {
-      return publishFail(
-        "devto_network_error",
-        "dev.to didn't respond in time (20s). The post wasn't sent — try again.",
-      );
-    }
+    // PR4: the article CREATE (POST /articles) failed with no confirmed
+    // response. A timeout/network error does NOT prove the article
+    // wasn't created — the request may have reached dev.to. Auto-retry
+    // could duplicate the article, so this is terminal (outcome
+    // unknown), not a retryable network error.
+    const reason = isTimeoutError(err)
+      ? "dev.to didn't respond in time (20s)"
+      : `dev.to network error: ${err instanceof Error ? err.message : "unknown"}`;
     return publishFail(
-      "devto_network_error",
-      `dev.to network error: ${err instanceof Error ? err.message : "unknown"}`,
+      "publish_outcome_unknown",
+      `${reason}. Publish outcome is unknown — the article may or may not have been created. Check the platform before retrying to avoid duplicate posts.`,
+      { endpoint: "articles", outcome: "unknown", timed_out: isTimeoutError(err) },
     );
   }
 

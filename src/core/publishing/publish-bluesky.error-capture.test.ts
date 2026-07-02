@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { publishToBluesky, publishToBlueskyAsIdentity } from "./publish-bluesky";
+import { isTransientPublishFailure } from "./publish-retry-policy";
 import type { PublishRequest } from "./publishing-types";
 
 /**
@@ -317,6 +318,76 @@ describe("publishToBlueskyAsIdentity — success path", () => {
     expect(outcome.externalId).toBe("at://did:plc:test/app.bsky.feed.post/abc");
     expect(outcome.metadata.atproto_error).toBeUndefined();
     expect(outcome.metadata.atproto_response_body_truncated).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------
+// PR4 — partial-thread double-publish protection
+// ---------------------------------------------------------------------
+//
+// When an earlier part of a multi-post thread already published and a
+// later part fails, the publisher must return the terminal
+// publish_partial_success code — NOT a transient one. Otherwise the
+// scheduler would reschedule and re-run the loop from part 1,
+// duplicating the already-live posts.
+
+describe("publishToBlueskyAsIdentity — partial thread failure (PR4)", () => {
+  it("marks a mid-thread failure publish_partial_success (terminal, not retryable)", async () => {
+    // Part 1 succeeds (root created); part 2 fails with a normally-
+    // transient 429. The already-created root means we must not retry.
+    enqueue(
+      "https://bsky.social/xrpc/com.atproto.repo.createRecord",
+      jsonResponse(200, {
+        uri: "at://did:plc:test/app.bsky.feed.post/root",
+        cid: "bafyroot",
+      }),
+    );
+    enqueue(
+      "https://bsky.social/xrpc/com.atproto.repo.createRecord",
+      jsonResponse(429, { error: "RateLimitExceeded", message: "slow down" }),
+    );
+
+    // Body > 300 graphemes forces a multi-post thread.
+    const longBody = "word ".repeat(120).trim();
+    const outcome = await publishToBlueskyAsIdentity({
+      request: { ...baseRequest(), body: longBody },
+      accessJwt: "test-jwt",
+      did: "did:plc:test",
+      handle: "handle.bsky.social",
+      service: "https://bsky.social",
+    });
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.reasonCode).toBe("publish_partial_success");
+    expect(outcome.reasonDetail).toMatch(/earlier posts are live/i);
+    expect(outcome.metadata.root_uri).toBe(
+      "at://did:plc:test/app.bsky.feed.post/root",
+    );
+    // The retry policy must treat this as terminal.
+    expect(
+      isTransientPublishFailure(
+        outcome.reasonCode,
+        outcome.metadata as Record<string, unknown>,
+      ),
+    ).toBe(false);
+  });
+
+  it("still returns the mapped (retryable) code when the FIRST part fails and nothing was created", async () => {
+    // A single-part failure with a transient 429 has created nothing, so
+    // it stays a normal retryable outcome (no false partial-success).
+    enqueue(
+      "https://bsky.social/xrpc/com.atproto.repo.createRecord",
+      jsonResponse(429, { error: "RateLimitExceeded", message: "slow down" }),
+    );
+    const outcome = await publishToBlueskyAsIdentity({
+      request: baseRequest(), // short body → single post
+      accessJwt: "test-jwt",
+      did: "did:plc:test",
+      handle: "handle.bsky.social",
+      service: "https://bsky.social",
+    });
+    expect(outcome.status).toBe("failed");
+    expect(outcome.reasonCode).not.toBe("publish_partial_success");
   });
 });
 

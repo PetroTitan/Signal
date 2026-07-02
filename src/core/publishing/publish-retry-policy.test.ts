@@ -83,6 +83,43 @@ describe("isTransientPublishFailure", () => {
       expect(isTransientPublishFailure(code, { http_status: 503 })).toBe(false);
     }
   });
+
+  it("never retries outcome-uncertain codes, even with a 5xx/network http_status (PR4)", () => {
+    // A retry could duplicate a post that already published — these must
+    // be terminal regardless of any metadata that would otherwise look
+    // transient.
+    for (const code of ["publish_outcome_unknown", "publish_partial_success"]) {
+      expect(isTransientPublishFailure(code)).toBe(false);
+      expect(isTransientPublishFailure(code, { http_status: 0 })).toBe(false);
+      expect(isTransientPublishFailure(code, { http_status: 503 })).toBe(false);
+      expect(isTransientPublishFailure(code, { http_status: 500 })).toBe(false);
+    }
+  });
+});
+
+describe("decidePublishRetry — outcome-uncertain codes (PR4)", () => {
+  it("does not auto-retry publish_outcome_unknown", () => {
+    const d = decidePublishRetry({
+      outcome: failed("publish_outcome_unknown", { http_status: 0 }),
+      attemptCount: 0,
+      maxAttempts: 3,
+      now: NOW,
+    });
+    expect(d.retry).toBe(false);
+    // Terminal-non-transient, not "retries exhausted".
+    expect(d.retry === false && d.exhausted).toBe(false);
+  });
+
+  it("does not auto-retry publish_partial_success (Bluesky partial thread)", () => {
+    const d = decidePublishRetry({
+      outcome: failed("publish_partial_success", { http_status: 429 }),
+      attemptCount: 0,
+      maxAttempts: 3,
+      now: NOW,
+    });
+    expect(d.retry).toBe(false);
+    expect(d.retry === false && d.exhausted).toBe(false);
+  });
 });
 
 describe("computeRetryBackoffMinutes", () => {
