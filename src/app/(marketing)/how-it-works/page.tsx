@@ -84,8 +84,9 @@ export default function HowItWorksPage() {
         How Signal works
       </h1>
       <p className="text-base text-ink-700 mt-3 leading-relaxed">
-        One operating loop. Nine stages. Every stage is deterministic today —
-        when external APIs ship, they slot in behind the existing types.
+        One operating loop. Nine stages. Every stage is deterministic, and the
+        platform integrations — OAuth, publishing, and verified metrics — are
+        wired in behind the same types.
       </p>
 
       <ol className="mt-10 space-y-4">
@@ -111,7 +112,7 @@ export default function HowItWorksPage() {
           What this is not
         </h2>
         <ul className="text-sm text-ink-700 mt-2 space-y-1 leading-relaxed">
-          <li>· Not an auto-publisher.</li>
+          <li>· Not an autonomous publisher — nothing publishes without your approval.</li>
           <li>· Not an auto-commenter.</li>
           <li>· Not an indexing API or auto-indexer.</li>
           <li>· Not a feed of AI-generated posts.</li>
@@ -126,8 +127,8 @@ export default function HowItWorksPage() {
         <Link href="/security" className="btn">
           Security
         </Link>
-        <Link href="/dashboard" className="btn-primary">
-          Open the app
+        <Link href="/signup" className="btn-primary">
+          Get started
         </Link>
       </div>
     </div>

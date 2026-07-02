@@ -2,8 +2,18 @@ import type { Metadata } from "next";
 import type { Article } from "./types";
 import { breadcrumbsFor } from "./registry";
 
-/** Matches the root layout's metadataBase. Used for absolute JSON-LD URLs. */
-export const SITE_URL = "https://signal.helperg.com";
+/**
+ * Canonical production origin. Single source of truth for every absolute
+ * public URL: root metadataBase, per-page canonical, sitemap.xml,
+ * robots.txt (host + sitemap), llms.txt links, and all JSON-LD.
+ *
+ * Override with NEXT_PUBLIC_SITE_URL (e.g. on a preview deployment);
+ * defaults to the production domain. Any trailing slash is stripped so
+ * `${SITE_URL}${path}` never produces a double slash.
+ */
+export const SITE_URL = (
+  process.env.NEXT_PUBLIC_SITE_URL?.trim() || "https://signal.webmasterid.com"
+).replace(/\/+$/, "");
 
 export function articlePath(slug: string): string {
   return `/academy/${slug}`;

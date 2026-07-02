@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
+import { SITE_URL } from "@/content/academy/seo";
 import "./globals.css";
 
 const inter = Inter({
@@ -21,7 +22,7 @@ export const metadata: Metadata = {
   },
   description:
     "Signal is an AI-assisted growth operations platform for founders and SaaS teams. Weekly planning, single approval gate, calm cadence.",
-  metadataBase: new URL("https://signal.helperg.com"),
+  metadataBase: new URL(SITE_URL),
   openGraph: {
     title: "Signal — Sustainable growth operations",
     description:
