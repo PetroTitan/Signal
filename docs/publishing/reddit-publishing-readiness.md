@@ -25,7 +25,7 @@ must still close before a single `POST /api/submit` goes out.
 | `submit` scope | ❌ deferred to F3 | |
 | `workspace_settings.execution_mode='live'` | ❌ blocker | Column doesn't exist; F1 follow-up |
 | Controlled test publish path | ❌ deferred to F3 | |
-| Vercel cron `SCHEDULER_TICK_TOKEN` env | ❌ unset | F1 follow-up |
+| Vercel cron secret (`CRON_SECRET`, or legacy `SCHEDULER_TICK_TOKEN`) | ❌ unset | Vercel Cron sends `CRON_SECRET`; set it or scheduled runs 401 |
 
 ## The full gate chain (live publish)
 
@@ -49,8 +49,9 @@ A real Reddit POST happens iff **every** condition is true:
    text + license/attribution where required by source type).
 8. **Schedule** — `scheduled_at <= now()`.
 9. **Risk** — `risk_level != 'blocked'`.
-10. **Scheduler tick** — `/api/scheduler/tick` is reachable with the
-    `SCHEDULER_TICK_TOKEN` shared secret.
+10. **Scheduler tick** — `/api/scheduler/tick` is reachable with a valid
+    cron secret (`CRON_SECRET`, which Vercel Cron sends, or the legacy
+    `SCHEDULER_TICK_TOKEN` for manual curl).
 
 If **any** condition fails, the scheduler writes an
 `execution_logs.reason_code` and the item stays in
@@ -103,7 +104,7 @@ Two reasons:
 ## Operator checklist before F3
 
 - [ ] F1 follow-up merged: `execution_mode` column added,
-      `SCHEDULER_TICK_TOKEN` set in Vercel.
+      `CRON_SECRET` set in Vercel (legacy `SCHEDULER_TICK_TOKEN` optional).
 - [ ] F2 merged: encrypted tokens stored; health check passes for
       at least one account.
 - [ ] `oauth_token_security_check` passes in `/settings/mcp`.

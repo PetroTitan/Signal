@@ -3,6 +3,7 @@ import {
   buildLiveRefreshDeps,
   refreshStaleMetrics,
 } from "@/core/metrics/refresh";
+import { authorizeCronRequest } from "@/lib/cron-auth";
 
 /**
  * Phase D.1G — metrics refresh endpoint.
@@ -12,10 +13,12 @@ import {
  * newly-published verified-platform posts.
  *
  * Auth: same shared-secret convention as the publishing scheduler tick
- * and the notification digest — `Authorization: Bearer
- * <SCHEDULER_TICK_TOKEN>`. Unset env → 503; mismatch → 401. Added to the
- * middleware public-path list (like /api/scheduler) so the /login
- * redirect doesn't intercept; the secret is the real gate. No UI access.
+ * and the notification digest — `Authorization: Bearer <secret>`, where
+ * <secret> is CRON_SECRET (what Vercel Cron sends) or
+ * SCHEDULER_TICK_TOKEN (manual/curl). Neither env set → 503; mismatch →
+ * 401. Added to the middleware public-path list (like /api/scheduler) so
+ * the /login redirect doesn't intercept; the secret is the real gate. No
+ * UI access.
  *
  * Isolation: this route touches the metrics subsystem ONLY. It never
  * publishes, never changes execution items / approvals / notifications,
@@ -35,17 +38,9 @@ function clampInt(value: string | null, fallback: number, min: number, max: numb
 }
 
 export async function GET(request: Request) {
-  const secret = process.env.SCHEDULER_TICK_TOKEN?.trim();
-  if (!secret) {
-    return NextResponse.json(
-      { ok: false, error: "Metrics refresh not configured: SCHEDULER_TICK_TOKEN is unset." },
-      { status: 503 },
-    );
-  }
-  const provided = request.headers.get("authorization") ?? "";
-  const match = /^Bearer\s+(.+)$/i.exec(provided.trim());
-  if (!match || match[1] !== secret) {
-    return NextResponse.json({ ok: false, error: "Unauthorized." }, { status: 401 });
+  const auth = authorizeCronRequest(request);
+  if (!auth.ok) {
+    return NextResponse.json({ ok: false, error: auth.error }, { status: auth.status });
   }
 
   const deps = buildLiveRefreshDeps();

@@ -38,7 +38,8 @@ TOKEN_ENCRYPTION_KEY=<F2>
 REDDIT_CLIENT_ID=<F2>
 REDDIT_CLIENT_SECRET=<F2>
 REDDIT_REDIRECT_URI=https://signal.webmasterid.com/api/oauth/reddit/callback
-SCHEDULER_TICK_TOKEN=<F1 follow-up>
+CRON_SECRET=<what Vercel Cron sends; required for scheduled runs>
+SCHEDULER_TICK_TOKEN=<optional legacy/manual token for curl>
 ```
 
 When `SAFE_TEST_MODE != 'true'`, the entire controlled-publish path
