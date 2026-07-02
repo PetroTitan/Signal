@@ -123,7 +123,14 @@ export async function sendDigestNowAction(
       "@/core/notifications/notification-sender"
     );
     if (prefs.telegramEnabled) {
-      results.push((await createTelegramSender().send(text)).detail);
+      // Manual, operator-initiated "send me a test digest" for the
+      // operator's OWN workspace. Explicitly target the operator-owned
+      // TELEGRAM_DIGEST_CHAT_ID here (a single-operator test channel);
+      // createTelegramSender no longer falls back to it implicitly, so
+      // the scheduled cron path can never leak to it. When unset, the
+      // sender reports not_configured and nothing is sent.
+      const testChatId = process.env.TELEGRAM_DIGEST_CHAT_ID?.trim() || null;
+      results.push((await createTelegramSender(testChatId).send(text)).detail);
     }
     if (prefs.emailEnabled) {
       results.push((await createEmailSender().send(text)).detail);

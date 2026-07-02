@@ -53,15 +53,25 @@ export function createEmailSender(): NotificationSender {
 
 /**
  * Telegram digest sender. Uses the existing bot token; the destination
- * chat id comes from TELEGRAM_DIGEST_CHAT_ID (operator-configured) — we
- * never reuse a publishing channel's chat id implicitly.
+ * chat id MUST be passed explicitly by the caller.
+ *
+ * SAFETY (PR5): there is deliberately NO implicit fallback to a global
+ * `TELEGRAM_DIGEST_CHAT_ID`. The scheduled digest job iterates recipients
+ * across ALL workspaces, and a global fallback would deliver every
+ * tenant's digest to one shared chat — a cross-workspace leak. Callers
+ * that legitimately target a single operator-owned chat (e.g. the manual
+ * "send me a test digest" action) must pass that chat id in explicitly,
+ * making the destination auditable at the call site. When no chat id is
+ * provided the sender is a `not_configured` no-op and sends nothing.
+ * Per-recipient routing for the scheduled path is a follow-up migration
+ * (add a verified chat id to notification_preferences).
  */
 export function createTelegramSender(chatId?: string | null): NotificationSender {
   return {
     channel: "telegram",
     async send(text: string): Promise<SendResult> {
       const creds = readTelegramCredentials();
-      const target = chatId?.trim() || process.env.TELEGRAM_DIGEST_CHAT_ID?.trim() || "";
+      const target = chatId?.trim() || "";
       if (!creds) {
         return {
           ok: false,
@@ -75,7 +85,8 @@ export function createTelegramSender(chatId?: string | null): NotificationSender
           ok: false,
           channel: "telegram",
           code: "not_configured",
-          detail: "No Telegram digest chat configured (set TELEGRAM_DIGEST_CHAT_ID).",
+          detail:
+            "No Telegram chat id provided for this recipient — digest not sent (per-recipient routing not configured).",
         };
       }
       try {
