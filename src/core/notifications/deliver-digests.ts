@@ -230,6 +230,13 @@ export function buildLiveDigestDeps(): DigestDeps | null {
     listPreferences: (cadence) => listNotificationPreferencesByCadence(cadence, db),
     countUnreadByType: (workspaceId, userId) =>
       countUnreadNotificationsByType(workspaceId, userId, db),
+    // PR5: the scheduled digest runs across ALL workspaces, so it must
+    // NOT route to a single global Telegram chat (cross-workspace leak).
+    // No per-recipient chat id exists yet, so we pass none — the sender
+    // becomes a `not_configured` no-op and Telegram delivery is reported
+    // as `skipped_not_configured`, never sent. Restore Telegram here by
+    // threading a verified per-(workspace,user) chat id once the
+    // notification_preferences migration adds one.
     makeTelegramSender: () => createTelegramSender(),
     makeEmailSender: () => createEmailSender(),
   };
