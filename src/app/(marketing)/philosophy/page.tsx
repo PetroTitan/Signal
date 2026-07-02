@@ -32,7 +32,7 @@ export default function PhilosophyPage() {
 
       <Section
         title="Comments are first-class presence"
-        body="On Reddit, X, and LinkedIn, the best growth move is often non-participation. The second best is a calm, contextual comment. Signal's comment intelligence will recommend 'skip' more often than 'participate' — that is the point."
+        body="On Reddit, X, and LinkedIn, the best growth move is often non-participation. The second best is a calm, contextual comment. Signal's comment intelligence recommends 'skip' more often than 'participate' — that is the point."
       />
 
       <Section
@@ -47,7 +47,7 @@ export default function PhilosophyPage() {
 
       <Section
         title="OAuth-first, always"
-        body="Signal never asks for platform passwords, cookies, session tokens, 2FA codes, or recovery codes. Account onboarding is manual; account connection will happen through official OAuth when integration is enabled. No anti-detect browsers, no proxies, no fingerprint randomization."
+        body="Signal never asks for platform passwords, cookies, session tokens, 2FA codes, or recovery codes. Account onboarding is manual; account connection happens through the platform's official OAuth flow, with tokens encrypted at rest. No anti-detect browsers, no proxies, no fingerprint randomization."
       />
 
       <Section
@@ -57,7 +57,7 @@ export default function PhilosophyPage() {
 
       <Section
         title="No fake analytics"
-        body="When the data isn't connected, Signal says so. We do not invent metrics, fabricate engagement, or fill placeholders with synthetic numbers. WebmasterID integration is the path to real numbers."
+        body="When the data isn't connected, Signal says so. We do not invent metrics, fabricate engagement, or fill placeholders with synthetic numbers. Verified engagement is read directly from official provider APIs; where a platform can't expose a metric, Signal shows 'Unavailable' rather than a guess."
       />
 
       <div className="mt-10 flex flex-wrap gap-2 text-sm">

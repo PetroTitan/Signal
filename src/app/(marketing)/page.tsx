@@ -58,7 +58,7 @@ interface PlatformRow {
 const PLATFORMS: PlatformRow[] = [
   { name: "Bluesky", publishing: "Automated", metrics: "Verified (likes, reposts, replies, quotes)", tone: "ok" },
   { name: "dev.to", publishing: "Automated", metrics: "Verified (reactions, comments)", tone: "ok" },
-  { name: "Reddit", publishing: "Automated (subreddit rules apply)", metrics: "Verified (score, comments)", tone: "ok" },
+  { name: "Reddit", publishing: "Pending Reddit API approval (manual fallback)", metrics: "Verified (score, comments)", tone: "partial" },
   { name: "X", publishing: "Automated", metrics: "Unavailable (requires a paid API tier)", tone: "partial" },
   { name: "Hashnode", publishing: "Automated", metrics: "Unavailable (not yet integrated)", tone: "partial" },
   { name: "LinkedIn", publishing: "Automated", metrics: "Unavailable (requires approved Marketing API)", tone: "partial" },

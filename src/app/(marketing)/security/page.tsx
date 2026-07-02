@@ -43,11 +43,11 @@ export default function SecurityPage() {
           OAuth-first account model
         </h2>
         <p className="text-sm text-ink-700 leading-relaxed">
-          Every account in Signal will connect through the platform&apos;s
-          official authorization flow. Until OAuth providers are wired in, the
-          accounts page exposes the model and a disabled connect control. Once
-          authorization is implemented, scopes will be requested explicitly,
-          revocable from inside the app, and visible per account.
+          Every account connects through the platform&apos;s official
+          authorization flow. Scopes are requested explicitly, OAuth tokens are
+          encrypted at rest and revocable from inside the app, and each
+          connection is visible per account. Signal never asks for or stores a
+          platform password.
         </p>
       </section>
 
@@ -60,9 +60,8 @@ export default function SecurityPage() {
           <li>· Route through proxies to disguise origin.</li>
           <li>· Randomize browser fingerprints.</li>
           <li>· Manage farms of synthetic accounts.</li>
-          <li>· Auto-publish content.</li>
-          <li>· Auto-comment or auto-reply.</li>
-          <li>· Auto-index or auto-update content for search.</li>
+          <li>· Publish, comment, or reply without your explicit approval.</li>
+          <li>· Auto-index or manipulate content for search rankings.</li>
           <li>· Fabricate analytics. When data isn&apos;t connected, we say so.</li>
         </ul>
       </section>
@@ -74,20 +73,21 @@ export default function SecurityPage() {
         <p className="text-sm text-ink-700 leading-relaxed">
           Every item Signal surfaces is a recommendation. The founder
           approves, softens, delays, or sets aside each item — there is no
-          path through the system that bypasses the weekly review.
+          path through the system that bypasses the weekly review. Approved
+          items publish on the schedule you set; nothing reaches a platform
+          outside that approval.
         </p>
       </section>
 
       <section className="mt-8 space-y-3">
         <h2 className="text-xl font-semibold text-ink-900">
-          Persistence (planned)
+          Persistence &amp; encryption
         </h2>
         <p className="text-sm text-ink-700 leading-relaxed">
-          Signal does not yet store anything in a database. When persistence
-          ships, it will live behind the same TypeScript domain types the
-          local store uses today. Sensitive credentials (OAuth tokens, refresh
-          tokens) will be stored encrypted at rest, with rotation and
-          revocation hooked into the account management flow.
+          Signal stores your workspace data in Postgres behind per-workspace
+          row-level security. Sensitive credentials — OAuth access and refresh
+          tokens — are encrypted at rest (AES-256-GCM) and never logged, with
+          rotation and revocation wired into the account management flow.
         </p>
       </section>
 
