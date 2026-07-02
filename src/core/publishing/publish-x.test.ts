@@ -13,7 +13,7 @@ import type { PublishRequest } from "./publishing-types";
  *   - 429 → x_rate_limited
  *   - 4xx → x_validation_error with X-supplied detail (when present)
  *   - 5xx → x_provider_unavailable
- *   - network / timeout → x_network_error
+ *   - network / timeout on create → publish_outcome_unknown (terminal)
  *   - body > 280 → body_too_long (no fetch issued)
  *   - decode error / missing data.id → x_api_error
  *   - access token never appears in returned outcome
@@ -282,7 +282,7 @@ describe("publishToX — provider error mapping", () => {
     expect(out.reasonCode).toBe("x_provider_unavailable");
   });
 
-  it("network error → x_network_error", async () => {
+  it("network error on the tweet create → publish_outcome_unknown (terminal, not auto-retried)", async () => {
     globalThis.fetch = vi
       .fn()
       .mockRejectedValue(new Error("ECONNRESET"));
@@ -292,7 +292,11 @@ describe("publishToX — provider error mapping", () => {
       username: "u",
     });
     expect(out.status).toBe("failed");
-    expect(out.reasonCode).toBe("x_network_error");
+    // PR4: a no-response failure on the non-idempotent create is
+    // outcome-unknown, NOT a retryable network error (retry could
+    // duplicate the tweet).
+    expect(out.reasonCode).toBe("publish_outcome_unknown");
+    expect(out.reasonDetail).toMatch(/check the platform before retrying/i);
     // Access token must not appear in any returned field.
     expect(JSON.stringify(out)).not.toContain(
       "atk_super_secret_token_DO_NOT_LEAK",

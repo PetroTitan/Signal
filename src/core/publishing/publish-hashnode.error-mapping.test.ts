@@ -217,7 +217,7 @@ describe("publishToHashnode — provider error mapping", () => {
     expect(out.reasonCode).toBe("hashnode_api_error");
   });
 
-  it("network error → hashnode_network_error", async () => {
+  it("network error on the publishPost mutation → publish_outcome_unknown (terminal, not auto-retried)", async () => {
     (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
       new Error("ECONNRESET"),
     );
@@ -226,7 +226,11 @@ describe("publishToHashnode — provider error mapping", () => {
       apiKey: REAL_LOOKING_KEY,
       publicationId: PUB_ID,
     });
-    expect(out.reasonCode).toBe("hashnode_network_error");
+    // PR4: a no-response failure on the non-idempotent create is
+    // outcome-unknown, NOT a retryable network error.
+    expect(out.status).toBe("failed");
+    expect(out.reasonCode).toBe("publish_outcome_unknown");
+    expect(out.reasonDetail).toMatch(/check the platform before retrying/i);
   });
 
   it("malformed JSON success body → hashnode_api_error", async () => {

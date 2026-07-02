@@ -687,8 +687,29 @@ export async function publishToBluesky(
     }
     const result = await createPostRecord(service, session, record);
     if (!result.ok) {
-      // Body error trumps HTTP status. Legacy app-password publisher
-      // has no refresh path; default401 = platform_unauthorized.
+      // PR4: if earlier parts of this thread already published (rootUri
+      // set), the whole item must NOT auto-retry — a retry re-runs the
+      // loop from part 1 and duplicates the already-live parts. Return a
+      // terminal outcome so the operator finishes/deletes the thread by
+      // hand instead of the scheduler re-posting it.
+      if (rootUri) {
+        return publishFail(
+          "publish_partial_success",
+          `Bluesky: an earlier part of this thread already published, then part ${part.index} of ${part.total} failed (${result.detail}). Earlier posts are live — do not auto-retry; check the thread and finish or remove it manually to avoid duplicates.`,
+          {
+            http_status: result.status,
+            endpoint: "createRecord",
+            thread_position_failed: part.index,
+            thread_total: part.total,
+            root_uri: rootUri,
+            ...errorBodyMetadata(result.errorBody),
+          },
+        );
+      }
+      // First part failed — nothing was created yet, so the real
+      // (possibly transient) code is safe. Body error trumps HTTP
+      // status. Legacy app-password publisher has no refresh path;
+      // default401 = platform_unauthorized.
       const code = mapBlueskyAtprotoErrorToReasonCode(
         result.errorBody,
         result.status,
@@ -838,13 +859,33 @@ export async function publishToBlueskyAsIdentity(
     }
     const result = await createPostRecord(service, session, record);
     if (!result.ok) {
-      // Body error trumps HTTP status. The identity-scoped path
-      // wants 401 (and AT Proto body errors ExpiredToken /
-      // InvalidToken regardless of HTTP status) to surface as
-      // session_expired so the orchestrator's refresh-and-retry
-      // path fires. 403 / AccountTakedown / AuthFactorTokenRequired
-      // mean refresh won't help — they bubble up as
-      // platform_unauthorized so the operator intervenes.
+      // PR4: if earlier parts of this thread already published (rootUri
+      // set), the whole item must NOT auto-retry — a retry re-runs the
+      // loop from part 1 and duplicates the already-live parts. This
+      // takes precedence over the session_expired refresh path below,
+      // which would otherwise reschedule and re-post the thread.
+      if (rootUri) {
+        return publishFail(
+          "publish_partial_success",
+          `Bluesky: an earlier part of this thread already published, then part ${part.index} of ${part.total} failed (${result.detail}). Earlier posts are live — do not auto-retry; check the thread and finish or remove it manually to avoid duplicates.`,
+          {
+            http_status: result.status,
+            endpoint: "createRecord",
+            thread_position_failed: part.index,
+            thread_total: part.total,
+            root_uri: rootUri,
+            did,
+            ...errorBodyMetadata(result.errorBody),
+          },
+        );
+      }
+      // First part failed — nothing was created yet. Body error trumps
+      // HTTP status. The identity-scoped path wants 401 (and AT Proto
+      // body errors ExpiredToken / InvalidToken regardless of HTTP
+      // status) to surface as session_expired so the orchestrator's
+      // refresh-and-retry path fires. 403 / AccountTakedown /
+      // AuthFactorTokenRequired mean refresh won't help — they bubble
+      // up as platform_unauthorized so the operator intervenes.
       const code = mapBlueskyAtprotoErrorToReasonCode(
         result.errorBody,
         result.status,

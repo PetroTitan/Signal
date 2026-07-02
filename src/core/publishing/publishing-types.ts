@@ -56,6 +56,23 @@ export const PUBLISH_REASON_CODES = [
   "cadence_cooldown",
   "safe_test_mode_ready_for_publish",
   "unknown_error",
+  // PR4 — non-idempotent publish retry safety. Both are terminal
+  // (never auto-retried; see publish-retry-policy.ts) and are stored as
+  // free text in publish_history/execution_logs (no DB CHECK), so this
+  // is a pure TS-side widening.
+  //
+  //   - publish_outcome_unknown: a non-idempotent provider CREATE call
+  //     (X tweet, dev.to article, Hashnode post) failed with no
+  //     confirmed response (timeout / network error). The post may or
+  //     may not have been created server-side, so auto-retrying could
+  //     duplicate it. The operator must check the platform before
+  //     retrying.
+  //   - publish_partial_success: a multi-part publish (a Bluesky thread)
+  //     created one or more parts and then a later part failed. The
+  //     earlier parts are already live, so re-running the whole publish
+  //     would duplicate them. Terminal + manual review.
+  "publish_outcome_unknown",
+  "publish_partial_success",
   // Phase F5.4 — identity-scoped publishing codes for Bluesky.
   // `reason_code` is a free-text column in publish_history (no DB
   // CHECK), so this is a pure TS-side widening.

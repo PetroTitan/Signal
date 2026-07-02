@@ -147,17 +147,19 @@ export async function publishToX(
       timeoutMs: 30_000,
     });
   } catch (err) {
-    if (isTimeoutError(err)) {
-      return publishFail(
-        "x_network_error",
-        "X didn't respond in time (30s).",
-        { endpoint: "tweets" },
-      );
-    }
+    // PR4: the tweet CREATE call failed with no confirmed response. A
+    // timeout/network error here does NOT mean the tweet wasn't created
+    // — the request may have reached X. Auto-retrying could duplicate
+    // the tweet, so this is terminal (outcome unknown), not a
+    // retryable network error. Pre-create failures (media upload, token
+    // refresh) keep their own retryable codes above/below.
+    const reason = isTimeoutError(err)
+      ? "X didn't respond in time (30s)"
+      : `X network error: ${err instanceof Error ? err.message : "unknown"}`;
     return publishFail(
-      "x_network_error",
-      `X network error: ${err instanceof Error ? err.message : "unknown"}`,
-      { endpoint: "tweets" },
+      "publish_outcome_unknown",
+      `${reason}. Publish outcome is unknown — the tweet may or may not have been created. Check the platform before retrying to avoid duplicate posts.`,
+      { endpoint: "tweets", outcome: "unknown", timed_out: isTimeoutError(err) },
     );
   }
 
