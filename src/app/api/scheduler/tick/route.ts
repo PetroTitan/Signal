@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
 import { tickOnce } from "@/core/publishing";
+import { authorizeCronRequest } from "@/lib/cron-auth";
 
 /**
  * Phase F1 — scheduler tick endpoint.
  *
  * Single one-shot batch runner. Designed to be called by Vercel Cron
- * (or curl) every few minutes. Gated by a fixed shared secret in the
- * `Authorization: Bearer <SCHEDULER_TICK_TOKEN>` header; if the env
- * is unset or the header doesn't match, returns 401 — the route
- * never silently no-ops.
+ * (or curl) every few minutes. Gated by a shared secret in the
+ * `Authorization: Bearer <secret>` header — either CRON_SECRET (what
+ * Vercel Cron sends) or SCHEDULER_TICK_TOKEN (manual/curl). If neither
+ * env is set the route returns 503; a bad header returns 401 — the
+ * route never silently no-ops. See src/lib/cron-auth.ts.
  *
  * The endpoint does not require a Supabase session because the
  * scheduler operates as the workspace via the service-role client.
@@ -43,23 +45,9 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 export async function GET(request: Request) {
-  const secret = process.env.SCHEDULER_TICK_TOKEN?.trim();
-  if (!secret) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "Scheduler not configured: SCHEDULER_TICK_TOKEN is unset.",
-      },
-      { status: 503 },
-    );
-  }
-  const provided = request.headers.get("authorization") ?? "";
-  const match = /^Bearer\s+(.+)$/i.exec(provided.trim());
-  if (!match || match[1] !== secret) {
-    return NextResponse.json(
-      { ok: false, error: "Unauthorized." },
-      { status: 401 },
-    );
+  const auth = authorizeCronRequest(request);
+  if (!auth.ok) {
+    return NextResponse.json({ ok: false, error: auth.error }, { status: auth.status });
   }
 
   try {

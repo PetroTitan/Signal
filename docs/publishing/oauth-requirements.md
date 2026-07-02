@@ -53,7 +53,8 @@ real POST goes out. This is intentional and safe.
 | `REDDIT_CLIENT_SECRET` | OAuth app secret |
 | `REDDIT_REDIRECT_URI` | Must match the value registered on Reddit (e.g. `https://signal.webmasterid.com/api/oauth/callback/reddit`) |
 | `TOKEN_ENCRYPTION_KEY` | 32-byte base64-encoded key for AES-GCM at-rest cipher |
-| `SCHEDULER_TICK_TOKEN` | Shared secret for `/api/scheduler/tick` |
+| `CRON_SECRET` | Secret Vercel Cron sends as `Authorization: Bearer …` to the cron routes (`/api/scheduler/tick`, `/api/notifications/digest`, `/api/metrics/refresh`). **Required for scheduled runs on Vercel.** |
+| `SCHEDULER_TICK_TOKEN` | Optional legacy/manual shared secret accepted by the same cron routes (for curl triggering). Safe to leave unset if only Vercel Cron drives the routes. |
 
 If any of these is unset, the corresponding surface degrades
 honestly:
@@ -62,8 +63,10 @@ honestly:
 - Missing `TOKEN_ENCRYPTION_KEY` → `/accounts/[id]` shows "Token
   storage not configured." and OAuth callbacks refuse to store
   plaintext.
-- Missing `SCHEDULER_TICK_TOKEN` → `/api/scheduler/tick` returns
-  `503 Scheduler not configured`.
+- Missing **both** `CRON_SECRET` and `SCHEDULER_TICK_TOKEN` → the cron
+  routes return `503` (honestly disabled). Note Vercel Cron only sends
+  `CRON_SECRET`; if you set only `SCHEDULER_TICK_TOKEN`, scheduled cron
+  invocations will `401` and silently never run.
 
 ## Reddit-specific scope
 

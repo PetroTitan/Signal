@@ -4,6 +4,7 @@ import {
   deliverDigests,
   type DigestCadenceWindow,
 } from "@/core/notifications/deliver-digests";
+import { authorizeCronRequest } from "@/lib/cron-auth";
 
 /**
  * C2.1 — scheduled notification digest delivery endpoint.
@@ -13,11 +14,12 @@ import {
  *   - GET /api/notifications/digest?cadence=weekly  (weekly)
  *
  * Auth: same shared-secret convention as the publishing scheduler tick
- * — `Authorization: Bearer <SCHEDULER_TICK_TOKEN>`. If the env is unset
- * the route returns 503; on a mismatch it returns 401. It is added to
- * the middleware public-path list (like /api/scheduler) so the /login
- * redirect doesn't intercept the cron call; the secret is the real
- * gate. No public unauthenticated access.
+ * — `Authorization: Bearer <secret>`, where <secret> is CRON_SECRET
+ * (what Vercel Cron sends) or SCHEDULER_TICK_TOKEN (manual/curl). If
+ * neither env is set the route returns 503; on a mismatch it returns
+ * 401. It is added to the middleware public-path list (like
+ * /api/scheduler) so the /login redirect doesn't intercept the cron
+ * call; the secret is the real gate. No public unauthenticated access.
  *
  * This route delivers notification digests ONLY. It never publishes,
  * never touches execution items / publish history / adapters, and never
@@ -36,20 +38,9 @@ function parseCadence(url: string): DigestCadenceWindow {
 }
 
 export async function GET(request: Request) {
-  const secret = process.env.SCHEDULER_TICK_TOKEN?.trim();
-  if (!secret) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "Digest delivery not configured: SCHEDULER_TICK_TOKEN is unset.",
-      },
-      { status: 503 },
-    );
-  }
-  const provided = request.headers.get("authorization") ?? "";
-  const match = /^Bearer\s+(.+)$/i.exec(provided.trim());
-  if (!match || match[1] !== secret) {
-    return NextResponse.json({ ok: false, error: "Unauthorized." }, { status: 401 });
+  const auth = authorizeCronRequest(request);
+  if (!auth.ok) {
+    return NextResponse.json({ ok: false, error: auth.error }, { status: auth.status });
   }
 
   const cadence = parseCadence(request.url);
