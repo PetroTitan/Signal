@@ -189,11 +189,28 @@ export function resolveSchedulerTarget(input: {
   return { target: null, source: null };
 }
 
+/**
+ * Platforms the scheduler may drive end-to-end without a human.
+ *
+ * P0.3 removed "linkedin". `publishToLinkedIn` is a stub returning
+ * `not_implemented`, which the scheduler maps to a TERMINAL `failed`
+ * status — so an autonomous claim for LinkedIn could only ever produce
+ * a guaranteed failure that pauses the operator's plan item. (In
+ * practice it was unreachable, because the LinkedIn OAuth callback is
+ * not implemented and no token can be stored, so the policy gate
+ * refused first with `no_token`. It was a false capability claim
+ * rather than a live incident — but the invariant now makes the state
+ * unrepresentable.) LinkedIn items fall through to the same
+ * `platform_not_supported` blocked outcome as the other
+ * manual-distribution platforms, which is the honest answer.
+ *
+ * Enforced by `platform-capability-truth.test.ts`:
+ *     MCP schedulable ⊆ scheduler autonomous ⊆ real publisher
+ */
 export const SCHEDULER_AUTONOMOUS_PLATFORMS: ReadonlySet<PublishPlatform> =
   new Set([
     "reddit",
     "x",
-    "linkedin",
     "bluesky",
     "devto",
     "hashnode",

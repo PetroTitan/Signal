@@ -37,10 +37,18 @@ describe("SCHEDULER_AUTONOMOUS_PLATFORMS", () => {
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("bluesky")).toBe(true);
   });
 
-  it("includes the OAuth platforms (reddit, x, linkedin)", () => {
+  it("includes the OAuth platforms that actually publish (reddit, x)", () => {
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("reddit")).toBe(true);
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("x")).toBe(true);
-    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("linkedin")).toBe(true);
+  });
+
+  it("excludes linkedin — its publisher is a stub (P0.3 capability truth)", () => {
+    // publishToLinkedIn returns not_implemented, which the scheduler
+    // maps to a TERMINAL failed status. Advertising it as autonomous
+    // could only ever produce a guaranteed failure that pauses the
+    // operator's plan item. LinkedIn now takes the same
+    // platform_not_supported path as the other manual platforms.
+    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("linkedin")).toBe(false);
   });
 
   it("includes devto (Phase F7.6 hotfix — pre-fix scheduler short-circuited dev.to items to platform_not_supported)", () => {
@@ -87,8 +95,16 @@ describe("SCHEDULER_AUTONOMOUS_PLATFORMS", () => {
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("instagram")).toBe(false);
   });
 
-  it("is exactly the seven-platform set today (reddit, x, linkedin, bluesky, devto, hashnode, telegram)", () => {
-    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.size).toBe(7);
+  it("is exactly the six real-publisher platforms (reddit, x, bluesky, devto, hashnode, telegram)", () => {
+    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.size).toBe(6);
+    expect([...SCHEDULER_AUTONOMOUS_PLATFORMS].sort()).toEqual([
+      "bluesky",
+      "devto",
+      "hashnode",
+      "reddit",
+      "telegram",
+      "x",
+    ]);
   });
 });
 

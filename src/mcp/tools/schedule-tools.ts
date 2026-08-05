@@ -63,7 +63,7 @@ const TOOL = "signal.schedule_publish";
  * `SCHEDULER_AUTONOMOUS_PLATFORMS`. If MCP ever gets ahead of the
  * scheduler, that test fires.
  */
-const SCHEDULABLE_PLATFORMS: ReadonlySet<FounderPlatform> = new Set([
+export const SCHEDULABLE_PLATFORMS: ReadonlySet<FounderPlatform> = new Set([
   "bluesky",
   "devto",
   "hashnode",
