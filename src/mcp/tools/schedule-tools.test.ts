@@ -276,10 +276,12 @@ function seedContract(
     week_start?: string;
     week_end?: string;
     status?: string;
+    id?: string;
   } = {},
 ): void {
+  const contractId = overrides.id ?? CONTRACT_ID;
   store.weekly_approval_contracts.push({
-    id: CONTRACT_ID,
+    id: contractId,
     workspace_id: WS,
     created_by: null,
     approved_by: null,
@@ -306,21 +308,21 @@ function seedContract(
   });
   for (const accountId of overrides.account_ids ?? ["acct-1"]) {
     store.weekly_contract_accounts.push({
-      contract_id: CONTRACT_ID,
+      contract_id: contractId,
       workspace_id: WS,
       account_id: accountId,
     });
   }
   for (const productId of overrides.product_ids ?? ["prod-1"]) {
     store.weekly_contract_products.push({
-      contract_id: CONTRACT_ID,
+      contract_id: contractId,
       workspace_id: WS,
       product_id: productId,
     });
   }
   for (const platform of overrides.platforms ?? ["bluesky"]) {
     store.weekly_contract_platforms.push({
-      contract_id: CONTRACT_ID,
+      contract_id: contractId,
       workspace_id: WS,
       platform,
     });
@@ -331,7 +333,7 @@ function seedContract(
   ];
   for (const actionType of actions) {
     store.weekly_contract_allowed_actions.push({
-      contract_id: CONTRACT_ID,
+      contract_id: contractId,
       workspace_id: WS,
       action_type: actionType,
     });
@@ -1042,6 +1044,143 @@ describe("schedulePublishTool — publishing authorization", () => {
       expect(data.contract_id).toBe(CONTRACT_ID);
     }
     expect(cookieClientCalls).toBe(0);
+  });
+
+  it("refuses when a RELEVANT paused authorization covers the item", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store);
+    seedConnection(store);
+    // Paused, in-window, and its scope covers this item on all four axes.
+    seedContract(store, {
+      status: "paused",
+      account_ids: ["acct-1"],
+      product_ids: ["prod-1"],
+      platforms: ["bluesky"],
+      allowed_actions: ["publish_scheduled_post"],
+    });
+
+    const result = await schedulePublishTool(ctxWith(store), validArgs(planItemId));
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toBe("contract_paused");
+    expect(store.execution_items).toHaveLength(0);
+  });
+
+  it("does NOT let an UNRELATED paused authorization block a contract-free item", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store);
+    seedConnection(store);
+    // Paused, but scoped to a different product and platform: it does
+    // not govern this item, so the deliberate contract-free path stands.
+    seedContract(store, {
+      id: "paused-unrelated",
+      status: "paused",
+      account_ids: ["someone-else"],
+      product_ids: ["other-prod"],
+      platforms: ["telegram"],
+    });
+
+    const result = await schedulePublishTool(ctxWith(store), validArgs(planItemId));
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const data = result.data as { contract_mode: string; contract_id: string | null };
+      expect(data.contract_mode).toBe("contract_free_item");
+      expect(data.contract_id).toBe(null);
+    }
+  });
+
+  it("does NOT let a paused authorization whose window already closed block", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store);
+    seedConnection(store);
+    // In scope, but spent: its window closed, so it can never resume
+    // into a governing state.
+    seedContract(store, {
+      status: "paused",
+      week_start: "2020-01-01",
+      week_end: "2020-01-07",
+    });
+
+    const result = await schedulePublishTool(ctxWith(store), validArgs(planItemId));
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect((result.data as { contract_mode: string }).contract_mode).toBe(
+        "contract_free_item",
+      );
+    }
+  });
+
+  it("an active in-scope authorization wins over a paused one", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store);
+    seedConnection(store);
+    seedContract(store, { status: "active" });
+    seedContract(store, {
+      id: "paused-also",
+      status: "paused",
+      account_ids: ["acct-1"],
+      product_ids: ["prod-1"],
+      platforms: ["bluesky"],
+    });
+    seedQueue(store);
+
+    const result = await schedulePublishTool(ctxWith(store), validArgs(planItemId));
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const data = result.data as { contract_mode: string; contract_id: string | null };
+      expect(data.contract_mode).toBe("contract_attached");
+      expect(data.contract_id).toBe(CONTRACT_ID);
+    }
+  });
+
+  it.each(["revoked", "expired", "draft"])(
+    "a %s authorization neither governs nor blocks the contract-free flow",
+    async (status) => {
+      const store = emptyStore();
+      const planItemId = seedPlanItem(store);
+      seedConnection(store);
+      // In scope on every axis — only the status keeps it from governing.
+      seedContract(store, { status });
+
+      const result = await schedulePublishTool(
+        ctxWith(store),
+        validArgs(planItemId),
+      );
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        const data = result.data as {
+          contract_mode: string;
+          contract_id: string | null;
+        };
+        expect(data.contract_mode).toBe("contract_free_item");
+        expect(data.contract_id).toBe(null);
+      }
+    },
+  );
+
+  it("fails closed when the paused sweep cannot load scope", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store);
+    seedConnection(store);
+    seedContract(store, { status: "paused" });
+
+    const ctx: ToolContext = {
+      ...ctxWith(store),
+      db: makeFakeClient(store, {
+        weekly_contract_platforms: { message: "relation unavailable" },
+      }),
+    };
+    const result = await schedulePublishTool(ctx, validArgs(planItemId));
+
+    expect(result.ok).toBe(false);
+    expect(result.summary.startsWith("authorization_scope_lookup_failed:")).toBe(
+      true,
+    );
+    expect(store.execution_items).toHaveLength(0);
   });
 
   it("never references the phantom `weekly_contracts` table", () => {

@@ -490,14 +490,17 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
     settings as { execution_mode?: string | null } | null,
   );
 
-  // Active contract for this workspace?
-  const { data: contractRow } = await supabase
-    .from("weekly_approval_contracts")
-    .select("id, status")
-    .eq("workspace_id", item.workspace_id)
-    .eq("status", "active")
-    .maybeSingle();
-  const hasActiveContract = Boolean(contractRow);
+  // NOTE: no authorization lookup here, by design. Publishing
+  // authorization is enforced BEFORE execution — at approval and
+  // scheduling time — not by the publisher policy. PR #91 deliberately
+  // removed the publish-time contract gate so contract-free approved
+  // items can publish; this path previously still read
+  // weekly_approval_contracts to compute a boolean the policy no longer
+  // consumed. The read and its parameter were removed rather than
+  // re-wired, because re-wiring would reintroduce the gate PR #91 took
+  // out. Canonical authorization classification lives in
+  // `classifyPublishingAuthorization` and is used by the callers that
+  // do authorize.
 
   // Account + product review_status.
   let accountReviewStatus: string | null = null;
@@ -772,7 +775,6 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
       coverImageUrl: publishCoverImageUrl,
     },
     context: {
-      hasActiveContract,
       accountReviewStatus,
       productReviewStatus,
       connectionStatus,

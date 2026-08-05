@@ -28,7 +28,6 @@ function makeRequest(
 function makeCtx(overrides: Partial<PolicyContext> = {}): PolicyContext {
   return {
     request: makeRequest(),
-    hasActiveContract: true,
     accountReviewStatus: "confirmed",
     productReviewStatus: null,
     connectionStatus: "connected",
@@ -49,21 +48,25 @@ describe("evaluatePublishingPolicy — happy path", () => {
 });
 
 describe("evaluatePublishingPolicy — contract-free regression guard", () => {
-  it("does NOT block publish when hasActiveContract is false (contract-free per-post)", () => {
+  it("does NOT block publish on contract absence (contract-free per-post)", () => {
     // The pre-PR-91 behavior was to block here with reason_code
     // 'no_active_contract'. Post contract-free migration, this gate
     // is removed. Bulk approval flows still gate on contract at
     // APPROVAL time; this is the PUBLISH-time gate.
-    const v = evaluatePublishingPolicy(
-      makeCtx({ hasActiveContract: false }),
-    );
+    //
+    // P0.1b removed the vestigial `hasActiveContract` field entirely:
+    // the scheduler was reading weekly_approval_contracts to populate
+    // a boolean this policy never consumed. The policy now has no
+    // contract input at all, which is a strictly stronger form of the
+    // same guarantee — contract state cannot influence the verdict
+    // because it is not reachable from here.
+    const v = evaluatePublishingPolicy(makeCtx());
     expect(v).toBe(null);
   });
 
   it("contract-free + Bluesky + all other gates pass → null verdict", () => {
     const v = evaluatePublishingPolicy(
       makeCtx({
-        hasActiveContract: false,
         request: makeRequest({ platform: "bluesky" }),
       }),
     );
@@ -73,7 +76,6 @@ describe("evaluatePublishingPolicy — contract-free regression guard", () => {
   it("contract-free + Reddit + all other gates pass → null verdict", () => {
     const v = evaluatePublishingPolicy(
       makeCtx({
-        hasActiveContract: false,
         request: makeRequest({ platform: "reddit", target: "test" }),
       }),
     );
@@ -338,18 +340,12 @@ describe("evaluatePublishingPolicy — risk + schedule", () => {
 describe("evaluatePublishingPolicy — invariant", () => {
   it("never returns a no_active_contract verdict (removed in PR #94)", () => {
     // Iterate over a small fuzz of states.
-    for (const hasActiveContract of [true, false]) {
-      for (const accountReviewStatus of ["confirmed", "pending"]) {
-        for (const connectionStatus of ["connected", "disconnected"]) {
-          const v = evaluatePublishingPolicy(
-            makeCtx({
-              hasActiveContract,
-              accountReviewStatus,
-              connectionStatus,
-            }),
-          );
-          expect(v?.reasonCode).not.toBe("no_active_contract");
-        }
+    for (const accountReviewStatus of ["confirmed", "pending"]) {
+      for (const connectionStatus of ["connected", "disconnected"]) {
+        const v = evaluatePublishingPolicy(
+          makeCtx({ accountReviewStatus, connectionStatus }),
+        );
+        expect(v?.reasonCode).not.toBe("no_active_contract");
       }
     }
   });
