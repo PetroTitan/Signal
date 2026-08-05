@@ -143,3 +143,61 @@ describe("unknown-outcome classification at the publishers", () => {
     }
   });
 });
+
+describe("publishOne persists every outcome it returns", () => {
+  /**
+   * Inverse defect found by the P0.2 audit: three pre-provider gates in
+   * publishOne returned a bare outcome without writing it. publishOne
+   * owns its own persistence (tickOnce only calls applyOutcome from its
+   * catch block), so those rows stayed at status='running' forever —
+   * the tick never re-selects 'running'. After 15 minutes they surfaced
+   * as stale claims telling the operator to "check the platform before
+   * retrying — it may already be live", which was factually wrong: the
+   * provider had never been called (class A).
+   *
+   * It also made the documented transient-skip path for
+   * x_token_refresh_transient dead code.
+   *
+   * A static check is the right shape here: the failure is a missing
+   * write, invisible to any test that only inspects the returned value.
+   */
+  it("has no bare `return {` outcome literal inside publishOne", () => {
+    const source = fs.readFileSync(
+      path.join(REPO_ROOT, "src", "core", "publishing", "publishing-scheduler.ts"),
+      "utf8",
+    );
+    const start = source.indexOf("async function publishOne(");
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf("\nasync function applyOutcome(", start);
+    expect(end).toBeGreaterThan(start);
+    const body = source.slice(start, end);
+
+    // Every outcome literal returned from publishOne must go through
+    // persist(...) so applyOutcome writes it.
+    const bareReturns = body.match(/return\s*\{\s*\n\s*status:/g) ?? [];
+    expect(bareReturns).toEqual([]);
+  });
+
+  it("routes its pre-provider gates through persist()", () => {
+    const source = fs.readFileSync(
+      path.join(REPO_ROOT, "src", "core", "publishing", "publishing-scheduler.ts"),
+      "utf8",
+    );
+    // Scope to publishOne's body — these reason codes also appear in
+    // nextExecutionStatusForOutcome, which is a pure mapper.
+    const start = source.indexOf("async function publishOne(");
+    const end = source.indexOf("\nasync function applyOutcome(", start);
+    const body = source.slice(start, end);
+
+    for (const code of [
+      "oauth_reauthorization_required",
+      "x_token_refresh_transient",
+    ]) {
+      // Match the assignment, not a mention in prose.
+      const at = body.indexOf(`reasonCode: "${code}"`);
+      expect(at).toBeGreaterThan(-1);
+      // persist({ opens shortly before the reason code.
+      expect(body.slice(Math.max(0, at - 200), at)).toContain("persist({");
+    }
+  });
+});
