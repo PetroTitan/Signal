@@ -70,16 +70,6 @@ export const PUBLISHING_POLICY_BLOCKED = [
  */
 export interface PolicyContext {
   request: PublishRequest;
-  /**
-   * Informational only — kept for backwards-compat with callers that
-   * already populate it (the scheduler reads `weekly_approval_contracts`
-   * and passes the boolean through). The policy gate NO LONGER
-   * blocks publishing on contract absence: per-post contract-free
-   * publishing is supported end-to-end after the contract-free
-   * migration (PR #91). Bulk approval flows still enforce contract
-   * at APPROVAL time, not publish time.
-   */
-  hasActiveContract: boolean;
   accountReviewStatus: string | null;
   productReviewStatus: string | null;
   connectionStatus: string | null;

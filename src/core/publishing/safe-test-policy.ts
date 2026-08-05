@@ -22,6 +22,12 @@
  */
 
 import "server-only";
+import {
+  ActiveAuthorizationLoadError,
+  classifyPublishingAuthorization,
+  type PublishingAuthorizationClassification,
+} from "@/repositories/weekly-contract-repository";
+import type { WeeklyContractActionType } from "@/core/weekly-contract";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { creativeReadinessReason } from "@/repositories/weekly-plan-creative-repository";
 import {
@@ -73,6 +79,11 @@ export type SafeTestReasonCode =
   | "rate_limit_daily"
   | "duplicate_within_30_days"
   | "no_active_contract"
+  | "contract_paused"
+  | "active_authorization_expired"
+  | "active_authorization_boundary_malformed"
+  | "authorization_lookup_failed"
+  | "authorization_scope_lookup_failed"
   | "missing_schedule"
   | "scheduled_in_future"
   | "internal_error";
@@ -313,18 +324,71 @@ async function evaluateSafeTestPolicyInternal(
     });
   }
 
-  // 8. active contract
-  const { data: contract } = await input.supabase
-    .from("weekly_approval_contracts")
-    .select("id")
-    .eq("workspace_id", input.workspaceId)
-    .eq("status", "active")
-    .maybeSingle();
-  if (!contract) {
+  // 8. publishing authorization
+  //
+  // Classification is canonical (shared with MCP scheduling); the
+  // POLICY applied on top is deliberately stricter and specific to
+  // this caller. Safe-test is an operator-initiated pre-flight for a
+  // manual publish, so unlike MCP it does NOT permit contract-free
+  // publishing — an absent authorization is still `no_active_contract`.
+  //
+  // What P0.1b adds is window and status correctness: a paused or
+  // time-expired envelope previously read as "Active contract: pass"
+  // because the query looked only at `status = 'active'` and never at
+  // the window. Scope is classified but not enforced here: scope is an
+  // approval/scheduling-time boundary, and re-refusing on it at
+  // pre-flight would change this gate's product meaning.
+  let authorization: PublishingAuthorizationClassification;
+  try {
+    authorization = await classifyPublishingAuthorization({
+      workspaceId: input.workspaceId,
+      subject: {
+        accountId: item.accountId,
+        productId: item.productId,
+        platform: item.platform ?? "",
+        actionType: item.actionType as WeeklyContractActionType,
+      },
+      // One captured `now` for the whole authorization evaluation.
+      nowMs: Date.now(),
+      db: input.supabase,
+    });
+  } catch (err) {
+    // Fail closed: a load failure is never "no authorization".
+    return fail(
+      "Publishing authorization",
+      err instanceof ActiveAuthorizationLoadError && err.stage === "scope"
+        ? "authorization_scope_lookup_failed"
+        : "authorization_lookup_failed",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
+  if (authorization.kind === "none") {
     return fail(
       "Active contract",
       "no_active_contract",
       "No active weekly_approval_contracts row for this workspace.",
+    );
+  }
+  if (authorization.kind === "paused_relevant") {
+    return fail(
+      "Publishing authorization",
+      "contract_paused",
+      "The authorization covering this item is paused.",
+    );
+  }
+  if (authorization.kind === "active_expired") {
+    return fail(
+      "Publishing authorization",
+      "active_authorization_expired",
+      `The active authorization's window closed on ${authorization.contract.weekEnd}.`,
+    );
+  }
+  if (authorization.kind === "active_malformed_boundary") {
+    return fail(
+      "Publishing authorization",
+      "active_authorization_boundary_malformed",
+      `The active authorization has an unparseable end boundary ("${authorization.contract.weekEnd}").`,
     );
   }
   checks.push({

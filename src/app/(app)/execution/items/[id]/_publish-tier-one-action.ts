@@ -178,7 +178,6 @@ export async function publishTierOneAction(
       // so this context is mostly a placeholder. It has to type-check;
       // the publisher reads env directly.
       context: {
-        hasActiveContract: true,
         accountReviewStatus: "confirmed",
         productReviewStatus: "confirmed",
         connectionStatus: null,

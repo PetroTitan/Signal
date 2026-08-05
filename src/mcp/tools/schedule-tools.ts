@@ -42,9 +42,8 @@ import type { FounderPlatform } from "@/core/publishing/platform-guidance";
 import type { WeeklyContractActionType } from "@/core/weekly-contract";
 import {
   ActiveAuthorizationLoadError,
-  evaluateAuthorizationScope,
-  resolveActiveAuthorization,
-  type ActiveAuthorizationResolution,
+  classifyPublishingAuthorization,
+  type PublishingAuthorizationClassification,
 } from "@/repositories/weekly-contract-repository";
 
 const TOOL = "signal.schedule_publish";
@@ -438,10 +437,11 @@ export async function schedulePublishTool(
   // between the expiry check and anything derived from it.
   const authorizationNowMs = Date.now();
 
-  let authorization: ActiveAuthorizationResolution;
+  let authorization: PublishingAuthorizationClassification;
   try {
-    authorization = await resolveActiveAuthorization({
+    authorization = await classifyPublishingAuthorization({
       workspaceId: ctx.workspaceId,
+      subject: { accountId, productId, platform, actionType },
       nowMs: authorizationNowMs,
       db: ctx.db,
     });
@@ -463,43 +463,41 @@ export async function schedulePublishTool(
     });
   }
 
-  if (authorization.outcome === "expired") {
+  if (authorization.kind === "active_expired") {
     return failed({ tool: TOOL, summary: "active_authorization_expired" });
   }
-  if (authorization.outcome === "malformed_boundary") {
+  if (authorization.kind === "active_malformed_boundary") {
     return failed({
       tool: TOOL,
       summary: "active_authorization_boundary_malformed",
     });
   }
+  if (authorization.kind === "paused_relevant") {
+    // A paused envelope that covers this item is a live operator
+    // boundary that has been suspended (paused ↔ active is reversible),
+    // so it refuses rather than falling through to contract-free. A
+    // paused envelope that does NOT cover this item is not relevant and
+    // never reaches here.
+    return failed({ tool: TOOL, summary: "contract_paused" });
+  }
+  if (authorization.kind === "active_out_of_scope") {
+    const SCOPE_REFUSAL_SUMMARY = {
+      account_out_of_scope: "plan_item_account_out_of_contract_scope",
+      product_out_of_scope: "plan_item_product_out_of_contract_scope",
+      platform_out_of_scope: "plan_item_platform_out_of_contract_scope",
+      action_not_permitted: "plan_item_action_not_permitted_by_contract",
+    } as const;
+    return failed({
+      tool: TOOL,
+      summary: SCOPE_REFUSAL_SUMMARY[authorization.reason],
+    });
+  }
 
   const contract =
-    authorization.outcome === "active" ? authorization.contract : null;
+    authorization.kind === "active_in_scope" ? authorization.contract : null;
   const contractId = contract === null ? null : contract.id;
   const contractMode: "contract_attached" | "contract_free_item" =
     contract === null ? "contract_free_item" : "contract_attached";
-
-  if (contract !== null) {
-    const decision = evaluateAuthorizationScope({
-      scope: contract.scope,
-      accountId,
-      productId,
-      platform,
-      actionType,
-    });
-    if (!decision.allowed) {
-      const SCOPE_REFUSAL_SUMMARY = {
-        account_out_of_scope: "plan_item_account_out_of_contract_scope",
-        product_out_of_scope: "plan_item_product_out_of_contract_scope",
-        platform_out_of_scope: "plan_item_platform_out_of_contract_scope",
-        action_not_permitted: "plan_item_action_not_permitted_by_contract",
-      } as const;
-      return failed({
-        tool: TOOL,
-        summary: SCOPE_REFUSAL_SUMMARY[decision.reason],
-      });
-    }
-  }
 
   // ── 7. Get / create execution_queue ───────────────────────────────
   // Contract path: look up the contract-bound queue.

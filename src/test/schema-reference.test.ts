@@ -107,6 +107,71 @@ function productionTableReferences(): TableReference[] {
   return refs;
 }
 
+/**
+ * Files permitted to query `weekly_approval_contracts` directly.
+ *
+ * Authorization gates must go through the canonical repository so that
+ * status interpretation, window validation, scope loading and scope
+ * evaluation cannot drift between callers. That drift is exactly what
+ * P0.1b removed: the scheduler and the safe-test pre-flight each read
+ * the table themselves and each implemented a different (incomplete)
+ * reading of it.
+ *
+ * Every entry is either the canonical repository itself, or a
+ * documented read-only/display or integrity-check reader that reaches
+ * no authorization verdict.
+ */
+const DIRECT_CONTRACT_READERS: ReadonlyMap<string, string> = new Map([
+  [
+    "src/repositories/weekly-contract-repository.ts",
+    "The canonical repository. Owns contract CRUD and the authorization classifier.",
+  ],
+  [
+    "src/mcp/tools/read-tools.ts",
+    "signal.contracts.active — read-only display tool. Returns contract fields to the operator and reaches no authorization verdict. Checks its own query error.",
+  ],
+  [
+    "src/repositories/verification/checks.ts",
+    "DB-integrity check. Verifies execution_items.contract_id references resolve; never gates a publish.",
+  ],
+]);
+
+describe("authorization gate drift", () => {
+  it("only the canonical repository and documented readers query weekly_approval_contracts", () => {
+    const offenders = productionTableReferences()
+      .filter((ref) => ref.table === "weekly_approval_contracts")
+      .filter((ref) => !DIRECT_CONTRACT_READERS.has(ref.file));
+    const detail = offenders
+      .map(
+        (ref) =>
+          `${ref.file}:${ref.line} — authorization gates must use ` +
+          `classifyPublishingAuthorization() from the canonical repository, ` +
+          `or be added to DIRECT_CONTRACT_READERS with a documented reason.`,
+      )
+      .join("\n");
+    expect(detail).toBe("");
+  });
+
+  it("the publisher policy path performs no authorization lookup", () => {
+    // PR #91 removed publish-time contract gating deliberately;
+    // authorization is enforced before execution. P0.1b removed the
+    // vestigial read that survived it. Re-adding one here would
+    // silently reintroduce that gate.
+    const scheduler = fs.readFileSync(
+      path.join(SRC_DIR, "core", "publishing", "publishing-scheduler.ts"),
+      "utf8",
+    );
+    expect(scheduler).not.toContain('from("weekly_approval_contracts")');
+    expect(scheduler).not.toContain("hasActiveContract");
+
+    const policy = fs.readFileSync(
+      path.join(SRC_DIR, "core", "publishing", "publishing-policy.ts"),
+      "utf8",
+    );
+    expect(policy).not.toContain('from("weekly_approval_contracts")');
+  });
+});
+
 describe("schema reference integrity", () => {
   const migrationTables = migrationTableNames();
   const references = productionTableReferences();

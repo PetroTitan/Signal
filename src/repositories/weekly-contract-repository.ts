@@ -315,6 +315,144 @@ export async function resolveActiveAuthorization(input: {
   return { outcome: "active", contract };
 }
 
+/**
+ * Rows a paused-relevance sweep considers, in a deterministic order.
+ *
+ * Unlike `active`, `paused` is NOT constrained to one row per
+ * workspace — `weekly_contracts_one_active_per_workspace`
+ * (20260522040001:91) is a partial unique index `where status =
+ * 'active'`. Several paused envelopes can therefore coexist, so this
+ * returns a list and orders it so the classification is stable.
+ */
+async function selectPausedContractRows(
+  workspaceId: string,
+  supabase: SupabaseClient,
+): Promise<WeeklyApprovalContractRow[]> {
+  const { data, error } = await supabase
+    .from("weekly_approval_contracts")
+    .select("*")
+    .eq("workspace_id", workspaceId)
+    .eq("status", "paused")
+    .order("week_start", { ascending: false })
+    .order("id", { ascending: true });
+  if (error) throw fromPostgres(error, "Failed to load paused contracts.");
+  return (data ?? []) as unknown as WeeklyApprovalContractRow[];
+}
+
+/** The item attributes an authorization is evaluated against. */
+export interface AuthorizationSubject {
+  accountId: string | null;
+  productId: string | null;
+  platform: string;
+  actionType: WeeklyContractActionType;
+}
+
+export type PublishingAuthorizationClassification =
+  /** No authorization governs this subject. */
+  | { kind: "none" }
+  | { kind: "active_in_scope"; contract: WeeklyContract }
+  | {
+      kind: "active_out_of_scope";
+      contract: WeeklyContract;
+      reason: Extract<
+        AuthorizationScopeDecision,
+        { allowed: false }
+      >["reason"];
+    }
+  | { kind: "active_expired"; contract: WeeklyContract }
+  | { kind: "active_malformed_boundary"; contract: WeeklyContract }
+  /** A paused envelope that would govern this subject if resumed. */
+  | { kind: "paused_relevant"; contract: WeeklyContract };
+
+/**
+ * Canonical authorization classification.
+ *
+ * Produces the same status / window / scope reading for every caller.
+ * It deliberately stops short of a verdict: callers apply their own
+ * policy on top, because their product semantics genuinely differ
+ * (MCP permits contract-free scheduling; the safe-test pre-flight
+ * requires an active envelope; the publisher does not re-authorize at
+ * all — see PR #91).
+ *
+ * Ordering rules:
+ *
+ *   1. An active row governs outright. Paused rows are then irrelevant,
+ *      because the operator's live envelope is the operative one.
+ *   2. With no active row, a paused row governs only if it is
+ *      RELEVANT: still inside its window AND covering this subject on
+ *      all four scope axes. That is what stops an unrelated paused
+ *      envelope — a different product, platform, or a week long past —
+ *      from freezing deliberate contract-free publishing.
+ *   3. A paused row whose boundary is unparseable is treated as
+ *      relevant when it covers the subject: we cannot prove it is
+ *      stale, so we fail closed.
+ *
+ * @throws ActiveAuthorizationLoadError on any load failure. A failure
+ *         is never reported as "no authorization".
+ */
+export async function classifyPublishingAuthorization(input: {
+  workspaceId: string;
+  subject: AuthorizationSubject;
+  nowMs: number;
+  db?: SupabaseClient;
+}): Promise<PublishingAuthorizationClassification> {
+  const supabase = resolveDb(input.db);
+
+  const active = await resolveActiveAuthorization({
+    workspaceId: input.workspaceId,
+    nowMs: input.nowMs,
+    db: supabase,
+  });
+
+  if (active.outcome === "malformed_boundary") {
+    return { kind: "active_malformed_boundary", contract: active.contract };
+  }
+  if (active.outcome === "expired") {
+    return { kind: "active_expired", contract: active.contract };
+  }
+  if (active.outcome === "active") {
+    const decision = evaluateAuthorizationScope({
+      scope: active.contract.scope,
+      ...input.subject,
+    });
+    return decision.allowed
+      ? { kind: "active_in_scope", contract: active.contract }
+      : {
+          kind: "active_out_of_scope",
+          contract: active.contract,
+          reason: decision.reason,
+        };
+  }
+
+  // No active envelope — does a paused one still govern this subject?
+  let pausedRows: WeeklyApprovalContractRow[];
+  try {
+    pausedRows = await selectPausedContractRows(input.workspaceId, supabase);
+  } catch (err) {
+    throw new ActiveAuthorizationLoadError("contract", err);
+  }
+
+  for (const row of pausedRows) {
+    let scope: WeeklyContractScope;
+    try {
+      scope = await loadContractScope(input.workspaceId, row.id, supabase);
+    } catch (err) {
+      throw new ActiveAuthorizationLoadError("scope", err);
+    }
+    const contract: WeeklyContract = { ...toContractBase(row), scope };
+
+    const boundaryMs = authorizationWindowEndExclusiveMs(contract.weekEnd);
+    // A paused envelope whose window has already closed is spent: it
+    // cannot be resumed into a governing state, so it does not block.
+    if (boundaryMs !== null && input.nowMs >= boundaryMs) continue;
+
+    const decision = evaluateAuthorizationScope({ scope, ...input.subject });
+    if (decision.allowed) return { kind: "paused_relevant", contract };
+  }
+
+  return { kind: "none" };
+}
+
 // =====================================================================
 // Reads
 // =====================================================================
