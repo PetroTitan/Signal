@@ -1,5 +1,20 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
+
+// The MCP path must never construct a cookie-bound Supabase client:
+// there is no request context behind an operator token. Any call to
+// `createSupabaseServerClient` is counted and throws, so a test that
+// completes successfully proves the injected service-role client was
+// the only one used.
+let cookieClientCalls = 0;
+vi.mock("@/lib/supabase", () => ({
+  createSupabaseServerClient: () => {
+    cookieClientCalls += 1;
+    throw new Error(
+      "createSupabaseServerClient() must not be called on the MCP path",
+    );
+  },
+}));
 
 import { schedulePublishTool } from "./schedule-tools";
 import type { ToolContext } from "../tool-context";
@@ -11,10 +26,20 @@ import { TOOLS_BY_NAME } from "../tool-registry";
 // Fake Supabase client — same shape used by planning-tools.test.ts
 // =====================================================================
 
+// Table names below are the REAL ones, pinned against
+// supabase/migrations by `schema-reference.test.ts`. The fake store
+// must never invent a table that does not exist in the schema — that
+// is exactly how the phantom `weekly_contracts` query stayed green
+// while being dead in production.
 interface FakeStore {
   weekly_plan_items: Array<Record<string, unknown>>;
   platform_connections: Array<Record<string, unknown>>;
-  weekly_contracts: Array<Record<string, unknown>>;
+  weekly_approval_contracts: Array<Record<string, unknown>>;
+  weekly_contract_accounts: Array<Record<string, unknown>>;
+  weekly_contract_products: Array<Record<string, unknown>>;
+  weekly_contract_platforms: Array<Record<string, unknown>>;
+  weekly_contract_allowed_actions: Array<Record<string, unknown>>;
+  weekly_contract_execution_windows: Array<Record<string, unknown>>;
   execution_queues: Array<Record<string, unknown>>;
   execution_items: Array<Record<string, unknown>>;
   execution_logs: Array<Record<string, unknown>>;
@@ -25,13 +50,25 @@ function emptyStore(): FakeStore {
   return {
     weekly_plan_items: [],
     platform_connections: [],
-    weekly_contracts: [],
+    weekly_approval_contracts: [],
+    weekly_contract_accounts: [],
+    weekly_contract_products: [],
+    weekly_contract_platforms: [],
+    weekly_contract_allowed_actions: [],
+    weekly_contract_execution_windows: [],
     execution_queues: [],
     execution_items: [],
     execution_logs: [],
     activity_events: [],
   };
 }
+
+/**
+ * Tables the fake client should fail on, so the fail-closed paths can
+ * be exercised. Keyed by table name; the value becomes the returned
+ * `error`.
+ */
+type FailingTables = Partial<Record<keyof FakeStore, { message: string }>>;
 
 let idCounter = 0;
 function fakeUuid(prefix = "aaaa"): string {
@@ -40,11 +77,15 @@ function fakeUuid(prefix = "aaaa"): string {
   return `${prefix}aaaa-bbbb-cccc-dddd-${hex}`;
 }
 
-function makeFakeClient(store: FakeStore): SupabaseClient {
+function makeFakeClient(
+  store: FakeStore,
+  failing: FailingTables = {},
+): SupabaseClient {
   function chain(table: keyof FakeStore) {
     const filters: Array<(row: Record<string, unknown>) => boolean> = [];
     let insertRow: Record<string, unknown> | null = null;
     let updatePatch: Record<string, unknown> | null = null;
+    const failure = failing[table] ?? null;
     const api = {
       select(_cols: string) {
         return api;
@@ -74,6 +115,7 @@ function makeFakeClient(store: FakeStore): SupabaseClient {
         return api;
       },
       async maybeSingle() {
+        if (failure) return { data: null, error: failure };
         const rows = (store[table] as Record<string, unknown>[]).filter((r) =>
           filters.every((f) => f(r)),
         );
@@ -98,6 +140,10 @@ function makeFakeClient(store: FakeStore): SupabaseClient {
           },
         ) => void,
       ) {
+        if (failure) {
+          resolve({ data: null, error: failure } as never);
+          return;
+        }
         // Terminal for update/insert without .select() — needed when
         // the handler updates execution_items without selecting back.
         if (updatePatch !== null) {
@@ -211,27 +257,85 @@ function seedConnection(
   });
 }
 
+/**
+ * Seed an approval contract across the REAL schema: one row in
+ * `weekly_approval_contracts` plus its scope join tables. Scope is
+ * never a JSON column — that shape only ever existed in a repository
+ * projection, which is what made the phantom query look plausible.
+ *
+ * `week_end` defaults far in the future so the vast majority of tests
+ * exercise scope rather than expiry.
+ */
 function seedContract(
   store: FakeStore,
   overrides: {
     account_ids?: string[];
     product_ids?: string[];
     platforms?: string[];
+    allowed_actions?: string[];
+    week_start?: string;
+    week_end?: string;
+    status?: string;
   } = {},
 ): void {
-  store.weekly_contracts.push({
+  store.weekly_approval_contracts.push({
     id: CONTRACT_ID,
     workspace_id: WS,
-    status: "active",
-    week_start: "2026-05-25",
-    week_end: "2026-05-31",
+    created_by: null,
+    approved_by: null,
     title: "Week of 2026-05-25",
-    scope: {
-      accountIds: overrides.account_ids ?? ["acct-1"],
-      productIds: overrides.product_ids ?? ["prod-1"],
-      platforms: overrides.platforms ?? ["bluesky"],
-    },
+    week_start: overrides.week_start ?? "2026-05-25",
+    week_end: overrides.week_end ?? "2999-12-31",
+    status: overrides.status ?? "active",
+    max_risk_level: "medium",
+    max_actions_total: null,
+    max_actions_per_day: null,
+    max_actions_per_platform_per_day: null,
+    pause_on_first_failure: true,
+    pause_on_risk_event: true,
+    notes: null,
+    approval_text_phrase: null,
+    approved_at: null,
+    activated_at: null,
+    paused_at: null,
+    expired_at: null,
+    revoked_at: null,
+    metadata: {},
+    created_at: "2026-05-25T00:00:00.000Z",
+    updated_at: "2026-05-25T00:00:00.000Z",
   });
+  for (const accountId of overrides.account_ids ?? ["acct-1"]) {
+    store.weekly_contract_accounts.push({
+      contract_id: CONTRACT_ID,
+      workspace_id: WS,
+      account_id: accountId,
+    });
+  }
+  for (const productId of overrides.product_ids ?? ["prod-1"]) {
+    store.weekly_contract_products.push({
+      contract_id: CONTRACT_ID,
+      workspace_id: WS,
+      product_id: productId,
+    });
+  }
+  for (const platform of overrides.platforms ?? ["bluesky"]) {
+    store.weekly_contract_platforms.push({
+      contract_id: CONTRACT_ID,
+      workspace_id: WS,
+      platform,
+    });
+  }
+  const actions = overrides.allowed_actions ?? [
+    "publish_scheduled_post",
+    "publish_scheduled_comment",
+  ];
+  for (const actionType of actions) {
+    store.weekly_contract_allowed_actions.push({
+      contract_id: CONTRACT_ID,
+      workspace_id: WS,
+      action_type: actionType,
+    });
+  }
 }
 
 function seedQueue(store: FakeStore): void {
@@ -716,6 +820,235 @@ describe("schedulePublishTool — risk + scope gate", () => {
 
     expect(result.ok).toBe(false);
     expect(result.summary).toBe("plan_item_account_out_of_contract_scope");
+  });
+});
+
+// =====================================================================
+// Publishing-authorization gate (P0.1)
+// =====================================================================
+//
+// Pre-fix, this gate queried a `weekly_contracts` table that no
+// migration creates. The error was discarded, a failed query read as
+// "no active contract", and every MCP-scheduled publish ran
+// contract-free with the entire scope block unreachable. The tests
+// passed because the fake store invented the phantom table.
+//
+// These tests pin the corrected semantics:
+//
+//   no active authorization        → contract-free (deliberate)
+//   active + in scope              → allowed
+//   active + out of any scope axis → refused, never downgraded
+//   active + past its window       → refused (evaluated at read time)
+//   non-active row                 → does not authorize
+//   load failure (either stage)    → refused, structured code
+//
+describe("schedulePublishTool — publishing authorization", () => {
+  it("allows deliberate contract-free scheduling when no active authorization exists", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store);
+    seedConnection(store);
+    // No contract seeded at all.
+
+    const result = await schedulePublishTool(ctxWith(store), validArgs(planItemId));
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const data = result.data as {
+        contract_mode: string;
+        contract_id: string | null;
+      };
+      expect(data.contract_mode).toBe("contract_free_item");
+      expect(data.contract_id).toBe(null);
+    }
+  });
+
+  it("allows scheduling when the item is fully inside the authorization scope", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store);
+    seedConnection(store);
+    seedContract(store, {
+      account_ids: ["acct-1"],
+      product_ids: ["prod-1"],
+      platforms: ["bluesky"],
+      allowed_actions: ["publish_scheduled_post"],
+    });
+    seedQueue(store);
+
+    const result = await schedulePublishTool(ctxWith(store), validArgs(planItemId));
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const data = result.data as {
+        contract_mode: string;
+        contract_id: string | null;
+      };
+      expect(data.contract_mode).toBe("contract_attached");
+      expect(data.contract_id).toBe(CONTRACT_ID);
+    }
+  });
+
+  it("refuses when the product is out of authorization scope", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store, { product_id: "outside-prod" });
+    seedConnection(store);
+    seedContract(store, { product_ids: ["different-prod"] });
+
+    const result = await schedulePublishTool(ctxWith(store), validArgs(planItemId));
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toBe("plan_item_product_out_of_contract_scope");
+  });
+
+  it("refuses when the platform is out of authorization scope", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store, { platform: "bluesky" });
+    seedConnection(store, { platform: "bluesky" });
+    seedContract(store, { platforms: ["telegram"] });
+
+    const result = await schedulePublishTool(ctxWith(store), validArgs(planItemId));
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toBe("plan_item_platform_out_of_contract_scope");
+  });
+
+  it("refuses when the action type is not permitted by the authorization", async () => {
+    const store = emptyStore();
+    // content_type "post" maps to action publish_scheduled_post.
+    const planItemId = seedPlanItem(store);
+    seedConnection(store);
+    seedContract(store, {
+      allowed_actions: ["publish_scheduled_comment", "mark_item_skipped"],
+    });
+
+    const result = await schedulePublishTool(ctxWith(store), validArgs(planItemId));
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toBe("plan_item_action_not_permitted_by_contract");
+  });
+
+  it("refuses an authorization whose window has closed, even while status says active", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store);
+    seedConnection(store);
+    seedContract(store, {
+      week_start: "2020-01-01",
+      week_end: "2020-01-07",
+      status: "active",
+    });
+
+    const result = await schedulePublishTool(ctxWith(store), validArgs(planItemId));
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toBe("active_authorization_expired");
+  });
+
+  it("refuses when the authorization end boundary is malformed", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store);
+    seedConnection(store);
+    seedContract(store, { week_end: "not-a-date" });
+
+    const result = await schedulePublishTool(ctxWith(store), validArgs(planItemId));
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toBe("active_authorization_boundary_malformed");
+  });
+
+  it("does not let a revoked authorization authorize scheduling", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store);
+    seedConnection(store);
+    // Revoked contract whose scope would NOT admit this item. It must
+    // neither authorize (contract_id stays null) nor be consulted for
+    // scope, because only `active` rows are an operator boundary.
+    seedContract(store, {
+      status: "revoked",
+      platforms: ["telegram"],
+      account_ids: ["someone-else"],
+    });
+
+    const result = await schedulePublishTool(ctxWith(store), validArgs(planItemId));
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const data = result.data as {
+        contract_mode: string;
+        contract_id: string | null;
+      };
+      expect(data.contract_mode).toBe("contract_free_item");
+      expect(data.contract_id).toBe(null);
+    }
+  });
+
+  it("fails closed when the authorization row cannot be loaded", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store);
+    seedConnection(store);
+    seedContract(store);
+
+    const ctx: ToolContext = {
+      ...ctxWith(store),
+      db: makeFakeClient(store, {
+        weekly_approval_contracts: { message: "permission denied" },
+      }),
+    };
+    const result = await schedulePublishTool(ctx, validArgs(planItemId));
+
+    expect(result.ok).toBe(false);
+    expect(result.summary.startsWith("authorization_lookup_failed:")).toBe(true);
+    // Never silently downgraded to the contract-free path.
+    expect(result.summary).not.toContain("contract_free");
+    expect(store.execution_items).toHaveLength(0);
+  });
+
+  it("fails closed when the authorization scope join tables cannot be loaded", async () => {
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store);
+    seedConnection(store);
+    seedContract(store);
+
+    const ctx: ToolContext = {
+      ...ctxWith(store),
+      db: makeFakeClient(store, {
+        weekly_contract_platforms: { message: "relation unavailable" },
+      }),
+    };
+    const result = await schedulePublishTool(ctx, validArgs(planItemId));
+
+    expect(result.ok).toBe(false);
+    expect(result.summary.startsWith("authorization_scope_lookup_failed:")).toBe(
+      true,
+    );
+    expect(store.execution_items).toHaveLength(0);
+  });
+
+  it("resolves the authorization through the injected client, never a cookie-bound one", async () => {
+    // `createSupabaseServerClient` is mocked at module scope (see the
+    // vi.mock at the top of this file) to throw if it is ever called.
+    // Reaching a successful contract_attached schedule therefore proves
+    // the repository used ctx.db and constructed no request-scoped
+    // client on the MCP path.
+    const store = emptyStore();
+    const planItemId = seedPlanItem(store);
+    seedConnection(store);
+    seedContract(store);
+    seedQueue(store);
+
+    const result = await schedulePublishTool(ctxWith(store), validArgs(planItemId));
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const data = result.data as { contract_id: string | null };
+      expect(data.contract_id).toBe(CONTRACT_ID);
+    }
+    expect(cookieClientCalls).toBe(0);
+  });
+
+  it("never references the phantom `weekly_contracts` table", () => {
+    // The fake store is the schema the tool is tested against. If a
+    // phantom table reappears here, the corresponding production query
+    // would be dead on arrival exactly as it was pre-fix.
+    expect(Object.keys(emptyStore())).not.toContain("weekly_contracts");
   });
 });
 
