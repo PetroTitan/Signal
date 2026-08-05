@@ -1,4 +1,5 @@
 import "server-only";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase";
 import type {
   WeeklyApprovalContractInsert,
@@ -21,9 +22,27 @@ import {
   type WeeklyContract,
   type WeeklyContractActionType,
   type WeeklyContractRiskCeiling,
+  type WeeklyContractScope,
   type WeeklyContractStatus,
 } from "@/core/weekly-contract";
 import { fromPostgres, notAuthenticated, notFound } from "./errors";
+
+/**
+ * Resolve the Supabase client for a repository call.
+ *
+ * Callers running inside a request (server components, server
+ * actions) omit `db` and get the cookie-bound client. Callers running
+ * outside a request context — notably the MCP tool dispatcher, which
+ * holds a service-role client — pass their own.
+ *
+ * `??` short-circuits, so `createSupabaseServerClient()` is never
+ * invoked when an injected client is supplied. That is the property
+ * the MCP path depends on: no cookie-aware client is constructed
+ * there.
+ */
+function resolveDb(db?: SupabaseClient): SupabaseClient {
+  return db ?? (createSupabaseServerClient() as unknown as SupabaseClient);
+}
 
 function toContractBase(
   row: WeeklyApprovalContractRow,
@@ -68,8 +87,9 @@ function toWindow(row: WeeklyContractExecutionWindowRow): ExecutionWindowDef {
 async function loadContractScope(
   workspaceId: string,
   contractId: string,
+  db?: SupabaseClient,
 ): Promise<WeeklyContract["scope"]> {
-  const supabase = createSupabaseServerClient();
+  const supabase = resolveDb(db);
   const [accounts, products, platforms, actions, windows] = await Promise.all([
     supabase
       .from("weekly_contract_accounts")
@@ -125,6 +145,177 @@ async function loadContractScope(
 }
 
 // =====================================================================
+// Active-authorization evaluation
+//
+// One canonical answer to "may this item be scheduled?", used by any
+// caller that must enforce an operator's approval envelope.
+//
+// Design rules this section encodes:
+//
+//   - Contract-free per-item scheduling is DELIBERATE (see migration
+//     20260605000001_contract_free_per_post_publishing.sql). It stays
+//     allowed when NO active authorization governs the workspace.
+//   - Once an active authorization exists, its scope is an explicit
+//     operator boundary: out-of-scope items are REFUSED, never
+//     silently downgraded to the contract-free path.
+//   - Expiry is enforced at READ time. Correctness must not depend on
+//     a cron or background writer having run.
+//   - A load failure is never "no contract". It throws, and the caller
+//     turns it into a refusal.
+// =====================================================================
+
+/**
+ * Which load failed. Callers map this to distinct refusal codes so a
+ * schema/permission fault on the contract row is distinguishable from
+ * one on the scope join tables.
+ */
+export type ActiveAuthorizationLoadStage = "contract" | "scope";
+
+export class ActiveAuthorizationLoadError extends Error {
+  readonly stage: ActiveAuthorizationLoadStage;
+  readonly reason: unknown;
+
+  constructor(stage: ActiveAuthorizationLoadStage, reason: unknown) {
+    const detail =
+      reason instanceof Error ? reason.message : String(reason ?? "unknown");
+    super(`Failed to load active authorization (${stage}): ${detail}`);
+    this.name = "ActiveAuthorizationLoadError";
+    this.stage = stage;
+    this.reason = reason;
+  }
+}
+
+export type ActiveAuthorizationResolution =
+  /** No active authorization governs this workspace. */
+  | { outcome: "none" }
+  /** An active, in-date authorization. Its scope must still be checked. */
+  | { outcome: "active"; contract: WeeklyContract }
+  /** Row says `active` but its window has closed. Must not authorize. */
+  | { outcome: "expired"; contract: WeeklyContract }
+  /** Row says `active` but its end boundary is unparseable. Fail closed. */
+  | { outcome: "malformed_boundary"; contract: WeeklyContract };
+
+/**
+ * Exclusive end of an authorization window, in epoch ms.
+ *
+ * `week_end` is a DATE (`YYYY-MM-DD`) with no timezone, and it is
+ * inclusive — an authorization "ending 2026-05-31" covers all of the
+ * 31st. The boundary is therefore midnight UTC at the START of the
+ * following day, and the window is closed once `now >= boundary`.
+ *
+ * Returns null when the value is not a well-formed calendar date, so
+ * the caller can fail closed instead of guessing.
+ */
+export function authorizationWindowEndExclusiveMs(
+  weekEnd: string,
+): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(weekEnd.trim());
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const startOfEndDay = Date.UTC(year, month - 1, day);
+  const parsed = new Date(startOfEndDay);
+  // Reject impossible dates that Date.UTC would silently roll over
+  // (e.g. 2026-02-30 becoming March 2nd).
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return startOfEndDay + 24 * 60 * 60 * 1000;
+}
+
+export type AuthorizationScopeDecision =
+  | { allowed: true }
+  | {
+      allowed: false;
+      reason:
+        | "account_out_of_scope"
+        | "product_out_of_scope"
+        | "platform_out_of_scope"
+        | "action_not_permitted";
+    };
+
+/**
+ * Pure scope check against an already-loaded authorization.
+ *
+ * Account and product are checked only when the item carries one — an
+ * item with no account is not constrained by the account scope. This
+ * preserves the pre-existing semantics. Platform and action type are
+ * always checked.
+ */
+export function evaluateAuthorizationScope(input: {
+  scope: WeeklyContractScope;
+  accountId: string | null;
+  productId: string | null;
+  platform: string;
+  actionType: WeeklyContractActionType;
+}): AuthorizationScopeDecision {
+  const { scope, accountId, productId, platform, actionType } = input;
+  if (accountId && !scope.accountIds.includes(accountId)) {
+    return { allowed: false, reason: "account_out_of_scope" };
+  }
+  if (productId && !scope.productIds.includes(productId)) {
+    return { allowed: false, reason: "product_out_of_scope" };
+  }
+  if (!scope.platforms.includes(platform)) {
+    return { allowed: false, reason: "platform_out_of_scope" };
+  }
+  if (!scope.allowedActions.includes(actionType)) {
+    return { allowed: false, reason: "action_not_permitted" };
+  }
+  return { allowed: true };
+}
+
+/**
+ * Load the workspace's active authorization and classify it against a
+ * single captured `now`.
+ *
+ * Only rows with `status = 'active'` are considered. A revoked, paused,
+ * expired or draft row therefore does not authorize anything — and it
+ * does not block the deliberate contract-free path either, which is
+ * what keeps a stale envelope from permanently freezing per-item
+ * scheduling.
+ *
+ * @throws ActiveAuthorizationLoadError when either load fails. Never
+ *         returns `none` because of an error.
+ */
+export async function resolveActiveAuthorization(input: {
+  workspaceId: string;
+  nowMs: number;
+  db?: SupabaseClient;
+}): Promise<ActiveAuthorizationResolution> {
+  const supabase = resolveDb(input.db);
+
+  let row: WeeklyApprovalContractRow | null;
+  try {
+    row = await selectActiveContractRow(input.workspaceId, supabase);
+  } catch (err) {
+    throw new ActiveAuthorizationLoadError("contract", err);
+  }
+  if (!row) return { outcome: "none" };
+
+  let scope: WeeklyContractScope;
+  try {
+    scope = await loadContractScope(input.workspaceId, row.id, supabase);
+  } catch (err) {
+    throw new ActiveAuthorizationLoadError("scope", err);
+  }
+
+  const contract: WeeklyContract = { ...toContractBase(row), scope };
+
+  const boundaryMs = authorizationWindowEndExclusiveMs(contract.weekEnd);
+  if (boundaryMs === null) return { outcome: "malformed_boundary", contract };
+  if (input.nowMs >= boundaryMs) return { outcome: "expired", contract };
+
+  return { outcome: "active", contract };
+}
+
+// =====================================================================
 // Reads
 // =====================================================================
 
@@ -147,10 +338,16 @@ export async function listWeeklyContracts(
   return rows.map((row, i) => ({ ...toContractBase(row), scope: scopes[i]! }));
 }
 
-export async function getActiveContract(
+/**
+ * The single query that defines "the active approval contract for
+ * this workspace". Shared by `getActiveContract` and
+ * `resolveActiveAuthorization` so contract selection is never
+ * duplicated.
+ */
+async function selectActiveContractRow(
   workspaceId: string,
-): Promise<WeeklyContract | null> {
-  const supabase = createSupabaseServerClient();
+  supabase: SupabaseClient,
+): Promise<WeeklyApprovalContractRow | null> {
   const { data, error } = await supabase
     .from("weekly_approval_contracts")
     .select("*")
@@ -159,8 +356,17 @@ export async function getActiveContract(
     .maybeSingle();
   if (error) throw fromPostgres(error, "Failed to load active weekly contract.");
   if (!data) return null;
-  const row = data as unknown as WeeklyApprovalContractRow;
-  const scope = await loadContractScope(workspaceId, row.id);
+  return data as unknown as WeeklyApprovalContractRow;
+}
+
+export async function getActiveContract(
+  workspaceId: string,
+  db?: SupabaseClient,
+): Promise<WeeklyContract | null> {
+  const supabase = resolveDb(db);
+  const row = await selectActiveContractRow(workspaceId, supabase);
+  if (!row) return null;
+  const scope = await loadContractScope(workspaceId, row.id, supabase);
   return { ...toContractBase(row), scope };
 }
 

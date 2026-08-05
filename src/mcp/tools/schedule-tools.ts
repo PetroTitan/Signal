@@ -21,8 +21,13 @@ import "server-only";
  *     (workspace, account, platform))
  *   - plan_item.risk_level !== "blocked" (proxy for the QA verdict;
  *     the existing approve flow uses the same check)
- *   - active weekly contract exists and the item's account/product/
- *     platform are inside its scope
+ *   - publishing authorization: when an active approval contract
+ *     governs the workspace, the item's account / product / platform /
+ *     action type must all be inside its scope and the contract must
+ *     still be within its window. When no active contract exists, the
+ *     deliberate contract-free per-item path applies. A failure to
+ *     load the authorization refuses — it is never read as "no
+ *     contract".
  *   - scheduled_at parsed by the schema parser (≥ 2 minutes future)
  *
  * No platform publish API is called. No retries. No bulk. No
@@ -34,6 +39,13 @@ import { ok, failed, type McpToolResponse } from "../responses";
 import type { ToolContext } from "../tool-context";
 import type { SchedulePublishArgs } from "../schemas";
 import type { FounderPlatform } from "@/core/publishing/platform-guidance";
+import type { WeeklyContractActionType } from "@/core/weekly-contract";
+import {
+  ActiveAuthorizationLoadError,
+  evaluateAuthorizationScope,
+  resolveActiveAuthorization,
+  type ActiveAuthorizationResolution,
+} from "@/repositories/weekly-contract-repository";
 
 const TOOL = "signal.schedule_publish";
 
@@ -400,57 +412,91 @@ export async function schedulePublishTool(
     }
   }
 
-  // ── 6. Contract scope check (optional) ────────────────────────────
+  // ── 6. Publishing-authorization gate ──────────────────────────────
   //
-  // Active weekly contract is OPTIONAL post-migration. When present,
-  // we apply scope checks. When absent, the per-post path runs
-  // contract-free.
-  const { data: contract } = await ctx.db
-    .from("weekly_contracts")
-    .select("id, scope, week_start, week_end, title")
-    .eq("workspace_id", ctx.workspaceId)
-    .eq("status", "active")
-    .maybeSingle();
-  const contractId =
-    contract === null
-      ? null
-      : (contract as { id: string }).id;
+  // Contract-free per-item scheduling is deliberate (migration
+  // 20260605000001_contract_free_per_post_publishing.sql) and stays
+  // allowed when NO active authorization governs the workspace.
+  //
+  // Once an active authorization exists it is an explicit operator
+  // boundary: an out-of-scope item is REFUSED, never downgraded to the
+  // contract-free path. Expiry is evaluated here rather than trusted
+  // from `status`, so correctness does not depend on any background
+  // writer. A load failure is a refusal, never "no contract".
+  //
+  // The authorization is resolved through the canonical repository
+  // helper — the same one the UI uses — with this tool's service-role
+  // client injected, so scope comes from the real join tables and no
+  // cookie-bound client is constructed on the MCP path.
+  const actionType: WeeklyContractActionType =
+    (planItem as { content_type: string | null }).content_type === "comment"
+      ? "publish_scheduled_comment"
+      : "publish_scheduled_post";
+  const productId = (planItem as { product_id: string | null }).product_id;
+
+  // One captured `now` for the whole evaluation — no boundary drift
+  // between the expiry check and anything derived from it.
+  const authorizationNowMs = Date.now();
+
+  let authorization: ActiveAuthorizationResolution;
+  try {
+    authorization = await resolveActiveAuthorization({
+      workspaceId: ctx.workspaceId,
+      nowMs: authorizationNowMs,
+      db: ctx.db,
+    });
+  } catch (err) {
+    if (err instanceof ActiveAuthorizationLoadError) {
+      return failed({
+        tool: TOOL,
+        summary:
+          err.stage === "scope"
+            ? `authorization_scope_lookup_failed:${err.message}`
+            : `authorization_lookup_failed:${err.message}`,
+      });
+    }
+    return failed({
+      tool: TOOL,
+      summary: `authorization_lookup_failed:${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    });
+  }
+
+  if (authorization.outcome === "expired") {
+    return failed({ tool: TOOL, summary: "active_authorization_expired" });
+  }
+  if (authorization.outcome === "malformed_boundary") {
+    return failed({
+      tool: TOOL,
+      summary: "active_authorization_boundary_malformed",
+    });
+  }
+
+  const contract =
+    authorization.outcome === "active" ? authorization.contract : null;
+  const contractId = contract === null ? null : contract.id;
   const contractMode: "contract_attached" | "contract_free_item" =
     contract === null ? "contract_free_item" : "contract_attached";
 
   if (contract !== null) {
-    const scope = (
-      contract as {
-        scope: {
-          accountIds: string[];
-          productIds: string[];
-          platforms: string[];
-        } | null;
-      }
-    ).scope;
-    if (!scope) {
+    const decision = evaluateAuthorizationScope({
+      scope: contract.scope,
+      accountId,
+      productId,
+      platform,
+      actionType,
+    });
+    if (!decision.allowed) {
+      const SCOPE_REFUSAL_SUMMARY = {
+        account_out_of_scope: "plan_item_account_out_of_contract_scope",
+        product_out_of_scope: "plan_item_product_out_of_contract_scope",
+        platform_out_of_scope: "plan_item_platform_out_of_contract_scope",
+        action_not_permitted: "plan_item_action_not_permitted_by_contract",
+      } as const;
       return failed({
         tool: TOOL,
-        summary: "active_contract_has_no_scope",
-      });
-    }
-    if (accountId && !scope.accountIds.includes(accountId)) {
-      return failed({
-        tool: TOOL,
-        summary: "plan_item_account_out_of_contract_scope",
-      });
-    }
-    const productId = (planItem as { product_id: string | null }).product_id;
-    if (productId && !scope.productIds.includes(productId)) {
-      return failed({
-        tool: TOOL,
-        summary: "plan_item_product_out_of_contract_scope",
-      });
-    }
-    if (!scope.platforms.includes(platform)) {
-      return failed({
-        tool: TOOL,
-        summary: "plan_item_platform_out_of_contract_scope",
+        summary: SCOPE_REFUSAL_SUMMARY[decision.reason],
       });
     }
   }
@@ -478,18 +524,9 @@ export async function schedulePublishTool(
     const insertPayload = {
       workspace_id: ctx.workspaceId,
       contract_id: contractId,
-      title:
-        contract === null
-          ? "Contract-free items"
-          : (contract as { title: string }).title,
-      week_start:
-        contract === null
-          ? todayIso
-          : (contract as { week_start: string }).week_start,
-      week_end:
-        contract === null
-          ? endIso
-          : (contract as { week_end: string }).week_end,
+      title: contract === null ? "Contract-free items" : contract.title,
+      week_start: contract === null ? todayIso : contract.weekStart,
+      week_end: contract === null ? endIso : contract.weekEnd,
       status: "active",
     };
     const { data: newQueue, error: queueErr } = await ctx.db
@@ -519,13 +556,10 @@ export async function schedulePublishTool(
         workspace_id: ctx.workspaceId,
         queue_id: queueId,
         contract_id: contractId,
-        action_type:
-          (planItem as { content_type: string | null }).content_type === "comment"
-            ? "publish_scheduled_comment"
-            : "publish_scheduled_post",
+        action_type: actionType,
         source_entity_type: "weekly_plan_item",
         source_entity_id: (planItem as { id: string }).id,
-        product_id: (planItem as { product_id: string | null }).product_id,
+        product_id: productId,
         account_id: accountId,
         platform,
         title: (planItem as { title: string | null }).title,
