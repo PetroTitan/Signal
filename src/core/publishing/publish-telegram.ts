@@ -141,15 +141,21 @@ export async function publishToTelegram(
       timeoutMs: 20_000,
     });
   } catch (err) {
+    // P0.2 class C. sendMessage / sendPhoto are non-idempotent CREATE
+    // calls: the request was dispatched and no response came back, so
+    // the message may already be in the channel. Reporting a plain API
+    // error let the operator "Try again" and post it twice.
     if (isTimeoutError(err)) {
       return publishFail(
-        "platform_api_error",
-        "Telegram didn't respond in time (20s).",
+        "publish_outcome_unknown",
+        "Telegram didn't respond in time (20s). The message may or may not have been delivered — check the channel before retrying.",
+        { http_status: 0 },
       );
     }
     return publishFail(
-      "platform_api_error",
-      `Telegram network error: ${err instanceof Error ? err.message : "unknown"}`,
+      "publish_outcome_unknown",
+      `Telegram: the request was sent but no response came back (${err instanceof Error ? err.message : "unknown"}). Check the channel before retrying.`,
+      { http_status: 0 },
     );
   }
 
@@ -172,9 +178,11 @@ export async function publishToTelegram(
   try {
     json = (await response.json()) as TelegramApiResponse;
   } catch {
+    // P0.2 class C. Telegram answered but the body was unreadable, so
+    // delivery is unconfirmed either way.
     return publishFail(
-      "platform_api_error",
-      "Couldn't read Telegram's response.",
+      "publish_outcome_unknown",
+      "Telegram accepted the request but its response could not be read. The message may already be in the channel — check before retrying.",
       { http_status: response.status },
     );
   }
@@ -254,10 +262,12 @@ async function sendTelegramPhoto(
     });
   } catch (err) {
     if (isTimeoutError(err)) {
+      // P0.2 class C — sendPhoto is a non-idempotent CREATE.
       return publishFail(
-        "platform_api_error",
-        "Telegram didn't respond in time (30s).",
+        "publish_outcome_unknown",
+        "Telegram didn't respond in time (30s). The photo may or may not have been delivered — check the channel before retrying.",
         {
+          http_status: 0,
           telegram_endpoint: "sendPhoto",
           creative_id: creativeId,
           media_mode: "telegram_photo",
@@ -265,9 +275,10 @@ async function sendTelegramPhoto(
       );
     }
     return publishFail(
-      "platform_api_error",
-      `Telegram network error: ${err instanceof Error ? err.message : "unknown"}`,
+      "publish_outcome_unknown",
+      `Telegram: the sendPhoto request was sent but no response came back (${err instanceof Error ? err.message : "unknown"}). Check the channel before retrying.`,
       {
+        http_status: 0,
         telegram_endpoint: "sendPhoto",
         creative_id: creativeId,
         media_mode: "telegram_photo",
@@ -305,8 +316,8 @@ async function sendTelegramPhoto(
     json = (await response.json()) as TelegramApiResponse;
   } catch {
     return publishFail(
-      "platform_api_error",
-      "Couldn't read Telegram's response.",
+      "publish_outcome_unknown",
+      "Telegram accepted the photo request but its response could not be read. The photo may already be in the channel — check before retrying.",
       {
         http_status: response.status,
         telegram_endpoint: "sendPhoto",

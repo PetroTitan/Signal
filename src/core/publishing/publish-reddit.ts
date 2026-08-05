@@ -108,9 +108,15 @@ export async function publishToReddit(
       body: body.toString(),
     });
   } catch (err) {
+    // P0.2 class C. POST /api/submit is a non-idempotent CREATE. The
+    // request was dispatched and no response came back, so the post may
+    // exist. Reporting this as a plain API error let the retry policy
+    // treat it as transient and let the operator's "Try again" fire —
+    // either of which could duplicate a live post.
     return publishFail(
-      "platform_api_error",
-      `Network error: ${err instanceof Error ? err.message : "unknown"}`,
+      "publish_outcome_unknown",
+      `Reddit: the submit request was sent but no response came back (${err instanceof Error ? err.message : "unknown"}). The post may or may not exist — check r/ before retrying.`,
+      { http_status: 0, endpoint: "api/submit" },
     );
   }
 
@@ -142,9 +148,14 @@ export async function publishToReddit(
   try {
     json = await response.json();
   } catch (err) {
+    // P0.2 class C. Reddit answered 2xx — the submit very likely
+    // succeeded — but the body could not be parsed, so no permalink was
+    // captured. Treating this as a plain failure invited a retry that
+    // would post twice.
     return publishFail(
-      "platform_api_error",
-      `Reddit response was not JSON: ${err instanceof Error ? err.message : "unknown"}`,
+      "publish_outcome_unknown",
+      `Reddit accepted the submit (HTTP ${response.status}) but the response body could not be read (${err instanceof Error ? err.message : "unknown"}). The post has probably been created — check r/ before retrying.`,
+      { http_status: response.status, endpoint: "api/submit" },
     );
   }
 
