@@ -13,6 +13,7 @@ import { updatePlanItemStatus } from "@/repositories/weekly-plan-repository";
 import { recordActivity } from "@/repositories/activity-repository";
 import { insertPublishHistory } from "@/repositories/publish-history-repository";
 import { evaluateSafeTestPolicy } from "@/core/publishing/safe-test-policy";
+import { evaluateRetryEligibilityFromMetadata } from "@/core/publishing/retry-eligibility";
 import { decryptForOutboundUse } from "@/core/platform-oauth";
 import { publishToReddit } from "@/core/publishing/publish-reddit";
 import { computeFingerprint } from "@/core/publishing/publish-fingerprint";
@@ -57,6 +58,16 @@ export async function retryFailedExecutionItemAction(
       return actionFail(
         `Only failed items can be retried (this one is "${item.status}").`,
       );
+    }
+
+    // P0.2 retry firewall. `status === "failed"` collapses "the
+    // provider refused before writing anything" and "the provider may
+    // have published and we never heard back" into one value. The
+    // shared predicate reads the persisted outcome and refuses the
+    // classes that could duplicate a live post.
+    const eligibility = evaluateRetryEligibilityFromMetadata(item.metadata);
+    if (!eligibility.operatorRetryAllowed) {
+      return actionFail(eligibility.reason);
     }
 
     const nowIso = new Date().toISOString();

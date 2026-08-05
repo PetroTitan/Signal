@@ -39,6 +39,7 @@ import { ok, failed, type McpToolResponse } from "../responses";
 import type { ToolContext } from "../tool-context";
 import type { SchedulePublishArgs } from "../schemas";
 import type { FounderPlatform } from "@/core/publishing/platform-guidance";
+import { evaluateRetryEligibilityFromMetadata } from "@/core/publishing/retry-eligibility";
 import type { WeeklyContractActionType } from "@/core/weekly-contract";
 import {
   ActiveAuthorizationLoadError,
@@ -299,15 +300,39 @@ export async function schedulePublishTool(
   // previous execution_item id for the retry audit trail.
   const { data: allExec } = await ctx.db
     .from("execution_items")
-    .select("id, status")
+    .select("id, status, metadata")
     .eq("workspace_id", ctx.workspaceId)
     .eq("source_entity_id", args.plan_item_id)
     .order("created_at", { ascending: false })
     .limit(1);
   const previousExec =
     allExec && allExec.length > 0
-      ? (allExec[0] as { id: string; status: string })
+      ? (allExec[0] as {
+          id: string;
+          status: string;
+          metadata: Record<string, unknown> | null;
+        })
       : null;
+
+  // ── 2c. Retry firewall ────────────────────────────────────────────
+  //
+  // This branch mints a FRESH execution_item, so the scheduler's own
+  // retry protection never sees it. If the previous attempt ended in an
+  // unknown or partial outcome, a post may already be live and
+  // scheduling again would duplicate it. Same shared predicate the
+  // operator UI and the scheduler use.
+  if (previousExec) {
+    const eligibility = evaluateRetryEligibilityFromMetadata(
+      previousExec.metadata,
+    );
+    if (!eligibility.operatorRetryAllowed) {
+      return failed({
+        tool: TOOL,
+        summary: eligibility.refusalCode ?? "retry_refused",
+        warnings: [eligibility.reason],
+      });
+    }
+  }
 
   // ── 3. Platform allow-list ────────────────────────────────────────
   const platform = (planItem as { platform: string | null }).platform as
