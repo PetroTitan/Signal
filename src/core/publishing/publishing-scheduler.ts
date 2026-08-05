@@ -189,11 +189,28 @@ export function resolveSchedulerTarget(input: {
   return { target: null, source: null };
 }
 
+/**
+ * Platforms the scheduler may drive end-to-end without a human.
+ *
+ * P0.3 removed "linkedin". `publishToLinkedIn` is a stub returning
+ * `not_implemented`, which the scheduler maps to a TERMINAL `failed`
+ * status — so an autonomous claim for LinkedIn could only ever produce
+ * a guaranteed failure that pauses the operator's plan item. (In
+ * practice it was unreachable, because the LinkedIn OAuth callback is
+ * not implemented and no token can be stored, so the policy gate
+ * refused first with `no_token`. It was a false capability claim
+ * rather than a live incident — but the invariant now makes the state
+ * unrepresentable.) LinkedIn items fall through to the same
+ * `platform_not_supported` blocked outcome as the other
+ * manual-distribution platforms, which is the honest answer.
+ *
+ * Enforced by `platform-capability-truth.test.ts`:
+ *     MCP schedulable ⊆ scheduler autonomous ⊆ real publisher
+ */
 export const SCHEDULER_AUTONOMOUS_PLATFORMS: ReadonlySet<PublishPlatform> =
   new Set([
     "reddit",
     "x",
-    "linkedin",
     "bluesky",
     "devto",
     "hashnode",
@@ -460,6 +477,29 @@ interface PublishOneInput {
 }
 
 async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
+  /**
+   * Persist an outcome, then return it.
+   *
+   * publishOne owns its own persistence — tickOnce only calls
+   * applyOutcome from its catch block. Three pre-provider gates used to
+   * `return` a bare outcome without writing it, so the row stayed at
+   * status='running' forever: the tick never re-selects 'running', and
+   * after 15 minutes it surfaced as a stale claim telling the operator
+   * to "check the platform before retrying — it may already be live".
+   * That copy was factually wrong for all three, because the provider
+   * had not been called at all (class A). Routing them through here
+   * also revives the documented transient-skip path for
+   * x_token_refresh_transient, which was dead code for the same reason.
+   */
+  const persist = async (outcome: PublishOutcome): Promise<PublishOutcome> => {
+    await applyOutcome({
+      supabase: input.supabase,
+      item: input.item,
+      outcome,
+    });
+    return outcome;
+  };
+
   const { supabase, nowIso, item, platform } = input;
 
   // Workspace publishing mode (dry_run | live).
@@ -603,7 +643,7 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
       nowIso,
     });
     if (refresh.outcome.kind === "reauthorization_required") {
-      return {
+      return persist({
         status: "blocked",
         reasonCode: "oauth_reauthorization_required",
         reasonDetail: `X refresh failed (${refresh.outcome.reason}); operator must reconnect this identity from /accounts.`,
@@ -615,10 +655,10 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
           plan_item_id:
             (item.metadata as { plan_item_id?: string })?.plan_item_id ?? "",
         },
-      };
+      });
     }
     if (refresh.outcome.kind === "transient_error") {
-      return {
+      return persist({
         status: "skipped",
         reasonCode: "x_token_refresh_transient",
         reasonDetail: `X token refresh hit a transient error (${refresh.outcome.reason}); item will retry next tick.`,
@@ -630,7 +670,7 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
           plan_item_id:
             (item.metadata as { plan_item_id?: string })?.plan_item_id ?? "",
         },
-      };
+      });
     }
     // no_refresh_needed or refreshed → use the (possibly rotated)
     // encrypted access token for the decrypt step below.
@@ -717,7 +757,7 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
       // creative for these; publishing text-only would diverge from
       // intent. Block with the resolver's reason code.
       if (platform === "bluesky" || platform === "x") {
-        return {
+        return persist({
           status: "blocked",
           reasonCode: decision.reasonCode,
           reasonDetail: decision.reasonDetail,
@@ -727,7 +767,7 @@ async function publishOne(input: PublishOneInput): Promise<PublishOutcome> {
             creative_id: decision.creativeId,
             plan_item_id: planItemId,
           },
-        };
+        });
       }
       // dev.to / telegram — media optional, surface the verdict but
       // continue text-only. The adapter publishes the post without

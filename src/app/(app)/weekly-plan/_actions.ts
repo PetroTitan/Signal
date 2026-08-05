@@ -29,6 +29,7 @@ import type {
   WeeklyPlanItemUpdate,
 } from "@/lib/supabase/types";
 import type { AllowedMime } from "@/core/publishing/creative-upload-policy";
+import { evaluateRetryEligibilityFromMetadata } from "@/core/publishing/retry-eligibility";
 import {
   createCreative,
   getCreativeById,
@@ -1815,6 +1816,22 @@ export async function scheduleApprovedItemAction(
     }
     const previousExec =
       allExec.length > 0 ? allExec[allExec.length - 1] : null;
+
+    // P0.2 retry firewall. Terminal rows are history — but "history"
+    // is not the same as "safe to repeat". A row that ended in an
+    // unknown or partial outcome may correspond to a post that is
+    // already live, and minting a FRESH execution_item here would
+    // bypass the scheduler's own retry protection entirely (this path
+    // does not retry the old row; it creates a new one). Rescheduling
+    // must not be a way around the firewall.
+    if (previousExec) {
+      const eligibility = evaluateRetryEligibilityFromMetadata(
+        previousExec.metadata,
+      );
+      if (!eligibility.operatorRetryAllowed) {
+        return actionFail(eligibility.reason);
+      }
+    }
 
     // Queue selection — same branching as approvePlanItemAndScheduleAction.
     let queue;

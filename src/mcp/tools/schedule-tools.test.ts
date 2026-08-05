@@ -1521,14 +1521,15 @@ describe("schedulePublishTool — MCP/scheduler drift regression", () => {
     }
   });
 
-  it("X and LinkedIn — scheduler-routable (stub publishers) but MCP-blocked (until publishers ship)", async () => {
-    // The scheduler set includes X / LinkedIn because their
-    // not_implemented stubs resolve cleanly. MCP intentionally
-    // refuses them via MANUAL_OR_DISTRIBUTION_PLATFORMS so an
-    // external caller can't schedule something the publisher
-    // hasn't implemented yet.
+  it("X and LinkedIn are MCP-blocked, for different reasons (P0.3)", async () => {
+    // X has a REAL publisher and is scheduler-autonomous; MCP still
+    // refuses it deliberately — the MCP surface is a strict subset, and
+    // widening it would be enabling a platform, not fixing a bug.
     expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("x")).toBe(true);
-    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("linkedin")).toBe(true);
+    // LinkedIn's publisher is a stub, so it is no longer claimed as
+    // autonomous anywhere. MCP refusing it is now consistent with the
+    // scheduler rather than compensating for it.
+    expect(SCHEDULER_AUTONOMOUS_PLATFORMS.has("linkedin")).toBe(false);
 
     for (const platform of ["x", "linkedin"] as const) {
       const store = emptyStore();

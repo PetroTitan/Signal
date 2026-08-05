@@ -706,9 +706,27 @@ export async function publishToBluesky(
           },
         );
       }
-      // First part failed — nothing was created yet, so the real
-      // (possibly transient) code is safe. Body error trumps HTTP
-      // status. Legacy app-password publisher has no refresh path;
+      // First part failed. P0.2 class C: when the transport itself
+      // failed (status 0 with no error body) the createRecord request
+      // was dispatched and no answer came back, so the record may exist
+      // on the PDS. The old comment below ("nothing was created yet")
+      // holds for a body-carrying refusal but NOT for a timeout — and
+      // because `platform_api_error` with http_status 0 is classified
+      // transient, the scheduler re-ran the whole thread.
+      if (result.status === 0 && result.errorBody === null) {
+        return publishFail(
+          "publish_outcome_unknown",
+          `Bluesky: the createRecord request was sent but no response came back (${result.detail}). The post may or may not exist — check the profile before retrying.`,
+          {
+            http_status: 0,
+            endpoint: "createRecord",
+            thread_position_failed: part.index,
+            thread_total: part.total,
+          },
+        );
+      }
+      // Body-carrying refusal — nothing was created. Body error trumps
+      // HTTP status. Legacy app-password publisher has no refresh path;
       // default401 = platform_unauthorized.
       const code = mapBlueskyAtprotoErrorToReasonCode(
         result.errorBody,
@@ -879,7 +897,25 @@ export async function publishToBlueskyAsIdentity(
           },
         );
       }
-      // First part failed — nothing was created yet. Body error trumps
+      // First part failed. P0.2 class C: a status-0 transport failure
+      // with no error body means the createRecord request went out and
+      // no answer came back, so the record may exist. This must not
+      // reach the session-refresh retry path below — a refresh-and-
+      // retry would re-post a record that may already be live.
+      if (result.status === 0 && result.errorBody === null) {
+        return publishFail(
+          "publish_outcome_unknown",
+          `Bluesky: the createRecord request was sent but no response came back (${result.detail}). The post may or may not exist — check the profile before retrying.`,
+          {
+            http_status: 0,
+            endpoint: "createRecord",
+            thread_position_failed: part.index,
+            thread_total: part.total,
+            did,
+          },
+        );
+      }
+      // Body-carrying refusal — nothing was created. Body error trumps
       // HTTP status. The identity-scoped path wants 401 (and AT Proto
       // body errors ExpiredToken / InvalidToken regardless of HTTP
       // status) to surface as session_expired so the orchestrator's

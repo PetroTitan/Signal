@@ -15,6 +15,7 @@ import "server-only";
  * tokens, raw response payloads, or chain-of-thought.
  */
 
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { getPublishingIdentityContext } from "@/core/publishing/publishing-identity-context";
 import { buildRewritePrompt } from "./rewrite-builder";
 import { evaluateDraftSafety } from "./safety-rules";
@@ -30,6 +31,12 @@ export interface RewriteDraftInput {
   currentBody: string;
   platform: string;
   action: RewriteAction;
+  /**
+   * Optional Supabase client for the usage ledger. UI callers run
+   * inside a cookie session and omit it; any non-request caller must
+   * pass its own so metering works without a Supabase cookie.
+   */
+  db?: SupabaseClient;
 }
 
 export type RewriteDraftResult =
@@ -53,7 +60,9 @@ export type RewriteDraftResult =
         | "no_provider_configured"
         | "provider_unavailable"
         | "provider_refused"
-        | "empty_response";
+        | "empty_response"
+        /** Workspace AI budget spent; no provider request was made. */
+        | "usage_limit_exceeded";
       detail: string;
       safetyNotes: string[];
       durationMs?: number;
@@ -93,19 +102,27 @@ export async function rewriteDraft(
     action: input.action,
   });
 
-  const response = await callGenerationProvider({
-    system: prompt.system,
-    user: prompt.user,
-    // Headline rewrites only need a small budget; full rewrites get the default.
-    maxOutputTokens: prompt.expectsHeadlineOnly ? 200 : 4096,
-  });
+  const response = await callGenerationProvider(
+    {
+      system: prompt.system,
+      user: prompt.user,
+      // Headline rewrites only need a small budget; full rewrites get the default.
+      maxOutputTokens: prompt.expectsHeadlineOnly ? 200 : 4096,
+    },
+    { workspaceId: input.workspaceId, db: input.db },
+  );
 
   if (!response.ok) {
+    // A budget refusal is reported as itself, not as a provider
+    // outage: nothing was dispatched and the operator's remedy is
+    // different (wait for the window, or raise the ceiling).
     const reason =
-      response.reason === "no_credentials" ||
-      response.reason === "no_provider_configured"
-        ? "no_provider_configured"
-        : "provider_unavailable";
+      response.reason === "usage_limit_exceeded"
+        ? "usage_limit_exceeded"
+        : response.reason === "no_credentials" ||
+            response.reason === "no_provider_configured"
+          ? "no_provider_configured"
+          : "provider_unavailable";
     return {
       ok: false,
       reason,

@@ -17,6 +17,7 @@ import {
   evaluatePublishingPolicy,
   type PolicyContext,
 } from "./publishing-policy";
+import type { PublishPlatform } from "./publishing-types";
 import { publishToReddit } from "./publish-reddit";
 import { publishXForIdentity } from "./x-publish-orchestrator";
 import { publishToLinkedIn } from "./publish-linkedin";
@@ -178,3 +179,33 @@ export async function runPublish(input: RunnerInput): Promise<PublishOutcome> {
       return publishToLinkedIn();
   }
 }
+
+/**
+ * Platforms with a REAL publisher — one that actually dispatches a
+ * provider request.
+ *
+ * This is the ceiling for every capability claim in the system:
+ *
+ *     MCP schedulable ⊆ scheduler autonomous ⊆ real publisher
+ *
+ * Membership is declared here, beside the dispatch switch, and pinned
+ * by a static test that scans `publish-*.ts` for the
+ * `publishNotImplemented` marker. The declaration therefore cannot
+ * drift from the code it describes: adding a stub to this set, or
+ * implementing a publisher without declaring it, fails the build.
+ *
+ * LinkedIn is deliberately absent. `publishToLinkedIn` is a stub, and
+ * its OAuth callback is not implemented either, so a LinkedIn item can
+ * never obtain a token — it must not be advertised as autonomous.
+ * YouTube, Threads and Instagram publish through the manual
+ * distribution path and have no publisher at all.
+ */
+export const PLATFORMS_WITH_REAL_PUBLISHER: ReadonlySet<PublishPlatform> =
+  new Set<PublishPlatform>([
+    "bluesky",
+    "devto",
+    "hashnode",
+    "reddit",
+    "telegram",
+    "x",
+  ]);
