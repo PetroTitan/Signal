@@ -79,7 +79,14 @@ export interface GenerationResult {
     | "provider_generated"
     | "manual_seed_created"
     | "provider_unavailable"
-    | "provider_refused";
+    | "provider_refused"
+    /**
+     * The workspace's rolling AI budget is spent. Distinct from
+     * `provider_unavailable`: no provider request was dispatched, so
+     * nothing was charged, and the remedy is to wait for the window or
+     * raise the ceiling rather than to check provider health.
+     */
+    | "usage_limit_exceeded";
   draft: GenerationDraft;
   /**
    * Required platform-native envelope. Carries the same body content

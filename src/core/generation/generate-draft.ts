@@ -156,16 +156,26 @@ export async function generateDraft(input: {
   const prompt = buildGenerationPrompt(promptContext);
 
   // ── Real provider dispatch (F4.6).
-  const response = await callGenerationProvider({
-    system: prompt.system,
-    user: prompt.user,
-  });
+  const response = await callGenerationProvider(
+    {
+      system: prompt.system,
+      user: prompt.user,
+    },
+    { workspaceId: input.workspaceId, db: input.db },
+  );
 
   if (!response.ok) {
     const seeded = seededDraftFromInputs(input.generation, promptContext);
     return {
       providerUsed: false,
-      status: "provider_unavailable",
+      // A budget refusal is distinguishable from a provider outage:
+      // nothing was dispatched, and the operator's remedy differs.
+      // The seeded draft is still returned so the caller has a
+      // complete envelope to render or persist.
+      status:
+        response.reason === "usage_limit_exceeded"
+          ? "usage_limit_exceeded"
+          : "provider_unavailable",
       draft: seeded,
       platformNativeDraft: buildEnvelope({
         identityContext,

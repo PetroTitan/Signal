@@ -19,6 +19,7 @@ import "server-only";
  * action already writes a row there, so no new schema is required.
  */
 
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase";
 
 const DEFAULT_LIMIT = 20;
@@ -53,8 +54,12 @@ function readLimit(): number {
  */
 export async function checkWorkspaceAiUsage(
   workspaceId: string,
+  db?: SupabaseClient,
 ): Promise<AiUsageState> {
-  const supabase = createSupabaseServerClient();
+  // `??` short-circuits, so no cookie-bound client is constructed when
+  // a caller injects its own. The MCP path depends on this: operator
+  // tokens authenticate by bearer header and carry no Supabase cookie.
+  const supabase = db ?? (createSupabaseServerClient() as unknown as SupabaseClient);
   const since = new Date(
     Date.now() - WINDOW_HOURS * 60 * 60 * 1000,
   ).toISOString();

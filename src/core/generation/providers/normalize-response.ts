@@ -41,7 +41,13 @@ export type GenerationProviderResponse =
         | "network_error"
         | "provider_error"
         | "empty_response"
-        | "no_provider_configured";
+        | "no_provider_configured"
+        /**
+         * The workspace's rolling AI budget is spent. Returned by the
+         * provider boundary BEFORE any provider request is dispatched,
+         * so it never costs a token.
+         */
+        | "usage_limit_exceeded";
       detail: string;
       durationMs?: number;
     };
