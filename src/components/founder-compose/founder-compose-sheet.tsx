@@ -30,6 +30,7 @@ import {
   type PublishDestination,
 } from "@/core/publishing/publish-destinations";
 import { requiresTitle } from "@/core/platform-native/approval-policy";
+import { evaluatePublishBlockers } from "@/core/publishing/publish-blockers";
 import { autosaveLabel, useAutosave } from "./use-autosave";
 import {
   serializeAutosaveDraft,
@@ -362,6 +363,43 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     platform: draft.platform || null,
     contentType: draft.contentType || null,
   });
+
+  // The footer's blocker, from the SAME evaluator the server gate and
+  // the weekly-plan card use. Previously the footer's only blocker was
+  // alt text, so it could not see a missing publishing identity — the
+  // production incident's actual cause — and offered an enabled
+  // "Schedule retry" on an item the scheduler was certain to refuse.
+  const canonicalBlocker =
+    evaluatePublishBlockers({
+      item: {
+        id: draft.itemId ?? "",
+        status: props.existingItem?.status ?? "draft",
+        platform: draft.platform || null,
+        contentType: draft.contentType || null,
+        intent: null,
+        title: draft.title,
+        body: draft.body,
+        accountId: draft.accountId || null,
+        scheduledAt: schedule.inputValue.trim().length > 0 ? "set" : null,
+        riskLevel: null,
+        metadata: draft.subreddit ? { target: draft.subreddit } : {},
+      },
+      creative: draft.creativeId
+        ? {
+            id: draft.creativeId,
+            status: draft.creativeStatus,
+            sourceType: props.existingItem?.creative?.sourceType ?? null,
+            assetUrl: draft.creativeAssetUrl,
+            sourceUrl: null,
+            altText: draft.creativeAltText,
+          }
+        : null,
+      allowedStatuses: [props.existingItem?.status ?? "draft"],
+      // The footer's schedule/identity CTAs only matter once a publish
+      // time exists, which is exactly when an execution item is minted.
+      requireSchedule: schedule.inputValue.trim().length > 0,
+      requireIdentity: schedule.inputValue.trim().length > 0,
+    }).blockers[0]?.message ?? null;
 
   /**
    * Switch the item's destination.
@@ -1254,6 +1292,7 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
             hasTitle: draft.title.trim().length > 0,
             titleRequired,
             hasBody: draft.body.trim().length > 0,
+            blockerMessage: canonicalBlocker,
             altTextMissing:
               draft.creativeId !== null &&
               draft.creativeAltText.trim().length === 0,
