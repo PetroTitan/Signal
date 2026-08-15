@@ -47,7 +47,15 @@ function SeededShell({ children }: { children: React.ReactNode }) {
       <div className="flex min-h-screen">
         <Sidebar />
         <div className="flex-1 flex flex-col min-w-0">
-          <main id="main-content" className="flex-1 min-w-0" tabIndex={-1}>
+          {/* Bottom padding clears the now-pinned MobileNav (44px bar +
+              the home-indicator inset) so the last card on every page
+              stays reachable. Zero on lg, where the nav is hidden and
+              the sidebar takes over. */}
+          <main
+            id="main-content"
+            className="flex-1 min-w-0 pb-[calc(3.5rem+env(safe-area-inset-bottom))] lg:pb-0"
+            tabIndex={-1}
+          >
             {children}
           </main>
           <MobileNav />
