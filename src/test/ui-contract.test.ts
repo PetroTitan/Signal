@@ -119,11 +119,22 @@ describe("design-system classes referenced in components are defined", () => {
 // 2. Safe-area handling is actually live
 // =====================================================================
 
+/**
+ * Strip block and line comments before asserting on code. Without this
+ * the layout's own docstring — which quotes `viewportFit: "cover"` while
+ * explaining why it matters — satisfies the assertion, so deleting the
+ * real declaration passes. Caught by the negative control.
+ */
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/.*$/gm, "$1");
+}
+
 describe("safe-area insets resolve to real values", () => {
   it("the root layout declares viewport-fit: cover", () => {
-    const layout = fs.readFileSync(
-      path.join(SRC_ROOT, "app", "layout.tsx"),
-      "utf8",
+    const layout = stripComments(
+      fs.readFileSync(path.join(SRC_ROOT, "app", "layout.tsx"), "utf8"),
     );
     expect(layout).toMatch(/export const viewport/);
     expect(layout).toMatch(/viewportFit:\s*"cover"/);
@@ -138,9 +149,8 @@ describe("safe-area insets resolve to real values", () => {
       fs.readFileSync(f, "utf8").includes("env(safe-area-inset"),
     );
     expect(users.length).toBeGreaterThan(0);
-    const layout = fs.readFileSync(
-      path.join(SRC_ROOT, "app", "layout.tsx"),
-      "utf8",
+    const layout = stripComments(
+      fs.readFileSync(path.join(SRC_ROOT, "app", "layout.tsx"), "utf8"),
     );
     expect(layout).toContain("viewportFit");
   });
