@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   AUTHENTICATED_ROUTES,
   NON_NAVIGABLE_ROUTES,
+  ORPHANED_ROUTES,
   PRIMARY_ROUTES,
   SECONDARY_ROUTES,
   SETTINGS_ROUTES,
@@ -47,6 +48,95 @@ function routesFromFilesystem(dir: string, prefix = ""): string[] {
 }
 
 const FILESYSTEM_ROUTES = routesFromFilesystem(APP_DIR).sort();
+
+/** Every non-test source file, for inbound-link analysis. */
+function walkSource(dir: string, acc: string[] = []): string[] {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) walkSource(full, acc);
+    else if (/\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) {
+      acc.push(full);
+    }
+  }
+  return acc;
+}
+
+const SOURCE_FILES = walkSource(path.join(REPO_ROOT, "src"));
+
+/**
+ * Modules that contain links but are never rendered, so a link inside
+ * them is not a real path to anything. Each is verified to have no
+ * consumers; keeping the list explicit means "unreachable" stays a
+ * finding rather than an assumption.
+ */
+const DEAD_LINK_SOURCES = [
+  // `CommandCenter` has zero consumers.
+  "src/components/command-center.tsx",
+  // `@/core/search` has no importer outside its own directory.
+  "src/core/search/index.ts",
+  // Reached only from command-center.
+  "src/core/data-mode/data-mode.ts",
+  // Sets a `link:` field on derived activity rows that NO renderer
+  // reads — verified: activity/page.tsx renders eventType/title/
+  // description/createdAt with no <Link>, and activity-feed.tsx renders
+  // line.label only. A data field, not navigation.
+  "src/core/activity/derive.ts",
+];
+
+/**
+ * Does anything actually navigate to this route?
+ *
+ * A dynamic route is matched by its static prefix followed by an
+ * interpolation, which is how every real detail link is written:
+ * `/execution/items/${item.id}`.
+ */
+function hasInboundLink(href: string): boolean {
+  const isDynamic = href.includes("[");
+  // A dynamic route is linked by its static prefix plus an
+  // interpolation: `/operator-bridge/${r.id}`.
+  const prefix = isDynamic ? href.slice(0, href.indexOf("[")) : href;
+  // The route's OWN directory — a detail page's back-link to itself
+  // does not make it reachable. Deliberately not the parent section:
+  // the list page is exactly the legitimate inbound link.
+  // The route's own folder, e.g. src/app/(app)/operator-bridge/[id]/ —
+  // NOT its parent section, which is where the list page that links to
+  // it lives.
+  const ownDir = `src/app/(app)${href}/`;
+
+  // A link FROM an orphaned page is not reachability: /accounts/new is
+  // the only live linker of /accounts/[id], and nothing links to
+  // /accounts/new. Reachability has to be transitive or an unreachable
+  // cluster vouches for itself.
+  const orphanDirs = ORPHANED_ROUTES.map((r) => `src/app/(app)${r.href}/`);
+
+  for (const file of SOURCE_FILES) {
+    const rel = path.relative(REPO_ROOT, file).split(path.sep).join("/");
+    if (isDynamic && rel.startsWith(ownDir)) continue;
+    if (orphanDirs.some((d) => rel.startsWith(d))) continue;
+    if (DEAD_LINK_SOURCES.includes(rel)) continue;
+    if (rel.endsWith("route-manifest.ts")) continue;
+
+    const source = fs.readFileSync(file, "utf8");
+    if (isDynamic) {
+      if (source.includes(`${prefix}\${`)) return true;
+    } else {
+      // Static routes appear as "/x", `/x`, or inside a longer template
+      // such as `/invite/accept?token=${…}`. Require a quote or
+      // backtick before the path so /settings does not match
+      // /settings/mcp.
+      if (
+        source.includes(`"${href}"`) ||
+        source.includes(`'${href}'`) ||
+        source.includes(`\`${href}`) ||
+        source.includes(`"${href}?`)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 describe("guard the guard", () => {
   it("found the authenticated route tree", () => {
@@ -95,6 +185,32 @@ describe("every authenticated route is classified", () => {
     for (const r of NON_NAVIGABLE_ROUTES) {
       expect(r.reachableFrom, `${r.href} is contextual but says nothing about how it is reached`).toBeTruthy();
     }
+  });
+
+  it("VERIFIES that contextual routes actually have an inbound link", () => {
+    // The first version of this guard only checked that `reachableFrom`
+    // was non-empty — so it happily accepted prose claiming a link that
+    // did not exist. Two routes were classified contextual on exactly
+    // that basis and were in fact unreachable. A claim in a comment is
+    // not evidence; the codebase is.
+    const missing: string[] = [];
+    for (const r of NON_NAVIGABLE_ROUTES) {
+      if (!hasInboundLink(r.href)) missing.push(r.href);
+    }
+    expect(
+      missing.join("\n"),
+      "classified contextual but nothing links to them — either add the " +
+        'link or reclassify as "orphaned"',
+    ).toBe("");
+  });
+
+  it("VERIFIES that orphaned routes really have no inbound link", () => {
+    // The inverse. An orphan that gains a link should be reclassified
+    // rather than left describing itself as unreachable.
+    const linked = ORPHANED_ROUTES.filter((r) => hasInboundLink(r.href)).map(
+      (r) => `${r.href} is marked orphaned but something links to it now.`,
+    );
+    expect(linked.join("\n")).toBe("");
   });
 
   it("marks every dynamic route as dynamic", () => {

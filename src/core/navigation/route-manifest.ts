@@ -57,7 +57,17 @@ export type NavTier =
   | "secondary"
   | "settings"
   | "contextual"
-  | "internal";
+  | "internal"
+  /**
+   * The route exists and nothing links to it.
+   *
+   * This tier is a finding, not a design. It is here so an unreachable
+   * page is recorded as unreachable rather than quietly described as
+   * "contextual" — which is what the first version of this manifest
+   * did, asserting a `reachableFrom` that the guard then failed to
+   * verify.
+   */
+  | "orphaned";
 
 /** Grouping inside the More sheet and the sidebar. */
 export type NavGroupKey = "publish" | "setup" | "advanced";
@@ -246,24 +256,54 @@ export const AUTHENTICATED_ROUTES: ReadonlyArray<RouteEntry> = [
 
   // ── Contextual: reached by tapping a row, never from a menu ───────
   {
+    // ORPHANED, verified: the only links to it are in
+    // components/command-center.tsx, which is rendered nowhere
+    // (`CommandCenter` has zero consumers). Meanwhile /accounts embeds
+    // AccountCreateForm inline at page.tsx:532, so identity creation
+    // already works without this page.
+    //
+    // Left in place deliberately: deleting a route is a product
+    // decision, not a navigation one. Recorded so it is visible.
     href: "/accounts/new",
     label: "Add identity",
-    tier: "contextual",
-    reachableFrom: "/accounts — the Add identity CTA.",
+    tier: "orphaned",
+    reachableFrom:
+      "Nothing links here. /accounts embeds the create form inline; this standalone page is redundant.",
   },
   {
+    // ORPHANED, verified. /accounts does not link here — it manages
+    // identities inline via IdentityCardWithManage (page.tsx:510). The
+    // only remaining links are in command-center.tsx (rendered nowhere)
+    // and /accounts/new, which is itself orphaned.
+    //
+    // Like /products/[slug], this is a "use client" page reading the
+    // demo store rather than the identity repository, so linking it
+    // would not show real data. Same product decision required.
     href: "/accounts/[id]",
     label: "Identity detail",
-    tier: "contextual",
+    tier: "orphaned",
     dynamic: true,
-    reachableFrom: "/accounts — tapping an identity card.",
+    reachableFrom:
+      "Nothing live links here. /accounts manages identities inline; this page reads the demo store.",
   },
   {
+    // ORPHANED, verified. Its only linker is core/search/index.ts,
+    // which has no consumers.
+    //
+    // Do NOT "fix" this by linking product cards to it: the page reads
+    // the client-side demo store (useSignal().state.productsById, whose
+    // ProductProfile carries a slug) while /products reads the real
+    // products repository, whose Product type has no slug and whose
+    // table has no slug column. Every real product would render
+    // "Product not found" — a worse outcome than no link.
+    //
+    // Reaching it needs a product decision about slugs, not a nav fix.
     href: "/products/[slug]",
     label: "Product detail",
-    tier: "contextual",
+    tier: "orphaned",
     dynamic: true,
-    reachableFrom: "/products — tapping a product.",
+    reachableFrom:
+      "Nothing links here. The page resolves against the demo store; real products have no slug.",
   },
   {
     href: "/execution/[id]",
@@ -323,6 +363,10 @@ export const SETTINGS_ROUTES: ReadonlyArray<RouteEntry> =
 /** Routes that appear in no navigation surface, by decision. */
 export const NON_NAVIGABLE_ROUTES: ReadonlyArray<RouteEntry> =
   AUTHENTICATED_ROUTES.filter((r) => r.tier === "contextual");
+
+/** Routes with no inbound link anywhere. A finding to act on, not a design. */
+export const ORPHANED_ROUTES: ReadonlyArray<RouteEntry> =
+  AUTHENTICATED_ROUTES.filter((r) => r.tier === "orphaned");
 
 /**
  * Filter a route list by what this role may see.
