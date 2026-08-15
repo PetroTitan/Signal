@@ -106,7 +106,7 @@ export default function SettingsPage() {
         description="Workspace, connections, AI, and trust."
       />
 
-      <div className="px-6 lg:px-10 py-8 max-w-3xl space-y-6">
+      <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-3xl space-y-6">
         <section className="card p-5">
           <div className="flex items-start justify-between gap-3">
             <div>

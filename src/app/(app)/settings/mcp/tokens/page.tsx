@@ -26,7 +26,7 @@ export default async function McpTokensPage() {
           title="Assistant access"
           description="Persistence not configured."
         />
-        <div className="px-6 lg:px-10 py-12 max-w-3xl text-sm text-ink-600">
+        <div className="px-4 sm:px-6 lg:px-10 py-12 max-w-3xl text-sm text-ink-600">
           Configure Supabase first.
         </div>
       </>
@@ -37,7 +37,7 @@ export default async function McpTokensPage() {
     return (
       <>
         <Topbar title="Assistant access" description="No workspace found." />
-        <div className="px-6 lg:px-10 py-12 max-w-3xl text-sm text-ink-600">
+        <div className="px-4 sm:px-6 lg:px-10 py-12 max-w-3xl text-sm text-ink-600">
           Create a workspace first.
         </div>
       </>
@@ -87,8 +87,8 @@ export default async function McpTokensPage() {
         <CreateTokenForm endpoint={endpoint} groups={FOUNDER_PERMISSION_GROUPS} />
 
         <section className="rounded-2xl border border-ink-200 bg-white">
-          <header className="px-5 py-3.5 border-b border-ink-100 flex items-baseline justify-between gap-3">
-            <div>
+          <header className="px-4 sm:px-5 py-3.5 border-b border-ink-100 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1.5">
+            <div className="min-w-0">
               <div className="text-sm font-semibold text-ink-900">
                 Active tokens
               </div>
@@ -96,9 +96,14 @@ export default async function McpTokensPage() {
                 {activeTokens.length} active · {tokens.length} total
               </p>
             </div>
-            <div className="text-[11px] text-ink-500">
+            {/* The endpoint is a full https URL with no break
+                opportunities. Unbounded it pushes the header — and with
+                it the page — wider than a phone. */}
+            <div className="text-[11px] text-ink-500 min-w-0">
               Endpoint:{" "}
-              <code className="font-mono text-[10px]">{endpoint}</code>
+              <code className="font-mono text-[10px] break-all">
+                {endpoint}
+              </code>
             </div>
           </header>
           {activeTokens.length === 0 ? (
