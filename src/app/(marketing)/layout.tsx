@@ -15,7 +15,7 @@ export default function MarketingLayout({
   return (
     <div className="min-h-screen flex flex-col bg-ink-50">
       <header className="border-b border-ink-100 bg-white">
-        <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-3 flex-wrap">
           <Link
             href="/"
             className="inline-flex items-center gap-2 text-ink-900"
@@ -24,7 +24,10 @@ export default function MarketingLayout({
             <BrandMark size={20} />
             <span className="text-sm font-semibold tracking-tight">Signal</span>
           </Link>
-          <nav className="flex items-center gap-1 text-sm">
+          <nav
+            aria-label="Marketing"
+            className="flex items-center gap-1 text-sm flex-wrap justify-end min-w-0"
+          >
             {marketingLinks.map((link) => (
               <Link
                 key={link.href}
