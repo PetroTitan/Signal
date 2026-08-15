@@ -7,6 +7,12 @@ import {
 } from "@/core/publishing/publishing-runner";
 import { SCHEDULER_AUTONOMOUS_PLATFORMS } from "@/core/publishing/publishing-scheduler";
 import { SCHEDULABLE_PLATFORMS } from "@/mcp/tools/schedule-tools";
+import {
+  PLATFORMS_WITH_REAL_PUBLISHER as REGISTRY_REAL_PUBLISHER,
+  SCHEDULER_AUTONOMOUS_PLATFORMS as REGISTRY_AUTONOMOUS,
+} from "@/core/publishing/publish-capability-registry";
+import { resolvePublishDestinations } from "@/core/publishing/publish-destinations";
+import { FOUNDER_PLATFORMS } from "@/core/publishing/platform-guidance";
 
 /**
  * P0.3 — capability truth.
@@ -133,6 +139,43 @@ describe("platform capability truth", () => {
     expect((SCHEDULABLE_PLATFORMS as ReadonlySet<string>).has("linkedin")).toBe(
       false,
     );
+  });
+
+  it("the pure registry is the single declaration site", () => {
+    // The two sets are re-exported by publishing-runner /
+    // publishing-scheduler for backward compatibility. If someone
+    // re-declares one locally, this catches it: the identity check
+    // fails even though membership would still match.
+    expect(PLATFORMS_WITH_REAL_PUBLISHER).toBe(REGISTRY_REAL_PUBLISHER);
+    expect(SCHEDULER_AUTONOMOUS_PLATFORMS).toBe(REGISTRY_AUTONOMOUS);
+  });
+
+  it("the editor's destination model cannot widen the autonomous set", () => {
+    // UI visibility is not publish authorization. The editor renders
+    // every founder platform; only the scheduler-autonomous ones may
+    // report themselves as schedulable.
+    //
+    // Inputs are maximally permissive on purpose — every platform has
+    // an identity AND a healthy connection — so a model that derived
+    // autonomy from connection state would claim it everywhere and
+    // fail here.
+    const claimed = resolvePublishDestinations({
+      identities: FOUNDER_PLATFORMS.map((platform) => ({ platform })),
+      connections: FOUNDER_PLATFORMS.map((platform) => ({
+        platform,
+        connectionStatus: "connected",
+        healthStatus: "healthy",
+      })),
+    })
+      .filter((d) => d.autonomousSchedulable)
+      .map((d) => d.platform)
+      .sort();
+
+    const truth = [...SCHEDULER_AUTONOMOUS_PLATFORMS]
+      .filter((p) => (PLATFORMS_WITH_REAL_PUBLISHER as ReadonlySet<string>).has(p))
+      .sort();
+
+    expect(claimed).toEqual(truth);
   });
 
   it("records where each layer is narrower, so narrowing stays deliberate", () => {
