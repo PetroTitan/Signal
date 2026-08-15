@@ -80,7 +80,7 @@ export default async function WeeklyContractDetailPage({ params }: PageProps) {
         title={contract.title}
         description={`Weekly operating contract · ${contract.weekStart} → ${contract.weekEnd}`}
         actions={
-          <Link href="/weekly-contracts" className="btn-secondary text-xs">
+          <Link href="/weekly-contracts" className="btn-nav text-xs">
             ← All contracts
           </Link>
         }

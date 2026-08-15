@@ -106,7 +106,10 @@ export function Sidebar() {
           </div>
         ) : null}
       </div>
-      <nav className="flex-1 px-3 py-4 overflow-y-auto">
+      <nav
+        className="flex-1 px-3 py-4 overflow-y-auto"
+        aria-label="Primary"
+      >
         {groups.map((group) => {
           if (group.advanced) {
             return (
@@ -138,17 +141,18 @@ export function Sidebar() {
                         <li key={href}>
                           <Link
                             href={href}
-                            className={`group flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors ${
+                            aria-current={active ? "page" : undefined}
+                            className={`group flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm transition-colors ${
                               active
-                                ? "bg-ink-100 text-ink-900 font-medium"
+                                ? "nav-item-active"
                                 : "text-ink-500 hover:bg-ink-50 hover:text-ink-800"
                             }`}
                           >
                             <Icon
                               className={`shrink-0 ${
                                 active
-                                  ? "text-signal-600"
-                                  : "text-ink-300 group-hover:text-ink-500"
+                                  ? "text-signal-700"
+                                  : "text-ink-400 group-hover:text-ink-600"
                               }`}
                             />
                             {label}
@@ -175,16 +179,17 @@ export function Sidebar() {
                     <li key={href}>
                       <Link
                         href={href}
-                        className={`group flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors ${
+                        aria-current={active ? "page" : undefined}
+                        className={`group flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm transition-colors ${
                           active
-                            ? "bg-ink-100 text-ink-900 font-medium"
+                            ? "nav-item-active"
                             : "text-ink-700 hover:bg-ink-50 hover:text-ink-900"
                         }`}
                       >
                         <Icon
                           className={`shrink-0 ${
                             active
-                              ? "text-signal-600"
+                              ? "text-signal-700"
                               : "text-ink-400 group-hover:text-ink-600"
                           }`}
                         />

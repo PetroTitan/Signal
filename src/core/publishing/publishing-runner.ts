@@ -199,13 +199,13 @@ export async function runPublish(input: RunnerInput): Promise<PublishOutcome> {
  * never obtain a token — it must not be advertised as autonomous.
  * YouTube, Threads and Instagram publish through the manual
  * distribution path and have no publisher at all.
+ *
+ * The declaration itself now lives in the PURE
+ * `publish-capability-registry` module and is re-exported here
+ * unchanged. This module is `server-only`, so client surfaces (the
+ * compose sheet's destination selector) could not read capability
+ * truth from here — and the one that needed it grew a hardcoded
+ * shadow list instead. Moving the declaration, rather than copying
+ * it, is what removes the drift.
  */
-export const PLATFORMS_WITH_REAL_PUBLISHER: ReadonlySet<PublishPlatform> =
-  new Set<PublishPlatform>([
-    "bluesky",
-    "devto",
-    "hashnode",
-    "reddit",
-    "telegram",
-    "x",
-  ]);
+export { PLATFORMS_WITH_REAL_PUBLISHER } from "./publish-capability-registry";

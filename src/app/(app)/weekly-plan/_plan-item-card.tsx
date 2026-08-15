@@ -43,6 +43,12 @@ import type { ScheduleDisplay } from "@/core/scheduling/format-schedule-display"
 import { shouldShowDueCountdown } from "@/core/dashboard/workflow-filters";
 import { describeProviderMediaReadiness } from "@/core/creatives/provider-media-prep";
 import type { PublishPlatform } from "@/core/publishing/publishing-types";
+import type { DestinationConnectionInput } from "@/core/publishing/publish-destinations";
+import {
+  isDerivedLabel,
+  planItemDisplayLabel,
+} from "@/core/publishing/plan-item-label";
+import { resolveIdentityPlatformGuidance } from "@/core/publishing/platform-guidance";
 
 const updateInitial: UpdatePlanItemResult = { ok: false, error: "" };
 const duplicateInitial: DuplicatePlanItemResult = { ok: false, error: "" };
@@ -96,6 +102,9 @@ export interface PlanItemCardProps {
   products: { id: string; name: string }[];
   accounts: { id: string; displayName: string | null; platform: string }[];
   allowedSubreddits: string[];
+  /** Workspace platform connections, projected for the destination
+   *  model the compose sheet renders. */
+  connections?: DestinationConnectionInput[];
   /** True when an active weekly contract exists for the workspace.
    *  Required only for immediate-schedule per-item approval and bulk
    *  paths; per-item hold approval works regardless. */
@@ -135,7 +144,21 @@ export function PlanItemCard(props: PlanItemCardProps) {
     accounts: props.accounts,
     products: props.products,
     allowedSubreddits: props.allowedSubreddits,
+    connections: props.connections,
   };
+
+  // A titleless post is now a legitimate object on body-only
+  // destinations, so the row label is derived rather than demanding the
+  // operator invent a title. Display only — see plan-item-label.ts.
+  const labelInput = {
+    title: props.title,
+    body: props.body,
+    platformLabel: props.platform
+      ? (resolveIdentityPlatformGuidance(props.platform)?.label ?? null)
+      : null,
+  };
+  const displayLabel = planItemDisplayLabel(labelInput);
+  const derivedLabel = isDerivedLabel(labelInput);
 
   const isDraft = props.status === "draft" || props.status === "skipped";
   const accountLabel = props.accountId
@@ -161,8 +184,12 @@ export function PlanItemCard(props: PlanItemCardProps) {
               onClick={() => setComposeOpen(true)}
               className="block text-left w-full"
             >
-              <h3 className="text-sm font-semibold text-ink-900 leading-snug hover:text-signal-700">
-                {props.title ?? "Untitled draft"}
+              <h3
+                className={`text-sm font-semibold leading-snug hover:text-signal-700 ${
+                  derivedLabel ? "text-ink-700 italic" : "text-ink-900"
+                }`}
+              >
+                {displayLabel}
               </h3>
             </button>
 
@@ -663,9 +690,13 @@ function QuickReschedule({
         {open ? "Close" : scheduledAt ? "Reschedule" : "Schedule"}
       </button>
       {open ? (
-        <div
-          className="fixed md:absolute z-30 inset-x-2 md:inset-x-auto md:left-0 mt-1 md:w-72 rounded-lg border border-ink-200 bg-white shadow-lg p-3"
-        >
+        // Was `fixed md:absolute` with no top/bottom. A fixed box with
+        // top:auto takes its static position relative to the VIEWPORT,
+        // so it rendered under the trigger and then detached on scroll,
+        // floating over unrelated cards. Absolute keeps it anchored;
+        // right-anchoring plus a viewport-capped width keeps it on
+        // screen at 320px without a fixed-position hack.
+        <div className="absolute z-30 right-0 mt-1 w-[min(18rem,calc(100vw-2rem))] rounded-lg border border-ink-200 bg-white shadow-lg p-3">
           <ReschedulePopover
             itemId={itemId}
             defaultIso={scheduledAt}

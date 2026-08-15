@@ -80,7 +80,7 @@ export default async function OperatorBridgeDetailPage({ params }: PageProps) {
         title={request.title}
         description={`${BRIDGE_ASSISTANT_LABELS[request.assistantType]} · ${BRIDGE_REQUEST_TYPE_LABELS[request.requestType]} · risk ${request.riskLevel}`}
         actions={
-          <Link href="/operator-bridge" className="btn-secondary text-xs">
+          <Link href="/operator-bridge" className="btn-nav text-xs">
             ← All bridge requests
           </Link>
         }

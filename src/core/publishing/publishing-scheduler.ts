@@ -23,6 +23,7 @@ import "server-only";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
 import { readTelegramTargetType } from "@/core/identity-verifiers";
 import { runPublish } from "./publishing-runner";
+import { SCHEDULER_AUTONOMOUS_PLATFORMS } from "./publish-capability-registry";
 import { claimExecutionItem } from "./execution-claim";
 import {
   buildRetryMetadata,
@@ -206,16 +207,14 @@ export function resolveSchedulerTarget(input: {
  *
  * Enforced by `platform-capability-truth.test.ts`:
  *     MCP schedulable ⊆ scheduler autonomous ⊆ real publisher
+ *
+ * The declaration itself now lives in the PURE
+ * `publish-capability-registry` module and is re-exported here
+ * unchanged. This module is `server-only`; the compose sheet's
+ * destination selector is a client component and must derive from
+ * the same truth rather than from a hardcoded shadow list.
  */
-export const SCHEDULER_AUTONOMOUS_PLATFORMS: ReadonlySet<PublishPlatform> =
-  new Set([
-    "reddit",
-    "x",
-    "bluesky",
-    "devto",
-    "hashnode",
-    "telegram",
-  ]);
+export { SCHEDULER_AUTONOMOUS_PLATFORMS };
 
 export interface SchedulerTickInput {
   /** Soft cap on items processed per tick. Default 10. */

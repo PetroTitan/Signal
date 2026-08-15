@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   approvePlanItemAndHoldAction,
@@ -23,6 +23,13 @@ import {
   SCHEDULE_PRESETS,
   toDatetimeLocalString,
 } from "@/core/publishing/schedule-presets";
+import {
+  allowsOperatorTarget,
+  resolvePublishDestinations,
+  type DestinationConnectionInput,
+  type PublishDestination,
+} from "@/core/publishing/publish-destinations";
+import { requiresTitle } from "@/core/platform-native/approval-policy";
 import { autosaveLabel, useAutosave } from "./use-autosave";
 import {
   serializeAutosaveDraft,
@@ -96,6 +103,18 @@ export interface FounderComposeSheetDefaults {
   allowedSubreddits: string[];
   /** F4.6 — true when an AI provider is configured server-side. */
   aiProviderAvailable?: boolean;
+  /**
+   * Platform connection rows for the workspace, projected down to what
+   * the destination model needs. Every page that renders this sheet
+   * already loads them; before this milestone they simply were not
+   * passed down, which is why the editor could not tell a connected
+   * destination from an unconnected one.
+   *
+   * Optional so a caller with no connection data still renders: the
+   * destinations then resolve to "connection required", which is the
+   * honest answer rather than a fabricated "connected".
+   */
+  connections?: DestinationConnectionInput[];
 }
 
 /**
@@ -163,16 +182,41 @@ export interface FounderComposeSheetProps {
   existingItem?: FounderComposeSheetExistingItem;
 }
 
-const PLATFORM_CHOICES: ReadonlyArray<{
-  value: string;
-  label: string;
-  short: string;
-}> = [
-  { value: "reddit", label: "Reddit", short: "r/" },
-  { value: "devto", label: "dev.to", short: "dev" },
-  { value: "hashnode", label: "Hashnode", short: "Hn" },
-  { value: "bluesky", label: "Bluesky", short: "Bs" },
-];
+/**
+ * The "Where" selector's options are DERIVED, never listed here.
+ *
+ * A hardcoded four-entry `PLATFORM_CHOICES` used to live at this spot. It
+ * was correct when written and then never moved, while X and Telegram
+ * gained real publishers and entered the scheduler's autonomous set. The
+ * editor could not notice, because capability truth lived behind
+ * `server-only` imports. See `publish-destinations.ts` and
+ * docs/publishing/publishing-ux-architecture.md.
+ *
+ * Do not reintroduce a literal list here. If a destination is missing,
+ * the registry is what is wrong.
+ */
+function destinationStateLabel(d: PublishDestination): string {
+  switch (d.availability) {
+    case "connected":
+      return "API";
+    case "connection_required":
+      return "Connect";
+    case "manual":
+      return "Manual";
+    case "unavailable":
+      return "N/A";
+  }
+}
+
+/** Ordering: ready-to-publish destinations first, then ones needing a
+ *  connection, then manual. Within a band, registry order is preserved so
+ *  the row does not reshuffle as connections come and go. */
+const AVAILABILITY_RANK: Record<PublishDestination["availability"], number> = {
+  connected: 0,
+  connection_required: 1,
+  manual: 2,
+  unavailable: 3,
+};
 
 interface DraftState {
   itemId: string | null;
@@ -281,6 +325,74 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
   const [composeTab, setComposeTab] = useState<ComposeTab>("editor");
   const [, startTransition] = useTransition();
 
+  // ---- Destination model -------------------------------------------
+  //
+  // Derived from capability truth + this workspace's identities and
+  // connections. `useMemo` is keyed on the inputs rather than run per
+  // render because the parent passes fresh array literals on every
+  // refresh.
+  const destinations = useMemo(
+    () =>
+      resolvePublishDestinations({
+        identities: props.defaults.accounts,
+        connections: props.defaults.connections ?? [],
+      }),
+    [props.defaults.accounts, props.defaults.connections],
+  );
+  const orderedDestinations = useMemo(
+    () =>
+      [...destinations].sort(
+        (a, b) =>
+          AVAILABILITY_RANK[a.availability] - AVAILABILITY_RANK[b.availability],
+      ),
+    [destinations],
+  );
+  const selectedDestination =
+    destinations.find((d) => d.platform === draft.platform) ?? null;
+
+  /** Identities that belong to the chosen destination. Before a
+   *  destination is chosen, show everything rather than nothing. */
+  const eligibleAccounts = draft.platform
+    ? props.defaults.accounts.filter((a) => a.platform === draft.platform)
+    : props.defaults.accounts;
+
+  /** Does THIS destination + content type need a title? One predicate,
+   *  shared with the server action and the approval gate. */
+  const titleRequired = requiresTitle({
+    platform: draft.platform || null,
+    contentType: draft.contentType || null,
+  });
+
+  /**
+   * Switch the item's destination.
+   *
+   * Clears the operator-typed routing target when moving to a
+   * destination that does not take one. Leaving it set would persist
+   * `metadata.target`, which `resolveSchedulerTarget` reads with higher
+   * precedence than the identity's own target — for Telegram that means
+   * publishing into a different chat than the one the operator connected.
+   *
+   * Also drops an account selection that belongs to a different
+   * platform: the publish gate keys the connection lookup on
+   * (workspace, account, platform), so a mismatched pair can only ever
+   * produce `oauth_not_connected`.
+   */
+  function selectDestination(destination: PublishDestination) {
+    setDraft((d) => {
+      const accountMatches = props.defaults.accounts.some(
+        (a) => a.id === d.accountId && a.platform === destination.platform,
+      );
+      return {
+        ...d,
+        platform: destination.platform,
+        subreddit: allowsOperatorTarget(destination.platform)
+          ? d.subreddit
+          : "",
+        accountId: accountMatches ? d.accountId : "",
+      };
+    });
+  }
+
   // Track the previous `open` value so we only reset on a real
   // closed → open transition. Parent re-renders that pass fresh
   // object literals for `defaults`/`existingItem` must NOT overwrite
@@ -324,7 +436,17 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     fd.set("product_id", d.productId);
     // INVARIANT: do NOT set "scheduled_at" here. Schedule writes have
     // a separate, explicit, operator-only path (saveScheduleAction).
-    fd.set("subreddit", d.subreddit);
+    //
+    // INVARIANT: only send the routing target for destinations that
+    // take an operator-typed one (Reddit). The field used to be sent on
+    // every autosave regardless of platform, and the action writes it to
+    // `metadata.target` — which the scheduler reads with precedence over
+    // the identity's own target. Opening a Telegram item and typing one
+    // character was enough to stamp the default subreddit ("test") onto
+    // it as a chat id.
+    if (allowsOperatorTarget(d.platform)) {
+      fd.set("subreddit", d.subreddit);
+    }
     if (d.riskScore.length > 0) fd.set("risk_score", d.riskScore);
     fd.set("notes", d.notes);
     const result = await composeUpsertDraftAction(
@@ -606,6 +728,17 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     setSchedule((s) => touchByClear(s));
   }
 
+  // Shared by the desktop inline button and the mobile action bar, so
+  // the two can never disagree about whether the schedule is savable.
+  const scheduleSaveDisabled =
+    !schedule.touched || !draft.itemId || scheduleSaveStatus === "saving";
+  const scheduleSaveLabel =
+    scheduleSaveStatus === "saving"
+      ? "Saving…"
+      : props.existingItem?.status === "scheduled"
+        ? "Update publish time"
+        : "Save schedule";
+
   if (!props.open) return null;
 
   return (
@@ -645,11 +778,24 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-4 py-4 md:px-6 md:py-5 space-y-4">
-          {/* Title */}
+          {/* Title — required only where the destination's publisher
+              genuinely refuses without one (Reddit / dev.to / Hashnode /
+              LinkedIn article / YouTube upload). A platform-native
+              social post has no title, and inventing one only produces
+              a string that is never published. */}
           <label className="block">
-            <div className="flex items-baseline justify-between">
+            <div className="flex items-baseline justify-between gap-2">
               <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
-                Title
+                Title{" "}
+                <span
+                  className={`font-normal normal-case tracking-normal ${
+                    titleRequired ? "text-amber-700" : "text-ink-400"
+                  }`}
+                >
+                  {titleRequired
+                    ? `· required for ${selectedDestination?.label ?? draft.platform}`
+                    : "· optional"}
+                </span>
               </span>
               <CharCounter value={draft.title} limit={300} softAt={270} />
             </div>
@@ -659,7 +805,9 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
               onChange={(e) =>
                 setDraft((d) => ({ ...d, title: e.target.value }))
               }
-              placeholder="What's the hook?"
+              placeholder={
+                titleRequired ? "What's the hook?" : "Optional headline"
+              }
               className="input w-full text-lg mt-1"
               autoFocus={!props.existingItem}
             />
@@ -792,46 +940,96 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
             }}
           />
 
-          {/* Platform — primary choice, chips not dropdown */}
+          {/* Where — the item's actual destination. Derived from
+              capability truth + this workspace's connections; see
+              publish-destinations.ts. Distinct from the "Publish
+              destinations" capability row above, which is context. */}
           <div className="space-y-1.5">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
-              Where
+            <div className="flex items-baseline justify-between gap-2">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
+                Where
+              </div>
+              <span className="text-[10px] text-ink-400">
+                Destination for this post
+              </span>
             </div>
-            <div className="flex flex-wrap gap-1.5">
-              {PLATFORM_CHOICES.map((p) => {
-                const selected = draft.platform === p.value;
+            <div
+              className="flex flex-wrap gap-1.5"
+              role="radiogroup"
+              aria-label="Publishing destination"
+            >
+              {orderedDestinations.map((d) => {
+                const selected = draft.platform === d.platform;
                 return (
                   <button
-                    key={p.value}
+                    key={d.platform}
                     type="button"
-                    onClick={() =>
-                      setDraft((d) => ({ ...d, platform: p.value }))
-                    }
-                    className={`text-[11px] px-3 py-1 rounded-full border transition-colors inline-flex items-center gap-1.5 ${
+                    role="radio"
+                    aria-checked={selected}
+                    onClick={() => selectDestination(d)}
+                    title={d.hint}
+                    className={`text-xs px-3 py-2 min-h-[40px] rounded-full border transition-colors inline-flex items-center gap-1.5 ${
                       selected
-                        ? "bg-signal-50 border-signal-300 text-signal-800"
+                        ? "bg-signal-50 border-signal-500 text-signal-800 font-medium"
                         : "bg-white border-ink-200 text-ink-700 hover:bg-ink-50"
                     }`}
                   >
                     <span className="font-mono text-[10px] opacity-80">
-                      {p.short}
+                      {d.short}
                     </span>
-                    {p.label}
+                    <span>{d.label}</span>
+                    <span
+                      className={`text-[9px] uppercase tracking-wide ${
+                        d.availability === "connected"
+                          ? "text-emerald-700"
+                          : d.availability === "connection_required"
+                            ? "text-amber-700"
+                            : "text-ink-400"
+                      }`}
+                    >
+                      {destinationStateLabel(d)}
+                    </span>
                   </button>
                 );
               })}
             </div>
-            {draft.platform === "reddit" ? (
+            {selectedDestination ? (
+              <p
+                className={`text-[11px] leading-relaxed ${
+                  selectedDestination.availability === "connected"
+                    ? "text-ink-500"
+                    : "text-amber-700"
+                }`}
+              >
+                {selectedDestination.hint}
+              </p>
+            ) : draft.platform ? (
+              <p className="text-[11px] text-amber-700 leading-relaxed">
+                &ldquo;{draft.platform}&rdquo; is not a destination Signal
+                supports. Pick one above before approving.
+              </p>
+            ) : null}
+            {/* Operator-typed routing target. Reddit only — for every
+                other destination the target belongs to the identity
+                (Telegram's chat id lives on the connection row), and
+                metadata.target OVERRIDES it in the scheduler. */}
+            {allowsOperatorTarget(draft.platform) ? (
               <input
                 type="text"
                 value={draft.subreddit}
                 onChange={(e) =>
                   setDraft((d) => ({ ...d, subreddit: e.target.value }))
                 }
-                className="input w-full text-sm font-mono"
+                className="input w-full text-base font-mono"
                 placeholder="subreddit (e.g. test)"
                 aria-label="Subreddit"
               />
+            ) : selectedDestination?.identityBoundTarget ? (
+              <p className="text-[11px] text-ink-500 leading-relaxed">
+                The target comes from the connected {selectedDestination.label}{" "}
+                identity — one identity is one {selectedDestination.label}{" "}
+                target. Change it on Accounts, not here.
+              </p>
             ) : null}
           </div>
 
@@ -854,7 +1052,7 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
                     key={p.id}
                     type="button"
                     onClick={() => applyPreset(p.id)}
-                    className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${
+                    className={`text-xs px-3 py-2 min-h-[40px] rounded-full border transition-colors ${
                       matches
                         ? "bg-signal-50 border-signal-200 text-signal-800"
                         : "bg-white border-ink-200 text-ink-700 hover:bg-ink-50"
@@ -869,7 +1067,7 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
                 <button
                   type="button"
                   onClick={handleScheduleClear}
-                  className="text-[11px] px-2.5 py-1 rounded-full border bg-white border-ink-200 text-ink-500 hover:text-ink-800 hover:bg-ink-50"
+                  className="text-xs px-3 py-2 min-h-[40px] rounded-full border bg-white border-ink-200 text-ink-500 hover:text-ink-800 hover:bg-ink-50"
                 >
                   Clear
                 </button>
@@ -882,21 +1080,19 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
                 onChange={(e) => handleScheduleInputChange(e.target.value)}
                 className="input flex-1 text-sm font-mono"
               />
+              {/* Desktop keeps the commit button beside the field. On
+                  mobile it lives in the pinned action bar instead —
+                  this section sits ~700-900px down a body that is
+                  roughly 1.7 screens tall, so the operator was setting
+                  a time and then hunting for the button. Rendered in
+                  exactly one place per breakpoint, never both. */}
               <button
                 type="button"
                 onClick={handleExplicitScheduleSave}
-                disabled={
-                  !schedule.touched ||
-                  !draft.itemId ||
-                  scheduleSaveStatus === "saving"
-                }
-                className="btn-primary text-xs disabled:opacity-50"
+                disabled={scheduleSaveDisabled}
+                className="btn-primary text-xs disabled:opacity-50 hidden md:inline-flex"
               >
-                {scheduleSaveStatus === "saving"
-                  ? "Saving…"
-                  : props.existingItem?.status === "scheduled"
-                    ? "Update publish time"
-                    : "Save schedule"}
+                {scheduleSaveLabel}
               </button>
             </div>
             <div className="text-[11px] text-ink-500 flex items-center justify-between gap-2 flex-wrap">
@@ -958,22 +1154,34 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
             </summary>
             <div className="px-3 py-3 space-y-2.5 text-xs">
               <div className="grid grid-cols-2 gap-2">
+                {/* Identity picker, scoped to the chosen destination.
+                    The publish gate looks the connection up by
+                    (workspace, account, platform), so an identity from
+                    another platform can only ever resolve to
+                    `oauth_not_connected`. Offering it was a way to build
+                    an item that was guaranteed to fail. */}
                 <label className="block">
-                  <span className="text-ink-500">Account</span>
+                  <span className="text-ink-500">Identity</span>
                   <select
                     value={draft.accountId}
                     onChange={(e) =>
                       setDraft((d) => ({ ...d, accountId: e.target.value }))
                     }
-                    className="input w-full text-xs mt-0.5"
+                    className="input w-full text-base mt-0.5"
                   >
                     <option value="">—</option>
-                    {props.defaults.accounts.map((a) => (
+                    {eligibleAccounts.map((a) => (
                       <option key={a.id} value={a.id}>
-                        {(a.displayName ?? a.id) + " · " + a.platform}
+                        {a.displayName ?? a.id}
                       </option>
                     ))}
                   </select>
+                  {draft.platform && eligibleAccounts.length === 0 ? (
+                    <span className="text-[10px] text-amber-700 leading-relaxed block mt-0.5">
+                      No {selectedDestination?.label ?? draft.platform} identity
+                      yet — add one on Accounts.
+                    </span>
+                  ) : null}
                 </label>
                 <label className="block">
                   <span className="text-ink-500">Product</span>
@@ -1036,10 +1244,16 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
 
         {/* Footer actions — status-aware */}
         <ComposeFooter
+          scheduleSaveDisabled={scheduleSaveDisabled}
+          scheduleSaveLabel={scheduleSaveLabel}
+          scheduleUnsaved={schedule.touched}
+          onSaveSchedule={handleExplicitScheduleSave}
           actionState={deriveComposeActionState({
             status: (props.existingItem?.status ?? null) as ComposeItemStatus | null,
             hasItemId: Boolean(draft.itemId),
             hasTitle: draft.title.trim().length > 0,
+            titleRequired,
+            hasBody: draft.body.trim().length > 0,
             altTextMissing:
               draft.creativeId !== null &&
               draft.creativeAltText.trim().length === 0,
@@ -1225,14 +1439,14 @@ function CreativeRow({
           type="button"
           onClick={() => fileRef.current?.click()}
           disabled={busy !== null}
-          className="text-[11px] px-2.5 py-1 rounded-full border bg-white border-ink-200 text-ink-700 hover:bg-ink-50 disabled:opacity-50"
+          className="text-xs px-3 py-2 min-h-[40px] rounded-full border bg-white border-ink-200 text-ink-700 hover:bg-ink-50 disabled:opacity-50"
         >
           {busy === "upload" ? "Uploading…" : "Upload screenshot / image / video"}
         </button>
         <button
           type="button"
           onClick={() => setShowPasteUrl((v) => !v)}
-          className="text-[11px] px-2.5 py-1 rounded-full border bg-white border-ink-200 text-ink-700 hover:bg-ink-50"
+          className="text-xs px-3 py-2 min-h-[40px] rounded-full border bg-white border-ink-200 text-ink-700 hover:bg-ink-50"
         >
           Paste URL
         </button>
@@ -1240,7 +1454,7 @@ function CreativeRow({
           type="button"
           onClick={handleGenerateVisual}
           disabled={busy !== null}
-          className="text-[11px] px-2.5 py-1 rounded-full border bg-white border-ink-200 text-ink-700 hover:bg-ink-50 disabled:opacity-50"
+          className="text-xs px-3 py-2 min-h-[40px] rounded-full border bg-white border-ink-200 text-ink-700 hover:bg-ink-50 disabled:opacity-50"
         >
           {busy === "generate" ? "Planning…" : "Generate visual"}
         </button>
@@ -1249,7 +1463,7 @@ function CreativeRow({
           onClick={() => {
             setDraft((d) => ({ ...d, creativeId: null, creativeAssetUrl: null }));
           }}
-          className="text-[11px] px-2.5 py-1 text-ink-500 hover:text-ink-800"
+          className="text-xs px-3 py-2 min-h-[40px] text-ink-500 hover:text-ink-800"
         >
           {hasCreative ? "Remove" : "Skip for now"}
         </button>
@@ -1323,8 +1537,20 @@ function CreativeRow({
           `target` for every platform — adapters that don't need it
           (X, Bluesky, etc.) simply ignore. No platform branching in
           the modal. */}
+      {/* Informational: what the platform-native adapter will produce.
+          It renders 8+ rows on every open and sat between the operator
+          and the footer, occupying ~180-260px of an already ~1.7-screen
+          body. Collapsed by default so capability/debug detail cannot
+          dominate the action path — nothing here is a blocker the
+          operator must act on; real blockers surface on the card and in
+          the footer. */}
       {isKnownPublishPlatform(draft.platform) ? (
-        <PlatformShapeSummary
+        <details className="rounded-md border border-ink-200">
+          <summary className="cursor-pointer text-xs text-ink-600 px-3 py-2.5 min-h-[40px] flex items-center hover:bg-ink-50">
+            What will publish (platform shape)
+          </summary>
+          <div className="px-3 pb-3">
+            <PlatformShapeSummary
           platform={draft.platform as PublishPlatform}
           title={draft.title || null}
           body={draft.body}
@@ -1338,9 +1564,11 @@ function CreativeRow({
                 }
               : null
           }
-          rawIntent={existingItem?.platformPublishIntent ?? null}
-          target={draft.subreddit || null}
-        />
+              rawIntent={existingItem?.platformPublishIntent ?? null}
+              target={draft.subreddit || null}
+            />
+          </div>
+        </details>
       ) : null}
     </div>
   );
@@ -1519,6 +1747,10 @@ function AltTextEditor({
 function ComposeFooter({
   actionState,
   autosaveLabel: autosaveText,
+  scheduleSaveDisabled,
+  scheduleSaveLabel,
+  scheduleUnsaved,
+  onSaveSchedule,
   scheduleSet,
   hasActiveContract,
   perItemApproveBusy,
@@ -1535,6 +1767,12 @@ function ComposeFooter({
 }: {
   actionState: ReturnType<typeof deriveComposeActionState>;
   autosaveLabel: string;
+  /** Mirrors the desktop inline button's disabled state exactly. */
+  scheduleSaveDisabled: boolean;
+  scheduleSaveLabel: string;
+  /** True while the schedule field holds unpersisted changes. */
+  scheduleUnsaved: boolean;
+  onSaveSchedule: () => void;
   scheduleSet: boolean;
   hasActiveContract: boolean;
   perItemApproveBusy: "hold" | "schedule" | null;
@@ -1568,8 +1806,23 @@ function ComposeFooter({
           {actionState.primaryBlocker}
         </p>
       ) : null}
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-[11px] text-ink-500">{autosaveText}</div>
+      {/* Mobile schedule commit. The desktop copy of this button lives
+          beside the schedule field (hidden md:inline-flex there,
+          md:hidden here), so exactly one is rendered at any width and
+          the two can never compete. Only appears while there is
+          something to save. */}
+      {scheduleUnsaved ? (
+        <button
+          type="button"
+          onClick={onSaveSchedule}
+          disabled={scheduleSaveDisabled}
+          className="btn-primary text-xs w-full min-h-[44px] disabled:opacity-50 md:hidden"
+        >
+          {scheduleSaveLabel}
+        </button>
+      ) : null}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="text-[11px] text-ink-500 min-w-0">{autosaveText}</div>
         <div className="flex items-center gap-2">
           {actionState.showSaveAsDraft ? (
             <button
@@ -1611,7 +1864,7 @@ function ComposeFooter({
                 </button>
               ) : (
                 <span
-                  className="text-[11px] text-ink-500 italic max-w-xs"
+                  className="text-[11px] text-ink-500 italic max-w-full sm:max-w-xs"
                   title={approveActions.schedulePost.hint}
                 >
                   {approveActions.schedulePost.kind === "disabled_no_schedule"
@@ -1634,7 +1887,7 @@ function ComposeFooter({
               </button>
               {scheduleApproveError ? (
                 <span
-                  className="text-[11px] text-amber-700 max-w-xs"
+                  className="text-[11px] text-amber-700 max-w-full sm:max-w-xs"
                   data-error-scope="schedule"
                 >
                   {scheduleApproveError}{" "}
@@ -1644,13 +1897,13 @@ function ComposeFooter({
                 </span>
               ) : holdApproveError ? (
                 <span
-                  className="text-[11px] text-amber-700 max-w-xs"
+                  className="text-[11px] text-amber-700 max-w-full sm:max-w-xs"
                   data-error-scope="hold"
                 >
                   {holdApproveError}
                 </span>
               ) : approveActions.contextHint ? (
-                <span className="text-[11px] text-ink-500 italic max-w-xs">
+                <span className="text-[11px] text-ink-500 italic max-w-full sm:max-w-xs">
                   {approveActions.contextHint}
                 </span>
               ) : null}
@@ -1675,7 +1928,7 @@ function ComposeFooter({
                   : actionState.primaryLabel}
               </button>
               {scheduleApprovedError ? (
-                <span className="text-[11px] text-amber-700 max-w-xs">
+                <span className="text-[11px] text-amber-700 max-w-full sm:max-w-xs">
                   {scheduleApprovedError}
                 </span>
               ) : null}

@@ -233,7 +233,7 @@ export function PublishingCapabilitiesPanel({
         {rows.map((row) => (
           <li
             key={row.label}
-            className="px-5 py-3 flex items-center gap-3"
+            className="px-4 sm:px-5 py-3 flex flex-wrap items-center gap-x-3 gap-y-1.5"
           >
             <span
               className="w-6 h-6 rounded-md bg-ink-100 text-ink-700 grid place-items-center text-[10px] font-mono shrink-0"

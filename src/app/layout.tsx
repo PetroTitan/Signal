@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { SITE_URL } from "@/content/academy/seo";
 import "./globals.css";
@@ -33,6 +33,25 @@ export const metadata: Metadata = {
     index: true,
     follow: true,
   },
+};
+
+/**
+ * `viewportFit: "cover"` is what makes `env(safe-area-inset-*)` resolve
+ * to a real value. Three components already used it — the compose
+ * footer, the generate-draft sheet footer, and the new-post FAB — and
+ * all three were dead code, because without this declaration the built
+ * HTML emitted only `width=device-width, initial-scale=1` and the CSS
+ * Env spec resolves every inset to 0px.
+ *
+ * `maximumScale` is deliberately not set: capping zoom is an
+ * accessibility regression. The iOS focus-zoom problem is solved by
+ * giving form controls a 16px base size (see `.input` in globals.css),
+ * not by disabling pinch-zoom.
+ */
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({

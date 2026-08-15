@@ -24,7 +24,7 @@ function SubmitButton() {
     <button
       type="submit"
       disabled={pending}
-      className="btn-ghost text-xs disabled:opacity-60"
+      className="btn-danger text-xs disabled:opacity-60"
     >
       {pending ? "Archiving…" : "Archive"}
     </button>

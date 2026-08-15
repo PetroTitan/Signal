@@ -18,6 +18,10 @@ import {
 export interface ContinueWritingDraft {
   itemId: string;
   title: string | null;
+  /** Row label. Derived server-side via planItemDisplayLabel so a
+   *  titleless body-only post still reads as itself rather than as
+   *  "Untitled draft". Display only — never published. */
+  label: string;
   /** Short description of what's missing, e.g. "no body, no creative". */
   missing: string;
   /** Full payload for the compose sheet. */
@@ -55,7 +59,7 @@ export function ContinueWritingStrip(props: ContinueWritingStripProps) {
               className="text-left rounded-md border border-ink-200 bg-white px-3 py-1.5 hover:bg-ink-50 transition-colors min-w-0 max-w-xs"
             >
               <div className="text-xs font-medium text-ink-900 truncate">
-                {d.title?.trim() || "Untitled draft"}
+                {d.label}
               </div>
               <div className="text-[10px] text-amber-700 truncate">
                 Missing: {d.missing}

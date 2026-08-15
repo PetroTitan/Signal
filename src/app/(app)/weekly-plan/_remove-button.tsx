@@ -188,8 +188,8 @@ function ConfirmSubmit({
   const { pending } = useFormStatus();
   const className =
     variant === "danger"
-      ? "text-xs px-3 py-1.5 rounded-md bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
-      : "btn-ghost text-[11px] text-red-700 hover:bg-red-50 disabled:opacity-50";
+      ? "btn-danger-solid text-xs disabled:opacity-50"
+      : "btn-danger text-[11px] disabled:opacity-50";
   return (
     <button type="submit" disabled={pending} className={className}>
       {pending ? "Removing…" : label}

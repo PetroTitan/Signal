@@ -33,6 +33,7 @@ import {
   insertPublishHistory,
 } from "@/repositories/publish-history-repository";
 import { computeFingerprint } from "@/core/publishing/publish-fingerprint";
+import { titleRequirementBlocker } from "@/core/platform-native/approval-policy";
 import { runPublish } from "@/core/publishing/publishing-runner";
 import { friendlyFailure } from "@/core/publishing/founder-error";
 import type { PublishPlatform } from "@/core/publishing/publishing-types";
@@ -82,9 +83,18 @@ export async function publishTierOneAction(
         `This post isn't ready yet (current state: ${item.status}). It needs to be approved and scheduled first.`,
       );
     }
-    if (!item.title || item.title.trim().length === 0) {
-      return actionFail("This post needs a title before publishing.");
-    }
+    // Title is required per destination, not universally. This gate ran
+    // for all three tier-1 platforms, which meant it blocked Bluesky —
+    // whose adapter declares `requiresTitle: false` and whose publisher
+    // never reads `request.title`. dev.to and Hashnode still refuse
+    // without one, and their publishers back that up independently
+    // (`article_title_required` / `hashnode_title_required`).
+    const titleBlocker = titleRequirementBlocker({
+      platform,
+      contentType: null,
+      title: item.title,
+    });
+    if (titleBlocker) return actionFail(titleBlocker);
     if (!item.body || item.body.trim().length === 0) {
       return actionFail("This post needs a body before publishing.");
     }

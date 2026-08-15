@@ -38,7 +38,7 @@ export function PreviewTabsHeader({
   return (
     <div
       role="tablist"
-      className="flex items-center gap-1 border-b border-ink-100 px-1"
+      className="flex items-center gap-1 border-b border-ink-100 px-1 overflow-x-auto"
     >
       {tabs.map((tab) => {
         const isActive = active === tab.id;
@@ -50,18 +50,21 @@ export function PreviewTabsHeader({
             disabled={tab.disabled}
             onClick={() => onChange(tab.id)}
             aria-selected={isActive}
-            className={`text-[11px] font-medium px-3 py-2 -mb-px border-b-2 transition-colors ${
+            title={
+              tab.disabled ? "Not available for this platform" : undefined
+            }
+            aria-label={
+              tab.disabled
+                ? `${tab.label} — not available for this platform`
+                : undefined
+            }
+            className={`text-[11px] font-medium px-3 py-2 min-h-[40px] shrink-0 whitespace-nowrap -mb-px border-b-2 transition-colors ${
               isActive
                 ? "border-signal-500 text-signal-800"
                 : "border-transparent text-ink-500 hover:text-ink-800"
             } disabled:opacity-40 disabled:cursor-not-allowed`}
           >
             {tab.label}
-            {tab.disabled ? (
-              <span className="ml-1 text-[10px] text-ink-400">
-                (not available for this platform)
-              </span>
-            ) : null}
           </button>
         );
       })}

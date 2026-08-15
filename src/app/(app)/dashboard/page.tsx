@@ -218,6 +218,14 @@ export default async function DashboardPage() {
     })),
     products: products.map((p) => ({ id: p.id, name: p.name })),
     allowedSubreddits,
+    // Already loaded above for the expired-connection strip; the
+    // editor's destination model needs it to distinguish a connected
+    // destination from one still awaiting sign-in.
+    connections: connections.map((c) => ({
+      platform: c.platform,
+      connectionStatus: c.connectionStatus,
+      healthStatus: c.healthStatus,
+    })),
   };
 
   const now = new Date();

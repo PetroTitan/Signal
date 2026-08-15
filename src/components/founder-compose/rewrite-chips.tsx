@@ -213,11 +213,17 @@ export function RewriteChips(props: RewriteChipsProps) {
 
   return (
     <div className="space-y-3">
-      {/* ─────────────── Publish destinations ─────────────── */}
+      {/* ─────────────── Adapt draft for ───────────────
+          Renamed from "Publish destinations", which collided head-on
+          with the "Where" selector below: two rows in one modal, both
+          reading as destination pickers, giving different answers (11
+          entries vs 4). This row never chose where a post went — it
+          rewrites the draft in a platform's shape. The label now says
+          so, and the caption states what it does NOT do. */}
       <div className="space-y-1.5">
-        <div className="flex items-baseline justify-between gap-2">
+        <div className="flex items-baseline justify-between gap-2 flex-wrap">
           <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">
-            Publish destinations
+            Adapt draft for
           </span>
           {disabledReason ? (
             <span className="text-[10px] text-ink-400">{disabledReason}</span>
@@ -225,6 +231,10 @@ export function RewriteChips(props: RewriteChipsProps) {
             <span className="text-[10px] text-ink-400">{providerHint}</span>
           ) : null}
         </div>
+        <p className="text-[10px] text-ink-400 leading-relaxed">
+          Rewrites the draft in that platform&apos;s shape. It does not change
+          where this post publishes — set that under <em>Where</em>.
+        </p>
         <div className="flex flex-wrap gap-1.5">
           {FOUNDER_PLATFORMS.map((platform) => {
             const label = DESTINATION_CHIP_LABEL[platform];
@@ -241,7 +251,7 @@ export function RewriteChips(props: RewriteChipsProps) {
               return (
                 <span
                   key={platform}
-                  className="text-[11px] px-2.5 py-1 rounded-full border border-ink-200 bg-white text-ink-700 inline-flex items-center gap-1.5 select-none cursor-default"
+                  className="text-xs px-3 py-2 min-h-[40px] rounded-full border border-ink-200 bg-white text-ink-700 inline-flex items-center gap-1.5 select-none cursor-default"
                   title={`${label} · ${badge}`}
                 >
                   <span>{label}</span>
@@ -258,7 +268,7 @@ export function RewriteChips(props: RewriteChipsProps) {
                 onClick={() => fire(action)}
                 disabled={globalDisabled}
                 title={`Adapt draft for ${label} (${badge})`}
-                className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors inline-flex items-center gap-1.5 ${
+                className={`text-xs px-3 py-2 min-h-[40px] rounded-full border transition-colors inline-flex items-center gap-1.5 ${
                   pending
                     ? "bg-signal-100 border-signal-300 text-signal-800"
                     : "bg-white border-ink-200 text-ink-700 hover:bg-ink-50"
@@ -290,7 +300,7 @@ export function RewriteChips(props: RewriteChipsProps) {
                 type="button"
                 onClick={() => fire(action)}
                 disabled={globalDisabled}
-                className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${
+                className={`text-xs px-3 py-2 min-h-[40px] rounded-full border transition-colors ${
                   pending
                     ? "bg-signal-100 border-signal-300 text-signal-800"
                     : "bg-white border-ink-200 text-ink-700 hover:bg-ink-50"

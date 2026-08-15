@@ -188,8 +188,14 @@ export default function HomePage() {
             An honest view of what&apos;s supported today. Where a platform
             can&apos;t expose a metric, we say so rather than estimating it.
           </p>
+          {/* The card is overflow-hidden, so a table wider than the
+              viewport had no escape hatch and simply widened the
+              document at 320px. Scroll it inside its own container
+              instead — the pattern already used by every other table in
+              the app. */}
           <div className="mt-6 card overflow-hidden">
-            <table className="w-full text-sm">
+            <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[30rem]">
               <thead>
                 <tr className="border-b border-ink-100 text-left text-[11px] uppercase tracking-wider text-ink-400">
                   <th className="px-4 py-2 font-semibold">Platform</th>
@@ -212,6 +218,7 @@ export default function HomePage() {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
           <div className="mt-3 text-sm">
             <Link href="/academy/supported-metrics-by-platform" className="text-signal-700 hover:text-signal-800">

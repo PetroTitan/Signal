@@ -128,6 +128,144 @@ export function getApprovalPolicy(
 // Legacy items predating platform-native intent typically carry
 // content_type='post' (the MCP default) and remain approvable.
 
+// =====================================================================
+// Title requirement contract
+// =====================================================================
+//
+// The legacy assumption was "every plan item needs a title", enforced
+// universally in `sendForApprovalAction`, the compose footer, and the
+// missing-parts label. That is the wrong abstraction: a
+// platform-native social post usually has NO title. X, Bluesky,
+// Telegram, Threads and an Instagram caption are body-only objects —
+// their publishers never read `request.title` and their transformers
+// explicitly refuse to prepend it (see
+// `transformers/x.ts` and `transformers/bluesky.ts`: "title is NOT
+// prepended"). Requiring one forced the operator to invent a string
+// that would never be published.
+//
+// Meanwhile three publishers DO hard-refuse without a title, and
+// those refusals must be preserved:
+//
+//   publish-reddit.ts     → "missing_title"
+//   publish-devto.ts      → "article_title_required"
+//   publish-hashnode.ts   → "hashnode_title_required"
+//
+// So the requirement is a property of the (platform, object) pair,
+// not of drafts in general. This predicate is the single place that
+// decides. No `if (platform === "x")` branches belong anywhere else;
+// extend the matrix here instead.
+//
+// Relationship to the adapters
+// ----------------------------
+// Each platform-native adapter already carries a `requiresTitle`
+// capability flag and enforces it inside `preview()` at render time.
+// That is PROVIDER-shape enforcement. This predicate is APPROVAL-time
+// policy — the same split the file already draws for
+// `requiresCreative`. The two agree by construction because both are
+// derived from the same publisher behavior; `title-contract.test.ts`
+// pins them against each other so they cannot drift.
+//
+// V1 matrix
+// ---------
+//   reddit    + any submission object            → required
+//   devto     + any object                       → required
+//   hashnode  + any object                       → required
+//   linkedin  + article                          → required
+//   youtube   + video_post / short_video         → required
+//   everything else                              → optional
+//
+// Default is OPTIONAL. Adding a platform must not silently reinstate
+// the universal rule.
+
+/** Objects that are Reddit *submissions* (a title-bearing post) as
+ *  opposed to parent-anchored comments/replies, which have none. */
+const REDDIT_SUBMISSION_OBJECTS: ReadonlySet<string> = new Set([
+  "post",
+  "link_post",
+  "media_post",
+  "article",
+  "new_post",
+]);
+
+/** Platforms whose every publishable object carries a title, because
+ *  the publisher itself refuses without one. */
+const ALWAYS_TITLED_PLATFORMS: ReadonlySet<string> = new Set([
+  "devto",
+  "hashnode",
+]);
+
+export interface TitlePolicyInput {
+  /** weekly_plan_items.platform. Null → no destination chosen yet. */
+  platform: string | null;
+  /** weekly_plan_items.content_type. Free text; compared lowercased. */
+  contentType?: string | null;
+  /** Operator-chosen intent parsed from platform_publish_intent. */
+  intent?: PublishingIntent | null;
+}
+
+/**
+ * True when this item cannot be approved or published without a
+ * non-empty title.
+ *
+ * Deliberately conservative for the three hard-refusing publishers:
+ * for Reddit / dev.to / Hashnode the answer is "required" even for
+ * legacy rows carrying `intent="unknown"`, because the publisher
+ * gate is unconditional. Letting such an item through approval would
+ * only move the failure later, to a terminal publish failure the
+ * operator has to recover from.
+ */
+export function requiresTitle(input: TitlePolicyInput): boolean {
+  const platform = (input.platform ?? "").trim().toLowerCase();
+  if (platform.length === 0) return false;
+
+  if (ALWAYS_TITLED_PLATFORMS.has(platform)) return true;
+
+  // Normalise the object: explicit content_type wins, intent is the
+  // fallback for rows created through the MCP intent path.
+  const object = (input.contentType ?? "").trim().toLowerCase();
+  const intent = input.intent ?? null;
+  const effective =
+    object.length > 0 ? object : intent && intent !== "unknown" ? intent : "";
+
+  if (platform === "reddit") {
+    // Comments and replies are parent-anchored and titleless. Legacy
+    // rows with no object at all are treated as submissions, matching
+    // the publisher's unconditional gate.
+    if (effective === "comment" || effective === "reply") return false;
+    if (effective.length === 0) return true;
+    return REDDIT_SUBMISSION_OBJECTS.has(effective);
+  }
+
+  if (platform === "linkedin") return effective === "article";
+
+  if (platform === "youtube") {
+    return effective === "video_post" || effective === "short_video";
+  }
+
+  // x, bluesky, telegram, threads, instagram, indie_hackers, and any
+  // future platform: titleless unless a rule above says otherwise.
+  return false;
+}
+
+/**
+ * Operator-facing explanation for a missing required title. Returns
+ * null when no title is required, so callers can use it directly as
+ * a blocker value.
+ */
+export function titleRequirementBlocker(
+  input: TitlePolicyInput & { title: string | null },
+): string | null {
+  if (!requiresTitle(input)) return null;
+  if (input.title !== null && input.title.trim().length > 0) return null;
+  const platform = (input.platform ?? "").trim().toLowerCase();
+  if (platform === "devto") return "dev.to articles require a title.";
+  if (platform === "hashnode") return "Hashnode articles require a title.";
+  if (platform === "reddit") return "Reddit posts require a title.";
+  if (platform === "linkedin") return "LinkedIn articles require a title.";
+  if (platform === "youtube") return "YouTube uploads require a title.";
+  return "This destination requires a title.";
+}
+
 export interface ApprovableObjectInput {
   /** weekly_plan_items.platform. Null tolerated for legacy rows. */
   platform: string | null;

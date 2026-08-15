@@ -33,7 +33,7 @@ export function ApproveButton({
           type="text"
           name="confirmation_phrase"
           placeholder={expected}
-          className="input text-xs min-w-[20rem]"
+          className="input text-xs w-full sm:min-w-[20rem]"
           autoComplete="off"
         />
       ) : null}
