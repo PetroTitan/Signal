@@ -14,14 +14,21 @@ import {
   WEEKLY_CONTRACT_POLICY_RESTRICTED,
   WEEKLY_CONTRACT_STATUS_LABELS,
 } from "@/core/weekly-contract";
+import { SCHEDULER_AUTONOMOUS_PLATFORMS } from "@/core/publishing/publish-capability-registry";
 import { CreateContractForm } from "./_create-contract-form";
 
 export const dynamic = "force-dynamic";
 
-// F4.3 — Tier-1 platforms only. X and LinkedIn don't have functional
-// publishers yet, so listing them in the publishing scope would
-// imply support we don't have.
-const PLATFORM_OPTIONS = ["reddit", "devto", "hashnode", "bluesky"] as const;
+// Publishing scope covers the destinations the scheduler can actually
+// drive. Derived, not listed: this was a hardcoded four-platform literal
+// identical to the editor's old one, and it drifted the same way. X and
+// Telegram gained real publishers and could never be brought into scope
+// from this page, so bulk approval skipped them with "platform out of
+// contract scope".
+//
+// Sorted for a stable render order — `SCHEDULER_AUTONOMOUS_PLATFORMS` is
+// a Set and its declaration order is not a UI decision.
+const PLATFORM_OPTIONS = [...SCHEDULER_AUTONOMOUS_PLATFORMS].sort();
 
 function isoMonday(date: Date): string {
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));

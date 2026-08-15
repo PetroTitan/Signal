@@ -7,6 +7,7 @@
  */
 
 import type { PublishPlatform } from "@/core/publishing/publishing-types";
+import { resolveIdentityPlatformGuidance } from "@/core/publishing/platform-guidance";
 
 interface PlatformChipProps {
   platform: PublishPlatform | string;
@@ -23,23 +24,45 @@ interface PlatformVisual {
   cls: string;
 }
 
-const VISUAL: Record<string, PlatformVisual> = {
-  reddit: { label: "Reddit", short: "r/", cls: "bg-orange-100 text-orange-800" },
-  x: { label: "X", short: "X", cls: "bg-ink-900 text-white" },
-  linkedin: { label: "LinkedIn", short: "in", cls: "bg-sky-100 text-sky-800" },
-  devto: { label: "dev.to", short: "dev", cls: "bg-ink-100 text-ink-800" },
-  hashnode: { label: "Hashnode", short: "Hn", cls: "bg-blue-100 text-blue-800" },
-  bluesky: { label: "Bluesky", short: "Bs", cls: "bg-sky-100 text-sky-700" },
+/**
+ * Per-platform brand tint. Deliberately NOT Signal blue — a platform
+ * chip identifies a destination, it is not a navigation control.
+ *
+ * Label and short text are NOT listed here: they come from the
+ * editorial registry, so a chip can never disagree with the destination
+ * selector about what a platform is called. This map used to carry both
+ * and covered only six platforms, so a Telegram item rendered as the
+ * literal word "Platform" with a "·" glyph.
+ */
+const TINT: Record<string, string> = {
+  reddit: "bg-orange-100 text-orange-800",
+  x: "bg-ink-900 text-white",
+  linkedin: "bg-sky-100 text-sky-800",
+  devto: "bg-ink-100 text-ink-800",
+  hashnode: "bg-blue-100 text-blue-800",
+  bluesky: "bg-sky-100 text-sky-700",
+  telegram: "bg-cyan-100 text-cyan-800",
+  youtube: "bg-red-100 text-red-800",
+  threads: "bg-ink-200 text-ink-900",
+  instagram: "bg-fuchsia-100 text-fuchsia-800",
+  indie_hackers: "bg-violet-100 text-violet-800",
 };
 
-const FALLBACK: PlatformVisual = {
-  label: "Platform",
-  short: "·",
-  cls: "bg-ink-100 text-ink-700",
-};
+const FALLBACK_TINT = "bg-ink-100 text-ink-700";
+
+function resolveVisual(platform: string): PlatformVisual {
+  const guidance = resolveIdentityPlatformGuidance(platform);
+  return {
+    // An unrecognized slug renders its own value rather than the word
+    // "Platform" — a legacy row should show what it actually says.
+    label: guidance?.label ?? platform,
+    short: guidance?.short ?? "·",
+    cls: TINT[platform] ?? FALLBACK_TINT,
+  };
+}
 
 export function PlatformChip({ platform, href, size = "sm" }: PlatformChipProps) {
-  const v = VISUAL[platform] ?? FALLBACK;
+  const v = resolveVisual(platform);
   const pad =
     size === "md" ? "px-2.5 py-1 text-xs" : "px-2 py-0.5 text-[11px]";
   const inner = (
