@@ -390,32 +390,49 @@ terminal `failed`, plan item `paused`. Masked in practice only by
 `SAFE_TEST_MODE`, which diverts Reddit to the courier path before
 `publishOne`.
 
-Not fixed here because the fix changes publishing-engine behaviour: it would
-newly cause live Reddit API submissions where the system currently fails
-closed. That deserves its own change with its own verification. The
-precondition for it being *safe* — that `metadata.target` is only ever written
-for Reddit — is delivered by this milestone.
+**RESOLVED** (`feat/publishing-truth-cleanup`) — with the safety consequence
+handled explicitly. The target is threaded by one helper spread into every
+execution-item creation site, gated on `allowsOperatorTarget` so it cannot
+override Telegram's identity-bound chat id, and pinned by a static test so a
+new creation site cannot silently reopen it.
 
-**D2 — manual distribution is unreachable.** No `scheduled → ready`
-transition exists for manual platforms, so `prepareForManualPublishAction`
-and `recordManualDistributionAction` cannot be entered for LinkedIn / YouTube
-/ Threads / Instagram / X. Building that transition is a publishing-flow
-feature, not a UX pass.
+Because that revives a path which had been fail-closed since it was written,
+and revives it into a place with none of the manual path's protections, the
+runner now requires `REDDIT_AUTONOMOUS_PUBLISH=true` AND the resolved subreddit
+to be in `ALLOWED_TEST_SUBREDDITS` before calling the provider. Unset — the
+default, and production today — means no autonomous Reddit provider call, so
+landing the fix changed no production behaviour. See §6.
 
-**D3 — `/execution/items/[id]` classifies `x` as a distribution platform**
-while the scheduler publishes it autonomously. Currently masked because the
-manual branch is unreachable (D2). Should be resolved together with D2.
+**D2 — RESOLVED** (`feat/publishing-truth-cleanup`). `prepareForManualDistributionAction`
+walks a manual item `pending_authorization → authorized → ready →
+ready_for_manual_publish`; every edge was already legal and the status was
+already in the DB CHECK, so no migration. It never routes through `scheduled`,
+which is what keeps the item invisible to the tick. A second defect surfaced
+while fixing it: `recordManualDistributionAction` transitioned straight to
+`completed`, which is not an edge from either `ready` or
+`ready_for_manual_publish`, and `updateItemStatus` throws on an illegal
+transition — so the action could never have succeeded. It now walks through
+`running`, as the Reddit manual-record path already did.
 
-**D4 — `/accounts` capability panel calls Reddit "Manual-first"**, contradicting
-`platform-guidance` (`publishingMode: "api"`) and
-`/settings/publishing-platforms` ("Connected via OAuth"). A capability-copy
-inconsistency on a page outside this milestone's surface.
+**D3 — RESOLVED** (`feat/publishing-truth-cleanup`). `isDistribution` derives
+from `isAutonomousDestination`. `isTierOne` deliberately does NOT: it is a
+credential question (dev.to / Hashnode / Bluesky publish with API-key
+credentials and therefore offer an operator "publish now" button), not an
+autonomy question — Reddit and X are equally autonomous and have no such
+button.
 
-**D5 — MCP `prepare_item` performs no platform validation**
-(`platform: input.platform ? String(input.platform) : null`), unlike
-`accounts.prepare`, which is allowlisted against `FOUNDER_PLATFORMS`. An agent
-can still mint an arbitrary-platform plan item; the scheduling gate added here
-is what stops it from becoming a dead execution item.
+**D4 — RESOLVED** (`feat/publishing-truth-cleanup`). Reddit reports like every
+other API platform, deriving readiness from the same provider-env-plus-token-
+encryption AND that `/settings/publishing-platforms` uses. The manual copy is
+retained and made conditional: while `REDDIT_OAUTH_STATUS` holds the workspace
+at API approval, "Manual — API approval pending" is the truthful answer.
+
+**D5 — RESOLVED** (`feat/publishing-truth-cleanup`). `prepare_item` validates
+`platform` against the same derived `FOUNDER_PLATFORMS` allowlist
+`accounts.prepare` uses, refusing with `platform_unsupported`. Both surfaces —
+the hand-rolled parser and the declared JSON Schema — are fixed and pinned to
+each other. Preparation deliberately accepts manual platforms; it says nothing
+about schedulability, which is still gated by `SCHEDULABLE_PLATFORMS`.
 
 **D6 — the weekly-contract scope selector** duplicates the stale four-platform
 literal, so Telegram and X items cannot be brought into contract scope from
@@ -426,3 +443,43 @@ here because the same literal may exist elsewhere.
 focus zoom; the calendar grid crushes to ~44px per day column at 430px; ~20
 pages use the legacy `px-6` base padding instead of `px-4`; no modal locks
 background scroll.
+
+
+---
+
+## 6. Autonomous Reddit publishing — operator QA
+
+Threading the routing target (§5, D1) revived the scheduler's Reddit path. It
+is gated, and turning it on is a deliberate operator action.
+
+**Default state — nothing to do.** With `REDDIT_AUTONOMOUS_PUBLISH` unset, the
+scheduler never calls Reddit. A scheduled Reddit item resolves its subreddit,
+reaches the runner, and is refused with `reddit_autonomous_publish_disabled`
+(terminal `blocked`, no retry budget consumed). This is byte-identical in
+outcome to production before the fix, which refused with `missing_subreddit`
+— the difference is that the reason is now honest and the operator is told at
+approval time if a subreddit is missing at all.
+
+**The manual path is unaffected.** `/execution/items/[id]` calls
+`publishToReddit` directly with the subreddit typed into the form. It does not
+go through the runner and is not gated by any of this.
+
+**To enable autonomous Reddit publishing:**
+
+1. Confirm the Reddit identity is connected and its token carries the `submit`
+   scope. The scope is requested only while `SAFE_TEST_MODE=true` at connect
+   time and is frozen into the token — a token minted without it will reach
+   Reddit and get a 403 (`platform_unauthorized`), which is a real outbound
+   request that creates no post.
+2. Set `ALLOWED_TEST_SUBREDDITS` to the subreddits Signal may post to. The
+   scheduler will refuse anything else with `subreddit_not_allowlisted`. This
+   is the same allowlist the manual path has always enforced.
+3. Set `REDDIT_AUTONOMOUS_PUBLISH=true`.
+4. Verify with ONE post to a throwaway subreddit before widening the
+   allowlist.
+
+**What the autonomous path still does NOT have**, and what an operator is
+therefore accepting when they enable it: no typed confirmation phrase, no
+1/hour or 3/24h rate limit, and no 30-day duplicate fingerprint check. Those
+live in `safe-test-policy`, which only the manual path consults. Bringing them
+to the scheduler is a separate change and is not done here.
