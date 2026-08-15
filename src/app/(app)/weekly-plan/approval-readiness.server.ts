@@ -31,6 +31,7 @@ import {
   type PublishingIntent,
 } from "@/core/platform-native";
 import type { PublishPlatform } from "@/core/publishing/publishing-types";
+import { operatorTargetBlocker } from "@/core/publishing/reddit-target";
 
 export type { ApprovalReadiness } from "./approval-readiness.shared";
 export { summarizeReadiness } from "./approval-readiness.shared";
@@ -208,6 +209,21 @@ export function assessItemApprovalReadiness(
     );
   }
 
+  // Reddit is the one destination that takes an operator-typed routing
+  // target, and it is useless without one: the publisher refuses with
+  // `missing_subreddit`, which is terminal. Refusing here means the
+  // operator is told while they can still fix it, instead of finding a
+  // blocked execution item and a paused plan item afterwards.
+  //
+  // Gated on requireSchedule for the same reason the schedule blocker
+  // is: "approve & hold" is a legitimate way to park a post that is not
+  // finished yet. Only the paths that mint an execution item demand it.
+  const targetBlocker = input.requireSchedule
+    ? operatorTargetBlocker(input.item.platform, input.item.metadata)
+    : null;
+  const targetSet = targetBlocker === null;
+  if (targetBlocker) blockers.push(targetBlocker);
+
   return {
     ready: blockers.length === 0,
     blockers,
@@ -223,6 +239,7 @@ export function assessItemApprovalReadiness(
       platformScope,
       scheduleSet,
       creativeRequired,
+      targetSet,
     },
   };
 }

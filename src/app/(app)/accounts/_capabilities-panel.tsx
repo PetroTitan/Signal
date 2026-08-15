@@ -83,6 +83,11 @@ export function PublishingCapabilitiesPanel({
   // "Workspace ready · no identity connected" and "Setup needed".
   const xConfigured =
     isOAuthProviderConfigured("x") && hasTokenEncryptionKey();
+  // Same AND as the X row and as /settings/publishing-platforms: the
+  // OAuth flow is only usable end to end when the provider env and
+  // token encryption are both in place.
+  const redditConfigured =
+    isOAuthProviderConfigured("reddit") && hasTokenEncryptionKey();
   const counts = identityAuthCounts ?? {};
 
   const rows: PlatformRow[] = FOUNDER_PLATFORMS.map((p) => {
@@ -128,18 +133,28 @@ export function PublishingCapabilitiesPanel({
     if (p === "hashnode") return apiRow(tier1.hashnode.configured);
     if (p === "bluesky") return apiRow(tier1.bluesky.configured);
     if (p === "reddit") {
-      return {
-        label,
-        short,
-        mode: redditBlocked
-          ? "Manual — API approval pending"
-          : "Manual-first",
-        status: {
-          kind: "manual",
-          detail: redditBlocked ? "Manual mode" : "Manual-first",
-        },
-        rowKind: "manual_first",
-      };
+      // Reddit is an OAuth/API platform (platform-guidance declares
+      // `publishingMode: "api"`, the publisher and the scheduler
+      // allowlist both support it, and /settings/publishing-platforms
+      // already says "Connected via OAuth"). This row said
+      // "Manual-first" unconditionally, which is the last surface still
+      // repeating the pre-API-approval state as if it were permanent.
+      //
+      // The manual answer is still the TRUTHFUL one while the operator
+      // is in the API-approval hold — REDDIT_OAUTH_STATUS=
+      // blocked_pending_reddit_api_approval — so that branch stays and
+      // keeps its copy. Outside the hold, Reddit reports like every
+      // other API platform.
+      if (redditBlocked) {
+        return {
+          label,
+          short,
+          mode: "Manual — API approval pending",
+          status: { kind: "manual", detail: "Manual mode" },
+          rowKind: "manual_first",
+        };
+      }
+      return apiRow(redditConfigured);
     }
     if (p === "x") {
       // Phase F9 — X is automated via OAuth 2.0 + /2/tweets.

@@ -202,6 +202,20 @@ export async function recordManualDistributionAction(
       },
     });
 
+    // The state machine has no `ready → completed` or
+    // `ready_for_manual_publish → completed` edge, and updateItemStatus
+    // THROWS on an illegal transition — so this action could never have
+    // succeeded. It went unnoticed because the path was unreachable:
+    // `ready` had one writer, gated on SAFE_TEST_MODE + reddit.
+    //
+    // Walk through `running` like the Reddit manual-record path already
+    // does. Both edges are legal, and no state-machine change is needed
+    // to widen what is reachable.
+    await updateItemStatus({
+      workspaceId,
+      itemId: item.id,
+      to: "running",
+    });
     await updateItemStatus({
       workspaceId,
       itemId: item.id,

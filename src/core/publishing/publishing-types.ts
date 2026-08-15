@@ -203,6 +203,23 @@ export const PUBLISH_REASON_CODES = [
   // Media-upload codes (Phase F9 commit 5).
   "x_media_upload_failed",
   "x_media_upload_unavailable",
+  // Autonomous Reddit publishing gates. Both are terminal `blocked`
+  // outcomes requiring an operator decision, never transient:
+  //
+  //   - reddit_autonomous_publish_disabled: the scheduler reached a
+  //     Reddit item with a valid target, but REDDIT_AUTONOMOUS_PUBLISH
+  //     is not enabled. Default state; the operator publishes through
+  //     the confirmed manual path instead.
+  //   - subreddit_not_allowlisted: autonomous publishing is enabled but
+  //     the resolved subreddit is not in ALLOWED_TEST_SUBREDDITS. The
+  //     manual path has always enforced this allowlist
+  //     (`safe-test-policy`); the autonomous path now enforces the same
+  //     rule rather than a weaker one.
+  //
+  // Free-text `reason_code` in publish_history (no DB CHECK), so this
+  // is a pure TS-side widening.
+  "reddit_autonomous_publish_disabled",
+  "subreddit_not_allowlisted",
 ] as const;
 export type PublishReasonCode = (typeof PUBLISH_REASON_CODES)[number];
 

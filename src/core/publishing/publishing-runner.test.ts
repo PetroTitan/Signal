@@ -122,13 +122,24 @@ describe("runPublish — db plumbing", () => {
   });
 
   it("does not affect the Reddit path — runner ignores db for non-bluesky cases", async () => {
-    await runPublish({
-      request: redditRequest(),
-      context: baseContext(),
-      accessToken: "tok",
-      target: "test",
-      db: FAKE_DB,
-    });
+    // This case is about db plumbing, not the autonomous gate, so it
+    // opts in explicitly. Autonomous Reddit publishing is off by
+    // default and requires an allow-listed subreddit; those refusals
+    // have their own tests in reddit-target.test.ts.
+    const prev = { ...process.env };
+    process.env.REDDIT_AUTONOMOUS_PUBLISH = "true";
+    process.env.ALLOWED_TEST_SUBREDDITS = "test";
+    try {
+      await runPublish({
+        request: redditRequest(),
+        context: baseContext(),
+        accessToken: "tok",
+        target: "test",
+        db: FAKE_DB,
+      });
+    } finally {
+      process.env = prev;
+    }
     expect(otherPlatformCalls).toEqual([{ name: "reddit" }]);
     expect(blueskyCalls).toHaveLength(0);
   });

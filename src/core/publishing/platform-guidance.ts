@@ -7,20 +7,27 @@
  * knows what kind of voice fits each platform.
  *
  * Platforms exposed in the founder UI:
- *   - reddit         (manual-first via Reddit's official OAuth + manual fallback)
+ *   - reddit         (automated via Reddit's official OAuth; falls back to
+ *                     operator-driven manual publishing only while
+ *                     REDDIT_OAUTH_STATUS holds it at API-approval)
  *   - devto          (automated when DEVTO_API_KEY is set)
  *   - hashnode       (automated when HASHNODE_API_KEY is set)
  *   - bluesky        (automated when BLUESKY_APP_PASSWORD is set)
  *   - indie_hackers  (manual-only — no API)
- *   - x              (F5.0 — manual-first distribution; share-intent fallback)
- *   - linkedin       (F5.0 — manual-first distribution; share-intent fallback)
+ *   - x              (F9 — automated via OAuth 2.0 + the v2 endpoints)
+ *   - linkedin       (manual distribution; share-intent fallback)
  *
- * X and LinkedIn ARE NOT autonomous publishing layers. They are
- * distribution layers: Signal prepares the post, formats it for the
- * platform, opens the official compose intent URL, and the founder
- * confirms + clicks publish on the platform itself. The founder then
- * pastes the resulting permalink back into Signal so the publish
- * history stays unified.
+ * LinkedIn, YouTube, Threads and Instagram ARE NOT autonomous
+ * publishing layers. They are distribution layers: Signal prepares the
+ * post, formats it for the platform, opens the official compose intent
+ * URL, and the founder confirms + clicks publish on the platform
+ * itself. The founder then pastes the resulting permalink back into
+ * Signal so the publish history stays unified.
+ *
+ * X was in that list until Phase F9 and no longer belongs there — it
+ * has a real publisher and is scheduler-autonomous. The single source
+ * of truth for that distinction is `publish-capability-registry`, not
+ * this docstring and not any per-surface literal.
  */
 
 export type FounderPlatform =

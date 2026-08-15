@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { executionTargetMetadata } from "@/core/publishing/reddit-target";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import {
   cancelQueue,
@@ -313,6 +314,15 @@ export async function queueWeeklyPlanItemsAction(
         scheduledAt: plan.scheduledAt,
         riskScore: plan.riskScore,
         riskLevel: plan.riskLevel,
+        // Carry the operator-typed routing target (Reddit only). This
+        // path passed no metadata at all, so a queued Reddit item
+        // resolved no subreddit and died at `missing_subreddit` like
+        // every other scheduling path.
+        metadata: {
+          plan_item_id: plan.id,
+          source: "queue_approved_items",
+          ...executionTargetMetadata(plan.platform, plan.metadata),
+        },
       });
       await recordLog(
         composeQueueLog({

@@ -209,6 +209,8 @@ interface PlanItemSeed {
   account_id?: string | null;
   risk_level?: string | null;
   product_id?: string | null;
+  /** Merged over the defaults, so a case can clear metadata.target. */
+  metadata?: Record<string, unknown>;
 }
 
 function seedPlanItem(store: FakeStore, overrides: PlanItemSeed = {}): string {
@@ -233,7 +235,18 @@ function seedPlanItem(store: FakeStore, overrides: PlanItemSeed = {}): string {
     status: overrides.status ?? "approved",
     risk_score: 10,
     risk_level: riskLevel,
-    metadata: { platform_native_draft: { platform: "bluesky" } },
+    metadata: {
+      platform_native_draft: { platform: "bluesky" },
+      // A Reddit plan item carries the operator-typed subreddit at
+      // metadata.target; the tool refuses without one, because the
+      // publisher would terminally refuse with `missing_subreddit`.
+      // Non-Reddit platforms take no operator target — writing one
+      // there would override the identity's own target.
+      ...((overrides.platform ?? "bluesky") === "reddit"
+        ? { target: "test" }
+        : {}),
+      ...(overrides.metadata ?? {}),
+    },
   });
   return id;
 }
