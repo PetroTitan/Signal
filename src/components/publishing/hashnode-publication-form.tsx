@@ -124,8 +124,8 @@ export function HashnodePublicationForm({
           spellCheck={false}
           className={
             isCompact
-              ? "min-w-[200px] flex-1 rounded border border-ink-200 bg-white px-2 py-1 text-[11px] font-mono text-ink-800 focus:outline-none focus:ring-2 focus:ring-signal-500"
-              : "min-w-[260px] flex-1 rounded-md border border-ink-200 bg-white px-3 py-1.5 text-sm font-mono text-ink-800 focus:outline-none focus:ring-2 focus:ring-signal-500"
+              ? "sm:min-w-[200px] flex-1 rounded border border-ink-200 bg-white px-2 py-1 text-[11px] font-mono text-ink-800 focus:outline-none focus:ring-2 focus:ring-signal-500"
+              : "sm:min-w-[260px] flex-1 rounded-md border border-ink-200 bg-white px-3 py-1.5 text-sm font-mono text-ink-800 focus:outline-none focus:ring-2 focus:ring-signal-500"
           }
         />
         <button

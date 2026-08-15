@@ -288,9 +288,13 @@ function SummaryShell(props: {
 
 function Row(props: { label: string; children: React.ReactNode }) {
   return (
-    <div className="text-[11px] grid grid-cols-[110px_1fr] gap-x-3">
+    // `1fr` on a grid is minmax(auto, 1fr), so it carries a min-content
+    // floor: the Reply/Quote rows render a raw target URL, and one long
+    // URL was enough to push the compose body wider than the viewport.
+    // The `dd` rows further down already use break-all; this matches.
+    <div className="text-[11px] grid grid-cols-[90px_minmax(0,1fr)] sm:grid-cols-[110px_minmax(0,1fr)] gap-x-3">
       <span className="text-ink-500">{props.label}</span>
-      <span className="text-ink-800">{props.children}</span>
+      <span className="text-ink-800 break-words">{props.children}</span>
     </div>
   );
 }

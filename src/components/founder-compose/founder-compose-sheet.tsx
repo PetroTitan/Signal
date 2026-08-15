@@ -728,6 +728,17 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
     setSchedule((s) => touchByClear(s));
   }
 
+  // Shared by the desktop inline button and the mobile action bar, so
+  // the two can never disagree about whether the schedule is savable.
+  const scheduleSaveDisabled =
+    !schedule.touched || !draft.itemId || scheduleSaveStatus === "saving";
+  const scheduleSaveLabel =
+    scheduleSaveStatus === "saving"
+      ? "Saving…"
+      : props.existingItem?.status === "scheduled"
+        ? "Update publish time"
+        : "Save schedule";
+
   if (!props.open) return null;
 
   return (
@@ -1041,7 +1052,7 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
                     key={p.id}
                     type="button"
                     onClick={() => applyPreset(p.id)}
-                    className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${
+                    className={`text-xs px-3 py-2 min-h-[40px] rounded-full border transition-colors ${
                       matches
                         ? "bg-signal-50 border-signal-200 text-signal-800"
                         : "bg-white border-ink-200 text-ink-700 hover:bg-ink-50"
@@ -1056,7 +1067,7 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
                 <button
                   type="button"
                   onClick={handleScheduleClear}
-                  className="text-[11px] px-2.5 py-1 rounded-full border bg-white border-ink-200 text-ink-500 hover:text-ink-800 hover:bg-ink-50"
+                  className="text-xs px-3 py-2 min-h-[40px] rounded-full border bg-white border-ink-200 text-ink-500 hover:text-ink-800 hover:bg-ink-50"
                 >
                   Clear
                 </button>
@@ -1069,21 +1080,19 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
                 onChange={(e) => handleScheduleInputChange(e.target.value)}
                 className="input flex-1 text-sm font-mono"
               />
+              {/* Desktop keeps the commit button beside the field. On
+                  mobile it lives in the pinned action bar instead —
+                  this section sits ~700-900px down a body that is
+                  roughly 1.7 screens tall, so the operator was setting
+                  a time and then hunting for the button. Rendered in
+                  exactly one place per breakpoint, never both. */}
               <button
                 type="button"
                 onClick={handleExplicitScheduleSave}
-                disabled={
-                  !schedule.touched ||
-                  !draft.itemId ||
-                  scheduleSaveStatus === "saving"
-                }
-                className="btn-primary text-xs disabled:opacity-50"
+                disabled={scheduleSaveDisabled}
+                className="btn-primary text-xs disabled:opacity-50 hidden md:inline-flex"
               >
-                {scheduleSaveStatus === "saving"
-                  ? "Saving…"
-                  : props.existingItem?.status === "scheduled"
-                    ? "Update publish time"
-                    : "Save schedule"}
+                {scheduleSaveLabel}
               </button>
             </div>
             <div className="text-[11px] text-ink-500 flex items-center justify-between gap-2 flex-wrap">
@@ -1235,6 +1244,10 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
 
         {/* Footer actions — status-aware */}
         <ComposeFooter
+          scheduleSaveDisabled={scheduleSaveDisabled}
+          scheduleSaveLabel={scheduleSaveLabel}
+          scheduleUnsaved={schedule.touched}
+          onSaveSchedule={handleExplicitScheduleSave}
           actionState={deriveComposeActionState({
             status: (props.existingItem?.status ?? null) as ComposeItemStatus | null,
             hasItemId: Boolean(draft.itemId),
@@ -1426,14 +1439,14 @@ function CreativeRow({
           type="button"
           onClick={() => fileRef.current?.click()}
           disabled={busy !== null}
-          className="text-[11px] px-2.5 py-1 rounded-full border bg-white border-ink-200 text-ink-700 hover:bg-ink-50 disabled:opacity-50"
+          className="text-xs px-3 py-2 min-h-[40px] rounded-full border bg-white border-ink-200 text-ink-700 hover:bg-ink-50 disabled:opacity-50"
         >
           {busy === "upload" ? "Uploading…" : "Upload screenshot / image / video"}
         </button>
         <button
           type="button"
           onClick={() => setShowPasteUrl((v) => !v)}
-          className="text-[11px] px-2.5 py-1 rounded-full border bg-white border-ink-200 text-ink-700 hover:bg-ink-50"
+          className="text-xs px-3 py-2 min-h-[40px] rounded-full border bg-white border-ink-200 text-ink-700 hover:bg-ink-50"
         >
           Paste URL
         </button>
@@ -1441,7 +1454,7 @@ function CreativeRow({
           type="button"
           onClick={handleGenerateVisual}
           disabled={busy !== null}
-          className="text-[11px] px-2.5 py-1 rounded-full border bg-white border-ink-200 text-ink-700 hover:bg-ink-50 disabled:opacity-50"
+          className="text-xs px-3 py-2 min-h-[40px] rounded-full border bg-white border-ink-200 text-ink-700 hover:bg-ink-50 disabled:opacity-50"
         >
           {busy === "generate" ? "Planning…" : "Generate visual"}
         </button>
@@ -1450,7 +1463,7 @@ function CreativeRow({
           onClick={() => {
             setDraft((d) => ({ ...d, creativeId: null, creativeAssetUrl: null }));
           }}
-          className="text-[11px] px-2.5 py-1 text-ink-500 hover:text-ink-800"
+          className="text-xs px-3 py-2 min-h-[40px] text-ink-500 hover:text-ink-800"
         >
           {hasCreative ? "Remove" : "Skip for now"}
         </button>
@@ -1524,8 +1537,20 @@ function CreativeRow({
           `target` for every platform — adapters that don't need it
           (X, Bluesky, etc.) simply ignore. No platform branching in
           the modal. */}
+      {/* Informational: what the platform-native adapter will produce.
+          It renders 8+ rows on every open and sat between the operator
+          and the footer, occupying ~180-260px of an already ~1.7-screen
+          body. Collapsed by default so capability/debug detail cannot
+          dominate the action path — nothing here is a blocker the
+          operator must act on; real blockers surface on the card and in
+          the footer. */}
       {isKnownPublishPlatform(draft.platform) ? (
-        <PlatformShapeSummary
+        <details className="rounded-md border border-ink-200">
+          <summary className="cursor-pointer text-xs text-ink-600 px-3 py-2.5 min-h-[40px] flex items-center hover:bg-ink-50">
+            What will publish (platform shape)
+          </summary>
+          <div className="px-3 pb-3">
+            <PlatformShapeSummary
           platform={draft.platform as PublishPlatform}
           title={draft.title || null}
           body={draft.body}
@@ -1539,9 +1564,11 @@ function CreativeRow({
                 }
               : null
           }
-          rawIntent={existingItem?.platformPublishIntent ?? null}
-          target={draft.subreddit || null}
-        />
+              rawIntent={existingItem?.platformPublishIntent ?? null}
+              target={draft.subreddit || null}
+            />
+          </div>
+        </details>
       ) : null}
     </div>
   );
@@ -1720,6 +1747,10 @@ function AltTextEditor({
 function ComposeFooter({
   actionState,
   autosaveLabel: autosaveText,
+  scheduleSaveDisabled,
+  scheduleSaveLabel,
+  scheduleUnsaved,
+  onSaveSchedule,
   scheduleSet,
   hasActiveContract,
   perItemApproveBusy,
@@ -1736,6 +1767,12 @@ function ComposeFooter({
 }: {
   actionState: ReturnType<typeof deriveComposeActionState>;
   autosaveLabel: string;
+  /** Mirrors the desktop inline button's disabled state exactly. */
+  scheduleSaveDisabled: boolean;
+  scheduleSaveLabel: string;
+  /** True while the schedule field holds unpersisted changes. */
+  scheduleUnsaved: boolean;
+  onSaveSchedule: () => void;
   scheduleSet: boolean;
   hasActiveContract: boolean;
   perItemApproveBusy: "hold" | "schedule" | null;
@@ -1769,8 +1806,23 @@ function ComposeFooter({
           {actionState.primaryBlocker}
         </p>
       ) : null}
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-[11px] text-ink-500">{autosaveText}</div>
+      {/* Mobile schedule commit. The desktop copy of this button lives
+          beside the schedule field (hidden md:inline-flex there,
+          md:hidden here), so exactly one is rendered at any width and
+          the two can never compete. Only appears while there is
+          something to save. */}
+      {scheduleUnsaved ? (
+        <button
+          type="button"
+          onClick={onSaveSchedule}
+          disabled={scheduleSaveDisabled}
+          className="btn-primary text-xs w-full min-h-[44px] disabled:opacity-50 md:hidden"
+        >
+          {scheduleSaveLabel}
+        </button>
+      ) : null}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="text-[11px] text-ink-500 min-w-0">{autosaveText}</div>
         <div className="flex items-center gap-2">
           {actionState.showSaveAsDraft ? (
             <button
@@ -1812,7 +1864,7 @@ function ComposeFooter({
                 </button>
               ) : (
                 <span
-                  className="text-[11px] text-ink-500 italic max-w-xs"
+                  className="text-[11px] text-ink-500 italic max-w-full sm:max-w-xs"
                   title={approveActions.schedulePost.hint}
                 >
                   {approveActions.schedulePost.kind === "disabled_no_schedule"
@@ -1835,7 +1887,7 @@ function ComposeFooter({
               </button>
               {scheduleApproveError ? (
                 <span
-                  className="text-[11px] text-amber-700 max-w-xs"
+                  className="text-[11px] text-amber-700 max-w-full sm:max-w-xs"
                   data-error-scope="schedule"
                 >
                   {scheduleApproveError}{" "}
@@ -1845,13 +1897,13 @@ function ComposeFooter({
                 </span>
               ) : holdApproveError ? (
                 <span
-                  className="text-[11px] text-amber-700 max-w-xs"
+                  className="text-[11px] text-amber-700 max-w-full sm:max-w-xs"
                   data-error-scope="hold"
                 >
                   {holdApproveError}
                 </span>
               ) : approveActions.contextHint ? (
-                <span className="text-[11px] text-ink-500 italic max-w-xs">
+                <span className="text-[11px] text-ink-500 italic max-w-full sm:max-w-xs">
                   {approveActions.contextHint}
                 </span>
               ) : null}
@@ -1876,7 +1928,7 @@ function ComposeFooter({
                   : actionState.primaryLabel}
               </button>
               {scheduleApprovedError ? (
-                <span className="text-[11px] text-amber-700 max-w-xs">
+                <span className="text-[11px] text-amber-700 max-w-full sm:max-w-xs">
                   {scheduleApprovedError}
                 </span>
               ) : null}

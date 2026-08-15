@@ -690,9 +690,13 @@ function QuickReschedule({
         {open ? "Close" : scheduledAt ? "Reschedule" : "Schedule"}
       </button>
       {open ? (
-        <div
-          className="fixed md:absolute z-30 inset-x-2 md:inset-x-auto md:left-0 mt-1 md:w-72 rounded-lg border border-ink-200 bg-white shadow-lg p-3"
-        >
+        // Was `fixed md:absolute` with no top/bottom. A fixed box with
+        // top:auto takes its static position relative to the VIEWPORT,
+        // so it rendered under the trigger and then detached on scroll,
+        // floating over unrelated cards. Absolute keeps it anchored;
+        // right-anchoring plus a viewport-capped width keeps it on
+        // screen at 320px without a fixed-position hack.
+        <div className="absolute z-30 right-0 mt-1 w-[min(18rem,calc(100vw-2rem))] rounded-lg border border-ink-200 bg-white shadow-lg p-3">
           <ReschedulePopover
             itemId={itemId}
             defaultIso={scheduledAt}
