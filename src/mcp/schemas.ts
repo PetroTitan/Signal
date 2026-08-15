@@ -86,6 +86,26 @@ export const VOICE_PROFILE_MAX_CHARS = 1500;
 export const ACCOUNTS_PREPARE_PLATFORMS: ReadonlyArray<FounderPlatform> =
   FOUNDER_PLATFORMS;
 
+/**
+ * Platforms an MCP caller may PREPARE content for.
+ *
+ * Same derived list — preparation is not publication, so the set is
+ * the full founder surface including manual-only platforms. Adding a
+ * platform to the founder UI makes it preparable automatically; there
+ * is no second list to update.
+ *
+ * This is deliberately NOT the schedulable set. `signal.schedule_publish`
+ * gates separately on SCHEDULABLE_PLATFORMS, and widening preparation
+ * cannot widen that: the two consult different constants and the
+ * capability-truth invariant test pins the scheduling side.
+ */
+export function isPreparablePlatform(value: unknown): value is FounderPlatform {
+  return (
+    typeof value === "string" &&
+    (FOUNDER_PLATFORMS as ReadonlyArray<string>).includes(value.trim())
+  );
+}
+
 export type AccountsPrepareReviewHint = "pending_review" | "confirmed";
 
 export interface AccountsPrepareArgs {
@@ -270,6 +290,26 @@ export function parseWeeklyPlanPrepareItem(
     if (!str(input.account_id) || !isUuidLike(input.account_id))
       errors.push("account_id_invalid");
   }
+  // Platform is optional — an item may be prepared before its
+  // destination is chosen — but when supplied it must be a real one.
+  // Before this gate the value was passed straight through
+  // (`String(input.platform)`), so an agent could mint a plan item on
+  // "myspace": the row inserted fine (weekly_plan_items.platform is
+  // unconstrained `text`), the adapter lookup fell through to a stub,
+  // and the item only died much later at the scheduler's allowlist.
+  //
+  // Deliberately validated against the SAME derived allowlist as
+  // signal.accounts.prepare rather than a second literal. Note this
+  // accepts MANUAL platforms: preparing content for LinkedIn is a
+  // legitimate operation. It says nothing about schedulability, which
+  // is gated separately in schedule-tools.
+  if (input.platform !== undefined && input.platform !== null) {
+    if (!str(input.platform) || input.platform.trim().length === 0) {
+      errors.push("platform_must_be_string");
+    } else if (!isPreparablePlatform(input.platform)) {
+      errors.push("platform_unsupported");
+    }
+  }
   if (input.risk_score !== undefined && input.risk_score !== null) {
     if (typeof input.risk_score !== "number" || input.risk_score < 0 || input.risk_score > 100)
       errors.push("risk_score_out_of_range");
@@ -326,7 +366,7 @@ export function parseWeeklyPlanPrepareItem(
     value: {
       product_id: input.product_id ? String(input.product_id) : null,
       account_id: input.account_id ? String(input.account_id) : null,
-      platform: input.platform ? String(input.platform) : null,
+      platform: input.platform ? String(input.platform).trim() : null,
       title: (input.title as string).trim(),
       body: input.body ? String(input.body) : null,
       content_type: input.content_type ? String(input.content_type) : null,

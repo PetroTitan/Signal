@@ -115,7 +115,15 @@ const WEEKLY_PLAN_PREPARE_ITEM_SCHEMA: JsonSchema = {
     title: { type: "string", minLength: 1 },
     product_id: { type: ["string", "null"] },
     account_id: { type: ["string", "null"] },
-    platform: NULLABLE_STRING,
+    // Enum-constrained, mirroring signal.accounts.prepare. The
+    // hand-rolled parser in schemas.ts enforces the same allowlist —
+    // both surfaces must agree, and a test pins them to each other.
+    // `null` stays valid: an item may be prepared before its
+    // destination is chosen.
+    platform: {
+      type: ["string", "null"],
+      enum: [...FOUNDER_PLATFORMS, null],
+    },
     body: NULLABLE_STRING,
     content_type: NULLABLE_STRING,
     scheduled_at: NULLABLE_STRING,
