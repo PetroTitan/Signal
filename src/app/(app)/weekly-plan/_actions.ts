@@ -35,6 +35,8 @@ import {
   executionTargetMetadata,
   operatorTargetBlocker,
 } from "@/core/publishing/reddit-target";
+import { isAutonomousDestination } from "@/core/publishing/publish-destinations";
+import { resolveIdentityPlatformGuidance } from "@/core/publishing/platform-guidance";
 import {
   allowsOperatorTarget,
   autonomousSchedulingBlocker,
@@ -1758,6 +1760,269 @@ export async function cancelApprovalAction(
 // MCP `signal.schedule_publish` already supports both
 // `pending_approval` and `approved` items because it inlines its own
 // logic. This UI-facing action mirrors that behavior.
+
+// =====================================================================
+// prepareForManualDistributionAction — the manual destinations' path
+// =====================================================================
+//
+// Manual destinations (LinkedIn / YouTube / Threads / Instagram /
+// Indie Hackers) had no way forward at all. The scheduling actions
+// refuse them — correctly, since the scheduler cannot publish them —
+// but nothing replaced that path, so an approved LinkedIn post simply
+// sat at `approved` forever. Meanwhile `/execution/items/[id]` carried
+// a complete manual-distribution UI that was unreachable:
+// `execution_items.status = 'ready'` had exactly ONE writer in the
+// repository, `markItemReadyForPublish`, reachable only under
+// SAFE_TEST_MODE with platform='reddit'.
+//
+// This action is the missing bridge. It creates the execution item the
+// manual UI needs and walks it to `ready_for_manual_publish`:
+//
+//     pending_authorization → authorized → ready → ready_for_manual_publish
+//
+// Every one of those transitions is already legal in the state machine
+// (execution-state-machine.ts ITEM_TRANSITIONS), and the status value is
+// already in the DB CHECK (migration 20260523000004). No migration.
+//
+// CRITICAL — the item is never `scheduled`. The scheduler tick selects
+// `.eq("status", "scheduled")`, so a row parked at
+// `ready_for_manual_publish` is invisible to it. That is what lets a
+// manual destination have a real execution item without ever becoming
+// scheduler-visible, which is the invariant the whole manual/autonomous
+// distinction rests on.
+
+export async function prepareForManualDistributionAction(
+  _prev: ApprovePlanItemResult,
+  formData: FormData,
+): Promise<ApprovePlanItemResult> {
+  const itemId = String(formData.get("item_id") ?? "").trim();
+  if (!itemId) return actionFail("Missing item id.");
+
+  const { getActiveContract } = await import(
+    "@/repositories/weekly-contract-repository"
+  );
+  const { updatePlanItemStatus } = await import(
+    "@/repositories/weekly-plan-repository"
+  );
+  const { listCreativesForItems } = await import(
+    "@/repositories/weekly-plan-creative-repository"
+  );
+  const {
+    getActiveExecutionQueue,
+    getActiveContractFreeExecutionQueue,
+    createExecutionQueue,
+  } = await import("@/repositories/execution-queue-repository");
+  const {
+    createExecutionItem,
+    listExecutionItemsByPlanItemIds,
+    updateItemStatus,
+  } = await import("@/repositories/execution-item-repository");
+  const { recordLog } = await import(
+    "@/repositories/execution-log-repository"
+  );
+
+  try {
+    const membership = await getPrimaryWorkspace();
+    if (!membership) return actionFail("No workspace found.");
+    const workspaceId = membership.workspace.id;
+
+    const item = await getPlanItemById(workspaceId, itemId);
+
+    // This path is ONLY for destinations the scheduler cannot drive.
+    // An autonomous destination has scheduleApprovedItemAction and must
+    // not be diverted here — that would take a publishable post out of
+    // the scheduler's hands.
+    if (isAutonomousDestination(item.platform)) {
+      const label =
+        resolveIdentityPlatformGuidance(item.platform ?? "")?.label ??
+        item.platform ??
+        "this platform";
+      return actionFail(
+        `Signal publishes to ${label} automatically — schedule it instead of preparing it for manual publishing.`,
+      );
+    }
+    if (!item.platform) {
+      return actionFail("Pick a destination before preparing this post.");
+    }
+
+    const contract = await getActiveContract(workspaceId);
+    const allCreatives = await listCreativesForItems(workspaceId, [itemId]);
+    const primaryCreative = selectPrimaryCreativeFromList(allCreatives);
+
+    // Same readiness gates as the scheduling paths, minus the schedule:
+    // a manual post has no publish time Signal will act on. The operator
+    // publishes when they choose.
+    const readiness = assessItemApprovalReadiness({
+      item,
+      contract,
+      primaryCreative,
+      requireSchedule: false,
+      requireContract: contract !== null,
+      allowedStatuses: ["approved", "paused"],
+    });
+    if (!readiness.ready) {
+      return actionFail(
+        `Cannot prepare: ${readiness.blockers.slice(0, 2).join(" ")}`,
+      );
+    }
+
+    // Same active-row refusal as the scheduling paths, so a second
+    // click cannot mint a duplicate.
+    const ACTIVE_EXECUTION_STATUSES = new Set([
+      "pending_authorization",
+      "authorized",
+      "scheduled",
+      "ready",
+      "ready_for_manual_publish",
+      "running",
+    ]);
+    const allExec = await listExecutionItemsByPlanItemIds(workspaceId, [
+      itemId,
+    ]);
+    const activeExec = allExec.filter((e) =>
+      ACTIVE_EXECUTION_STATUSES.has(e.status),
+    );
+    if (activeExec.length > 0) {
+      return actionFail(
+        "This post already has an active execution item — open it from the publishing view.",
+      );
+    }
+
+    // P0.2 retry firewall. This path mints a FRESH execution item, so
+    // the scheduler's own protection never applies to it — exactly the
+    // case the firewall exists for. A prior attempt that may already be
+    // live must not be silently re-prepared.
+    const previousExec =
+      allExec.length > 0 ? allExec[allExec.length - 1] : null;
+    if (previousExec) {
+      const eligibility = evaluateRetryEligibilityFromMetadata(
+        previousExec.metadata,
+      );
+      if (!eligibility.operatorRetryAllowed) {
+        return actionFail(eligibility.reason);
+      }
+    }
+
+    let queue;
+    if (contract) {
+      queue = await getActiveExecutionQueue(workspaceId, contract.id);
+      if (!queue) {
+        queue = await createExecutionQueue({
+          workspaceId,
+          contractId: contract.id,
+          title: contract.title,
+          weekStart: contract.weekStart,
+          weekEnd: contract.weekEnd,
+        });
+      }
+    } else {
+      queue = await getActiveContractFreeExecutionQueue(workspaceId);
+      if (!queue) {
+        const todayIso = new Date().toISOString().slice(0, 10);
+        const endIso = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .slice(0, 10);
+        queue = await createExecutionQueue({
+          workspaceId,
+          contractId: null,
+          title: "Contract-free items",
+          weekStart: todayIso,
+          weekEnd: endIso,
+        });
+      }
+    }
+
+    const execItem = await createExecutionItem({
+      workspaceId,
+      queueId: queue.id,
+      contractId: contract ? contract.id : null,
+      actionType:
+        item.contentType === "comment"
+          ? "publish_scheduled_comment"
+          : "publish_scheduled_post",
+      sourceEntityType: "weekly_plan_item",
+      sourceEntityId: item.id,
+      productId: item.productId,
+      accountId: item.accountId,
+      platform: item.platform,
+      title: item.title,
+      body: item.body,
+      linkUrl: item.linkUrl,
+      // No scheduled_at: nothing will act on it. The operator decides
+      // when to publish on the platform itself.
+      scheduledAt: null,
+      riskScore: item.riskScore,
+      riskLevel: item.riskLevel,
+      metadata: {
+        plan_item_id: item.id,
+        plan_id: item.weeklyPlanId,
+        source: "prepare_for_manual_distribution",
+        contract_mode: contract ? "contract_attached" : "contract_free_item",
+        approval_mode: "per_item",
+        distribution_mode: "manual",
+        // Manual destinations take no operator-typed routing target;
+        // this resolves to {} for all of them. Present for symmetry
+        // with the scheduling paths and pinned by the static guard.
+        ...executionTargetMetadata(item.platform, item.metadata),
+      },
+    });
+
+    // Walk to the manual-ready state. Never through "scheduled" — the
+    // tick selects on that status, and this item must stay invisible
+    // to it.
+    await updateItemStatus({
+      workspaceId,
+      itemId: execItem.id,
+      to: "authorized",
+    });
+    await updateItemStatus({ workspaceId, itemId: execItem.id, to: "ready" });
+    await updateItemStatus({
+      workspaceId,
+      itemId: execItem.id,
+      to: "ready_for_manual_publish",
+    });
+
+    await recordLog({
+      workspaceId,
+      queueId: queue.id,
+      executionItemId: execItem.id,
+      eventType: "item.ready_for_manual_publish",
+      severity: "info",
+      message: `Prepared "${item.title ?? "Untitled post"}" for manual publishing on ${item.platform}`,
+      metadata: { plan_item_id: item.id, plan_id: item.weeklyPlanId },
+    });
+    await logActivityBestEffort({
+      workspaceId,
+      eventType: "weekly_plan_item.prepared_for_manual_publish",
+      entityType: "weekly_plan_item",
+      entityId: item.id,
+      title: `"${item.title ?? "Untitled post"}" ready to publish manually`,
+      description: `Publish it on ${item.platform} and record the permalink.`,
+    });
+
+    revalidatePath("/weekly-plan");
+    revalidatePath("/execution");
+    revalidatePath("/activity");
+    return actionOk({
+      itemId: item.id,
+      // The plan item stays `approved`. It is not scheduled — nothing
+      // will publish it but the operator — and it is not published
+      // until they record the permalink.
+      status: "approved" as const,
+      scheduledAtIso: null,
+      executionItemId: execItem.id,
+    });
+  } catch (error) {
+    const message =
+      error instanceof RepositoryError
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : "Could not prepare this post for manual publishing.";
+    console.error("[prepareForManualDistributionAction] failed", error);
+    return actionFail(message);
+  }
+}
 
 export async function scheduleApprovedItemAction(
   _prev: ApprovePlanItemResult,

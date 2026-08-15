@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Topbar } from "@/components/topbar";
+import { isAutonomousDestination } from "@/core/publishing/publish-destinations";
 import { isSupabaseConfigured, createSupabaseServerClient } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { getExecutionItemById } from "@/repositories/execution-item-repository";
@@ -157,17 +158,24 @@ export default async function ExecutionItemPage({ params }: PageProps) {
   const oauthBlocked = isRedditOauthBlocked();
   const isReady = item.status === "ready";
   const isReadyForManual = item.status === "ready_for_manual_publish";
+  // "Tier one" is a CREDENTIAL question, not an autonomy question: these
+  // three publish with env / per-identity API credentials and therefore
+  // offer an operator-driven "publish now" button on this page. It is
+  // deliberately not derived from the capability registry — reddit and x
+  // are equally autonomous but publish through OAuth and have no such
+  // button. Keeping the two questions separate is the point.
   const isTierOne =
     item.platform === "devto" ||
     item.platform === "hashnode" ||
     item.platform === "bluesky";
-  // F5.0 + F5.1 — distribution-only (manual-first) platforms.
+  // Manual distribution is an AUTONOMY question, so it derives from
+  // capability truth. This was a hardcoded literal that still listed
+  // "x" — X has had a real publisher and scheduler autonomy since F9,
+  // so the page was offering a copy-and-paste-it-yourself flow for a
+  // platform Signal publishes on its own. Deriving it means the answer
+  // cannot drift from the registry again.
   const isDistribution =
-    item.platform === "x" ||
-    item.platform === "linkedin" ||
-    item.platform === "youtube" ||
-    item.platform === "threads" ||
-    item.platform === "instagram";
+    item.platform !== null && !isAutonomousDestination(item.platform);
   let verdict: SafeTestPolicyVerdict | null = null;
   // Tier-1 platforms (dev.to / Hashnode / Bluesky) AND distribution
   // platforms (X / LinkedIn) skip the Reddit-shaped safe-test policy
@@ -389,7 +397,7 @@ export default async function ExecutionItemPage({ params }: PageProps) {
           </section>
         ) : null}
 
-        {isDistribution && isReady ? (
+        {isDistribution && (isReady || isReadyForManual) ? (
           <DistributionPublishBranch
             itemId={item.id}
             platform={
@@ -421,7 +429,7 @@ export default async function ExecutionItemPage({ params }: PageProps) {
             }
             cadenceWarning={cadenceWarning}
           />
-        ) : isDistribution && !isReady ? (
+        ) : isDistribution && !isReady && !isReadyForManual ? (
           <section className="rounded-2xl border border-ink-200 bg-white p-5">
             <h2 className="text-sm font-semibold text-ink-900">
               Not ready to publish yet

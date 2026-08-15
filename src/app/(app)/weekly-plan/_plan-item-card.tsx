@@ -8,6 +8,7 @@ import {
   approvePlanItemAndScheduleAction,
   cancelApprovalAction,
   duplicatePlanItemAction,
+  prepareForManualDistributionAction,
   scheduleApprovedItemAction,
   sendForApprovalAction,
   updatePlanItemAction,
@@ -49,6 +50,7 @@ import {
   planItemDisplayLabel,
 } from "@/core/publishing/plan-item-label";
 import { resolveIdentityPlatformGuidance } from "@/core/publishing/platform-guidance";
+import { isAutonomousDestination } from "@/core/publishing/publish-destinations";
 
 const updateInitial: UpdatePlanItemResult = { ok: false, error: "" };
 const duplicateInitial: DuplicatePlanItemResult = { ok: false, error: "" };
@@ -426,13 +428,26 @@ export function PlanItemCard(props: PlanItemCardProps) {
                   hasActiveContract={props.hasActiveContract}
                 />
               ) : null}
+              {/* Autonomous destinations schedule; manual destinations
+                  prepare. Both paths mint an execution item, but only
+                  the scheduling one produces a row the tick can see.
+                  Rendered as an either/or so an operator is never shown
+                  a CTA their destination cannot honour. */}
               {(props.status === "approved" || props.status === "paused") &&
               props.isApprovable &&
+              isAutonomousDestination(props.platform) &&
               props.scheduledAt !== null ? (
                 <ScheduleApprovedItemButton
                   itemId={props.id}
                   isRetry={props.status === "paused"}
                 />
+              ) : null}
+              {(props.status === "approved" || props.status === "paused") &&
+              props.isApprovable &&
+              props.platform !== null &&
+              !isAutonomousDestination(props.platform) &&
+              props.executionItemId === null ? (
+                <PrepareForManualDistributionButton itemId={props.id} />
               ) : null}
               {(props.status === "approved" ||
                 props.status === "scheduled") &&
@@ -971,6 +986,44 @@ function ApproveAndHoldSubmit() {
       className="btn-secondary text-xs disabled:opacity-60"
     >
       {pending ? "Approving…" : "Approve & hold"}
+    </button>
+  );
+}
+
+// =====================================================================
+// Prepare-for-manual-distribution button.
+// The manual destinations' counterpart to "Schedule for publish".
+// Creates the execution item the manual publish UI needs and parks it
+// at ready_for_manual_publish — a status the scheduler tick, which
+// selects only status='scheduled', can never see.
+// =====================================================================
+
+function PrepareForManualDistributionButton({ itemId }: { itemId: string }) {
+  const [state, action] = useFormState(
+    prepareForManualDistributionAction,
+    approveItemInitial,
+  );
+  const safe = state ?? approveItemInitial;
+  return (
+    <form action={action} className="inline">
+      <input type="hidden" name="item_id" value={itemId} />
+      <PrepareForManualSubmit />
+      {safe.error ? (
+        <span className="ml-1 text-[11px] text-amber-700">{safe.error}</span>
+      ) : null}
+    </form>
+  );
+}
+
+function PrepareForManualSubmit() {
+  const { pending } = useFormStatus();
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      className="btn-primary text-xs disabled:opacity-60"
+    >
+      {pending ? "Preparing…" : "Prepare to publish manually"}
     </button>
   );
 }
