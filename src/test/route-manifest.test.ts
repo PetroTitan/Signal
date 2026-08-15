@@ -222,6 +222,76 @@ describe("role-aware visibility", () => {
   });
 });
 
+// =====================================================================
+// Coverage — every navigable route has at least one surface
+// =====================================================================
+//
+// The sidebar keeps its own hand-authored order and icons on purpose:
+// the desktop IA is a deliberate arrangement, and rewriting it would be
+// churn this milestone does not need. What must not happen again is a
+// manifest route with NO surface at all — which is how /settings/mcp,
+// /notifications and /backlog became unreachable.
+
+const SIDEBAR_SOURCE = fs.readFileSync(
+  path.join(REPO_ROOT, "src", "components", "sidebar.tsx"),
+  "utf8",
+);
+const SETTINGS_PAGE_SOURCE = fs.readFileSync(
+  path.join(REPO_ROOT, "src", "app", "(app)", "settings", "page.tsx"),
+  "utf8",
+);
+
+describe("every navigable route has a home", () => {
+  it("the desktop sidebar covers the primary, secondary and internal tiers", () => {
+    // Settings SUB-pages are deliberately absent from the sidebar — the
+    // hub is their home — so they are excluded here.
+    const expected = AUTHENTICATED_ROUTES.filter(
+      (r) =>
+        r.tier === "primary" || r.tier === "secondary" || r.tier === "internal",
+    );
+    const missing = expected
+      .filter((r) => !SIDEBAR_SOURCE.includes(`"${r.href}"`))
+      .map(
+        (r) =>
+          `${r.href} (${r.tier}) is navigable but absent from the desktop ` +
+          `sidebar — desktop and mobile would disagree again.`,
+      );
+    expect(missing.join("\n")).toBe("");
+  });
+
+  it("the settings hub derives its list from the manifest", () => {
+    // Asserting the derivation rather than each href: a hardcoded list
+    // is exactly what omitted MCP.
+    expect(SETTINGS_PAGE_SOURCE).toContain("SETTINGS_ROUTES");
+    expect(SETTINGS_PAGE_SOURCE).toContain("visibleTo");
+  });
+
+  it("the mobile surfaces derive from the manifest too", () => {
+    const nav = fs.readFileSync(
+      path.join(REPO_ROOT, "src", "components", "mobile-nav.tsx"),
+      "utf8",
+    );
+    const sheet = fs.readFileSync(
+      path.join(REPO_ROOT, "src", "components", "mobile-more-sheet.tsx"),
+      "utf8",
+    );
+    expect(nav).toContain("PRIMARY_ROUTES");
+    expect(sheet).toContain("SECONDARY_ROUTES");
+    // Neither may keep a literal route list of its own.
+    expect(nav).not.toMatch(/href:\s*"\/dashboard"/);
+    expect(sheet).not.toMatch(/href:\s*"\/settings/);
+  });
+
+  it("no settings route is reachable ONLY from the desktop sidebar", () => {
+    // The exact shape of the MCP defect: present in the desktop-only
+    // aside and nowhere else.
+    for (const r of SETTINGS_ROUTES) {
+      const inHub = SETTINGS_PAGE_SOURCE.includes("SETTINGS_ROUTES");
+      expect(inHub, `${r.href} needs a non-sidebar home`).toBe(true);
+    }
+  });
+});
+
 describe("manifest quality", () => {
   it("every navigable entry has a label and a description", () => {
     for (const r of [...PRIMARY_ROUTES, ...SECONDARY_ROUTES]) {
