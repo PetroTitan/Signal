@@ -420,13 +420,32 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
       const accountMatches = props.defaults.accounts.some(
         (a) => a.id === d.accountId && a.platform === destination.platform,
       );
+      // Auto-select the identity when the destination has exactly one.
+      //
+      // This is the reason the production incident item had no identity
+      // at all: `defaultAccountId` on /weekly-plan is computed from
+      // confirmed REDDIT accounts only, so a Bluesky draft started with
+      // an empty identity, nothing ever asked for one, and the item was
+      // approved and scheduled without it. The scheduler then refused
+      // with `account_not_confirmed`.
+      //
+      // Only ever picks an identity that belongs to this destination,
+      // and only when the choice is unambiguous.
+      const forPlatform = props.defaults.accounts.filter(
+        (a) => a.platform === destination.platform,
+      );
+      const nextAccountId = accountMatches
+        ? d.accountId
+        : forPlatform.length === 1
+          ? forPlatform[0].id
+          : "";
       return {
         ...d,
         platform: destination.platform,
         subreddit: allowsOperatorTarget(destination.platform)
           ? d.subreddit
           : "",
-        accountId: accountMatches ? d.accountId : "",
+        accountId: nextAccountId,
       };
     });
   }

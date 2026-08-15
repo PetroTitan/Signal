@@ -301,6 +301,12 @@ export default async function WeeklyPlanPage({
   const allowedSubreddits = readAllowedTestSubreddits();
 
   // Smart defaults for the founder compose sheet.
+  // Smart default for a NEW draft. The compose sheet defaults to
+  // Reddit, so this stays Reddit-scoped — but the sheet now also
+  // auto-selects the identity whenever the operator switches to a
+  // destination that has exactly one. Before that, choosing any
+  // non-Reddit destination left the draft with no identity, which is
+  // how the production incident item reached the scheduler without one.
   const confirmedRedditAccounts = accounts.filter(
     (a) => a.platform === "reddit" && a.reviewStatus === "confirmed",
   );
