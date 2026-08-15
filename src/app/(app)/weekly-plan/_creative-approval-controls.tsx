@@ -65,6 +65,21 @@ export function toCreativeStatusToken(
 export interface CreativeApprovalControlsProps {
   creativeId: string | null;
   creativeStatus: CreativeStatusToken;
+  /**
+   * Whether the attached creative is actually publishable.
+   *
+   * Approval status alone is not enough. `describeCreativeState`
+   * reports "Creative missing asset" / "Alt text missing" BEFORE it
+   * looks at status, so guidance keyed only on status would say
+   * "Creative approved and will be attached" directly beneath a
+   * summary row saying the asset is missing — the same contradiction
+   * class this component was fixed for, reintroduced one row down.
+   *
+   * `resolvePublishCreative` hard-refuses an APPROVED creative missing
+   * either, so both are real publish blockers, not cosmetics.
+   */
+  creativeHasAsset?: boolean;
+  creativeHasAltText?: boolean;
   postStatus: WeeklyPlanItemStatus;
   /** Optional structured blockers to render in the debug section. */
   approvalBlockers?: ReadonlyArray<string>;
@@ -97,6 +112,8 @@ export function CreativeApprovalControls(props: CreativeApprovalControlsProps) {
       <CreativeGuidance
         creativeStatus={props.creativeStatus}
         postIsTerminal={postIsTerminal}
+        hasAsset={props.creativeHasAsset ?? true}
+        hasAltText={props.creativeHasAltText ?? true}
       />
 
       {isPendingReview && !postIsTerminal ? (
@@ -141,13 +158,42 @@ export function CreativeApprovalControls(props: CreativeApprovalControlsProps) {
 function CreativeGuidance({
   creativeStatus,
   postIsTerminal,
+  hasAsset,
+  hasAltText,
 }: {
   creativeStatus: CreativeStatusToken;
   postIsTerminal: boolean;
+  hasAsset: boolean;
+  hasAltText: boolean;
 }) {
   if (postIsTerminal) return null;
 
   if (creativeStatus === "approved") {
+    // Approved and publishable are different questions. The creative
+    // stays APPROVED — approval is never silently revoked — but the
+    // sentence names the remaining action instead of promising an
+    // attachment that would in fact block the publish.
+    if (!hasAsset) {
+      return (
+        <p className="text-[11px] text-ink-600 leading-relaxed">
+          <span className="font-semibold text-emerald-700">
+            Creative approved
+          </span>
+          , but the image file is missing. Re-upload it before approving the
+          post.
+        </p>
+      );
+    }
+    if (!hasAltText) {
+      return (
+        <p className="text-[11px] text-ink-600 leading-relaxed">
+          <span className="font-semibold text-emerald-700">
+            Creative approved
+          </span>
+          . Add alt text before approving the post.
+        </p>
+      );
+    }
     return (
       <p className="text-[11px] text-ink-600 leading-relaxed">
         <span className="font-semibold text-emerald-700">

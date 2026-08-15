@@ -426,6 +426,13 @@ export function PlanItemCard(props: PlanItemCardProps) {
               <CreativeApprovalControls
                 creativeId={props.creative?.id ?? null}
                 creativeStatus={toCreativeStatusToken(props.creative?.status)}
+                creativeHasAsset={Boolean(
+                  props.creative?.assetUrl ?? props.creative?.sourceUrl,
+                )}
+                creativeHasAltText={Boolean(
+                  props.creative?.altText &&
+                    props.creative.altText.trim().length > 0,
+                )}
                 postStatus={props.status}
                 approvalBlockers={props.warnings}
               />

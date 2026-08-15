@@ -49,11 +49,14 @@ function read(rel: string): string {
 function renderControls(
   creativeStatus: string | null,
   postStatus: string,
+  over: { hasAsset?: boolean; hasAltText?: boolean } = {},
 ): string {
   return renderToStaticMarkup(
     createElement(CreativeApprovalControls, {
       creativeId: "cb61b3ff-6cdf-417e-b4e5-52f292419570",
       creativeStatus: toCreativeStatusToken(creativeStatus),
+      creativeHasAsset: over.hasAsset ?? true,
+      creativeHasAltText: over.hasAltText ?? true,
       postStatus: postStatus as never,
     }),
   );
@@ -97,6 +100,30 @@ describe("the creative guidance can never contradict the creative status", () =>
     expect(renderControls("approved", "pending_approval")).not.toBe(
       renderControls("pending_review", "pending_approval"),
     );
+  });
+
+  it("an approved creative missing alt text stays approved AND names the action", () => {
+    // The user-specified copy: "Creative approved. Add alt text before
+    // approving the post." — not "Creative must be approved…".
+    const html = renderControls("approved", "pending_approval", {
+      hasAltText: false,
+    });
+    expect(html).toMatch(/Creative approved/i);
+    expect(html).toMatch(/add alt text/i);
+    expect(html).not.toMatch(/must be approved/i);
+  });
+
+  it("an approved creative missing its asset stays approved AND names the action", () => {
+    // Guards against the contradiction one row down: the status summary
+    // reports "Creative missing asset" from describeCreativeState, so
+    // guidance keyed only on status would promise an attachment that
+    // would in fact block the publish.
+    const html = renderControls("approved", "pending_approval", {
+      hasAsset: false,
+    });
+    expect(html).toMatch(/Creative approved/i);
+    expect(html).toMatch(/image file is missing/i);
+    expect(html).not.toMatch(/will be attached/i);
   });
 
   it("the unconditional banner is gone from the source", () => {
