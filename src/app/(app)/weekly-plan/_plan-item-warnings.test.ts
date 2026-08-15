@@ -428,7 +428,12 @@ describe("computeContinueWritingMissingParts — Telegram regression", () => {
     expect(missing).toEqual(["body"]);
   });
 
-  it("Telegram draft, missing everything → title/body/schedule but NOT creative", () => {
+  it("Telegram draft, missing everything → body/schedule; NOT title, NOT creative", () => {
+    // Telegram messages have no title — the adapter declares
+    // `requiresTitle: false` and `publish-telegram.ts` never reads
+    // `request.title`. Reporting "missing: title" made every Telegram
+    // draft permanently advertise itself as incomplete for a field that
+    // would never be published.
     const missing = computeContinueWritingMissingParts({
       contentType: "post",
       title: null,
@@ -439,7 +444,54 @@ describe("computeContinueWritingMissingParts — Telegram regression", () => {
       creativeAttached: false,
       creativeReason: "creative_missing",
     });
-    expect(missing).toEqual(["title", "body", "schedule"]);
+    expect(missing).toEqual(["body", "schedule"]);
+  });
+});
+
+describe("computeContinueWritingMissingParts — title is destination-scoped", () => {
+  const base = {
+    contentType: "post" as string | null,
+    title: null,
+    body: "Body",
+    scheduledAt: "2026-12-01T00:00:00Z",
+    intent: "new_post" as const,
+    creativeAttached: false,
+    creativeReason: null,
+  };
+
+  it.each(["x", "bluesky", "telegram", "threads", "instagram"])(
+    "%s: a titleless post is complete",
+    (platform) => {
+      const missing = computeContinueWritingMissingParts({
+        ...base,
+        platform,
+        // Instagram requires a creative; give it one so the assertion
+        // isolates the title rule.
+        creativeAttached: platform === "instagram",
+        creativeReason: null,
+      });
+      expect(missing).not.toContain("title");
+    },
+  );
+
+  it.each(["reddit", "devto", "hashnode"])(
+    "%s: a titleless post still reports the missing title",
+    (platform) => {
+      const missing = computeContinueWritingMissingParts({
+        ...base,
+        platform,
+      });
+      expect(missing).toContain("title");
+    },
+  );
+
+  it("reddit comment: parent-anchored, so no title is expected", () => {
+    const missing = computeContinueWritingMissingParts({
+      ...base,
+      contentType: "comment",
+      platform: "reddit",
+    });
+    expect(missing).not.toContain("title");
   });
 });
 

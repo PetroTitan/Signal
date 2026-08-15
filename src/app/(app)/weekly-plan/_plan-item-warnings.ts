@@ -38,7 +38,10 @@
  */
 
 import type { CreativeReadinessReason } from "@/repositories/weekly-plan-creative-repository";
-import { requiresCreative } from "@/core/platform-native/approval-policy";
+import {
+  requiresCreative,
+  requiresTitle,
+} from "@/core/platform-native/approval-policy";
 import type { PublishingIntent } from "@/core/platform-native/publishing-intent";
 
 export interface CreativeGateInput {
@@ -103,7 +106,18 @@ export function computeContinueWritingMissingParts(
   const missingParts: string[] = [];
   const isPost = input.contentType === "post";
 
-  if (!input.title || input.title.trim().length === 0) {
+  // "missing: title" was reported for every draft regardless of
+  // destination, so an X or Bluesky post — which has no title by
+  // design — permanently advertised itself as incomplete. The same
+  // predicate the approval gate uses decides here.
+  if (
+    requiresTitle({
+      platform: input.platform,
+      contentType: input.contentType,
+      intent: input.intent,
+    }) &&
+    (!input.title || input.title.trim().length === 0)
+  ) {
     missingParts.push("title");
   }
   if (!input.body || input.body.trim().length === 0) {

@@ -29,6 +29,29 @@ export interface ComposeActionStateInput {
   hasItemId: boolean;
   /** True when title is non-empty. */
   hasTitle: boolean;
+  /**
+   * True when THIS item's destination and content type genuinely
+   * require a title — i.e. `requiresTitle()` from the shared approval
+   * policy said so.
+   *
+   * This used to be an unconditional rule: every draft needed a title
+   * before it could be sent for approval, regardless of destination.
+   * That is the wrong abstraction. X, Bluesky, Telegram, Threads and an
+   * Instagram caption are body-only objects whose publishers never read
+   * `request.title`, so the gate only ever forced the operator to
+   * invent a string that would not be published.
+   *
+   * The caller passes the predicate's answer rather than a platform
+   * slug on purpose: no platform-name conditional belongs in the UI.
+   *
+   * Optional, defaulting to the old universal behavior, so a caller
+   * that has not been updated cannot silently start letting titleless
+   * Reddit posts through.
+   */
+  titleRequired?: boolean;
+  /** True when a body exists. A titleless post still needs content
+   *  before it can be reviewed. */
+  hasBody?: boolean;
   /** True when alt-text is required but currently missing. */
   altTextMissing: boolean;
   /** True when body autosave is mid-flight. */
@@ -79,13 +102,21 @@ export function deriveComposeActionState(
 
   // Create mode (no row yet) — same as draft footer.
   if (status === null || status === "draft" || status === "skipped") {
+    // Default true preserves the pre-milestone universal rule for any
+    // caller that hasn't been updated.
+    const titleRequired = input.titleRequired ?? true;
+    // `hasBody` is optional for the same reason; when a caller doesn't
+    // supply it we can't claim the item is empty, so we don't.
+    const bodyMissing = input.hasBody === false;
     const blocker = !input.hasItemId
       ? "Add a title or body to save the draft first."
-      : !input.hasTitle
+      : titleRequired && !input.hasTitle
         ? "Add a title before sending for approval."
-        : input.autosaveInFlight
-          ? "Wait for autosave to settle…"
-          : null;
+        : !titleRequired && !input.hasTitle && bodyMissing
+          ? "Write the post before sending for approval."
+          : input.autosaveInFlight
+            ? "Wait for autosave to settle…"
+            : null;
     return {
       variant: "send_for_approval",
       primaryLabel: "Send for approval",
