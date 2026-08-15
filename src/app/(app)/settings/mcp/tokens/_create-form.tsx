@@ -372,8 +372,13 @@ function TokenReceipt({
             );
           })}
         </div>
-        <div className="mt-2 relative">
-          <pre className="font-mono text-[11px] text-ink-800 bg-white border border-ink-200 rounded-md p-3 overflow-x-auto whitespace-pre">
+        {/* min-w-0 so the bounded scroller actually bounds: a flex or
+            grid child without it takes its min-content width from the
+            <pre>, and the config snippet then widens the page instead
+            of scrolling inside its own box. pr-16 keeps the copy button
+            from covering the first line. */}
+        <div className="mt-2 relative min-w-0">
+          <pre className="font-mono text-[11px] text-ink-800 bg-white border border-ink-200 rounded-md p-3 pr-16 overflow-x-auto whitespace-pre max-w-full">
             {activeBody}
           </pre>
           <div className="absolute top-2 right-2">
