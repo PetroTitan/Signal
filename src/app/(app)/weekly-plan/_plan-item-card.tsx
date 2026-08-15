@@ -51,6 +51,15 @@ import {
 } from "@/core/publishing/plan-item-label";
 import { resolveIdentityPlatformGuidance } from "@/core/publishing/platform-guidance";
 import { isAutonomousDestination } from "@/core/publishing/publish-destinations";
+import {
+  evaluateRetryEligibility,
+  type PersistedPublishOutcome,
+} from "@/core/publishing/retry-eligibility";
+import {
+  resolvePublishingState,
+  type PublishingState,
+} from "@/core/publishing/publish-blockers";
+import { friendlyFailure } from "@/core/publishing/founder-error";
 
 const updateInitial: UpdatePlanItemResult = { ok: false, error: "" };
 const duplicateInitial: DuplicatePlanItemResult = { ok: false, error: "" };
@@ -115,6 +124,17 @@ export interface PlanItemCardProps {
   executionItemId: string | null;
   executionItemStatus: string | null;
   /**
+   * The PERSISTED `execution_items.metadata.publish_outcome` for the
+   * latest attempt, or null when there has been none.
+   *
+   * The card previously had no field for this at all, which is why it
+   * could not tell the operator why a post was blocked and why the
+   * "Schedule retry" affordance was gated on `status === "paused"`
+   * rather than on the outcome. Both are source-of-truth failures:
+   * the answer exists in the database and simply was not passed down.
+   */
+  publishOutcome: PersistedPublishOutcome | null;
+  /**
    * Phase F6.0 — raw JSONB envelope from
    * weekly_plan_items.platform_publish_intent. Passed straight through
    * to the compose modal; null for legacy rows.
@@ -161,6 +181,17 @@ export function PlanItemCard(props: PlanItemCardProps) {
   };
   const displayLabel = planItemDisplayLabel(labelInput);
   const derivedLabel = isDerivedLabel(labelInput);
+
+  // Retry eligibility from the PERSISTED outcome, via the canonical P0.2
+  // predicate — not from `status === "paused"`.
+  //
+  // The old gate was status-shaped, so an unknown-outcome (class C) or
+  // partial-success (class D) attempt produced exactly the same
+  // `paused` + scheduled state and rendered exactly the same enabled
+  // "Schedule retry" button. The server refused, so no duplicate could
+  // publish — but the affordance lied, and it was one `if` away from
+  // being the only line of defence.
+  const retryEligibility = evaluateRetryEligibility(props.publishOutcome);
 
   const isDraft = props.status === "draft" || props.status === "skipped";
   const accountLabel = props.accountId
@@ -361,6 +392,20 @@ export function PlanItemCard(props: PlanItemCardProps) {
               </div>
             ) : null}
 
+            {/* The ACTUAL persisted publishing outcome.
+                The incident card showed only "Blocked" with no reason,
+                while the database held
+                `account_not_confirmed / "Account review_status must be
+                'confirmed' (is 'unknown')"`. Everything needed to
+                explain it was already stored and simply never
+                rendered. */}
+            <PublishOutcomeStrip
+              platform={props.platform}
+              outcome={props.publishOutcome}
+              retryAllowed={retryEligibility.operatorRetryAllowed}
+              retryRefusal={retryEligibility.reason}
+            />
+
             {/* Post vs creative status — clear separation so the
                 operator never has to guess whether "Approved" refers
                 to the creative or the post. */}
@@ -436,7 +481,8 @@ export function PlanItemCard(props: PlanItemCardProps) {
               {(props.status === "approved" || props.status === "paused") &&
               props.isApprovable &&
               isAutonomousDestination(props.platform) &&
-              props.scheduledAt !== null ? (
+              props.scheduledAt !== null &&
+              retryEligibility.operatorRetryAllowed ? (
                 <ScheduleApprovedItemButton
                   itemId={props.id}
                   isRetry={props.status === "paused"}
@@ -783,6 +829,74 @@ function ReschedSubmit({ alreadyScheduled }: { alreadyScheduled: boolean }) {
 // "Approved" badge on the creative is never confused with post
 // approval.
 // =====================================================================
+
+/**
+ * Renders the real publishing outcome from persisted state.
+ *
+ * Deliberately separates two things the incident card conflated:
+ * WHETHER the provider was contacted, and WHAT the operator must do.
+ * "refused_before_provider" is the common case and the one worth
+ * saying out loud — nothing was sent, so nothing can be duplicated,
+ * and retrying without changing anything will reproduce it exactly.
+ */
+function PublishOutcomeStrip({
+  platform,
+  outcome,
+  retryAllowed,
+  retryRefusal,
+}: {
+  platform: string | null;
+  outcome: PersistedPublishOutcome | null;
+  retryAllowed: boolean;
+  retryRefusal: string;
+}) {
+  if (!outcome) return null;
+  const state: PublishingState = resolvePublishingState(outcome);
+  if (state === "not_attempted" || state === "published") return null;
+
+  const reasonCode =
+    typeof outcome.reason_code === "string" ? outcome.reason_code : null;
+  const reasonDetail =
+    typeof outcome.reason_detail === "string" ? outcome.reason_detail : null;
+  const friendly = friendlyFailure({
+    platform: platform ?? "",
+    reasonCode,
+    reasonDetail,
+  });
+
+  const heading =
+    state === "refused_before_provider"
+      ? "Publishing blocked — nothing was sent"
+      : state === "unknown"
+        ? "Outcome unknown — check the platform before retrying"
+        : state === "partial"
+          ? "Partly published — check the platform before retrying"
+          : "Publish failed";
+
+  const tone =
+    state === "unknown" || state === "partial"
+      ? "border-red-200 bg-red-50/60"
+      : "border-amber-200 bg-amber-50/60";
+
+  return (
+    <div className={`rounded-md border ${tone} px-3 py-2 mt-1 space-y-1`}>
+      <div className="text-[11px] font-semibold text-ink-900">{heading}</div>
+      <p className="text-[11px] text-ink-800 leading-relaxed break-words">
+        {friendly.title} {friendly.advice}
+      </p>
+      {!retryAllowed && retryRefusal ? (
+        <p className="text-[11px] text-red-800 leading-relaxed break-words">
+          {retryRefusal}
+        </p>
+      ) : null}
+      {reasonCode ? (
+        <p className="text-[10px] text-ink-500 font-mono break-all">
+          {reasonCode}
+        </p>
+      ) : null}
+    </div>
+  );
+}
 
 function PostCreativeStatusSummary({
   postStatus,

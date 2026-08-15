@@ -32,6 +32,7 @@ import {
 } from "@/core/platform-native";
 import type { PublishPlatform } from "@/core/publishing/publishing-types";
 import { operatorTargetBlocker } from "@/core/publishing/reddit-target";
+import { evaluatePublishBlockers } from "@/core/publishing/publish-blockers";
 
 export type { ApprovalReadiness } from "./approval-readiness.shared";
 export { summarizeReadiness } from "./approval-readiness.shared";
@@ -209,20 +210,67 @@ export function assessItemApprovalReadiness(
     );
   }
 
-  // Reddit is the one destination that takes an operator-typed routing
-  // target, and it is useless without one: the publisher refuses with
-  // `missing_subreddit`, which is terminal. Refusing here means the
-  // operator is told while they can still fix it, instead of finding a
-  // blocked execution item and a paused plan item afterwards.
+  // ── Canonical structured blockers ────────────────────────────────
   //
-  // Gated on requireSchedule for the same reason the schedule blocker
-  // is: "approve & hold" is a legitimate way to park a post that is not
-  // finished yet. Only the paths that mint an execution item demand it.
-  const targetBlocker = input.requireSchedule
-    ? operatorTargetBlocker(input.item.platform, input.item.metadata)
-    : null;
-  const targetSet = targetBlocker === null;
-  if (targetBlocker) blockers.push(targetBlocker);
+  // The same pure evaluator the weekly-plan card renders from. Running
+  // it here is what makes "what the operator is told" and "what the
+  // server enforces" the same computation instead of two sets of
+  // conditions that drift.
+  //
+  // It owns the rules that are pure functions of the item + creative.
+  // Contract scope stays above: it needs the contract row, which is a
+  // server concept the card does not have.
+  const structured = evaluatePublishBlockers({
+    item: {
+      id: input.item.id,
+      status: input.item.status,
+      platform: input.item.platform,
+      contentType: input.item.contentType,
+      intent,
+      title: input.item.title,
+      body: input.item.body,
+      accountId: input.item.accountId,
+      scheduledAt: input.item.scheduledAt,
+      riskLevel: input.item.riskLevel,
+      metadata: input.item.metadata,
+    },
+    creative: input.primaryCreative
+      ? {
+          id: input.primaryCreative.id,
+          status: input.primaryCreative.status,
+          sourceType: input.primaryCreative.sourceType,
+          assetUrl: input.primaryCreative.assetUrl,
+          sourceUrl: input.primaryCreative.sourceUrl,
+          altText: input.primaryCreative.altText,
+        }
+      : null,
+    allowedStatuses,
+    requireSchedule: input.requireSchedule,
+    // THE INCIDENT GUARD. Only the paths that mint an execution item
+    // demand an identity — "approve & hold" may legitimately park a
+    // post before one is chosen. `requireSchedule` marks exactly the
+    // execution-item-creating callers today.
+    requireIdentity: input.requireSchedule,
+  });
+
+  // Surface any structured blocker the legacy string list does not
+  // already cover, so the server refuses on the same facts the card
+  // shows. Deduped by message so a rule expressed in both places
+  // cannot produce a doubled blocker.
+  const identityBlocked = structured.blockers.some(
+    (b) => b.code === "identity_not_attached",
+  );
+  const targetSet = !structured.blockers.some(
+    (b) => b.code === "operator_target_required",
+  );
+  for (const b of structured.blockers) {
+    if (!blockers.includes(b.message)) blockers.push(b.message);
+  }
+
+  // The Reddit routing-target rule now lives in the canonical
+  // evaluator below, so the card and this gate cannot disagree about
+  // it. `targetSet` is derived from the evaluator's verdict rather
+  // than recomputed here.
 
   return {
     ready: blockers.length === 0,
@@ -240,7 +288,9 @@ export function assessItemApprovalReadiness(
       scheduleSet,
       creativeRequired,
       targetSet,
+      identityAttached: !identityBlocked,
     },
+    structured,
   };
 }
 

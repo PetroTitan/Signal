@@ -94,7 +94,10 @@ export function CreativeApprovalControls(props: CreativeApprovalControlsProps) {
 
   return (
     <div className="rounded-md border border-ink-200 bg-white px-3 py-2.5 mt-1 space-y-2">
-      <WorkflowBanner />
+      <CreativeGuidance
+        creativeStatus={props.creativeStatus}
+        postIsTerminal={postIsTerminal}
+      />
 
       {isPendingReview && !postIsTerminal ? (
         <div className="flex flex-wrap items-center gap-2">
@@ -119,14 +122,69 @@ export function CreativeApprovalControls(props: CreativeApprovalControlsProps) {
   );
 }
 
-function WorkflowBanner() {
-  return (
-    <p className="text-[11px] text-ink-600 leading-relaxed">
-      <span className="font-semibold text-ink-800">Creative must be approved</span>{" "}
-      before the post itself can be approved. Approve the creative below, or
-      reject and replace it.
-    </p>
-  );
+/**
+ * Guidance derived from the creative's ACTUAL status.
+ *
+ * This replaces a static banner that read "Creative must be approved
+ * before the post itself can be approved. Approve the creative below,
+ * or reject and replace it." — rendered unconditionally, whenever a
+ * creative existed, with no inputs at all.
+ *
+ * In the production incident that banner sat directly beneath a green
+ * "Creative approved" label on the same card, telling the operator to
+ * approve a creative that was already approved, using buttons that
+ * were correctly hidden. The real blocker was elsewhere entirely and
+ * was never shown.
+ *
+ * A guidance string is a fact about this item, never a constant.
+ */
+function CreativeGuidance({
+  creativeStatus,
+  postIsTerminal,
+}: {
+  creativeStatus: CreativeStatusToken;
+  postIsTerminal: boolean;
+}) {
+  if (postIsTerminal) return null;
+
+  if (creativeStatus === "approved") {
+    return (
+      <p className="text-[11px] text-ink-600 leading-relaxed">
+        <span className="font-semibold text-emerald-700">
+          Creative approved
+        </span>{" "}
+        and will be attached when this post publishes.
+      </p>
+    );
+  }
+  if (creativeStatus === "pending_review") {
+    return (
+      <p className="text-[11px] text-ink-600 leading-relaxed">
+        <span className="font-semibold text-ink-800">
+          Creative is awaiting review
+        </span>
+        . Only approved creatives are published — approve it below, or this
+        post goes out without the image.
+      </p>
+    );
+  }
+  if (creativeStatus === "rejected") {
+    return (
+      <p className="text-[11px] text-ink-600 leading-relaxed">
+        <span className="font-semibold text-amber-700">Creative rejected</span>.
+        Replace it, or this post publishes without an image.
+      </p>
+    );
+  }
+  if (creativeStatus === "planned") {
+    return (
+      <p className="text-[11px] text-ink-600 leading-relaxed">
+        <span className="font-semibold text-ink-800">Creative planned</span> —
+        upload the asset before publishing.
+      </p>
+    );
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------
