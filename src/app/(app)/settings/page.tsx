@@ -19,8 +19,66 @@ import {
   type PlatformConnection,
 } from "@/core/platform-connections";
 import { useMaybeWorkspaceSession } from "@/core/workspace-session";
+import {
+  SETTINGS_ROUTES,
+  visibleTo,
+} from "@/core/navigation/route-manifest";
+import { can } from "@/core/teams/permissions";
+import type { WorkspaceRole } from "@/lib/supabase/types";
 import { RegionForm } from "./_region-form";
 import { useEffect, useState } from "react";
+
+/**
+ * Every settings destination, from the manifest, filtered by role.
+ *
+ * This is the information-architecture hub the mobile More sheet and
+ * the desktop sidebar both point at. It deliberately lists routes
+ * rather than duplicating their controls — the pages remain the single
+ * implementation, and mobile and desktop use the same ones.
+ */
+function SettingsDirectory({ role }: { role: WorkspaceRole | null }) {
+  const items = visibleTo(SETTINGS_ROUTES, role, can).filter(
+    // The hub does not link to itself, and token management is reached
+    // from the MCP page that explains it.
+    (r) => r.href !== "/settings" && r.href !== "/settings/mcp/tokens",
+  );
+  if (items.length === 0) return null;
+  return (
+    <section className="card p-5">
+      <h2 className="text-sm font-semibold text-ink-900">All settings</h2>
+      <p className="text-xs text-ink-600 mt-1 leading-relaxed">
+        Everything configurable in this workspace.
+      </p>
+      <ul className="mt-3 divide-y divide-ink-100">
+        {items.map((item) => (
+          <li key={item.href}>
+            <Link
+              href={item.href}
+              className="flex items-start justify-between gap-3 py-2.5 min-h-[44px] group"
+            >
+              <span className="min-w-0">
+                <span className="text-sm font-medium text-ink-900 group-hover:text-signal-700 block">
+                  {item.label}
+                </span>
+                {item.description ? (
+                  <span className="text-xs text-ink-500 block leading-snug">
+                    {item.description}
+                  </span>
+                ) : null}
+              </span>
+              <span
+                aria-hidden
+                className="text-signal-700 text-sm shrink-0 mt-0.5"
+              >
+                →
+              </span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
 
 export default function SettingsPage() {
   const { state } = useSignal();
@@ -109,6 +167,14 @@ export default function SettingsPage() {
             </button>
           </div>
         </section>
+
+        {/* Settings index, derived from the route manifest.
+            Before this the page linked to five sub-routes and simply
+            omitted MCP, whose only entry anywhere in the app was the
+            desktop-only sidebar's collapsed "Advanced" group. Deriving
+            the list means a settings route cannot be added and then
+            silently left off the hub. */}
+        <SettingsDirectory role={session?.role ?? null} />
 
         <section className="card p-5">
           <div className="flex items-start justify-between gap-3">
