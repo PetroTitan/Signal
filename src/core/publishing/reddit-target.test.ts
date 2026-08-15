@@ -263,27 +263,13 @@ describe("autonomous Reddit publishing stays opt-in", () => {
     );
   });
 
-  it("the runner refuses autonomously before calling the provider", () => {
-    // Source-level proof that the gate sits BEFORE publishToReddit in
-    // the reddit branch. A gate placed after the call would still pass
-    // every behavioural assertion above while posting to Reddit.
-    const source = fs.readFileSync(
-      path.join(REPO_ROOT, "src", "core", "publishing", "publishing-runner.ts"),
-      "utf8",
-    );
-    const branch = source.slice(
-      source.indexOf('case "reddit": {'),
-      source.indexOf('case "x":'),
-    );
-    expect(branch).toContain("redditAutonomousPublishEnabled");
-    expect(branch).toContain("isSubredditAllowed");
-    expect(branch.indexOf("redditAutonomousPublishEnabled")).toBeLessThan(
-      branch.indexOf("publishToReddit({"),
-    );
-    expect(branch.indexOf("isSubredditAllowed")).toBeLessThan(
-      branch.indexOf("publishToReddit({"),
-    );
-  });
+  // NOTE: the runner-side gate is pinned BEHAVIOURALLY in
+  // reddit-autonomous-gate.test.ts, not by source assertions. An
+  // earlier version of this file asserted the guard by searching the
+  // reddit branch for "redditAutonomousPublishEnabled" — and the
+  // negative control proved that worthless, because the identifier also
+  // appears in the import destructure, so deleting the guard itself
+  // left the test green. Assert on the outcome, not on the text.
 
   it("both refusals are terminal blocks, not retryable failures", async () => {
     // A retryable classification would have the scheduler re-attempt a
