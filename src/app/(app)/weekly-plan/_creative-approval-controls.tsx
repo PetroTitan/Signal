@@ -65,6 +65,21 @@ export function toCreativeStatusToken(
 export interface CreativeApprovalControlsProps {
   creativeId: string | null;
   creativeStatus: CreativeStatusToken;
+  /**
+   * Whether the attached creative is actually publishable.
+   *
+   * Approval status alone is not enough. `describeCreativeState`
+   * reports "Creative missing asset" / "Alt text missing" BEFORE it
+   * looks at status, so guidance keyed only on status would say
+   * "Creative approved and will be attached" directly beneath a
+   * summary row saying the asset is missing — the same contradiction
+   * class this component was fixed for, reintroduced one row down.
+   *
+   * `resolvePublishCreative` hard-refuses an APPROVED creative missing
+   * either, so both are real publish blockers, not cosmetics.
+   */
+  creativeHasAsset?: boolean;
+  creativeHasAltText?: boolean;
   postStatus: WeeklyPlanItemStatus;
   /** Optional structured blockers to render in the debug section. */
   approvalBlockers?: ReadonlyArray<string>;
@@ -94,7 +109,12 @@ export function CreativeApprovalControls(props: CreativeApprovalControlsProps) {
 
   return (
     <div className="rounded-md border border-ink-200 bg-white px-3 py-2.5 mt-1 space-y-2">
-      <WorkflowBanner />
+      <CreativeGuidance
+        creativeStatus={props.creativeStatus}
+        postIsTerminal={postIsTerminal}
+        hasAsset={props.creativeHasAsset ?? true}
+        hasAltText={props.creativeHasAltText ?? true}
+      />
 
       {isPendingReview && !postIsTerminal ? (
         <div className="flex flex-wrap items-center gap-2">
@@ -119,14 +139,98 @@ export function CreativeApprovalControls(props: CreativeApprovalControlsProps) {
   );
 }
 
-function WorkflowBanner() {
-  return (
-    <p className="text-[11px] text-ink-600 leading-relaxed">
-      <span className="font-semibold text-ink-800">Creative must be approved</span>{" "}
-      before the post itself can be approved. Approve the creative below, or
-      reject and replace it.
-    </p>
-  );
+/**
+ * Guidance derived from the creative's ACTUAL status.
+ *
+ * This replaces a static banner that read "Creative must be approved
+ * before the post itself can be approved. Approve the creative below,
+ * or reject and replace it." — rendered unconditionally, whenever a
+ * creative existed, with no inputs at all.
+ *
+ * In the production incident that banner sat directly beneath a green
+ * "Creative approved" label on the same card, telling the operator to
+ * approve a creative that was already approved, using buttons that
+ * were correctly hidden. The real blocker was elsewhere entirely and
+ * was never shown.
+ *
+ * A guidance string is a fact about this item, never a constant.
+ */
+function CreativeGuidance({
+  creativeStatus,
+  postIsTerminal,
+  hasAsset,
+  hasAltText,
+}: {
+  creativeStatus: CreativeStatusToken;
+  postIsTerminal: boolean;
+  hasAsset: boolean;
+  hasAltText: boolean;
+}) {
+  if (postIsTerminal) return null;
+
+  if (creativeStatus === "approved") {
+    // Approved and publishable are different questions. The creative
+    // stays APPROVED — approval is never silently revoked — but the
+    // sentence names the remaining action instead of promising an
+    // attachment that would in fact block the publish.
+    if (!hasAsset) {
+      return (
+        <p className="text-[11px] text-ink-600 leading-relaxed">
+          <span className="font-semibold text-emerald-700">
+            Creative approved
+          </span>
+          , but the image file is missing. Re-upload it before approving the
+          post.
+        </p>
+      );
+    }
+    if (!hasAltText) {
+      return (
+        <p className="text-[11px] text-ink-600 leading-relaxed">
+          <span className="font-semibold text-emerald-700">
+            Creative approved
+          </span>
+          . Add alt text before approving the post.
+        </p>
+      );
+    }
+    return (
+      <p className="text-[11px] text-ink-600 leading-relaxed">
+        <span className="font-semibold text-emerald-700">
+          Creative approved
+        </span>{" "}
+        and will be attached when this post publishes.
+      </p>
+    );
+  }
+  if (creativeStatus === "pending_review") {
+    return (
+      <p className="text-[11px] text-ink-600 leading-relaxed">
+        <span className="font-semibold text-ink-800">
+          Creative is awaiting review
+        </span>
+        . Only approved creatives are published — approve it below, or this
+        post goes out without the image.
+      </p>
+    );
+  }
+  if (creativeStatus === "rejected") {
+    return (
+      <p className="text-[11px] text-ink-600 leading-relaxed">
+        <span className="font-semibold text-amber-700">Creative rejected</span>.
+        Replace it, or this post publishes without an image.
+      </p>
+    );
+  }
+  if (creativeStatus === "planned") {
+    return (
+      <p className="text-[11px] text-ink-600 leading-relaxed">
+        <span className="font-semibold text-ink-800">Creative planned</span> —
+        upload the asset before publishing.
+      </p>
+    );
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------

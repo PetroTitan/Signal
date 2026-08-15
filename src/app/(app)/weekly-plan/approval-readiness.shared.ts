@@ -17,6 +17,11 @@
  * shape to the UI.
  */
 
+// `publish-blockers` is a PURE core module (no server-only, no
+// repository imports), so importing it here does not weaken the
+// firewall this file's integrity test enforces.
+import type { PublishBlockerVerdict } from "@/core/publishing/publish-blockers";
+
 // =====================================================================
 // Result + status types — shared between server assessment and UI.
 // =====================================================================
@@ -48,6 +53,18 @@ export interface ApprovalReadinessOkFlags {
    */
   targetSet: boolean;
   /**
+   * True when a publishing identity is attached, or when this path
+   * does not require one.
+   *
+   * The incident: an item with `account_id = null` was approved and
+   * scheduled. The scheduler's account lookup found nothing, so
+   * `accountReviewStatus` resolved to null and the policy gate refused
+   * with `account_not_confirmed` — "Account review_status must be
+   * 'confirmed' (is 'unknown')" — which describes a confirmation
+   * problem when the truth was that no identity existed.
+   */
+  identityAttached: boolean;
+  /**
    * Phase F7.3 — true when the platform-native approval policy says
    * a creative is REQUIRED for this item's (platform, intent). When
    * false, the assessor skips the creative blocker entirely and the
@@ -72,6 +89,12 @@ export interface ApprovalReadiness {
   informational: ReadonlyArray<string>;
   /** Structured breakdown — UI uses this to render affordances. */
   ok: ApprovalReadinessOkFlags;
+  /**
+   * The canonical structured verdict. Same computation the weekly-plan
+   * card renders from, so the server's refusal and the operator's
+   * on-screen explanation can never diverge.
+   */
+  structured: PublishBlockerVerdict;
 }
 
 /**

@@ -230,6 +230,42 @@ describe("the capability chip row no longer masquerades as a destination picker"
   });
 });
 
+describe("identity is attached when the destination has exactly one", () => {
+  // The production incident: the Bluesky draft had no identity, was
+  // approved and scheduled anyway, and died at the scheduler with
+  // `account_not_confirmed`. defaultAccountId is Reddit-scoped, so any
+  // other destination started empty and nothing ever asked.
+  const accounts = [
+    { id: "bsky-1", displayName: "@petrohrys.bsky.social", platform: "bluesky" },
+    { id: "x-1", displayName: "@PetroHrys", platform: "x" },
+    { id: "x-2", displayName: "@second", platform: "x" },
+  ];
+
+  it("offers the destination's identity in the picker", () => {
+    const html = render(
+      { accounts },
+      existing({ platform: "bluesky", accountId: "bsky-1" }),
+    );
+    expect(html).toContain("@petrohrys.bsky.social");
+  });
+
+  it("scopes the picker to the destination", () => {
+    const html = render(
+      { accounts },
+      existing({ platform: "bluesky", accountId: "bsky-1" }),
+    );
+    // The X identities belong to another destination and must not be
+    // selectable here — a mismatched pair can only ever produce
+    // oauth_not_connected.
+    expect(html).not.toContain("@second");
+  });
+
+  it("warns when the destination has no identity at all", () => {
+    const html = render({ accounts: [] }, existing({ platform: "bluesky" }));
+    expect(html).toMatch(/No Bluesky identity yet/i);
+  });
+});
+
 describe("the sheet renders nothing when closed", () => {
   it("returns empty markup", () => {
     expect(

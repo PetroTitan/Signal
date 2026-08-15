@@ -54,6 +54,22 @@ export interface ComposeActionStateInput {
   hasBody?: boolean;
   /** True when alt-text is required but currently missing. */
   altTextMissing: boolean;
+  /**
+   * The first canonical blocker for this item, or null when there is
+   * none. Computed by `evaluatePublishBlockers` — the same evaluator
+   * the server gate and the weekly-plan card use.
+   *
+   * Before this, the compose footer's only blocker was alt text. It
+   * therefore could not see a missing publishing identity, an
+   * unapproved creative, a blocked risk level, or a missing body — and
+   * happily offered "Schedule retry" on an item that would be refused
+   * the moment the scheduler looked at it. That is the incident's
+   * defect class expressed on a second surface.
+   *
+   * Optional so an un-updated caller keeps the previous behavior
+   * rather than silently losing the alt-text gate.
+   */
+  blockerMessage?: string | null;
   /** True when body autosave is mid-flight. */
   autosaveInFlight: boolean;
   /** True when scheduled_at is set on the item. Used to choose
@@ -138,9 +154,11 @@ export function deriveComposeActionState(
     // The footer is responsible for disabling the schedule button
     // when no schedule is set; the readiness state below tells it
     // about the alt-text blocker.
-    const blocker = input.altTextMissing
-      ? "Alt text required before approval and publishing."
-      : null;
+    const blocker =
+      input.blockerMessage ??
+      (input.altTextMissing
+        ? "Alt text required before approval and publishing."
+        : null);
     return {
       variant: "awaiting_approval_actions",
       primaryLabel: "Approve post",
@@ -165,9 +183,11 @@ export function deriveComposeActionState(
     // execution_item the scheduler needs. Posts sat in `approved`
     // status forever.
     if (input.scheduleSet) {
-      const blocker = input.altTextMissing
-        ? "Alt text required before approval and publishing."
-        : null;
+      const blocker =
+        input.blockerMessage ??
+        (input.altTextMissing
+          ? "Alt text required before approval and publishing."
+          : null);
       // `paused` means a prior execution attempt
       // (blocked / failed) — this is a retry. Use clearer copy so
       // the operator understands they're recovering, not scheduling

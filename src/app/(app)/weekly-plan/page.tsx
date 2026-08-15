@@ -39,6 +39,7 @@ import { readAllowedTestSubreddits } from "@/core/publishing/safe-test-env";
 import { readGenerationProviderStatus } from "@/core/generation/provider-status";
 import { NewPostButton } from "@/components/founder-compose/new-post-button";
 import { planItemDisplayLabel } from "@/core/publishing/plan-item-label";
+import type { PersistedPublishOutcome } from "@/core/publishing/retry-eligibility";
 import { resolveIdentityPlatformGuidance } from "@/core/publishing/platform-guidance";
 import {
   ContinueWritingStrip,
@@ -190,12 +191,21 @@ export default async function WeeklyPlanPage({
         items.map((i) => i.id),
       )
     : [];
-  const execByPlanItem = new Map<string, { id: string; status: string }>();
+  // `metadata` carries the persisted publish_outcome the card needs to
+  // explain a blocked item and to gate retry on the canonical predicate.
+  const execByPlanItem = new Map<
+    string,
+    { id: string; status: string; metadata: Record<string, unknown> | null }
+  >();
   for (const ei of execItems) {
     const key = ei.sourceEntityId ?? "";
     const prev = execByPlanItem.get(key);
     if (!prev) {
-      execByPlanItem.set(key, { id: ei.id, status: ei.status });
+      execByPlanItem.set(key, {
+        id: ei.id,
+        status: ei.status,
+        metadata: (ei.metadata as Record<string, unknown> | null) ?? null,
+      });
     } else {
       const rank: Record<string, number> = {
         completed: 6,
@@ -206,7 +216,11 @@ export default async function WeeklyPlanPage({
         authorized: 1,
       };
       if ((rank[ei.status] ?? 0) > (rank[prev.status] ?? 0)) {
-        execByPlanItem.set(key, { id: ei.id, status: ei.status });
+        execByPlanItem.set(key, {
+        id: ei.id,
+        status: ei.status,
+        metadata: (ei.metadata as Record<string, unknown> | null) ?? null,
+      });
       }
     }
   }
@@ -287,6 +301,12 @@ export default async function WeeklyPlanPage({
   const allowedSubreddits = readAllowedTestSubreddits();
 
   // Smart defaults for the founder compose sheet.
+  // Smart default for a NEW draft. The compose sheet defaults to
+  // Reddit, so this stays Reddit-scoped — but the sheet now also
+  // auto-selects the identity whenever the operator switches to a
+  // destination that has exactly one. Before that, choosing any
+  // non-Reddit destination left the draft with no identity, which is
+  // how the production incident item reached the scheduler without one.
   const confirmedRedditAccounts = accounts.filter(
     (a) => a.platform === "reddit" && a.reviewStatus === "confirmed",
   );
@@ -828,6 +848,10 @@ export default async function WeeklyPlanPage({
         hasActiveContract={hasActiveContract}
         executionItemId={exec?.id ?? null}
         executionItemStatus={exec?.status ?? null}
+        publishOutcome={
+          ((exec?.metadata as { publish_outcome?: unknown } | undefined)
+            ?.publish_outcome ?? null) as PersistedPublishOutcome | null
+        }
         platformPublishIntent={it.platformPublishIntent}
         aiAssistedKind={deriveAiAssistedKind(
           it.metadata as Record<string, unknown> | null,

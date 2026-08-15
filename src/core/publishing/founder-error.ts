@@ -163,6 +163,60 @@ export function friendlyFailure(input: {
         title: `${label} returned an unexpected response.`,
         advice: detail ? `Reason: ${detail}.` : "Try again in a moment.",
       };
+
+    // ── Gates that refuse BEFORE the provider is contacted ──────────
+    //
+    // These had no cases at all, so every policy-gate refusal fell
+    // through to "X didn't publish this post. Try again in a moment."
+    // — which is wrong twice over: nothing was sent, and retrying
+    // changes nothing until the operator fixes the named condition.
+    // A production Bluesky incident surfaced exactly this: the real
+    // cause was a missing publishing identity, and the operator was
+    // told to try again.
+    case "account_not_confirmed":
+      return {
+        title: `${label} publishing is not set up for this identity.`,
+        advice:
+          "Confirm the publishing identity on Accounts, and make sure the post has one selected. Nothing was sent.",
+      };
+    case "product_not_confirmed":
+      return {
+        title: "The linked product is not confirmed yet.",
+        advice: "Confirm it on Products, then schedule again. Nothing was sent.",
+      };
+    case "publishing_disabled":
+      return {
+        title: "Live publishing is off for this workspace.",
+        advice: "Enable it in Settings before scheduling. Nothing was sent.",
+      };
+    case "execution_mode_dry_run":
+      return {
+        title: "Workspace is in dry-run mode.",
+        advice:
+          "The attempt was recorded but nothing was sent. Switch to live mode to publish.",
+      };
+    case "risk_level_blocked":
+      return {
+        title: "QA blocked this draft.",
+        advice: "Rewrite it and approve again. Nothing was sent.",
+      };
+    case "platform_not_supported":
+      return {
+        title: `Signal does not publish to ${label} automatically.`,
+        advice:
+          "Publish it there yourself and record the permalink. Nothing was sent.",
+      };
+    case "scheduled_in_future":
+      return {
+        title: "Not due yet.",
+        advice: "This post will publish at its scheduled time.",
+      };
+    case "no_active_contract":
+      return {
+        title: "No active weekly publishing scope.",
+        advice: "Activate one before scheduling. Nothing was sent.",
+      };
+
     default:
       return {
         title: `${label} didn't publish this post.`,

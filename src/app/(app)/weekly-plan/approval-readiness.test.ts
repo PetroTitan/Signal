@@ -760,6 +760,7 @@ describe("summarizeReadiness", () => {
         blockers: [],
         informational: [],
         ok: {} as never,
+        structured: { canApprovePost: true, blockers: [], warnings: [] },
       }),
     ).toBe("Ready for post approval.");
   });
@@ -769,6 +770,7 @@ describe("summarizeReadiness", () => {
       blockers: ["A", "B", "C"],
       informational: [],
       ok: {} as never,
+      structured: { canApprovePost: false, blockers: [], warnings: [] },
     });
     expect(s).toBe("A (+2 more)");
   });
