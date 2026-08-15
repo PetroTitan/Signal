@@ -32,6 +32,10 @@ import type { AllowedMime } from "@/core/publishing/creative-upload-policy";
 import { evaluateRetryEligibilityFromMetadata } from "@/core/publishing/retry-eligibility";
 import { titleRequirementBlocker } from "@/core/platform-native/approval-policy";
 import {
+  executionTargetMetadata,
+  operatorTargetBlocker,
+} from "@/core/publishing/reddit-target";
+import {
   allowsOperatorTarget,
   autonomousSchedulingBlocker,
 } from "@/core/publishing/publish-destinations";
@@ -529,6 +533,11 @@ export async function approveWeeklyPlanAction(
             plan_item_id: it.id,
             plan_id: planId,
             source: "approve_weekly_plan",
+            // The operator-typed routing target. Reddit only — see
+            // executionTargetMetadata. Without this the scheduler
+            // resolves no subreddit and the item dies at
+            // `missing_subreddit`.
+            ...executionTargetMetadata(it.platform, it.metadata),
           },
         });
         executionItemsCreated += 1;
@@ -1395,6 +1404,7 @@ export async function approvePlanItemAndScheduleAction(
         plan_item_id: item.id,
         plan_id: item.weeklyPlanId,
         source: "approve_plan_item_and_schedule",
+        ...executionTargetMetadata(item.platform, item.metadata),
         // Audit-trail flags so future readers (and dashboards) can
         // see whether the item was scheduled under a contract or
         // without one.
@@ -1928,6 +1938,7 @@ export async function scheduleApprovedItemAction(
         plan_item_id: item.id,
         plan_id: item.weeklyPlanId,
         source: "schedule_approved_item",
+        ...executionTargetMetadata(item.platform, item.metadata),
         contract_mode: contract ? "contract_attached" : "contract_free_item",
         approval_mode: "per_item",
         approved_without_contract: contract === null,
@@ -2844,7 +2855,14 @@ export async function composeUpsertDraftAction(
       riskScore: riskScore ?? null,
       status: "draft",
       metadata: {
-        ...(subreddit ? { target: subreddit } : {}),
+        // Same Reddit-only gate the UPDATE path applies. The create
+        // path was left ungated by the previous milestone: the client
+        // never sends the field for another destination, but a
+        // hand-built request could, and metadata.target outranks the
+        // identity's own target at the scheduler.
+        ...(subreddit && allowsOperatorTarget(platform ?? "reddit")
+          ? { target: subreddit }
+          : {}),
         ...(notes ? { operator_notes: notes } : {}),
         compose_origin: "founder_compose_sheet",
       },

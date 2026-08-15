@@ -40,6 +40,14 @@ export interface ApprovalReadinessOkFlags {
   platformScope: boolean;
   scheduleSet: boolean;
   /**
+   * True when the destination's operator-typed routing target is
+   * present, or when the destination does not take one. Only Reddit
+   * takes one today; without a subreddit the publisher refuses
+   * terminally with `missing_subreddit`, so this is checked at
+   * approval time on the paths that mint an execution item.
+   */
+  targetSet: boolean;
+  /**
    * Phase F7.3 — true when the platform-native approval policy says
    * a creative is REQUIRED for this item's (platform, intent). When
    * false, the assessor skips the creative blocker entirely and the

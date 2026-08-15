@@ -40,6 +40,10 @@ import type { ToolContext } from "../tool-context";
 import type { SchedulePublishArgs } from "../schemas";
 import type { FounderPlatform } from "@/core/publishing/platform-guidance";
 import { evaluateRetryEligibilityFromMetadata } from "@/core/publishing/retry-eligibility";
+import {
+  executionTargetMetadata,
+  operatorTargetBlocker,
+} from "@/core/publishing/reddit-target";
 import type { WeeklyContractActionType } from "@/core/weekly-contract";
 import {
   ActiveAuthorizationLoadError,
@@ -360,6 +364,21 @@ export async function schedulePublishTool(
     });
   }
 
+  // Reddit needs an operator-typed subreddit. Refuse here rather than
+  // minting an execution item that the runner will terminally refuse
+  // with `missing_subreddit` — the UI path applies the same rule at
+  // approval time, so both surfaces agree on target semantics.
+  const redditTargetBlocker = operatorTargetBlocker(
+    platform,
+    (planItem as { metadata: Record<string, unknown> | null }).metadata,
+  );
+  if (redditTargetBlocker) {
+    return failed({
+      tool: TOOL,
+      summary: "plan_item_missing_reddit_target",
+    });
+  }
+
   // ── 4. Risk gate (proxy for QA verdict) ───────────────────────────
   // The existing approve flow uses the same check on plan_item.risk_level.
   const riskLevel = (planItem as { risk_level: string | null }).risk_level;
@@ -597,6 +616,10 @@ export async function schedulePublishTool(
           plan_item_id: (planItem as { id: string }).id,
           plan_id: (planItem as { weekly_plan_id: string }).weekly_plan_id,
           source: "mcp_operation",
+          // Same routing-target thread as the UI paths. planItemMetadata
+          // was already read above and was previously unused for the
+          // execution item, which is exactly how the target got lost.
+          ...executionTargetMetadata(platform, planItemMetadata),
           scheduled_by_operator_token_id: ctx.operatorTokenId,
           mcp_scheduled_at: new Date().toISOString(),
           contract_mode: contractMode,

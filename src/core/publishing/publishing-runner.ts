@@ -26,7 +26,7 @@ import { publishHashnodeForIdentity } from "./hashnode-publish-orchestrator";
 import { publishBlueskyForIdentity } from "./bluesky-publish-orchestrator";
 import { publishToTelegram } from "./publish-telegram";
 import { readTelegramCredentials } from "./platform-credentials";
-import { publishFail } from "./publishing-result";
+import { publishBlocked, publishFail } from "./publishing-result";
 import type { PublishOutcome, PublishRequest } from "./publishing-types";
 
 export interface RunnerInput {
@@ -157,11 +157,43 @@ export async function runPublish(input: RunnerInput): Promise<PublishOutcome> {
   }
 
   switch (input.request.platform) {
-    case "reddit":
+    case "reddit": {
       if (!input.target) {
         return publishFail(
           "missing_subreddit",
           "Reddit requires a target subreddit.",
+        );
+      }
+      // Autonomous Reddit publishing is opt-in, default off.
+      //
+      // Until the routing target was threaded from the plan item to the
+      // execution item, this branch was unreachable from the scheduler:
+      // `input.target` was always null and the gate above refused. The
+      // fix revives the path, and it revives it into a place with none
+      // of the manual path's protections — no typed confirmation
+      // phrase, no rate limit, no duplicate fingerprint check.
+      //
+      // The manual path has always required the subreddit to be in
+      // ALLOWED_TEST_SUBREDDITS (`safe-test-policy`). The autonomous
+      // path now enforces the SAME rule rather than a weaker one, plus
+      // an explicit env opt-in — so an operator turns this on
+      // deliberately, for subreddits they have already listed.
+      //
+      // This branch does NOT gate the operator-confirmed manual publish
+      // at /execution/items/[id], which calls `publishToReddit`
+      // directly with the subreddit typed into the form.
+      const { redditAutonomousPublishEnabled, isSubredditAllowed } =
+        await import("./safe-test-env");
+      if (!redditAutonomousPublishEnabled()) {
+        return publishBlocked(
+          "reddit_autonomous_publish_disabled",
+          "Autonomous Reddit publishing is off. Publish this post from the execution detail page, or set REDDIT_AUTONOMOUS_PUBLISH=true to let the scheduler post to allow-listed subreddits.",
+        );
+      }
+      if (!isSubredditAllowed(input.target)) {
+        return publishBlocked(
+          "subreddit_not_allowlisted",
+          `r/${input.target} is not in ALLOWED_TEST_SUBREDDITS. The scheduler only posts to subreddits you have explicitly listed.`,
         );
       }
       return publishToReddit({
@@ -169,6 +201,7 @@ export async function runPublish(input: RunnerInput): Promise<PublishOutcome> {
         accessToken: input.accessToken,
         subreddit: input.target,
       });
+    }
     case "x":
       return publishXForIdentity({
         request: input.request,
