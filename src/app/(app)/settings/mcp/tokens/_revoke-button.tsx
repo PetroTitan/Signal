@@ -25,7 +25,7 @@ export function RevokeTokenButton({ tokenId }: { tokenId: string }) {
 function Submit() {
   const { pending } = useFormStatus();
   return (
-    <button type="submit" className="btn-secondary text-[11px]" disabled={pending}>
+    <button type="submit" className="btn-danger text-[11px]" disabled={pending}>
       {pending ? "…" : "Revoke"}
     </button>
   );

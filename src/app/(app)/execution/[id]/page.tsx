@@ -99,7 +99,7 @@ export default async function ExecutionQueueDetailPage({ params }: PageProps) {
         title={queue.title}
         description={`Execution queue · ${queue.weekStart} → ${queue.weekEnd}`}
         actions={
-          <Link href="/execution" className="btn-secondary text-xs">
+          <Link href="/execution" className="btn-nav text-xs">
             ← All queues
           </Link>
         }

@@ -35,7 +35,7 @@ export function CancelRequestForm({ requestId }: { requestId: string }) {
 function Submit() {
   const { pending } = useFormStatus();
   return (
-    <button type="submit" className="btn-secondary text-xs" disabled={pending}>
+    <button type="submit" className="btn-danger text-xs" disabled={pending}>
       {pending ? "…" : "Cancel"}
     </button>
   );

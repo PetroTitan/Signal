@@ -64,8 +64,12 @@
   --shadow-md: 0 4px 12px rgba(11, 27, 51, 0.06), 0 1px 3px rgba(11, 27, 51, 0.04);
   --shadow-lg: 0 12px 32px rgba(11, 27, 51, 0.08), 0 4px 8px rgba(11, 27, 51, 0.04);
 
-  /* Focus rings — double ring for legibility on any surface */
-  --shadow-focus: 0 0 0 2px rgb(255 255 255 / 0.95), 0 0 0 4px rgb(var(--signal-500) / 0.45);
+  /* Focus rings — double ring for legibility on any surface.
+     The outer ring is full-opacity: at 45% it composited to
+     rgb(154 180 238) over white, which is 2.07:1 and fails WCAG 2.2
+     SC 1.4.11 (3:1 minimum for non-text UI). Full signal-500 is
+     6.08:1. This rule governs every control that is not a `.btn`. */
+  --shadow-focus: 0 0 0 2px rgb(255 255 255 / 0.95), 0 0 0 4px rgb(var(--signal-500));
   --shadow-focus-success: 0 0 0 2px rgb(255 255 255 / 0.95), 0 0 0 4px rgb(var(--accent-500) / 0.45);
 }
 
@@ -131,14 +135,74 @@ textarea:focus-visible,
   .badge-high {
     @apply badge bg-red-50 text-red-700;
   }
+  /* Ring is signal-500, not signal-300: `.btn:focus` (0,2,0) beats the
+     global `button:focus-visible` (0,1,1) on specificity, so this rule
+     is what every one of the ~180 button controls actually gets. At
+     signal-300 it measured 2.57:1 against white and failed WCAG 1.4.11;
+     signal-500 measures 6.08:1. */
   .btn {
-    @apply inline-flex items-center justify-center text-sm font-medium px-3 py-1.5 rounded-md border border-ink-200 bg-white text-ink-800 hover:bg-ink-50 transition-colors focus:outline-none focus:ring-2 focus:ring-signal-300 focus:ring-offset-1;
+    @apply inline-flex items-center justify-center text-sm font-medium px-3 py-1.5 rounded-md border border-ink-200 bg-white text-ink-800 hover:bg-ink-50 transition-colors focus:outline-none focus:ring-2 focus:ring-signal-500 focus:ring-offset-1;
   }
+  /* Primary IN-PLACE action: save, approve, schedule, publish. */
   .btn-primary {
     @apply btn bg-signal-600 border-signal-600 text-white hover:bg-signal-700 hover:border-signal-700;
   }
+  /*
+   * Primary NAVIGATION: moves the operator to another page, workspace,
+   * or management screen.
+   *
+   * Deliberately a tinted fill rather than a second solid blue, so a
+   * screen can carry one action CTA and one navigation CTA without two
+   * identical buttons competing. signal-800 on signal-50 is 10.87:1;
+   * the resting signal-300 border is decorative, and the signal-600
+   * hover/focus border carries the 3:1 non-text contrast.
+   */
+  .btn-nav {
+    @apply btn bg-signal-50 border-signal-300 text-signal-800 font-semibold hover:bg-signal-100 hover:border-signal-600;
+  }
+  /*
+   * Secondary action.
+   *
+   * This class was referenced by 31 call sites and defined nowhere —
+   * not here, not in tailwind.config.ts (plugins: []), and it appeared
+   * zero times in the compiled stylesheet. Tailwind Preflight strips
+   * button padding, border, background and link colour, so those
+   * controls rendered as bare body text: eight "Sign out of this
+   * account" disconnects, "Revoke", "Pause queue", "Cancel queue",
+   * "Reject", three "Approve & hold" CTAs, and three back-to-index nav
+   * links. Defining it repairs all 31 without touching a component.
+   */
+  .btn-secondary {
+    @apply btn border-ink-200 bg-white text-ink-800 hover:bg-ink-50;
+  }
+  /*
+   * Destructive. Note the `danger` prop in four lifecycle controls
+   * selected btn-secondary, so `danger` had come to mean "not the
+   * primary CTA" and was being passed for "Activate" and "Dry-run".
+   * Only genuinely destructive controls move here.
+   * red-700 on white 6.47:1; red-700 on red-50 5.92:1.
+   */
+  .btn-danger {
+    @apply btn border-red-300 bg-white text-red-700 hover:bg-red-50 hover:border-red-400 focus:ring-red-500;
+  }
+  /* Solid red is reserved for typed-confirmation moments only.
+     white on red-600 is 4.83:1. */
+  .btn-danger-solid {
+    @apply btn bg-red-600 border-red-600 text-white hover:bg-red-700 hover:border-red-700 focus:ring-red-500;
+  }
   .btn-ghost {
     @apply btn border-transparent bg-transparent hover:bg-ink-100;
+  }
+  /* Inline navigation link. signal-700 is 9.11:1 on white and 8.56:1 on
+     the ink-50 page background. Replaces a 30-site split between
+     underlined and not-underlined hand-rolled `text-signal-700`. */
+  .nav-link {
+    @apply text-signal-700 font-medium hover:text-signal-800 hover:underline underline-offset-2;
+  }
+  /* Active row in a navigation list. The sidebar's active state was
+     bg-ink-100 grey, carrying blue only on a 16px icon. 10.87:1. */
+  .nav-item-active {
+    @apply bg-signal-50 text-signal-800 font-medium;
   }
   .section-title {
     @apply text-xs font-semibold tracking-wide text-ink-500 uppercase;
@@ -152,7 +216,12 @@ textarea:focus-visible,
   .row-divider > * + * {
     @apply border-t border-ink-100;
   }
+  /* text-base (16px), not text-sm: iOS Safari auto-zooms on focus for
+     any form control under 16px, which on a phone yanks the whole
+     editor sideways mid-typing. Desktop keeps the compact scale via
+     `md:text-sm`. Ring raised to signal-500 for the same contrast
+     reason as `.btn`. */
   .input {
-    @apply text-sm px-2.5 py-1.5 rounded-md border border-ink-200 bg-white text-ink-800 placeholder:text-ink-400 focus:outline-none focus:ring-2 focus:ring-signal-300 focus:ring-offset-1;
+    @apply text-base md:text-sm px-2.5 py-1.5 rounded-md border border-ink-200 bg-white text-ink-800 placeholder:text-ink-400 focus:outline-none focus:ring-2 focus:ring-signal-500 focus:ring-offset-1;
   }
 }
