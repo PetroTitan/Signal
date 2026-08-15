@@ -38,6 +38,8 @@ import { ExecutionStateBadge } from "@/components/publishing/execution-state";
 import { readAllowedTestSubreddits } from "@/core/publishing/safe-test-env";
 import { readGenerationProviderStatus } from "@/core/generation/provider-status";
 import { NewPostButton } from "@/components/founder-compose/new-post-button";
+import { planItemDisplayLabel } from "@/core/publishing/plan-item-label";
+import { resolveIdentityPlatformGuidance } from "@/core/publishing/platform-guidance";
 import {
   ContinueWritingStrip,
   type ContinueWritingDraft,
@@ -267,6 +269,15 @@ export default async function WeeklyPlanPage({
     return acc;
   }, {});
 
+  // Minimal projection of platform_connections for the editor's
+  // destination model. Keeps `publish-destinations.ts` decoupled from
+  // repository types.
+  const destinationConnections = connections.map((c) => ({
+    platform: c.platform,
+    connectionStatus: c.connectionStatus,
+    healthStatus: c.healthStatus,
+  }));
+
   const productOptions = products.map((p) => ({ id: p.id, name: p.name }));
   const accountOptions = accounts.map((a) => ({
     id: a.id,
@@ -296,6 +307,11 @@ export default async function WeeklyPlanPage({
     products: productOptions,
     allowedSubreddits,
     aiProviderAvailable: aiProviderStatus.available,
+    // Connection rows were already loaded on this page for the
+    // needs-attention strip; the editor needs them to tell a connected
+    // destination from an unconnected one. Projected down to the two
+    // fields the destination model reads.
+    connections: destinationConnections,
   };
 
   // ---- Recently published (last 5 successful) ----
@@ -428,6 +444,13 @@ export default async function WeeklyPlanPage({
     .map(({ it, creative, missingParts }) => ({
       itemId: it.id,
       title: it.title,
+      label: planItemDisplayLabel({
+        title: it.title,
+        body: it.body,
+        platformLabel: it.platform
+          ? (resolveIdentityPlatformGuidance(it.platform)?.label ?? null)
+          : null,
+      }),
       missing: missingParts.join(", "),
       existing: {
         itemId: it.id,
@@ -801,6 +824,7 @@ export default async function WeeklyPlanPage({
         products={productOptions}
         accounts={accountOptions}
         allowedSubreddits={allowedSubreddits}
+        connections={destinationConnections}
         hasActiveContract={hasActiveContract}
         executionItemId={exec?.id ?? null}
         executionItemStatus={exec?.status ?? null}

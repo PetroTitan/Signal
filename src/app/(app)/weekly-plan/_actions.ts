@@ -30,6 +30,11 @@ import type {
 } from "@/lib/supabase/types";
 import type { AllowedMime } from "@/core/publishing/creative-upload-policy";
 import { evaluateRetryEligibilityFromMetadata } from "@/core/publishing/retry-eligibility";
+import { titleRequirementBlocker } from "@/core/platform-native/approval-policy";
+import {
+  allowsOperatorTarget,
+  autonomousSchedulingBlocker,
+} from "@/core/publishing/publish-destinations";
 import {
   createCreative,
   getCreativeById,
@@ -1275,6 +1280,18 @@ export async function approvePlanItemAndScheduleAction(
       );
     }
 
+    // EXECUTION-INTEGRITY GATE — see scheduleApprovedItemAction. This
+    // action also mints an execution_item, so it takes the same refusal.
+    // Deliberately absent from approvePlanItemAndHoldAction: holding a
+    // manual-destination post is the correct workflow, and that path
+    // creates no queued row.
+    const scheduleDestinationBlocker = autonomousSchedulingBlocker(
+      item.platform,
+    );
+    if (scheduleDestinationBlocker) {
+      return actionFail(scheduleDestinationBlocker);
+    }
+
     // Phase F6.2 — Bluesky-only operator-bound shape enforcement.
     // No-op for every other platform. Runs BEFORE the duplicate-
     // execution-item check so a stale-shape refusal doesn't waste a
@@ -1790,6 +1807,20 @@ export async function scheduleApprovedItemAction(
         `Schedule failed: ${readiness.blockers.slice(0, 2).join(" ")}`,
       );
     }
+
+    // EXECUTION-INTEGRITY GATE — the scheduler's autonomy allowlist is
+    // the authority on what may be queued, and this action is one of the
+    // places that can put a row in front of it. Refusing here is what
+    // keeps UI visibility from becoming publish authorization: a manual
+    // destination is selectable in the editor, but it can never be
+    // walked into the autonomous path.
+    //
+    // Without this, the item is created, walks to `scheduled`, is
+    // refused by the tick with `platform_not_supported`, mirrors back to
+    // `paused`, and the paused footer offers "Schedule retry" — which
+    // lands right back here. See docs/publishing/publishing-ux-architecture.md.
+    const schedulingBlocker = autonomousSchedulingBlocker(item.platform);
+    if (schedulingBlocker) return actionFail(schedulingBlocker);
 
     // Duplicate-prevention: refuse only when an ACTIVE execution_item
     // exists for this plan_item. Terminal rows (blocked, failed,
@@ -2746,9 +2777,25 @@ export async function composeUpsertDraftAction(
       // Stash subreddit + notes into metadata.
       const existing = await getPlanItemById(workspaceId, itemId);
       const meta = { ...(existing.metadata as Record<string, unknown>) };
+      // `metadata.target` is only meaningful for destinations that take
+      // an operator-typed routing target (Reddit's subreddit).
+      // `resolveSchedulerTarget` reads it with HIGHER precedence than the
+      // identity's own target, so writing it for e.g. Telegram does not
+      // add a hint — it overrides the connected chat id. The client no
+      // longer sends the field for those platforms; this is the
+      // authoritative half of the same rule, so an older client or a
+      // hand-built request cannot bypass it.
+      const effectivePlatform = platform ?? existing.platform;
       if (formData.has("subreddit")) {
-        if (subreddit) meta.target = subreddit;
-        else delete meta.target;
+        if (subreddit && allowsOperatorTarget(effectivePlatform)) {
+          meta.target = subreddit;
+        } else {
+          delete meta.target;
+        }
+      } else if (!allowsOperatorTarget(effectivePlatform)) {
+        // Switching an existing item away from Reddit clears a target
+        // that would otherwise be inherited by the new destination.
+        delete meta.target;
       }
       if (formData.has("notes")) {
         if (notes) meta.operator_notes = notes;
@@ -3126,8 +3173,27 @@ export async function sendForApprovalAction(
         `Already ${existing.status}. Can only send drafts (or skipped items) for approval.`,
       );
     }
-    if (!existing.title || existing.title.trim().length === 0) {
-      return actionFail("Add a title before sending for approval.");
+    // Title is required only where the destination's publisher genuinely
+    // refuses without one (Reddit / dev.to / Hashnode / LinkedIn article
+    // / YouTube upload). This gate used to be universal, which forced
+    // operators to invent a title for X, Bluesky and Telegram posts —
+    // platforms whose publishers never read `request.title` and whose
+    // transformers explicitly refuse to prepend it. One predicate now
+    // decides, shared with the compose footer.
+    const titleBlocker = titleRequirementBlocker({
+      platform: existing.platform,
+      contentType: existing.contentType,
+      title: existing.title,
+    });
+    if (titleBlocker) return actionFail(titleBlocker);
+    // A titleless post still needs content. Without this, clearing both
+    // fields on a body-only destination would send an empty item for
+    // approval.
+    if (
+      (!existing.title || existing.title.trim().length === 0) &&
+      (!existing.body || existing.body.trim().length === 0)
+    ) {
+      return actionFail("Write the post before sending for approval.");
     }
 
     await updatePlanItem({
@@ -3140,7 +3206,7 @@ export async function sendForApprovalAction(
       eventType: "weekly_plan_item.sent_for_approval",
       entityType: "weekly_plan_item",
       entityId: itemId,
-      title: `"${existing.title}" sent for approval`,
+      title: `"${existing.title ?? "Untitled post"}" sent for approval`,
       description: null,
     });
 
