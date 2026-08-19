@@ -126,3 +126,95 @@ describe("refreshStaleMetrics", () => {
     expect(r.results[0].status).toBe("unavailable");
   });
 });
+
+describe("refreshStaleMetrics — sweep observability", () => {
+  it("records a loader failure instead of reporting it as an empty backlog", async () => {
+    // This is the exact ambiguity that let post_metrics sit empty for two
+    // months: a thrown loader and a genuinely idle queue both produced
+    // `scanned: 0` and nothing else.
+    const deps: RefreshEngineDeps = {
+      loadStale: vi.fn().mockRejectedValue(new Error("permission denied for table")),
+      loadUnmeasured: vi.fn().mockResolvedValue([]),
+      refreshOne: vi.fn(),
+    };
+    const r = await refreshStaleMetrics(deps);
+    expect(r.scanned).toBe(0);
+    expect(r.report.loaders.stale.ok).toBe(false);
+    expect(r.report.loaders.stale.error).toContain("permission denied");
+    expect(r.report.loaders.unmeasured.ok).toBe(true);
+    expect(r.report.diagnosis).toContain("may be incomplete");
+  });
+
+  it("an idle queue is reported as idle, not as a failure", async () => {
+    const deps: RefreshEngineDeps = {
+      loadStale: vi.fn().mockResolvedValue([]),
+      loadUnmeasured: vi.fn().mockResolvedValue([]),
+      refreshOne: vi.fn(),
+    };
+    const r = await refreshStaleMetrics(deps, { seedWindowDays: 14 });
+    expect(r.report.loaders.stale.ok).toBe(true);
+    expect(r.report.loaders.unmeasured.ok).toBe(true);
+    expect(r.report.diagnosis).toContain("14-day enrolment window");
+  });
+
+  it("skips a target with no provider identifier and says so", async () => {
+    const refreshOne = vi.fn();
+    const deps: RefreshEngineDeps = {
+      loadStale: vi.fn().mockResolvedValue([
+        target({ publishHistoryId: "orphan", externalPostId: null, permalink: null }),
+      ]),
+      loadUnmeasured: vi.fn().mockResolvedValue([]),
+      refreshOne,
+    };
+    const r = await refreshStaleMetrics(deps);
+    expect(refreshOne).not.toHaveBeenCalled();
+    expect(r.report.skipped).toBe(1);
+    expect(r.report.skips[0].reason).toBe("no_provider_identifier");
+    expect(r.report.diagnosis).toContain("none reached a provider");
+  });
+
+  it("classifies a 429 as rate-limited rather than as a plain unavailable", async () => {
+    const deps: RefreshEngineDeps = {
+      loadStale: vi.fn().mockResolvedValue([target({ platform: "x" })]),
+      loadUnmeasured: vi.fn().mockResolvedValue([]),
+      refreshOne: vi.fn().mockResolvedValue({
+        status: "unavailable",
+        source: "x_api_v2",
+        externalPostId: "1",
+        metrics: {},
+        error: "provider rate limit (429)",
+        rateLimited: true,
+      } satisfies MetricsResult),
+    };
+    const r = await refreshStaleMetrics(deps);
+    expect(r.report.rateLimited).toBe(1);
+    expect(r.report.unavailable).toBe(0);
+    expect(r.report.byPlatform.x.rateLimited).toBe(1);
+  });
+
+  it("attributes candidates to every workspace the run touched", async () => {
+    const deps: RefreshEngineDeps = {
+      loadStale: vi.fn().mockResolvedValue([
+        target({ workspaceId: "w1", publishHistoryId: "a" }),
+        target({ workspaceId: "w2", publishHistoryId: "b", platform: "reddit", externalPostId: null, permalink: "https://r/x" }),
+      ]),
+      loadUnmeasured: vi.fn().mockResolvedValue([]),
+      refreshOne: vi.fn().mockImplementation((t: RefreshTarget) => connected(t.platform)),
+    };
+    const r = await refreshStaleMetrics(deps);
+    expect(Object.keys(r.report.byWorkspace).sort()).toEqual(["w1", "w2"]);
+    expect(r.report.byWorkspace.w1.connected).toBe(1);
+    expect(r.report.byWorkspace.w2.connected).toBe(1);
+  });
+
+  it("carries the run id through so a log line and an audit row can be joined", async () => {
+    const deps: RefreshEngineDeps = {
+      loadStale: vi.fn().mockResolvedValue([]),
+      loadUnmeasured: vi.fn().mockResolvedValue([]),
+      refreshOne: vi.fn(),
+    };
+    const r = await refreshStaleMetrics(deps, { runId: "run-abc" });
+    expect(r.report.runId).toBe("run-abc");
+    expect(r.report.phase).toBe("completed");
+  });
+});

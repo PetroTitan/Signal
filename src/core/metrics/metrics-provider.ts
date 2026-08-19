@@ -108,6 +108,16 @@ export interface VerifiedMetrics {
   comments?: number;
   /** dev.to public reaction count. */
   reactions?: number;
+  /** Deliberate save. Returned by Bluesky's AppView and by X's
+   *  public_metrics.bookmark_count. */
+  bookmarks?: number;
+  /**
+   * Provider-reported impressions. ONLY X supplies this
+   * (public_metrics.impression_count). Bluesky has no such field and the
+   * key must stay absent for Bluesky posts — absent renders as
+   * "unavailable", zero would be a fabrication.
+   */
+  impressions?: number;
   /** Provider-reported view count (only when the API returns it). NOT
    *  counted as engagement. */
   views?: number;
@@ -127,7 +137,8 @@ export function engagementCount(metrics: VerifiedMetrics): number {
     (metrics.quotes ?? 0) +
     (metrics.score ?? 0) +
     (metrics.comments ?? 0) +
-    (metrics.reactions ?? 0)
+    (metrics.reactions ?? 0) +
+    (metrics.bookmarks ?? 0)
   );
 }
 
@@ -137,6 +148,40 @@ export interface MetricsResult {
   externalPostId: string | null;
   metrics: VerifiedMetrics;
   error?: string | null;
+  /**
+   * True when the provider answered 429. Persisted status stays
+   * `unavailable` (we genuinely have no counts), but the sweep needs to
+   * distinguish "throttled, retry later" from "this post can never be
+   * read" — otherwise a rate-limited run looks identical to a broken
+   * integration in the observability record.
+   */
+  rateLimited?: boolean;
+  /** Provider-reported reset instant, when it sends one. */
+  rateLimitResetAt?: string | null;
+  /**
+   * The provider's OWN timestamp for the post (Bluesky `indexedAt`, X
+   * `created_at`), which is not the same instant as when Signal's
+   * publish request finished. Age-window normalization must key off
+   * this, not off `publish_history.finished_at`.
+   */
+  providerPublishedAt?: string | null;
+}
+
+/** A throttled read. No counts, but explicitly retryable. */
+export function rateLimitedResult(
+  platform: string,
+  externalPostId: string | null,
+  resetAt?: string | null,
+): MetricsResult {
+  return {
+    status: "unavailable",
+    source: metricSource(platform),
+    externalPostId,
+    metrics: {},
+    error: "provider rate limit (429)",
+    rateLimited: true,
+    rateLimitResetAt: resetAt ?? null,
+  };
 }
 
 /** A non-fetchable result for a platform we don't read. */
@@ -189,6 +234,8 @@ export function describeMetrics(result: {
   if (m.score != null) parts.push(`score ${m.score}`);
   if (m.reactions != null) parts.push(`${m.reactions} reactions`);
   if (m.comments != null) parts.push(`${m.comments} comments`);
+  if (m.bookmarks != null) parts.push(`${m.bookmarks} bookmarks`);
+  if (m.impressions != null) parts.push(`${m.impressions} impressions`);
   if (m.views != null) parts.push(`${m.views} views`);
   return parts.length > 0 ? parts.join(" · ") : "No metrics yet.";
 }
