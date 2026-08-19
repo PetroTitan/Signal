@@ -45,6 +45,12 @@ export interface PostMetricsRecord {
   fetchedAt: string | null;
   nextRefreshAt: string | null;
   error: string | null;
+  providerPublishedAt: string | null;
+  ageHours: number | null;
+  ageWindow: PostMetricsRow["age_window"];
+  freshness: PostMetricsRow["freshness"];
+  confidence: PostMetricsRow["confidence"];
+  providerPayloadVersion: string | null;
 }
 
 function toRecord(row: PostMetricsRow): PostMetricsRecord {
@@ -58,6 +64,12 @@ function toRecord(row: PostMetricsRow): PostMetricsRecord {
     fetchedAt: row.fetched_at,
     nextRefreshAt: row.next_refresh_at,
     error: row.error,
+    providerPublishedAt: row.provider_published_at ?? null,
+    ageHours: row.age_hours ?? null,
+    ageWindow: row.age_window ?? null,
+    freshness: row.freshness ?? null,
+    confidence: row.confidence ?? null,
+    providerPayloadVersion: row.provider_payload_version ?? null,
   };
 }
 
@@ -247,6 +259,17 @@ export interface PersistRefreshInput {
   nextRefreshAt: string | null;
   nowIso?: string;
   db?: SupabaseClient;
+  /**
+   * Measurement provenance. All optional so pre-existing callers keep
+   * working and write NULL — honestly "we do not know" rather than a
+   * fabricated default.
+   */
+  providerPublishedAt?: string | null;
+  ageHours?: number | null;
+  ageWindow?: PostMetricsRow["age_window"];
+  freshness?: PostMetricsRow["freshness"];
+  confidence?: PostMetricsRow["confidence"];
+  providerPayloadVersion?: string | null;
 }
 
 /**
@@ -288,7 +311,17 @@ export async function persistRefreshedMetrics(
   // rows aren't auto-swept.
   const nextRefreshAt =
     plan.status === "connected" ? input.nextRefreshAt : null;
+  const provenance = {
+    provider_published_at: input.providerPublishedAt ?? null,
+    age_hours: input.ageHours ?? null,
+    age_window: input.ageWindow ?? null,
+    freshness: input.freshness ?? null,
+    confidence: input.confidence ?? null,
+    provider_payload_version: input.providerPayloadVersion ?? null,
+  };
+
   const writeRow: PostMetricsInsert = {
+    ...provenance,
     workspace_id: input.workspaceId,
     publish_history_id: input.publishHistoryId,
     platform: input.platform,
@@ -313,6 +346,7 @@ export async function persistRefreshedMetrics(
   let snapshotWritten = false;
   if (plan.snapshot) {
     const snapRow: PostMetricsInsert = {
+      ...provenance,
       workspace_id: input.workspaceId,
       publish_history_id: input.publishHistoryId,
       platform: input.platform,

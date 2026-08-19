@@ -10,7 +10,10 @@ import "server-only";
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { resolveAge } from "./age-windows";
 import { fetchVerifiedMetrics } from "./fetch-metrics";
+import { classifyConfidence, classifyFreshness } from "./freshness";
+import { availableMetrics } from "./metric-availability";
 import type { MetricsResult } from "./metrics-provider";
 
 /** Cooldown before a connected post's metrics are re-fetched. */
@@ -50,6 +53,27 @@ export async function refreshPostMetrics(input: {
     Date.now() + CONNECTED_REFRESH_HOURS * 60 * 60 * 1000,
   ).toISOString();
 
+  // Provenance for this reading. `providerPublishedAt` comes from the
+  // provider's own timestamp when it supplied one; falling back to
+  // publish_history.finished_at would silently shift every age by the
+  // publish latency, so an absent provider timestamp yields a null age
+  // rather than an approximate one.
+  const fetchedAtIso = new Date().toISOString();
+  const { ageHours, ageWindow } = resolveAge(
+    result.providerPublishedAt ?? null,
+    fetchedAtIso,
+  );
+  const freshness = classifyFreshness({
+    fetchedAtIso,
+    nowIso: fetchedAtIso,
+    status: result.status,
+    rateLimited: result.rateLimited,
+  });
+  const confidence = classifyConfidence(
+    availableMetrics(input.platform),
+    result.metrics as Record<string, unknown>,
+  );
+
   // Persist best-effort — a cache write failure must not surface as a
   // page error; the fetched result is still returned to the caller. The
   // persist layer never overwrites verified counts with empties.
@@ -68,6 +92,12 @@ export async function refreshPostMetrics(input: {
       error: result.error ?? null,
       nextRefreshAt,
       db: input.db,
+      providerPublishedAt: result.providerPublishedAt ?? null,
+      ageHours,
+      ageWindow,
+      freshness,
+      confidence,
+      providerPayloadVersion: `${result.source}:1`,
     });
   } catch (err) {
     console.error("[refresh-metrics] cache write failed (non-fatal)", err);

@@ -4,6 +4,12 @@ Every manual publish leaves the same shape of audit record as the
 API path, plus explicit mode markers so the two are easy to
 distinguish in retrospect.
 
+> **Updated 2026-08-19.** `publish_history.mode` now has four values —
+> `api`, `manual`, `external`, `unknown` — so any query below that assumes a
+> two-valued field needs a matching predicate. `external` marks a post found on
+> the provider that Signal never published; it is not an integrity offender.
+> See `docs/platforms/provider-metric-capabilities.md`.
+
 ## Tables touched on a successful manual record
 
 | Table | What's written |

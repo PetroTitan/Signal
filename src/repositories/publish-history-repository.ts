@@ -4,6 +4,7 @@ import { createSupabaseServerClient } from "@/lib/supabase";
 import type {
   PublishHistoryInsert,
   PublishHistoryRow,
+  PublishHistoryMode,
 } from "@/lib/supabase/types";
 import { fromPostgres } from "./errors";
 
@@ -22,7 +23,7 @@ export interface PublishHistoryEntry {
   providerPostId: string | null;
   providerPermalink: string | null;
   outcome: "published" | "failed" | "blocked";
-  mode: "api" | "manual";
+  mode: PublishHistoryMode;
   reasonCode: string | null;
   httpStatus: number | null;
   startedAt: string;
@@ -71,8 +72,9 @@ export interface InsertPublishHistoryInput {
   outcome: "published" | "failed" | "blocked";
   /** Phase F2.6: distinguishes API publishes from manual records.
    *  Defaults to 'api' at the DB layer; the manual path passes
-   *  'manual' explicitly. */
-  mode?: "api" | "manual";
+   *  'manual' explicitly, and reconciliation passes 'external' for a
+   *  post discovered on the provider that Signal never published. */
+  mode?: PublishHistoryMode;
   reasonCode: string | null;
   httpStatus: number | null;
   startedAt: string;
