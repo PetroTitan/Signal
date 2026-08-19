@@ -16,6 +16,7 @@ import {
   BacklogIcon,
   InsightIcon,
   BellIcon,
+  AnalyticsIcon,
 } from "./icons";
 import { BrandMark } from "./brand-mark";
 
@@ -42,6 +43,7 @@ const groups: NavGroup[] = [
       { href: "/execution", label: "Publishing", icon: SchedulerIcon },
       { href: "/library", label: "Content library", icon: BacklogIcon },
       { href: "/results", label: "Results", icon: InsightIcon },
+      { href: "/account-health", label: "Account health", icon: AnalyticsIcon },
       { href: "/notifications", label: "Notifications", icon: BellIcon },
     ],
   },
