@@ -388,6 +388,11 @@ export interface RefreshTarget {
    * the account was since deleted (the FK is ON DELETE SET NULL).
    */
   accountId: string | null;
+  /**
+   * Provider handle for the publishing identity. Bluesky's profile read
+   * is keyed on it; X resolves its own from the stored token instead.
+   */
+  handle?: string | null;
 }
 
 /**
@@ -403,7 +408,7 @@ export async function listStaleConnectedMetrics(
   const { data, error } = await db
     .from("post_metrics")
     .select(
-      "workspace_id, publish_history_id, platform, external_post_id, next_refresh_at, status, publish_history(provider_permalink, provider_post_id, account_id)",
+      "workspace_id, publish_history_id, platform, external_post_id, next_refresh_at, status, publish_history(provider_permalink, provider_post_id, account_id, growth_accounts(handle))",
     )
     .eq("status", "connected")
     .lte("next_refresh_at", nowIso)
@@ -416,8 +421,8 @@ export async function listStaleConnectedMetrics(
     platform: string;
     external_post_id: string | null;
     publish_history:
-      | { provider_permalink: string | null; provider_post_id: string | null; account_id: string | null }
-      | { provider_permalink: string | null; provider_post_id: string | null; account_id: string | null }[]
+      | { provider_permalink: string | null; provider_post_id: string | null; account_id: string | null; growth_accounts?: { handle: string | null } | null }
+      | { provider_permalink: string | null; provider_post_id: string | null; account_id: string | null; growth_accounts?: { handle: string | null } | null }[]
       | null;
   }>).map((row) => {
     const ph = Array.isArray(row.publish_history) ? row.publish_history[0] : row.publish_history;
@@ -428,6 +433,7 @@ export async function listStaleConnectedMetrics(
       externalPostId: row.external_post_id ?? ph?.provider_post_id ?? null,
       permalink: ph?.provider_permalink ?? null,
       accountId: ph?.account_id ?? null,
+      handle: ph?.growth_accounts?.handle ?? null,
     };
   });
 }
@@ -564,7 +570,7 @@ export async function listUnmeasuredPublishedPosts(
   if (verifiedPlatforms.length === 0) return [];
   const { data, error } = await db
     .from("publish_history")
-    .select("id, workspace_id, platform, provider_post_id, provider_permalink, finished_at, account_id")
+    .select("id, workspace_id, platform, provider_post_id, provider_permalink, finished_at, account_id, growth_accounts(handle)")
     .eq("outcome", "published")
     .in("platform", verifiedPlatforms)
     .gte("finished_at", sinceIso)
@@ -578,6 +584,7 @@ export async function listUnmeasuredPublishedPosts(
     provider_post_id: string | null;
     provider_permalink: string | null;
     account_id: string | null;
+    growth_accounts?: { handle: string | null } | null;
   }>;
   if (rows.length === 0) return [];
 
@@ -605,5 +612,6 @@ export async function listUnmeasuredPublishedPosts(
       externalPostId: r.provider_post_id,
       permalink: r.provider_permalink,
       accountId: r.account_id,
+      handle: r.growth_accounts?.handle ?? null,
     }));
 }

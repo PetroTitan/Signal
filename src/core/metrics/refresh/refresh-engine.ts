@@ -44,6 +44,7 @@ import {
 import { PLATFORM_METRIC_CAPABILITY } from "../metrics-provider";
 import type { MetricsResult } from "../metrics-provider";
 import { refreshPostMetrics } from "../refresh-metrics";
+import { collectAccountSnapshots } from "../account-snapshot-collector";
 import {
   SweepReportBuilder,
   type ReadOutcome,
@@ -358,6 +359,25 @@ export function buildLiveRefreshDeps(
         new Date(nowIso).getTime() - seedWindowDays * 24 * 60 * 60 * 1000,
       ).toISOString();
       return listUnmeasuredPublishedPosts(db, platforms, sinceIso, limit);
+    },
+    // Account context shares this orchestration rather than getting its
+    // own cron. See account-snapshot-collector for the cadence rationale.
+    collectAccountSnapshots: async (targets, nowIso) => {
+      const result = await collectAccountSnapshots(
+        targets.map((t) => ({
+          workspaceId: t.workspaceId,
+          accountId: t.accountId ?? "",
+          platform: t.platform,
+          handle: t.handle ?? null,
+        })),
+        nowIso,
+        { db },
+      );
+      return {
+        attempted: result.attempted,
+        written: result.written,
+        failed: result.failed,
+      };
     },
     refreshOne: (target) =>
       refreshPostMetrics({

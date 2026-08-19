@@ -221,3 +221,57 @@ describe("refreshStaleMetrics — sweep observability", () => {
     expect(r.report.phase).toBe("completed");
   });
 });
+
+describe("account snapshots are isolated from post metrics", () => {
+  it("a thrown account-snapshot collector does not discard measured posts", async () => {
+    // The invariant: follower counts are context, post metrics are the
+    // product. Losing the former must never lose the latter.
+    const deps: RefreshEngineDeps = {
+      loadStale: vi.fn().mockResolvedValue([target()]),
+      loadUnmeasured: vi.fn().mockResolvedValue([]),
+      refreshOne: vi.fn().mockResolvedValue(connected("bluesky")),
+      collectAccountSnapshots: vi.fn().mockRejectedValue(new Error("profile API down")),
+    };
+    const r = await refreshStaleMetrics(deps);
+    expect(r.connected).toBe(1);
+    expect(r.report.succeeded).toBe(1);
+    expect(r.report.zeroReason).toBeNull();
+    expect(r.report.accountSnapshots.failed).toBe(1);
+  });
+
+  it("counts account snapshots separately from provider reads", async () => {
+    const deps: RefreshEngineDeps = {
+      loadStale: vi.fn().mockResolvedValue([target()]),
+      loadUnmeasured: vi.fn().mockResolvedValue([]),
+      refreshOne: vi.fn().mockResolvedValue(connected("bluesky")),
+      collectAccountSnapshots: vi.fn().mockResolvedValue({ attempted: 2, written: 2, failed: 0 }),
+    };
+    const r = await refreshStaleMetrics(deps);
+    expect(r.report.accountSnapshots.written).toBe(2);
+    expect(r.report.attempted).toBe(1); // post reads, not account reads
+  });
+
+  it("population context makes a zero-candidate run specific", async () => {
+    const deps: RefreshEngineDeps = {
+      loadStale: vi.fn().mockResolvedValue([]),
+      loadUnmeasured: vi.fn().mockResolvedValue([]),
+      refreshOne: vi.fn(),
+      countPopulation: vi.fn().mockResolvedValue({ allTime: 44, inWindow: 0 }),
+    };
+    const r = await refreshStaleMetrics(deps);
+    expect(r.report.zeroReason).toBe("all_outside_window");
+    expect(r.report.measurablePublicationsAllTime).toBe(44);
+  });
+
+  it("a failing population count does not break the run", async () => {
+    const deps: RefreshEngineDeps = {
+      loadStale: vi.fn().mockResolvedValue([]),
+      loadUnmeasured: vi.fn().mockResolvedValue([]),
+      refreshOne: vi.fn(),
+      countPopulation: vi.fn().mockRejectedValue(new Error("count failed")),
+    };
+    const r = await refreshStaleMetrics(deps);
+    expect(r.ok).toBe(true);
+    expect(r.report.zeroReason).not.toBeNull();
+  });
+});
