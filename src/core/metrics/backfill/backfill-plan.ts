@@ -39,6 +39,8 @@ export interface BackfillCandidate {
   publishedAt: string;
   /** True when a canonical metrics row already exists. */
   alreadyMeasured: boolean;
+  /** Publishing identity — X needs it to resolve a user-context token. */
+  accountId?: string | null;
 }
 
 export interface BackfillBounds {

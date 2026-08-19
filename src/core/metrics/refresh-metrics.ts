@@ -22,12 +22,24 @@ export async function refreshPostMetrics(input: {
   platform: string;
   externalPostId: string | null;
   permalink: string | null;
+  /** Publishing identity — X needs it to resolve a user-context token. */
+  accountId?: string | null;
   db?: SupabaseClient;
 }): Promise<MetricsResult> {
   const result = await fetchVerifiedMetrics({
     platform: input.platform,
     externalPostId: input.externalPostId,
     permalink: input.permalink,
+    // Only X consults this. Without a db client there is no way to reach
+    // a token, so the X path reports `unavailable` with a reason rather
+    // than silently returning nothing.
+    auth: input.db
+      ? {
+          db: input.db,
+          workspaceId: input.workspaceId,
+          accountId: input.accountId ?? null,
+        }
+      : null,
   });
 
   // Connected → eligible to re-fetch after the cooldown. A non-connected

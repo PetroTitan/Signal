@@ -14,6 +14,7 @@ function target(over: Partial<RefreshTarget> = {}): RefreshTarget {
     platform: "bluesky",
     externalPostId: "at://x",
     permalink: null,
+    accountId: "acct-1",
     ...over,
   };
 }
@@ -26,8 +27,10 @@ function unavailable(platform: string): MetricsResult {
 }
 
 describe("verifiedPlatforms", () => {
-  it("are exactly bluesky, devto, reddit (sorted)", () => {
-    expect(verifiedPlatforms()).toEqual(["bluesky", "devto", "reddit"]);
+  it("are exactly bluesky, devto, reddit, x (sorted)", () => {
+    // x joined the set when its capability was corrected; the sweep now
+    // enrols X posts, which it never did before.
+    expect(verifiedPlatforms()).toEqual(["bluesky", "devto", "reddit", "x"]);
   });
 });
 

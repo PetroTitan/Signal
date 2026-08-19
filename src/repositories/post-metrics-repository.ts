@@ -347,6 +347,13 @@ export interface RefreshTarget {
   platform: string;
   externalPostId: string | null;
   permalink: string | null;
+  /**
+   * growth_accounts.id of the publishing identity. Needed only by X,
+   * whose metrics read requires that identity's user-context token.
+   * Null on rows published before the column was populated, or where
+   * the account was since deleted (the FK is ON DELETE SET NULL).
+   */
+  accountId: string | null;
 }
 
 /**
@@ -362,7 +369,7 @@ export async function listStaleConnectedMetrics(
   const { data, error } = await db
     .from("post_metrics")
     .select(
-      "workspace_id, publish_history_id, platform, external_post_id, next_refresh_at, status, publish_history(provider_permalink, provider_post_id)",
+      "workspace_id, publish_history_id, platform, external_post_id, next_refresh_at, status, publish_history(provider_permalink, provider_post_id, account_id)",
     )
     .eq("status", "connected")
     .lte("next_refresh_at", nowIso)
@@ -375,8 +382,8 @@ export async function listStaleConnectedMetrics(
     platform: string;
     external_post_id: string | null;
     publish_history:
-      | { provider_permalink: string | null; provider_post_id: string | null }
-      | { provider_permalink: string | null; provider_post_id: string | null }[]
+      | { provider_permalink: string | null; provider_post_id: string | null; account_id: string | null }
+      | { provider_permalink: string | null; provider_post_id: string | null; account_id: string | null }[]
       | null;
   }>).map((row) => {
     const ph = Array.isArray(row.publish_history) ? row.publish_history[0] : row.publish_history;
@@ -386,6 +393,7 @@ export async function listStaleConnectedMetrics(
       platform: row.platform,
       externalPostId: row.external_post_id ?? ph?.provider_post_id ?? null,
       permalink: ph?.provider_permalink ?? null,
+      accountId: ph?.account_id ?? null,
     };
   });
 }
@@ -418,12 +426,13 @@ export async function listBackfillCandidates(
     permalink: string | null;
     publishedAt: string;
     alreadyMeasured: boolean;
+    accountId: string | null;
   }>
 > {
   if (platforms.length === 0) return [];
   const { data, error } = await db
     .from("publish_history")
-    .select("id, workspace_id, platform, provider_post_id, provider_permalink, finished_at")
+    .select("id, workspace_id, platform, provider_post_id, provider_permalink, finished_at, account_id")
     .eq("outcome", "published")
     .in("platform", platforms)
     .gte("finished_at", sinceIso)
@@ -439,6 +448,7 @@ export async function listBackfillCandidates(
     provider_post_id: string | null;
     provider_permalink: string | null;
     finished_at: string;
+    account_id: string | null;
   }>;
   if (rows.length === 0) return [];
 
@@ -464,6 +474,7 @@ export async function listBackfillCandidates(
     permalink: r.provider_permalink,
     publishedAt: r.finished_at,
     alreadyMeasured: measured.has(r.id),
+    accountId: r.account_id,
   }));
 }
 
@@ -480,7 +491,7 @@ export async function listUnmeasuredPublishedPosts(
   if (verifiedPlatforms.length === 0) return [];
   const { data, error } = await db
     .from("publish_history")
-    .select("id, workspace_id, platform, provider_post_id, provider_permalink, finished_at")
+    .select("id, workspace_id, platform, provider_post_id, provider_permalink, finished_at, account_id")
     .eq("outcome", "published")
     .in("platform", verifiedPlatforms)
     .gte("finished_at", sinceIso)
@@ -493,6 +504,7 @@ export async function listUnmeasuredPublishedPosts(
     platform: string;
     provider_post_id: string | null;
     provider_permalink: string | null;
+    account_id: string | null;
   }>;
   if (rows.length === 0) return [];
 
@@ -519,5 +531,6 @@ export async function listUnmeasuredPublishedPosts(
       platform: r.platform,
       externalPostId: r.provider_post_id,
       permalink: r.provider_permalink,
+      accountId: r.account_id,
     }));
 }

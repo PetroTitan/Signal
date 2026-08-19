@@ -9,15 +9,21 @@ import "server-only";
  *     likeCount / repostCount / replyCount / quoteCount.
  *   - Reddit:  the post's official `.json` (no auth) → score +
  *     num_comments.
- *   - X:       requires an elevated/paid tier → `unavailable` (we do
- *     NOT touch X OAuth/adapters here).
+ *   - X:       AUTHENTICATED GET /2/tweets → public_metrics (likes,
+ *     replies, reposts, quotes, bookmarks, impressions). This is the one
+ *     fetcher that needs a user-context token, so it takes an explicit
+ *     auth context and delegates to `x-metrics-reader`.
  *   - others:  `unsupported`.
  *
- * Does NOT touch OAuth login, provider publish adapters, or stored
- * tokens — these are read-only public lookups.
+ * Does NOT touch OAuth login or provider publish adapters. The X path
+ * reads stored tokens (and may rotate an expiring one through the same
+ * helper the publisher uses) but never starts a reauthorization flow and
+ * never calls a write endpoint.
  */
 
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { fetchWithTimeout, isTimeoutError } from "@/core/publishing/fetch-with-timeout";
+import { fetchXMetrics } from "./x-metrics-reader";
 import {
   coerceCount,
   metricCapability,
@@ -71,6 +77,18 @@ export interface FetchMetricsInput {
   externalPostId: string | null;
   /** Public permalink — used for the Reddit `.json` lookup. */
   permalink: string | null;
+  /**
+   * Authenticated context. Required ONLY by X, whose metrics endpoint
+   * needs a user-context token. Every other platform reads a public
+   * endpoint and ignores this. Absent context on an X post yields
+   * `unavailable` with a reason — never a fabricated zero.
+   */
+  auth?: {
+    db: SupabaseClient;
+    workspaceId: string;
+    accountId: string | null;
+    nowIso?: string;
+  } | null;
 }
 
 export async function fetchVerifiedMetrics(
@@ -90,6 +108,19 @@ export async function fetchVerifiedMetrics(
     if (input.platform === "bluesky") return await fetchBlueskyMetrics(input.externalPostId);
     if (input.platform === "reddit") return await fetchRedditMetrics(input.permalink);
     if (input.platform === "devto") return await fetchDevtoMetrics(input.externalPostId);
+    if (input.platform === "x") {
+      return await fetchXMetrics(
+        input.externalPostId,
+        input.auth
+          ? {
+              db: input.auth.db,
+              workspaceId: input.auth.workspaceId,
+              accountId: input.auth.accountId,
+              nowIso: input.auth.nowIso,
+            }
+          : null,
+      );
+    }
     return unsupportedResult(input.platform);
   } catch (err) {
     return unavailableResult(

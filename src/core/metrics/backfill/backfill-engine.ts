@@ -230,13 +230,21 @@ function summarise(base: {
  * Live wiring. `fetchOne` is the same read path the sweep uses, so the
  * backfill can never reach an endpoint the sweep cannot.
  */
-export function buildLiveBackfillDeps(db: SupabaseClient): BackfillDeps {
+export function buildLiveBackfillDeps(
+  db: SupabaseClient,
+  workspaceIdFallback?: string,
+): BackfillDeps {
   return {
     fetchOne: (candidate) =>
       fetchVerifiedMetrics({
         platform: candidate.platform,
         externalPostId: candidate.externalPostId,
         permalink: candidate.permalink,
+        auth: {
+          db,
+          workspaceId: candidate.workspaceId || (workspaceIdFallback ?? ""),
+          accountId: candidate.accountId ?? null,
+        },
       }),
     persist: async ({ candidate, result }) => {
       await persistRefreshedMetrics({

@@ -24,7 +24,13 @@ export type MetricCapability = "verified" | "unavailable" | "unsupported";
  *   - bluesky: PUBLIC app-view getPosts → like/repost/reply/quote counts.
  *   - reddit:  PUBLIC permalink .json → score + num_comments.
  *   - devto:   PUBLIC articles/{id} → public reactions + comments.
- *   - x:        requires elevated/paid API tier → 'unavailable'.
+ *   - x:       AUTHENTICATED GET /2/tweets → public_metrics, which
+ *              includes impression_count and bookmark_count. Verified
+ *              2026-08-19: X moved to pay-per-usage credits in Feb 2026,
+ *              the Free/Basic/Pro gate this entry used to cite no longer
+ *              governs access, and `tweet.read` + `users.read` (already
+ *              granted) are the documented minimum. The limit is cost,
+ *              not capability.
  *   - hashnode: analytics live behind a GraphQL query not integrated yet
  *               → 'unavailable' (publishing IS supported).
  *   - linkedin: post analytics require approved Marketing API access
@@ -43,7 +49,7 @@ export const PLATFORM_METRIC_CAPABILITY: Record<string, MetricCapability> = {
   bluesky: "verified",
   reddit: "verified",
   devto: "verified",
-  x: "unavailable",
+  x: "verified",
   hashnode: "unavailable",
   linkedin: "unavailable",
   telegram: "unsupported",
@@ -83,8 +89,6 @@ export function metricSource(platform: string): string {
  */
 export function unavailableReason(platform: string): string {
   switch (platform) {
-    case "x":
-      return "X metrics require an elevated/paid API tier this account doesn't have.";
     case "hashnode":
       return "Hashnode analytics require a GraphQL query not yet integrated.";
     case "linkedin":

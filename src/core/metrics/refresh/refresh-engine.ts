@@ -318,6 +318,7 @@ export function buildLiveRefreshDeps(
         platform: target.platform,
         externalPostId: target.externalPostId,
         permalink: target.permalink,
+        accountId: target.accountId,
         db,
       }),
   };
