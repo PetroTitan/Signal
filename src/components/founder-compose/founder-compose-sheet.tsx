@@ -64,6 +64,7 @@ import {
 } from "@/core/scheduling/schedule-checksum";
 import { Markdown } from "./markdown";
 import { RewriteChips } from "./rewrite-chips";
+import { StrategyHints, type StrategyHint } from "@/components/strategy-hints";
 import {
   PreviewCard,
   PreviewTabsHeader,
@@ -116,6 +117,12 @@ export interface FounderComposeSheetDefaults {
    * honest answer rather than a fabricated "connected".
    */
   connections?: DestinationConnectionInput[];
+  /**
+   * Advisory hints from the strategy layer, when the calling page has
+   * them. Optional and inert: the sheet renders identically without
+   * them, and nothing about them changes what the editor accepts.
+   */
+  strategyHints?: StrategyHint[];
 }
 
 /**
@@ -975,6 +982,17 @@ export function FounderComposeSheet(props: FounderComposeSheetProps) {
               </div>
             )}
           </div>
+
+          {/*
+            Advisory hints, rendered as text beside the editor. They sit
+            OUTSIDE every control: no chip applies them, nothing is
+            disabled by them, and the composer behaves identically when
+            the calling page supplies none.
+          */}
+          <StrategyHints
+            hints={props.defaults.strategyHints ?? []}
+            className="mt-3"
+          />
 
           {/* Editorial rewrite chips (F4.6 + F4.6.1 undo) */}
           <RewriteChips
