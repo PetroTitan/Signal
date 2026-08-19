@@ -17,6 +17,7 @@ import {
   InsightIcon,
   BellIcon,
   AnalyticsIcon,
+  RiskIcon,
 } from "./icons";
 import { BrandMark } from "./brand-mark";
 
@@ -65,6 +66,7 @@ const groups: NavGroup[] = [
       { href: "/activity", label: "Activity", icon: PlanIcon },
       { href: "/settings/mcp", label: "MCP operations", icon: SettingsIcon },
       { href: "/operator-bridge", label: "Operator bridge", icon: InsightIcon },
+      { href: "/measurement-health", label: "Measurement health", icon: RiskIcon },
     ],
   },
 ];

@@ -159,6 +159,13 @@ export const AUTHENTICATED_ROUTES: ReadonlyArray<RouteEntry> = [
     description: "Audience, cadence and repetition signals per identity.",
   },
   {
+    href: "/measurement-health",
+    label: "Measurement health",
+    tier: "secondary",
+    group: "advanced",
+    description: "Whether measurement is running, and what is broken if not.",
+  },
+  {
     href: "/notifications",
     label: "Notifications",
     tier: "secondary",
