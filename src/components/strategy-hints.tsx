@@ -42,7 +42,16 @@ export function StrategyHints({
     >
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <h3 className="text-[11px] uppercase tracking-wide text-ink-500">{heading}</h3>
-        <Link href="/strategy" className="text-[11px] text-ink-500 underline">
+        {/*
+          Padded into a real tap target. At 11px the link's own line box
+          is ~16px tall, which a browser measurement at 320-430px flagged
+          as a control smaller than a fingertip; the negative margin keeps
+          the visual spacing unchanged.
+        */}
+        <Link
+          href="/strategy"
+          className="text-[11px] text-ink-500 underline py-2 -my-2 inline-block"
+        >
           See the evidence
         </Link>
       </div>

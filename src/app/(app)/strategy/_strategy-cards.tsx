@@ -41,10 +41,16 @@ const CATEGORY_BADGE: Record<EvidenceItem["category"], string> = {
   ai_interpretation: "badge badge-info",
 };
 
+/**
+ * These name the strength of the EVIDENCE, not the strength of the
+ * advice. Rendering "Strong signal" beside a suggestion read, in a real
+ * browser check, as "strongly recommended" — which is the one thing this
+ * layer must never say.
+ */
 const CONFIDENCE_LABEL: Record<Confidence, string> = {
-  strong: "Strong signal",
-  moderate: "Moderate signal",
-  weak: "Weak signal",
+  strong: "Directly measured",
+  moderate: "Moderate evidence",
+  weak: "Weak evidence",
   none: "No performance data",
 };
 
