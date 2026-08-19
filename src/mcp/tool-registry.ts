@@ -38,6 +38,14 @@ import {
   workspaceGet,
 } from "./tools/read-tools";
 import {
+  socialAccountHealth,
+  socialCadence,
+  socialPerformance,
+  socialRecentPosts,
+  socialRecommendNextAction,
+  socialRepetition,
+} from "./tools/social-intelligence-tools";
+import {
   accountsPrepare,
   importsPrepareMapping,
   productsPrepare,
@@ -472,6 +480,86 @@ export const TOOLS: ToolDefinition[] = [
     touchesProduction: false,
     parseArgs: parseSchedulePublish,
     handler: wrap(schedulePublishTool),
+  },
+  // ---------------------------------------------------------------
+  // Social performance intelligence — READ ONLY.
+  //
+  // All six reuse `execution:read`: they read publish_history,
+  // post_metrics and account_snapshots, which is execution-domain data.
+  // Reusing the scope keeps the permission UI unchanged and avoids a
+  // scope that no existing token grants.
+  // ---------------------------------------------------------------
+  {
+    name: "signal.social.recent_posts",
+    description:
+      "List published social posts with their platform, publication method and whether they have been measured. Read-only.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(socialRecentPosts),
+  },
+  {
+    name: "signal.social.performance",
+    description:
+      "Per-platform post performance: medians and quartiles under explicit sample-size gates, plus which metrics each provider actually reports. Never reports a mean, never renders a missing metric as zero.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(socialPerformance),
+  },
+  {
+    name: "signal.social.account_health",
+    description:
+      "Explainable account-health panel per platform: audience, cadence, inactivity, cross-platform similarity, promotional share, link frequency, performance, freshness. No composite score.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(socialAccountHealth),
+  },
+  {
+    name: "signal.social.repetition",
+    description:
+      "Content repetition analysis: exact and near duplicates, cross-platform message reuse, repeated hooks and CTAs, and near-simultaneous publishing. Signal's own heuristic, not a provider classification.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(socialRepetition),
+  },
+  {
+    name: "signal.social.cadence",
+    description:
+      "Publishing cadence and inactivity per platform: posts in the last 24h/7d/30d, typical interval, bursts and days since the last post.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(socialCadence),
+  },
+  {
+    name: "signal.social.recommend_next_action",
+    description:
+      "Recommended next actions for the operator, derived from the health panel. Advice only — Signal never likes, follows, replies or engages on the operator's behalf.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(socialRecommendNextAction),
   },
 ];
 

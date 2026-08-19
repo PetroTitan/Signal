@@ -354,7 +354,18 @@ export interface WeeklyPlanItemUpdate {
 // Phase F2.5 — publish history (rate limit + dup check + audit).
 
 export type PublishHistoryOutcome = "published" | "failed" | "blocked";
-export type PublishHistoryMode = "api" | "manual";
+/**
+ * How a publication reached the platform.
+ *   api       Signal published it through a provider API
+ *   manual    a human published it and recorded it in Signal
+ *   external  found on the provider, never published through Signal
+ *   unknown   attribution genuinely undetermined — never a guess
+ *
+ * MUST stay in sync with the CHECK in
+ * supabase/migrations/20260819000001_social_performance_intelligence.sql.
+ * A drift test asserts set equality against that file.
+ */
+export type PublishHistoryMode = "api" | "manual" | "external" | "unknown";
 
 export interface PublishHistoryRow {
   id: string;
@@ -1640,6 +1651,17 @@ export type PostMetricsStatus =
   | "unsupported"
   | "pending";
 
+export type MetricFreshness =
+  | "fresh"
+  | "stale"
+  | "unavailable"
+  | "rate_limited"
+  | "provider_error";
+
+export type MetricAgeWindow = "1h" | "6h" | "24h" | "72h" | "7d" | "older";
+
+export type MetricConfidence = "verified" | "partial" | "unknown";
+
 export interface PostMetricsRow {
   id: string;
   workspace_id: string;
@@ -1654,6 +1676,13 @@ export interface PostMetricsRow {
   error: string | null;
   created_at: string;
   updated_at: string;
+  /** Provider's own publication instant — NOT publish_history.finished_at. */
+  provider_published_at: string | null;
+  age_hours: number | null;
+  age_window: MetricAgeWindow | null;
+  freshness: MetricFreshness | null;
+  confidence: MetricConfidence | null;
+  provider_payload_version: string | null;
 }
 export interface PostMetricsInsert {
   id?: string;
@@ -1667,6 +1696,12 @@ export interface PostMetricsInsert {
   fetched_at?: string | null;
   next_refresh_at?: string | null;
   error?: string | null;
+  provider_published_at?: string | null;
+  age_hours?: number | null;
+  age_window?: MetricAgeWindow | null;
+  freshness?: MetricFreshness | null;
+  confidence?: MetricConfidence | null;
+  provider_payload_version?: string | null;
 }
 export interface PostMetricsUpdate {
   external_post_id?: string | null;
@@ -1676,6 +1711,50 @@ export interface PostMetricsUpdate {
   next_refresh_at?: string | null;
   error?: string | null;
   updated_at?: string;
+  provider_published_at?: string | null;
+  age_hours?: number | null;
+  age_window?: MetricAgeWindow | null;
+  freshness?: MetricFreshness | null;
+  confidence?: MetricConfidence | null;
+  provider_payload_version?: string | null;
+}
+
+// Social Trust & Performance Intelligence — account-level context.
+
+export interface AccountSnapshotRow {
+  id: string;
+  workspace_id: string;
+  account_id: string;
+  platform: string;
+  provider_account_id: string | null;
+  handle: string | null;
+  /** NULL means the provider did not report a value — never zero. */
+  followers: number | null;
+  following: number | null;
+  post_count: number | null;
+  provider_created_at: string | null;
+  source: string;
+  freshness: MetricFreshness;
+  error: string | null;
+  fetched_at: string;
+  created_at: string;
+}
+
+export interface AccountSnapshotInsert {
+  id?: string;
+  workspace_id: string;
+  account_id: string;
+  platform: string;
+  provider_account_id?: string | null;
+  handle?: string | null;
+  followers?: number | null;
+  following?: number | null;
+  post_count?: number | null;
+  provider_created_at?: string | null;
+  source: string;
+  freshness?: MetricFreshness;
+  error?: string | null;
+  fetched_at?: string;
 }
 
 export interface Database {
@@ -1703,6 +1782,12 @@ export interface Database {
         Row: PostMetricsRow;
         Insert: PostMetricsInsert;
         Update: PostMetricsUpdate;
+        Relationships: [];
+      };
+      account_snapshots: {
+        Row: AccountSnapshotRow;
+        Insert: AccountSnapshotInsert;
+        Update: Partial<AccountSnapshotInsert>;
         Relationships: [];
       };
       workspaces: {

@@ -1,5 +1,19 @@
 # Live platform verification — F5.1
 
+> **⚠️ STALE as of 2026-08-19 — do not treat this file as current for X or
+> Bluesky.** It was last updated 2026-05-23, before real X API publishing landed
+> (`7bdcd88`, `4dec19c`, 2026-05-28). Production `publish_history` now holds 15
+> successful X publications and 13 successful Bluesky publications, all with
+> provider post ids and permalinks. The X section below still describes X as a
+> manual intent-URL flow and states that Signal does not use the X API; both are
+> false. The summary's "Zero platforms have been verified end-to-end live"
+> is also false.
+>
+> For provider read/metric capability, the current record is
+> [./platforms/provider-metric-capabilities.md](./platforms/provider-metric-capabilities.md).
+> This file is retained as the historical F5.1 record and has deliberately not
+> been rewritten, so the milestone diff stays legible.
+
 This document is the **honest record** of which platform publish flows have
 been verified end-to-end against real services, vs which exist only as
 typecheck-clean code. It is updated whenever a real publish lands and the

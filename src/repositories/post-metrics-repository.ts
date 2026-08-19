@@ -45,6 +45,12 @@ export interface PostMetricsRecord {
   fetchedAt: string | null;
   nextRefreshAt: string | null;
   error: string | null;
+  providerPublishedAt: string | null;
+  ageHours: number | null;
+  ageWindow: PostMetricsRow["age_window"];
+  freshness: PostMetricsRow["freshness"];
+  confidence: PostMetricsRow["confidence"];
+  providerPayloadVersion: string | null;
 }
 
 function toRecord(row: PostMetricsRow): PostMetricsRecord {
@@ -58,6 +64,12 @@ function toRecord(row: PostMetricsRow): PostMetricsRecord {
     fetchedAt: row.fetched_at,
     nextRefreshAt: row.next_refresh_at,
     error: row.error,
+    providerPublishedAt: row.provider_published_at ?? null,
+    ageHours: row.age_hours ?? null,
+    ageWindow: row.age_window ?? null,
+    freshness: row.freshness ?? null,
+    confidence: row.confidence ?? null,
+    providerPayloadVersion: row.provider_payload_version ?? null,
   };
 }
 
@@ -247,6 +259,17 @@ export interface PersistRefreshInput {
   nextRefreshAt: string | null;
   nowIso?: string;
   db?: SupabaseClient;
+  /**
+   * Measurement provenance. All optional so pre-existing callers keep
+   * working and write NULL — honestly "we do not know" rather than a
+   * fabricated default.
+   */
+  providerPublishedAt?: string | null;
+  ageHours?: number | null;
+  ageWindow?: PostMetricsRow["age_window"];
+  freshness?: PostMetricsRow["freshness"];
+  confidence?: PostMetricsRow["confidence"];
+  providerPayloadVersion?: string | null;
 }
 
 /**
@@ -288,7 +311,17 @@ export async function persistRefreshedMetrics(
   // rows aren't auto-swept.
   const nextRefreshAt =
     plan.status === "connected" ? input.nextRefreshAt : null;
+  const provenance = {
+    provider_published_at: input.providerPublishedAt ?? null,
+    age_hours: input.ageHours ?? null,
+    age_window: input.ageWindow ?? null,
+    freshness: input.freshness ?? null,
+    confidence: input.confidence ?? null,
+    provider_payload_version: input.providerPayloadVersion ?? null,
+  };
+
   const writeRow: PostMetricsInsert = {
+    ...provenance,
     workspace_id: input.workspaceId,
     publish_history_id: input.publishHistoryId,
     platform: input.platform,
@@ -313,6 +346,7 @@ export async function persistRefreshedMetrics(
   let snapshotWritten = false;
   if (plan.snapshot) {
     const snapRow: PostMetricsInsert = {
+      ...provenance,
       workspace_id: input.workspaceId,
       publish_history_id: input.publishHistoryId,
       platform: input.platform,
@@ -347,6 +381,13 @@ export interface RefreshTarget {
   platform: string;
   externalPostId: string | null;
   permalink: string | null;
+  /**
+   * growth_accounts.id of the publishing identity. Needed only by X,
+   * whose metrics read requires that identity's user-context token.
+   * Null on rows published before the column was populated, or where
+   * the account was since deleted (the FK is ON DELETE SET NULL).
+   */
+  accountId: string | null;
 }
 
 /**
@@ -362,7 +403,7 @@ export async function listStaleConnectedMetrics(
   const { data, error } = await db
     .from("post_metrics")
     .select(
-      "workspace_id, publish_history_id, platform, external_post_id, next_refresh_at, status, publish_history(provider_permalink, provider_post_id)",
+      "workspace_id, publish_history_id, platform, external_post_id, next_refresh_at, status, publish_history(provider_permalink, provider_post_id, account_id)",
     )
     .eq("status", "connected")
     .lte("next_refresh_at", nowIso)
@@ -375,8 +416,8 @@ export async function listStaleConnectedMetrics(
     platform: string;
     external_post_id: string | null;
     publish_history:
-      | { provider_permalink: string | null; provider_post_id: string | null }
-      | { provider_permalink: string | null; provider_post_id: string | null }[]
+      | { provider_permalink: string | null; provider_post_id: string | null; account_id: string | null }
+      | { provider_permalink: string | null; provider_post_id: string | null; account_id: string | null }[]
       | null;
   }>).map((row) => {
     const ph = Array.isArray(row.publish_history) ? row.publish_history[0] : row.publish_history;
@@ -386,8 +427,89 @@ export async function listStaleConnectedMetrics(
       platform: row.platform,
       externalPostId: row.external_post_id ?? ph?.provider_post_id ?? null,
       permalink: ph?.provider_permalink ?? null,
+      accountId: ph?.account_id ?? null,
     };
   });
+}
+
+/**
+ * Candidates for the BOUNDED HISTORICAL BACKFILL.
+ *
+ * Deliberately separate from `listUnmeasuredPublishedPosts`: that one
+ * serves the nightly sweep and is scoped to a rolling recent window,
+ * which is correct for a cron and is exactly why older publications were
+ * never enrolled. This one takes an explicit [since, until) range, is
+ * capped by the caller, and reports whether each post already has a
+ * canonical row rather than silently filtering — the planner decides.
+ *
+ * Read-only. Ordered newest-first so a truncated range keeps the posts
+ * whose provider-side data is most likely to still be complete.
+ */
+export async function listBackfillCandidates(
+  db: SupabaseClient,
+  platforms: string[],
+  sinceIso: string,
+  untilIso: string,
+  limit = 500,
+): Promise<
+  Array<{
+    workspaceId: string;
+    publishHistoryId: string;
+    platform: string;
+    externalPostId: string | null;
+    permalink: string | null;
+    publishedAt: string;
+    alreadyMeasured: boolean;
+    accountId: string | null;
+  }>
+> {
+  if (platforms.length === 0) return [];
+  const { data, error } = await db
+    .from("publish_history")
+    .select("id, workspace_id, platform, provider_post_id, provider_permalink, finished_at, account_id")
+    .eq("outcome", "published")
+    .in("platform", platforms)
+    .gte("finished_at", sinceIso)
+    .lt("finished_at", untilIso)
+    .order("finished_at", { ascending: false })
+    .limit(Math.max(1, Math.min(2000, limit)));
+  if (error) throw fromPostgres(error, "Failed to load backfill candidates.");
+
+  const rows = (data ?? []) as unknown as Array<{
+    id: string;
+    workspace_id: string;
+    platform: string;
+    provider_post_id: string | null;
+    provider_permalink: string | null;
+    finished_at: string;
+    account_id: string | null;
+  }>;
+  if (rows.length === 0) return [];
+
+  const { data: existing, error: exErr } = await db
+    .from("post_metrics")
+    .select("publish_history_id, source")
+    .in(
+      "publish_history_id",
+      rows.map((r) => r.id),
+    );
+  if (exErr) throw fromPostgres(exErr, "Failed to check existing metrics.");
+  const measured = new Set(
+    ((existing ?? []) as Array<{ publish_history_id: string; source: string }>)
+      .filter((e) => !isSnapshotSource(e.source))
+      .map((e) => e.publish_history_id),
+  );
+
+  return rows.map((r) => ({
+    workspaceId: r.workspace_id,
+    publishHistoryId: r.id,
+    platform: r.platform,
+    externalPostId: r.provider_post_id,
+    permalink: r.provider_permalink,
+    publishedAt: r.finished_at,
+    alreadyMeasured: measured.has(r.id),
+    accountId: r.account_id,
+  }));
 }
 
 /**
@@ -403,7 +525,7 @@ export async function listUnmeasuredPublishedPosts(
   if (verifiedPlatforms.length === 0) return [];
   const { data, error } = await db
     .from("publish_history")
-    .select("id, workspace_id, platform, provider_post_id, provider_permalink, finished_at")
+    .select("id, workspace_id, platform, provider_post_id, provider_permalink, finished_at, account_id")
     .eq("outcome", "published")
     .in("platform", verifiedPlatforms)
     .gte("finished_at", sinceIso)
@@ -416,6 +538,7 @@ export async function listUnmeasuredPublishedPosts(
     platform: string;
     provider_post_id: string | null;
     provider_permalink: string | null;
+    account_id: string | null;
   }>;
   if (rows.length === 0) return [];
 
@@ -442,5 +565,6 @@ export async function listUnmeasuredPublishedPosts(
       platform: r.platform,
       externalPostId: r.provider_post_id,
       permalink: r.provider_permalink,
+      accountId: r.account_id,
     }));
 }

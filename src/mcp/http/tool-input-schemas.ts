@@ -452,6 +452,13 @@ export const TOOL_INPUT_SCHEMAS: Record<string, JsonSchema> = {
   "signal.weekly_plan.update_item": WEEKLY_PLAN_UPDATE_ITEM_SCHEMA,
   // Scheduling.
   "signal.schedule_publish": SCHEDULE_PUBLISH_SCHEMA,
+  // Social performance intelligence (read-only, no arguments).
+  "signal.social.recent_posts": EMPTY_OBJECT_SCHEMA,
+  "signal.social.performance": EMPTY_OBJECT_SCHEMA,
+  "signal.social.account_health": EMPTY_OBJECT_SCHEMA,
+  "signal.social.repetition": EMPTY_OBJECT_SCHEMA,
+  "signal.social.cadence": EMPTY_OBJECT_SCHEMA,
+  "signal.social.recommend_next_action": EMPTY_OBJECT_SCHEMA,
 };
 
 /**

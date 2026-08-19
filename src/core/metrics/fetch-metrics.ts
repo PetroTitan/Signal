@@ -9,19 +9,26 @@ import "server-only";
  *     likeCount / repostCount / replyCount / quoteCount.
  *   - Reddit:  the post's official `.json` (no auth) → score +
  *     num_comments.
- *   - X:       requires an elevated/paid tier → `unavailable` (we do
- *     NOT touch X OAuth/adapters here).
+ *   - X:       AUTHENTICATED GET /2/tweets → public_metrics (likes,
+ *     replies, reposts, quotes, bookmarks, impressions). This is the one
+ *     fetcher that needs a user-context token, so it takes an explicit
+ *     auth context and delegates to `x-metrics-reader`.
  *   - others:  `unsupported`.
  *
- * Does NOT touch OAuth login, provider publish adapters, or stored
- * tokens — these are read-only public lookups.
+ * Does NOT touch OAuth login or provider publish adapters. The X path
+ * reads stored tokens (and may rotate an expiring one through the same
+ * helper the publisher uses) but never starts a reauthorization flow and
+ * never calls a write endpoint.
  */
 
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { fetchWithTimeout, isTimeoutError } from "@/core/publishing/fetch-with-timeout";
+import { fetchXMetrics } from "./x-metrics-reader";
 import {
   coerceCount,
   metricCapability,
   metricSource,
+  rateLimitedResult,
   unavailableReason,
   unavailableResult,
   unsupportedResult,
@@ -33,12 +40,55 @@ const BLUESKY_PUBLIC_APPVIEW = "https://public.api.bsky.app";
 const DEVTO_API_BASE = "https://dev.to/api";
 const METRICS_UA = "SignalPublishing/1.0 (metrics; +https://signal.app)";
 
+/**
+ * A 429 is not "this post has no metrics" — it is "ask again later". The
+ * sweep observability record depends on telling those apart, so every
+ * fetcher routes a 429 through here instead of the generic
+ * `unavailable` path.
+ *
+ * Providers signal the retry instant inconsistently: `Retry-After` is
+ * either delta-seconds or an HTTP date, and X additionally sends
+ * `x-rate-limit-reset` as a Unix timestamp. All three are normalized to
+ * an ISO instant, or null when the provider says nothing.
+ */
+export function rateLimitResetFrom(headers: Headers, nowMs = Date.now()): string | null {
+  const xReset = headers.get("x-rate-limit-reset");
+  if (xReset) {
+    const epochSeconds = Number(xReset);
+    if (Number.isFinite(epochSeconds) && epochSeconds > 0) {
+      return new Date(epochSeconds * 1000).toISOString();
+    }
+  }
+  const retryAfter = headers.get("retry-after");
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return new Date(nowMs + seconds * 1000).toISOString();
+    }
+    const asDate = Date.parse(retryAfter);
+    if (Number.isFinite(asDate)) return new Date(asDate).toISOString();
+  }
+  return null;
+}
+
 export interface FetchMetricsInput {
   platform: string;
   /** Provider post id — Bluesky at-uri, X tweet id, etc. */
   externalPostId: string | null;
   /** Public permalink — used for the Reddit `.json` lookup. */
   permalink: string | null;
+  /**
+   * Authenticated context. Required ONLY by X, whose metrics endpoint
+   * needs a user-context token. Every other platform reads a public
+   * endpoint and ignores this. Absent context on an X post yields
+   * `unavailable` with a reason — never a fabricated zero.
+   */
+  auth?: {
+    db: SupabaseClient;
+    workspaceId: string;
+    accountId: string | null;
+    nowIso?: string;
+  } | null;
 }
 
 export async function fetchVerifiedMetrics(
@@ -58,6 +108,19 @@ export async function fetchVerifiedMetrics(
     if (input.platform === "bluesky") return await fetchBlueskyMetrics(input.externalPostId);
     if (input.platform === "reddit") return await fetchRedditMetrics(input.permalink);
     if (input.platform === "devto") return await fetchDevtoMetrics(input.externalPostId);
+    if (input.platform === "x") {
+      return await fetchXMetrics(
+        input.externalPostId,
+        input.auth
+          ? {
+              db: input.auth.db,
+              workspaceId: input.auth.workspaceId,
+              accountId: input.auth.accountId,
+              nowIso: input.auth.nowIso,
+            }
+          : null,
+      );
+    }
     return unsupportedResult(input.platform);
   } catch (err) {
     return unavailableResult(
@@ -83,11 +146,21 @@ async function fetchBlueskyMetrics(atUri: string | null): Promise<MetricsResult>
     if (isTimeoutError(err)) throw new Error("Bluesky metrics timed out");
     throw err;
   }
+  if (resp.status === 429) {
+    return rateLimitedResult("bluesky", atUri, rateLimitResetFrom(resp.headers));
+  }
   if (!resp.ok) {
     return { status: "unavailable", source, externalPostId: atUri, metrics: {}, error: `getPosts ${resp.status}` };
   }
   const json = (await resp.json()) as {
-    posts?: Array<{ likeCount?: number; repostCount?: number; replyCount?: number; quoteCount?: number }>;
+    posts?: Array<{
+      likeCount?: number;
+      repostCount?: number;
+      replyCount?: number;
+      quoteCount?: number;
+      bookmarkCount?: number;
+      indexedAt?: string;
+    }>;
   };
   const post = json.posts?.[0];
   if (!post) {
@@ -98,8 +171,19 @@ async function fetchBlueskyMetrics(atUri: string | null): Promise<MetricsResult>
     reposts: coerceCount(post.repostCount),
     replies: coerceCount(post.replyCount),
     quotes: coerceCount(post.quoteCount),
+    // Returned by the AppView today and previously dropped on the floor.
+    bookmarks: coerceCount(post.bookmarkCount),
   };
-  return { status: "connected", source, externalPostId: atUri, metrics };
+  // NOTE: no impressions/views key is set here, and none may ever be.
+  // Bluesky exposes no such field; an absent key renders as "unavailable"
+  // downstream, which is the truth. Never coerce it to 0.
+  return {
+    status: "connected",
+    source,
+    externalPostId: atUri,
+    metrics,
+    providerPublishedAt: post.indexedAt ?? null,
+  };
 }
 
 async function fetchRedditMetrics(permalink: string | null): Promise<MetricsResult> {
@@ -120,6 +204,9 @@ async function fetchRedditMetrics(permalink: string | null): Promise<MetricsResu
   } catch (err) {
     if (isTimeoutError(err)) throw new Error("Reddit metrics timed out");
     throw err;
+  }
+  if (resp.status === 429) {
+    return rateLimitedResult("reddit", permalink, rateLimitResetFrom(resp.headers));
   }
   if (!resp.ok) {
     return { status: "unavailable", source, externalPostId: permalink, metrics: {}, error: `reddit ${resp.status}` };
@@ -162,6 +249,9 @@ async function fetchDevtoMetrics(articleId: string | null): Promise<MetricsResul
   } catch (err) {
     if (isTimeoutError(err)) throw new Error("dev.to metrics timed out");
     throw err;
+  }
+  if (resp.status === 429) {
+    return rateLimitedResult("devto", articleId, rateLimitResetFrom(resp.headers));
   }
   if (!resp.ok) {
     return { status: "unavailable", source, externalPostId: articleId, metrics: {}, error: `devto ${resp.status}` };

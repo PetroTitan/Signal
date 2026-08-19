@@ -16,8 +16,14 @@ describe("metricCapability (Phase D.1 audit)", () => {
     expect(metricCapability("reddit")).toBe("verified");
     expect(metricCapability("devto")).toBe("verified");
   });
-  it("x / hashnode / linkedin are unavailable (real API exists but not reachable here)", () => {
-    expect(metricCapability("x")).toBe("unavailable");
+  it("x is verified — the tier gate this test used to assert is obsolete", () => {
+    // Corrected 2026-08-19. X moved to pay-per-usage credits in Feb 2026;
+    // public_metrics (incl. impression_count) needs only a bearer token,
+    // and tweet.read + users.read are already granted. See
+    // docs/platforms/provider-metric-capabilities.md.
+    expect(metricCapability("x")).toBe("verified");
+  });
+  it("hashnode / linkedin remain unavailable (real API exists, not integrated)", () => {
     expect(metricCapability("hashnode")).toBe("unavailable");
     expect(metricCapability("linkedin")).toBe("unavailable");
   });
@@ -39,9 +45,17 @@ describe("metricSource", () => {
 
 describe("unavailableReason", () => {
   it("gives an honest, platform-specific explanation (no estimate)", () => {
-    expect(unavailableReason("x")).toMatch(/tier/i);
     expect(unavailableReason("hashnode")).toMatch(/graphql/i);
     expect(unavailableReason("linkedin")).toMatch(/marketing api/i);
+  });
+  it("no longer claims an API tier blocks X", () => {
+    // The string this replaced — "X metrics require an elevated/paid API
+    // tier this account doesn't have" — was the load-bearing false
+    // premise. X is verified now, so the reason is never reached for it;
+    // the guard is that no unavailable reason blames a tier.
+    for (const platform of ["x", "hashnode", "linkedin", "anything"]) {
+      expect(unavailableReason(platform)).not.toMatch(/elevated|paid api tier/i);
+    }
   });
 });
 

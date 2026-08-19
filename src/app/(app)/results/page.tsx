@@ -14,6 +14,10 @@ import type { PostMetricsStatus } from "@/lib/supabase/types";
 import { MetricsRefreshButton } from "./_metrics-refresh-button";
 import { listAccounts } from "@/repositories/account-repository";
 import { PlatformChip } from "@/components/publishing/platform-chip";
+import {
+  publicationMethodDescription,
+  publicationMethodLabel,
+} from "@/core/publishing/publication-method";
 import { parsePageParam, parseSearchQuery } from "@/core/dashboard/workflow-filters";
 import {
   assembleResult,
@@ -250,7 +254,9 @@ export default async function ResultsPage({
                     <div className="text-[11px] text-ink-500 mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
                       <span>{fmtDateTime(r.publishedAtIso)}</span>
                       {r.identityLabel ? <span>· {r.identityLabel}</span> : null}
-                      <span>· {r.mode === "manual" ? "manual" : "auto"}</span>
+                      <span title={publicationMethodDescription(r.mode)}>
+                        · {publicationMethodLabel(r.mode)}
+                      </span>
                       <span>· took {formatPublishDuration(r.publishDurationMs)}</span>
                       {/* C3 — verified metrics only (or an honest state). */}
                       {(() => {

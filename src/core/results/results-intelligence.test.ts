@@ -106,10 +106,11 @@ describe("computeBestPublishingTime", () => {
   it("picks the UTC hour/weekday with highest verified avg engagement", () => {
     const r = computeBestPublishingTime(
       [
-        // Mon 2026-06-01 09:00 UTC, high engagement
+        // Mon 09:00 UTC — three posts, enough to clear the per-bucket gate.
         point({ publishedAtIso: "2026-06-01T09:00:00Z", engagement: 100 }),
         point({ publishedAtIso: "2026-06-08T09:00:00Z", engagement: 80 }),
-        // Tue 2026-06-02 18:00 UTC, low
+        point({ publishedAtIso: "2026-06-15T09:00:00Z", engagement: 90 }),
+        // Tue 18:00 UTC, low
         point({ publishedAtIso: "2026-06-02T18:00:00Z", engagement: 1 }),
       ],
       lowThresholds,
@@ -119,7 +120,47 @@ describe("computeBestPublishingTime", () => {
       expect(r.stats.bestHour?.bucket).toBe(9);
       expect(r.stats.bestWeekday?.label).toBe("Mon");
       expect(r.stats.timezone).toBe("UTC");
-      expect(r.stats.sampleSize).toBe(3);
+      expect(r.stats.sampleSize).toBe(4);
+    }
+  });
+
+  it("never crowns a bucket holding fewer than MIN_POSTS_PER_TIME_BUCKET posts", () => {
+    // The authority defect this gate closes: five connected posts in five
+    // distinct hours made every bucket n=1, the overall gate passed, and
+    // a single post's engagement was rendered as "Best hour (90 avg)".
+    const r = computeBestPublishingTime(
+      [
+        point({ publishedAtIso: "2026-06-01T09:00:00Z", engagement: 90 }),
+        point({ publishedAtIso: "2026-06-02T10:00:00Z", engagement: 1 }),
+        point({ publishedAtIso: "2026-06-03T11:00:00Z", engagement: 1 }),
+        point({ publishedAtIso: "2026-06-04T12:00:00Z", engagement: 1 }),
+        point({ publishedAtIso: "2026-06-05T13:00:00Z", engagement: 1 }),
+      ],
+      lowThresholds,
+    );
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") {
+      expect(r.stats.bestHour).toBeNull();
+    }
+  });
+
+  it("reports the largest single platform as `have`, not the all-platform total", () => {
+    // The gate is per platform, so "5 of 3 needed" was self-contradictory.
+    const r = computeTopPlatforms(
+      [
+        point({ platform: "x", engagement: 1 }),
+        point({ platform: "x", engagement: 1 }),
+        point({ platform: "bluesky", engagement: 1 }),
+        point({ platform: "reddit", engagement: 1 }),
+        point({ platform: "devto", engagement: 1 }),
+      ],
+      DEFAULT_THRESHOLDS,
+    );
+    expect(r.kind).toBe("insufficient_data");
+    if (r.kind === "insufficient_data") {
+      expect(r.needed).toBe(3);
+      expect(r.have).toBe(2);
+      expect(r.have).toBeLessThan(r.needed);
     }
   });
 

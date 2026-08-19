@@ -152,6 +152,13 @@ export const AUTHENTICATED_ROUTES: ReadonlyArray<RouteEntry> = [
     description: "What each published post did.",
   },
   {
+    href: "/account-health",
+    label: "Account health",
+    tier: "secondary",
+    group: "publish",
+    description: "Audience, cadence and repetition signals per identity.",
+  },
+  {
     href: "/notifications",
     label: "Notifications",
     tier: "secondary",

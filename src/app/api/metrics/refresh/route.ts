@@ -1,9 +1,16 @@
 import { NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import {
   buildLiveRefreshDeps,
+  DEFAULT_SEED_WINDOW_DAYS,
+  persistSweepReport,
   refreshStaleMetrics,
+  sweepLogLine,
+  SweepReportBuilder,
+  verifiedPlatforms,
 } from "@/core/metrics/refresh";
 import { authorizeCronRequest } from "@/lib/cron-auth";
+import { createSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
 
 /**
  * Phase D.1G — metrics refresh endpoint.
@@ -23,6 +30,12 @@ import { authorizeCronRequest } from "@/lib/cron-auth";
  * Isolation: this route touches the metrics subsystem ONLY. It never
  * publishes, never changes execution items / approvals / notifications,
  * and the persist layer never overwrites verified counts with empties.
+ *
+ * Observability: every response carries the full `report`, and the run
+ * is written to `activity_events` per workspace. The 503 below is now
+ * ALSO reported rather than returned bare — an unset service-role key
+ * was one of the live hypotheses for why `post_metrics` stayed empty,
+ * and a bare 503 tells an operator nothing they can act on.
  */
 
 export const dynamic = "force-dynamic";
@@ -43,24 +56,72 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, error: auth.error }, { status: auth.status });
   }
 
+  const url = new URL(request.url);
+  const staleLimit = clampInt(url.searchParams.get("staleLimit"), 100, 1, 500);
+  const seedLimit = clampInt(url.searchParams.get("seedLimit"), 50, 0, 500);
+  const runId = randomUUID();
+  const startedAt = new Date().toISOString();
+
   const deps = buildLiveRefreshDeps();
   if (!deps) {
+    // Report the misconfiguration in the same shape as a real run, so
+    // whatever reads sweep output sees a cause rather than a gap.
+    const report = new SweepReportBuilder({
+      runId,
+      startedAt,
+      seedWindowDays: DEFAULT_SEED_WINDOW_DAYS,
+      staleLimit,
+      seedLimit,
+      verifiedPlatforms: verifiedPlatforms(),
+    }).fail(
+      new Date().toISOString(),
+      "SUPABASE_SERVICE_ROLE_KEY is unset in this environment, so the sweep " +
+        "cannot open a database connection. No posts were considered.",
+    );
+    console.error(sweepLogLine(report));
     return NextResponse.json(
-      { ok: false, error: "Metrics refresh unavailable: SUPABASE_SERVICE_ROLE_KEY is unset." },
+      {
+        ok: false,
+        error:
+          "Metrics refresh unavailable: SUPABASE_SERVICE_ROLE_KEY is unset.",
+        report,
+      },
       { status: 503 },
     );
   }
 
-  const url = new URL(request.url);
-  const staleLimit = clampInt(url.searchParams.get("staleLimit"), 100, 1, 500);
-  const seedLimit = clampInt(url.searchParams.get("seedLimit"), 50, 0, 500);
-
   try {
-    const result = await refreshStaleMetrics(deps, { staleLimit, seedLimit });
-    return NextResponse.json(result);
+    const result = await refreshStaleMetrics(deps, {
+      staleLimit,
+      seedLimit,
+      seedWindowDays: DEFAULT_SEED_WINDOW_DAYS,
+      runId,
+    });
+    console.log(sweepLogLine(result.report));
+
+    // Best-effort audit write. A failure here is reported, never thrown —
+    // losing the audit row must not lose the measurements.
+    let persisted = null;
+    const db = createSupabaseServiceRoleClient();
+    if (db) persisted = await persistSweepReport(db, result.report);
+
+    return NextResponse.json({ ...result, persisted });
   } catch (err) {
+    const report = new SweepReportBuilder({
+      runId,
+      startedAt,
+      seedWindowDays: DEFAULT_SEED_WINDOW_DAYS,
+      staleLimit,
+      seedLimit,
+      verifiedPlatforms: verifiedPlatforms(),
+    }).fail(new Date().toISOString(), err);
+    console.error(sweepLogLine(report));
     return NextResponse.json(
-      { ok: false, error: err instanceof Error ? err.message : "Metrics refresh failed." },
+      {
+        ok: false,
+        error: err instanceof Error ? err.message : "Metrics refresh failed.",
+        report,
+      },
       { status: 500 },
     );
   }

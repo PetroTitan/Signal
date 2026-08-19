@@ -56,6 +56,23 @@ export const DEFAULT_THRESHOLDS: IntelligenceThresholds = {
   topPostsLimit: 5,
 };
 
+/**
+ * Minimum posts IN A SINGLE TIME BUCKET before that bucket can be
+ * called "best".
+ *
+ * Without this, five connected posts landing in five distinct hours made
+ * every bucket n=1, the overall gate passed, and one post's engagement
+ * was crowned "Best hour 09:00 UTC (90 avg)" — an arithmetic mean of a
+ * single sample presented as a finding. The panel showed no n, so a
+ * reader could not tell.
+ *
+ * This does not turn the panel into a statistical instrument; the
+ * milestone's own comparisons live in src/core/intelligence/statistics.ts
+ * and are median-based. It stops the existing surface making a claim its
+ * sample cannot carry.
+ */
+export const MIN_POSTS_PER_TIME_BUCKET = 3;
+
 export interface InsufficientData {
   kind: "insufficient_data";
   needed: number;
@@ -163,7 +180,10 @@ export function computeTopPlatforms(
     return {
       kind: "insufficient_data",
       needed: thresholds.minConnectedPerPlatform,
-      have: connected.length,
+      // The gate is PER PLATFORM, so the comparable "have" is the
+      // largest single platform, not the all-platform total. Reporting
+      // the total produced the self-contradiction "5 of 3 needed".
+      have: largestPlatformCount(connected),
     };
   }
   platforms.sort(
@@ -271,9 +291,26 @@ function summarizeBuckets(
   return out.sort((a, b) => a.bucket - b.bucket);
 }
 
+/** Largest per-platform connected count, for an honest `have` figure. */
+function largestPlatformCount(connected: ResultDataPoint[]): number {
+  const counts = new Map<string, number>();
+  for (const p of connected) {
+    counts.set(p.platform, (counts.get(p.platform) ?? 0) + 1);
+  }
+  let max = 0;
+  for (const n of counts.values()) max = Math.max(max, n);
+  return max;
+}
+
+/**
+ * Pick the best bucket, considering only buckets with enough posts to
+ * mean anything. A bucket holding one post is not a "best time"; it is
+ * one post.
+ */
 function pickBest(buckets: TimeBucket[]): TimeBucket | null {
-  if (buckets.length === 0) return null;
-  return [...buckets].sort(
+  const eligible = buckets.filter((b) => b.posts >= MIN_POSTS_PER_TIME_BUCKET);
+  if (eligible.length === 0) return null;
+  return [...eligible].sort(
     (a, b) => b.avgEngagement - a.avgEngagement || a.bucket - b.bucket,
   )[0];
 }
