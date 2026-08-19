@@ -391,6 +391,83 @@ export async function listStaleConnectedMetrics(
 }
 
 /**
+ * Candidates for the BOUNDED HISTORICAL BACKFILL.
+ *
+ * Deliberately separate from `listUnmeasuredPublishedPosts`: that one
+ * serves the nightly sweep and is scoped to a rolling recent window,
+ * which is correct for a cron and is exactly why older publications were
+ * never enrolled. This one takes an explicit [since, until) range, is
+ * capped by the caller, and reports whether each post already has a
+ * canonical row rather than silently filtering — the planner decides.
+ *
+ * Read-only. Ordered newest-first so a truncated range keeps the posts
+ * whose provider-side data is most likely to still be complete.
+ */
+export async function listBackfillCandidates(
+  db: SupabaseClient,
+  platforms: string[],
+  sinceIso: string,
+  untilIso: string,
+  limit = 500,
+): Promise<
+  Array<{
+    workspaceId: string;
+    publishHistoryId: string;
+    platform: string;
+    externalPostId: string | null;
+    permalink: string | null;
+    publishedAt: string;
+    alreadyMeasured: boolean;
+  }>
+> {
+  if (platforms.length === 0) return [];
+  const { data, error } = await db
+    .from("publish_history")
+    .select("id, workspace_id, platform, provider_post_id, provider_permalink, finished_at")
+    .eq("outcome", "published")
+    .in("platform", platforms)
+    .gte("finished_at", sinceIso)
+    .lt("finished_at", untilIso)
+    .order("finished_at", { ascending: false })
+    .limit(Math.max(1, Math.min(2000, limit)));
+  if (error) throw fromPostgres(error, "Failed to load backfill candidates.");
+
+  const rows = (data ?? []) as unknown as Array<{
+    id: string;
+    workspace_id: string;
+    platform: string;
+    provider_post_id: string | null;
+    provider_permalink: string | null;
+    finished_at: string;
+  }>;
+  if (rows.length === 0) return [];
+
+  const { data: existing, error: exErr } = await db
+    .from("post_metrics")
+    .select("publish_history_id, source")
+    .in(
+      "publish_history_id",
+      rows.map((r) => r.id),
+    );
+  if (exErr) throw fromPostgres(exErr, "Failed to check existing metrics.");
+  const measured = new Set(
+    ((existing ?? []) as Array<{ publish_history_id: string; source: string }>)
+      .filter((e) => !isSnapshotSource(e.source))
+      .map((e) => e.publish_history_id),
+  );
+
+  return rows.map((r) => ({
+    workspaceId: r.workspace_id,
+    publishHistoryId: r.id,
+    platform: r.platform,
+    externalPostId: r.provider_post_id,
+    permalink: r.provider_permalink,
+    publishedAt: r.finished_at,
+    alreadyMeasured: measured.has(r.id),
+  }));
+}
+
+/**
  * Recently-published posts on verified platforms that have NO canonical
  * metrics row yet — so the daily sweep can seed their first fetch.
  */
