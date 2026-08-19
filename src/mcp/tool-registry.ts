@@ -46,6 +46,12 @@ import {
   socialRepetition,
 } from "./tools/social-intelligence-tools";
 import {
+  socialBackfillPreview,
+  socialMeasurementCoverage,
+  socialMeasurementHealth,
+  socialRefreshHistory,
+} from "./tools/measurement-health-tools";
+import {
   accountsPrepare,
   importsPrepareMapping,
   productsPrepare,
@@ -560,6 +566,55 @@ export const TOOLS: ToolDefinition[] = [
     touchesProduction: false,
     parseArgs: parseEmptyArgs,
     handler: wrap(socialRecommendNextAction),
+  },
+  // Measurement operations — READ ONLY. "Is measurement working?"
+  {
+    name: "signal.social.measurement_health",
+    description:
+      "Whether social measurement is actually working: last run, last successful run, per-provider health, alerts and the reason for any zero. Read-only.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(socialMeasurementHealth),
+  },
+  {
+    name: "signal.social.measurement_coverage",
+    description:
+      "How much of the publication history has current measurements, which posts are missing, and what the next sweep would read. Excludes blocked and failed attempts from the denominator.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(socialMeasurementCoverage),
+  },
+  {
+    name: "signal.social.refresh_history",
+    description:
+      "Recent measurement runs with their outcome and, for any run that measured nothing, the specific reason. Zero rows means the sweep has never run.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(socialRefreshHistory),
+  },
+  {
+    name: "signal.social.backfill_preview",
+    description:
+      "What a historical backfill would read and cost. Preview only — running one is a separate authenticated request with its own confirmation gate.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(socialBackfillPreview),
   },
 ];
 
