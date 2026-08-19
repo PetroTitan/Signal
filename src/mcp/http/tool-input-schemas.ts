@@ -464,6 +464,11 @@ export const TOOL_INPUT_SCHEMAS: Record<string, JsonSchema> = {
   "signal.social.measurement_coverage": EMPTY_OBJECT_SCHEMA,
   "signal.social.refresh_history": EMPTY_OBJECT_SCHEMA,
   "signal.social.backfill_preview": EMPTY_OBJECT_SCHEMA,
+  "signal.strategy.summary": EMPTY_OBJECT_SCHEMA,
+  "signal.strategy.recommendations": EMPTY_OBJECT_SCHEMA,
+  "signal.strategy.content_mix": EMPTY_OBJECT_SCHEMA,
+  "signal.strategy.cross_platform": EMPTY_OBJECT_SCHEMA,
+  "signal.strategy.experiments": EMPTY_OBJECT_SCHEMA,
 };
 
 /**

@@ -52,6 +52,13 @@ import {
   socialRefreshHistory,
 } from "./tools/measurement-health-tools";
 import {
+  strategyContentMix,
+  strategyCrossPlatform,
+  strategyExperiments,
+  strategyRecommendations,
+  strategySummary,
+} from "./tools/strategy-tools";
+import {
   accountsPrepare,
   importsPrepareMapping,
   productsPrepare,
@@ -615,6 +622,69 @@ export const TOOLS: ToolDefinition[] = [
     touchesProduction: false,
     parseArgs: parseEmptyArgs,
     handler: wrap(socialBackfillPreview),
+  },
+  // Content strategy — READ ONLY, ADVISORY ONLY. "What should I post
+  // next, and on what evidence?" Every option these return carries
+  // blocking: false; none of them can approve, schedule or publish.
+  {
+    name: "signal.strategy.summary",
+    description:
+      "What has been published and what the evidence supports: content mix, recurring topics, publishing rate, measurement level and known gaps. Advisory and read-only.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(strategySummary),
+  },
+  {
+    name: "signal.strategy.recommendations",
+    description:
+      "Options for what to post next, each with the evidence behind it and an explicit confidence. Options, never instructions — nothing here blocks publishing, approval or scheduling.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(strategyRecommendations),
+  },
+  {
+    name: "signal.strategy.content_mix",
+    description:
+      "The published mix by archetype, hook, call to action and format, plus the dimensions never tried. Reports counts rather than percentages while the sample is small.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(strategyContentMix),
+  },
+  {
+    name: "signal.strategy.cross_platform",
+    description:
+      "How much the same message is reused across platforms, pair by pair, with what is shared and what differs. A text measurement, not a judgement — no level blocks publishing.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(strategyCrossPlatform),
+  },
+  {
+    name: "signal.strategy.experiments",
+    description:
+      "Content questions worth asking, each with the posts and the weeks needed to answer it at the current publishing rate. Suggestions only — nothing enforces the arms.",
+    requiredScopes: ["execution:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(strategyExperiments),
   },
 ];
 

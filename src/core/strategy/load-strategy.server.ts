@@ -16,6 +16,7 @@ import "server-only";
  * Nothing here writes. Nothing here calls a provider.
  */
 
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase";
 import { engagementCount, type VerifiedMetrics } from "@/core/metrics/metrics-provider";
 import { analyzeCadence, type CadencePost } from "@/core/intelligence/cadence";
@@ -131,9 +132,12 @@ interface HistoryRow {
 export async function loadStrategy(
   workspaceId: string,
   nowIso = new Date().toISOString(),
-  options: { windowDays?: number } = {},
+  options: { windowDays?: number; db?: SupabaseClient } = {},
 ): Promise<StrategyView> {
-  const supabase = createSupabaseServerClient();
+  // UI callers get the cookie-bound client and therefore RLS; MCP passes
+  // its service-role client, which bypasses RLS — which is exactly why
+  // every query below carries an explicit workspace filter.
+  const supabase = options.db ?? createSupabaseServerClient();
 
   const { data: historyData } = await supabase
     .from("publish_history")
