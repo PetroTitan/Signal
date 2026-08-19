@@ -36,6 +36,7 @@ import "server-only";
 
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
 import {
+  countMeasurablePublications,
   listStaleConnectedMetrics,
   listUnmeasuredPublishedPosts,
   type RefreshTarget,
@@ -59,10 +60,24 @@ export interface RefreshEngineDeps {
   loadStale: (nowIso: string, limit: number) => Promise<RefreshTarget[]>;
   loadUnmeasured: (nowIso: string, limit: number) => Promise<RefreshTarget[]>;
   refreshOne: (target: RefreshTarget) => Promise<MetricsResult>;
+  /**
+   * Population context, so a zero-candidate run can say WHICH kind of
+   * zero it is. Optional: an engine wired without it still runs, it just
+   * reports a less specific reason.
+   */
+  countPopulation?: (
+    nowIso: string,
+  ) => Promise<{ allTime: number | null; inWindow: number | null }>;
+  /** Collect account-level context. Optional; failures are isolated. */
+  collectAccountSnapshots?: (
+    targets: readonly RefreshTarget[],
+    nowIso: string,
+  ) => Promise<{ written: number; failed: number; attempted: number }>;
 }
 
 export interface RefreshEngineOptions {
   now?: Date;
+  trigger?: "cron" | "manual" | "backfill" | "smoke_test";
   staleLimit?: number;
   seedLimit?: number;
   /** Reported (not applied) here — the window itself lives in the
@@ -141,6 +156,7 @@ export async function refreshStaleMetrics(
 
   const builder = new SweepReportBuilder({
     runId: options.runId ?? `sweep-${nowIso}`,
+    trigger: options.trigger ?? "cron",
     startedAt: nowIso,
     seedWindowDays: options.seedWindowDays ?? DEFAULT_SEED_WINDOW_DAYS,
     staleLimit,
@@ -192,6 +208,18 @@ export async function refreshStaleMetrics(
       a.publishHistoryId.localeCompare(b.publishHistoryId),
   );
   builder.recordCandidates(targets);
+
+  // Population context. Best-effort and never fatal — its only job is to
+  // let a zero-candidate run name which kind of zero it is.
+  if (deps.countPopulation) {
+    try {
+      const population = await deps.countPopulation(nowIso);
+      builder.recordPopulation(population.allTime, population.inWindow);
+    } catch (err) {
+      console.error("[refresh-engine] countPopulation failed (non-fatal)", err);
+      builder.recordPopulation(null, null);
+    }
+  }
 
   const byPlatform: Record<string, RefreshPlatformTally> = {};
   const results: RefreshEngineResult["results"] = [];
@@ -275,6 +303,20 @@ export async function refreshStaleMetrics(
     }
   }
 
+  // Account-context collection shares this orchestration rather than
+  // running on its own cron. Isolated in its own try: a follower-count
+  // failure must never discard the post measurements just written.
+  if (deps.collectAccountSnapshots) {
+    try {
+      const accounts = await deps.collectAccountSnapshots(targets, nowIso);
+      for (let i = 0; i < accounts.written; i += 1) builder.recordAccountSnapshot("written");
+      for (let i = 0; i < accounts.failed; i += 1) builder.recordAccountSnapshot("failed");
+    } catch (err) {
+      console.error("[refresh-engine] account snapshots failed (non-fatal)", err);
+      builder.recordAccountSnapshot("failed");
+    }
+  }
+
   const report = builder.complete(new Date().toISOString());
 
   return {
@@ -304,6 +346,12 @@ export function buildLiveRefreshDeps(
   const seedWindowDays = Math.max(1, opts.seedWindowDays ?? DEFAULT_SEED_WINDOW_DAYS);
   const platforms = verifiedPlatforms();
   return {
+    countPopulation: (nowIso) =>
+      countMeasurablePublications(
+        db,
+        platforms,
+        new Date(new Date(nowIso).getTime() - seedWindowDays * 86_400_000).toISOString(),
+      ),
     loadStale: (nowIso, limit) => listStaleConnectedMetrics(db, nowIso, limit),
     loadUnmeasured: (nowIso, limit) => {
       const sinceIso = new Date(

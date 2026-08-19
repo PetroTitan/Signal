@@ -40,6 +40,28 @@
 
 export type SweepPhase = "started" | "completed" | "failed";
 
+/** What caused this run. A cron tick and an operator's manual trigger
+ *  mean different things when reading history. */
+export type SweepTrigger = "cron" | "manual" | "backfill" | "smoke_test";
+
+/**
+ * Why a run measured nothing.
+ *
+ * The rule this type enforces: a run that succeeded at zero provider
+ * reads MUST name its reason. "0" on its own was the original bug, and
+ * an unexplained 0 is the same bug wearing a new number.
+ */
+export type ZeroReason =
+  | "zero_candidates"
+  | "all_outside_window"
+  | "all_already_fresh"
+  | "all_skipped_no_identifier"
+  | "provider_unavailable"
+  | "workspace_query_failed"
+  | "credentials_missing"
+  | "rate_limited"
+  | "fatal_error";
+
 /** Why a candidate was never handed to a provider reader. */
 export type SkipReason =
   | "no_provider_identifier"
@@ -93,10 +115,17 @@ export interface SweepSkip {
   reason: SkipReason;
 }
 
+export interface AccountSnapshotTally {
+  attempted: number;
+  written: number;
+  failed: number;
+}
+
 export interface SweepReport {
   /** Bumped when the shape changes, so persisted rows stay interpretable. */
   version: 1;
   runId: string;
+  trigger: SweepTrigger;
   phase: SweepPhase;
   startedAt: string;
   finishedAt: string | null;
@@ -125,10 +154,28 @@ export interface SweepReport {
   failed: number;
   skipped: number;
 
+  /** Canonical rows written / de-duplicated by the persist layer. */
+  snapshotsWritten: number;
+  snapshotsSkippedDuplicate: number;
+
+  /** Account-context collection, which shares this orchestration. */
+  accountSnapshots: AccountSnapshotTally;
+
+  /**
+   * Population context, used to tell "nothing exists" apart from
+   * "everything is outside the window" apart from "everything is already
+   * fresh". Null when the counts could not be read.
+   */
+  measurablePublicationsAllTime: number | null;
+  measurablePublicationsInWindow: number | null;
+
   byPlatform: Record<string, SweepPlatformTally>;
   byWorkspace: Record<string, SweepWorkspaceTally>;
   failures: SweepFailure[];
   skips: SweepSkip[];
+
+  /** Set whenever the run produced no verified measurement. */
+  zeroReason: ZeroReason | null;
 
   /** Set when the run threw before completing. */
   fatalError: string | null;
@@ -198,6 +245,7 @@ export function emptyWorkspaceTally(): SweepWorkspaceTally {
 
 export interface SweepReportInit {
   runId: string;
+  trigger?: SweepTrigger;
   startedAt: string;
   seedWindowDays: number;
   staleLimit: number;
@@ -217,6 +265,7 @@ export class SweepReportBuilder {
     this.report = {
       version: 1,
       runId: init.runId,
+      trigger: init.trigger ?? "cron",
       phase: "started",
       startedAt: init.startedAt,
       finishedAt: null,
@@ -238,10 +287,16 @@ export class SweepReportBuilder {
       rateLimited: 0,
       failed: 0,
       skipped: 0,
+      snapshotsWritten: 0,
+      snapshotsSkippedDuplicate: 0,
+      accountSnapshots: { attempted: 0, written: 0, failed: 0 },
+      measurablePublicationsAllTime: null,
+      measurablePublicationsInWindow: null,
       byPlatform: {},
       byWorkspace: {},
       failures: [],
       skips: [],
+      zeroReason: null,
       fatalError: null,
       diagnosis: "Sweep started but never completed.",
     };
@@ -324,10 +379,28 @@ export class SweepReportBuilder {
     }
   }
 
+  /** Population context for the zero-reason derivation. */
+  recordPopulation(allTime: number | null, inWindow: number | null): void {
+    this.report.measurablePublicationsAllTime = allTime;
+    this.report.measurablePublicationsInWindow = inWindow;
+  }
+
+  recordPersist(outcome: { snapshotWritten: boolean; duplicate?: boolean }): void {
+    if (outcome.snapshotWritten) this.report.snapshotsWritten += 1;
+    else if (outcome.duplicate) this.report.snapshotsSkippedDuplicate += 1;
+  }
+
+  recordAccountSnapshot(outcome: "written" | "failed"): void {
+    this.report.accountSnapshots.attempted += 1;
+    if (outcome === "written") this.report.accountSnapshots.written += 1;
+    else this.report.accountSnapshots.failed += 1;
+  }
+
   complete(finishedAt: string): SweepReport {
     this.report.phase = "completed";
     this.report.finishedAt = finishedAt;
     this.report.durationMs = durationMs(this.report.startedAt, finishedAt);
+    this.report.zeroReason = deriveZeroReason(this.report);
     this.report.diagnosis = diagnose(this.report);
     return this.snapshot();
   }
@@ -337,6 +410,7 @@ export class SweepReportBuilder {
     this.report.finishedAt = finishedAt;
     this.report.durationMs = durationMs(this.report.startedAt, finishedAt);
     this.report.fatalError = redactSecrets(error);
+    this.report.zeroReason = "fatal_error";
     this.report.diagnosis = `Sweep threw before completing: ${this.report.fatalError}`;
     return this.snapshot();
   }
@@ -366,6 +440,62 @@ function durationMs(startIso: string, endIso: string): number | null {
  * branch speculates about cron scheduling or environment variables,
  * because a run that produced a report necessarily got that far.
  */
+/**
+ * Why did this run measure nothing?
+ *
+ * Ordered so the FIRST true cause wins, and deliberately exhaustive: any
+ * run with zero successful reads returns a non-null reason. The
+ * population counts are what let "nothing was published" be told apart
+ * from "everything is older than the window" — the second is the real
+ * production situation and the first would be a very different bug.
+ */
+export function deriveZeroReason(r: SweepReport): ZeroReason | null {
+  if (r.succeeded > 0) return null;
+  if (r.phase === "failed" || r.fatalError) return "fatal_error";
+  if (!r.loaders.stale.ok && !r.loaders.unmeasured.ok) return "workspace_query_failed";
+
+  if (r.candidates === 0) {
+    if (r.measurablePublicationsAllTime === 0) return "zero_candidates";
+    if (r.measurablePublicationsInWindow === 0) return "all_outside_window";
+    if (r.measurablePublicationsInWindow != null && r.measurablePublicationsInWindow > 0) {
+      return "all_already_fresh";
+    }
+    return "zero_candidates";
+  }
+
+  if (r.attempted === 0 && r.skipped > 0) return "all_skipped_no_identifier";
+  if (r.rateLimited > 0 && r.rateLimited >= r.attempted) return "rate_limited";
+  if (r.failed > 0 && r.failed >= r.attempted) return "provider_unavailable";
+  if (r.unavailable > 0) return "provider_unavailable";
+  return "zero_candidates";
+}
+
+/** Operator-readable phrasing for a zero reason. */
+export function describeZeroReason(reason: ZeroReason): string {
+  switch (reason) {
+    case "zero_candidates":
+      return "Nothing has been published on a measurable platform.";
+    case "all_outside_window":
+      return "Every measurable publication is older than the enrolment window. The scheduled sweep will never reach them — use the bounded historical backfill.";
+    case "all_already_fresh":
+      return "Every in-window publication already has a current measurement, so there was nothing due.";
+    case "all_skipped_no_identifier":
+      return "Candidates were found but none carries a provider post id or permalink, so none could be looked up.";
+    case "provider_unavailable":
+      return "Every provider read came back without counts.";
+    case "workspace_query_failed":
+      return "The candidate queries failed, so no post was considered. This is a database or permissions problem, not an empty backlog.";
+    case "credentials_missing":
+      return "The run could not reach the database or a provider because configuration is missing.";
+    case "rate_limited":
+      return "Every provider read was rate limited. Retrying later should succeed.";
+    case "fatal_error":
+      return "The run threw before it could finish.";
+    default:
+      return "No measurement was produced.";
+  }
+}
+
 export function diagnose(r: SweepReport): string {
   const bothLoadersFailed = !r.loaders.stale.ok && !r.loaders.unmeasured.ok;
   const someLoaderFailed = !r.loaders.stale.ok || !r.loaders.unmeasured.ok;
@@ -474,6 +604,10 @@ export function sweepLogLine(r: SweepReport): string {
     rateLimited: r.rateLimited,
     failed: r.failed,
     skipped: r.skipped,
+    snapshotsWritten: r.snapshotsWritten,
+    accountSnapshotsWritten: r.accountSnapshots.written,
+    zeroReason: r.zeroReason,
+    trigger: r.trigger,
     durationMs: r.durationMs,
     diagnosis: r.diagnosis,
   });

@@ -11,6 +11,7 @@ import {
 } from "@/core/metrics/refresh";
 import { authorizeCronRequest } from "@/lib/cron-auth";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
+import { recordRefreshRun } from "@/repositories/metrics-refresh-run-repository";
 
 /**
  * Phase D.1G — metrics refresh endpoint.
@@ -79,11 +80,18 @@ export async function GET(request: Request) {
         "cannot open a database connection. No posts were considered.",
     );
     console.error(sweepLogLine(report));
+    // No service-role client means no way to record this to the database
+    // either. That is an inherent limit, not an oversight: the operator
+    // check for this state is the HTTP status, which is why it is 503 and
+    // not 500. Documented in the activation runbook.
     return NextResponse.json(
       {
         ok: false,
         error:
           "Metrics refresh unavailable: SUPABASE_SERVICE_ROLE_KEY is unset.",
+        recorded: false,
+        recordedReason:
+          "cannot write a run record without a database connection",
         report,
       },
       { status: 503 },
@@ -96,16 +104,30 @@ export async function GET(request: Request) {
       seedLimit,
       seedWindowDays: DEFAULT_SEED_WINDOW_DAYS,
       runId,
+      // Vercel Cron sends its own user agent; anything else reaching this
+      // route with a valid secret is an operator running it by hand, and
+      // the two read very differently in run history.
+      trigger: (request.headers.get("user-agent") ?? "").includes("vercel-cron")
+        ? "cron"
+        : "manual",
     });
     console.log(sweepLogLine(result.report));
 
-    // Best-effort audit write. A failure here is reported, never thrown —
+    // Best-effort audit writes. Failures are reported, never thrown —
     // losing the audit row must not lose the measurements.
     let persisted = null;
+    let runRecorded = null;
     const db = createSupabaseServiceRoleClient();
-    if (db) persisted = await persistSweepReport(db, result.report);
+    if (db) {
+      // The canonical run record goes FIRST and unconditionally. The
+      // per-workspace activity events only exist when the run touched a
+      // workspace, and that gap is exactly what used to make "ran and
+      // found nothing" indistinguishable from "never ran".
+      runRecorded = await recordRefreshRun(db, result.report);
+      persisted = await persistSweepReport(db, result.report);
+    }
 
-    return NextResponse.json({ ...result, persisted });
+    return NextResponse.json({ ...result, persisted, runRecorded });
   } catch (err) {
     const report = new SweepReportBuilder({
       runId,
@@ -116,11 +138,20 @@ export async function GET(request: Request) {
       verifiedPlatforms: verifiedPlatforms(),
     }).fail(new Date().toISOString(), err);
     console.error(sweepLogLine(report));
+
+    // A thrown sweep must still leave a record. This is the case that
+    // previously vanished entirely: no candidates means no workspaces,
+    // which meant no activity event.
+    let runRecorded = null;
+    const db = createSupabaseServiceRoleClient();
+    if (db) runRecorded = await recordRefreshRun(db, report);
+
     return NextResponse.json(
       {
         ok: false,
         error: err instanceof Error ? err.message : "Metrics refresh failed.",
         report,
+        runRecorded,
       },
       { status: 500 },
     );

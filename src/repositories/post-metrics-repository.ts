@@ -433,6 +433,45 @@ export async function listStaleConnectedMetrics(
 }
 
 /**
+ * How many published posts exist on measurable platforms, all time and
+ * inside the enrolment window.
+ *
+ * Cheap head-only counts whose sole purpose is to tell three very
+ * different zero-candidate situations apart: nothing was ever published,
+ * everything is older than the window, or everything in the window is
+ * already measured. Without them a sweep can only say "0".
+ */
+export async function countMeasurablePublications(
+  db: SupabaseClient,
+  platforms: string[],
+  sinceIso: string,
+): Promise<{ allTime: number | null; inWindow: number | null }> {
+  if (platforms.length === 0) return { allTime: 0, inWindow: 0 };
+  try {
+    const [allTime, inWindow] = await Promise.all([
+      db
+        .from("publish_history")
+        .select("id", { count: "exact", head: true })
+        .eq("outcome", "published")
+        .in("platform", platforms),
+      db
+        .from("publish_history")
+        .select("id", { count: "exact", head: true })
+        .eq("outcome", "published")
+        .in("platform", platforms)
+        .gte("finished_at", sinceIso),
+    ]);
+    return {
+      allTime: allTime.error ? null : (allTime.count ?? 0),
+      inWindow: inWindow.error ? null : (inWindow.count ?? 0),
+    };
+  } catch {
+    // Population context is a diagnostic nicety; never fail a sweep for it.
+    return { allTime: null, inWindow: null };
+  }
+}
+
+/**
  * Candidates for the BOUNDED HISTORICAL BACKFILL.
  *
  * Deliberately separate from `listUnmeasuredPublishedPosts`: that one
