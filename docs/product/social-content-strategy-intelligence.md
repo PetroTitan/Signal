@@ -252,3 +252,98 @@ Permitted: *"in this sample"*, *"consider testing"*, *"has not been
 tested"*, *"data is limited"*.
 Forbidden: any statement that a format, time or platform behaviour
 *causes* a performance outcome.
+
+---
+
+# Part II — Operating the strategy layer
+
+Written for whoever runs Signal, not for whoever built it.
+
+## 10. Where it appears
+
+| Surface | What it shows | What it can do |
+|---|---|---|
+| `/strategy` | the whole picture: mix, options, performance evidence, cross-platform pairs, experiments, optional AI reading | nothing — it is a page of text |
+| Weekly plan | the top two options as a strip | nothing; it never gates the plan |
+| Compose sheet | the same strip beside the editor | nothing; the editor behaves identically without it |
+| MCP | five read tools under `signal.strategy.*` | read only, workspace-scoped |
+
+There is no sixth surface, and no background job. The strategy layer runs
+when a page is rendered or a tool is called, and never on a schedule.
+
+## 11. Reading a recommendation
+
+Every option carries four things, and the fourth is the one to read
+first:
+
+1. **A title** — the option, in the operator's words.
+2. **A rationale** — one sentence on why it appeared.
+3. **Evidence** — each item labelled FACT, OBSERVATION or SUGGESTION,
+   with the table or computation it came from.
+4. **An evidence strength** — *Directly measured*, *Moderate evidence*,
+   *Weak evidence*, or *No performance data*.
+
+That last label describes the **evidence**, not the advice. "No
+performance data" does not mean the option is bad; it means Signal is
+telling you it has measured nothing, which is currently true of every
+workspace whose `post_metrics` table is empty.
+
+## 12. What the numbers will and will not do
+
+- A median needs **6** measured posts. Below that, no median is shown for
+  any dimension — not a zero, not an estimate.
+- A comparative verdict needs **25**. Between 6 and 25 the wording says
+  "in a small sample" and means it.
+- Posts that were never measured are **excluded** from every sample.
+  They are never counted as zero engagement, because "we did not read it"
+  and "nobody engaged" are different facts.
+- Percentages appear only once there are **10** posts. Below that the mix
+  is reported as counts, because "40% product updates" from five posts is
+  two posts wearing a decimal point.
+
+## 13. Experiments
+
+An experiment is a question plus the arithmetic of answering it. Signal
+computes how many posts each arm still needs and, from your actual
+publishing rate, how many weeks that is. When the answer is longer than
+six months it says so plainly rather than leaving you to work it out.
+
+Nothing enforces an experiment. There is no arm assignment, no post is
+rejected for being "outside" one, and abandoning an experiment costs
+nothing.
+
+## 14. The AI section
+
+Optional in the strictest sense: with no provider configured, the page is
+complete and unchanged. When a provider is configured, the model receives
+the evidence that is already on the page and is asked to restate it.
+
+Its output is discarded outright if it contains a number that is not in
+that evidence, a causal claim, an overclaim, or an instruction. The page
+then shows a short note saying so. That note is not an error — it is the
+guard working, and everything above it was computed without any model.
+
+## 15. Turning it off
+
+- **AI only**: unset `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`, or set
+  `SIGNAL_AI_PROVIDER` to a provider with no key. The rest is unaffected.
+- **The advisory strips**: remove `<StrategyHints …>` from
+  `weekly-plan/page.tsx` and `founder-compose-sheet.tsx`. Nothing else
+  reads them.
+- **The whole layer**: remove the `/strategy` entry from
+  `route-manifest.ts` and `sidebar.tsx`, and the five `signal.strategy.*`
+  entries from `tool-registry.ts`. No publishing, approval or scheduling
+  code imports `@/core/strategy`, and an invariant test keeps it that way,
+  so nothing downstream breaks.
+
+## 16. What it deliberately cannot tell you
+
+- **Why** a post did well. Signal has no access to how a platform treated
+  your account, and does not guess.
+- **The best time to post.** That would need many measured posts per time
+  slot; with none, any answer would be invented.
+- **How you compare to anyone else.** There is no benchmark data in
+  Signal, and a model asked for one would make it up.
+- **Whether a similarity level is too high.** Reposting the same message
+  everywhere is a valid choice. The percentage is a measurement, not a
+  verdict, and it never stops a post.
