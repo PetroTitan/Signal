@@ -200,6 +200,24 @@ describe("mobile layout", () => {
     expect(html).toContain("flex-wrap");
   });
 
+  it("lets a long provider handle break — real 320px regression", () => {
+    // Caught in browser QA: an unbroken handle pushed the page 30px wide
+    // at 320px. flex-wrap alone was not enough; the child needed to be
+    // allowed to shrink and break.
+    const html = renderToStaticMarkup(
+      createElement(AccountRow, {
+        account: {
+          accountId: "a1", platform: "bluesky",
+          handle: "averyveryverylonghandlename.bsky.social",
+          followers: 1, following: 10, postCount: 22,
+          fetchedAt: "2026-08-20T06:00:00Z", ageHours: 6, freshness: "fresh", error: null,
+        },
+      }),
+    );
+    expect(html).toContain("min-w-0");
+    expect(html).toContain("break-all");
+  });
+
   it("lets long handles break instead of widening the page", () => {
     const html = renderToStaticMarkup(
       createElement(ProviderRow, {

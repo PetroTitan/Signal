@@ -59,7 +59,7 @@ export function ProviderRow({ provider }: { provider: ProviderHealth }) {
   return (
     <li className="row-divider py-3 first:pt-0 last:pb-0">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <span className="stat-label">{platformLabel(provider.platform)}</span>
+        <span className="stat-label min-w-0 break-words">{platformLabel(provider.platform)}</span>
         <span className={HEALTH_BADGE[provider.state]}>
           {HEALTH_LABEL[provider.state]}
         </span>
@@ -80,7 +80,7 @@ export function CoverageRow({ platform }: { platform: CoverageSummary }) {
   return (
     <li className="row-divider py-3 first:pt-0 last:pb-0">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <span className="stat-label">{platformLabel(platform.platform)}</span>
+        <span className="stat-label min-w-0 break-words">{platformLabel(platform.platform)}</span>
         <span className="stat-value">
           {platform.coveragePercent == null
             ? emptyState("no_publications").label
@@ -104,7 +104,9 @@ export function AccountRow({ account }: { account: AccountContextView }) {
   return (
     <li className="row-divider py-3 first:pt-0 last:pb-0">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <span className="stat-label">
+        {/* min-w-0 + break-all: a long provider handle has no natural
+            break opportunity and pushed the page 30px wide at 320px. */}
+        <span className="stat-label min-w-0 break-all">
           {platformLabel(account.platform)}
           {account.handle ? ` · ${account.handle}` : ""}
         </span>
