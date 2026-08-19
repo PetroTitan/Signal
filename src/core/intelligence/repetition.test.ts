@@ -267,3 +267,37 @@ describe("determinism and bounds", () => {
     expect([...ranks].sort((x, y) => x - y)).toEqual(ranks);
   });
 });
+
+describe("regression — empty bodies are not similar to each other", () => {
+  it("two empty posts do not read as a 100% cross-platform copy", () => {
+    // publish_history holds no text; the body is joined from
+    // execution_items and coerced with `?? ""` in two loaders. Two rows
+    // with a null body therefore reached the similarity path as empty
+    // strings, where tokenize("") -> [] and shingles([], k) -> Set([""])
+    // made them 100% identical at severity "high".
+    const report = analyzeRepetition([
+      { id: "a", platform: "x", publishedAt: "2026-08-15T14:05:00Z", body: "" },
+      { id: "b", platform: "bluesky", publishedAt: "2026-08-15T14:25:00Z", body: "" },
+    ]);
+    expect(report.findings.some((f) => f.kind === "cross_platform_copy")).toBe(false);
+    expect(report.maxCrossPlatformPercent).toBe(0);
+  });
+
+  it("an empty post is not similar to a real one", () => {
+    const report = analyzeRepetition([
+      { id: "a", platform: "x", publishedAt: "2026-08-15T14:05:00Z", body: "" },
+      { id: "b", platform: "bluesky", publishedAt: "2026-08-15T14:25:00Z", body: "Real content about analytics." },
+    ]);
+    expect(report.findings.some((f) => f.kind === "cross_platform_copy")).toBe(false);
+  });
+
+  it("still detects the real historical pair", () => {
+    // The guard must not weaken genuine detection.
+    const body = "9 apps live. Not one of them is cool. ZIP extractor. PDF editor. Printer utility.";
+    const report = analyzeRepetition([
+      { id: "a", platform: "x", publishedAt: "2026-08-15T14:05:00Z", body },
+      { id: "b", platform: "bluesky", publishedAt: "2026-08-15T14:25:00Z", body: `${body} Same demand this year.` },
+    ]);
+    expect(report.findings.some((f) => f.kind === "cross_platform_copy")).toBe(true);
+  });
+});

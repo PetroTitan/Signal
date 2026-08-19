@@ -100,6 +100,11 @@ export async function loadAccountHealth(
 
   const snapshots = new Map<string, AccountSnapshot>();
   for (const s of (snapshotRows ?? []) as unknown as Array<Record<string, unknown>>) {
+    // History rows carry a `snapshot:` source prefix. Without this the
+    // newest HISTORY row could be presented as the current account
+    // context, complete with a source string like
+    // "snapshot:bluesky_getprofile:2026-08-19".
+    if (String(s.source ?? "").startsWith("snapshot:")) continue;
     const key = String(s.account_id);
     if (snapshots.has(key)) continue;
     snapshots.set(key, {

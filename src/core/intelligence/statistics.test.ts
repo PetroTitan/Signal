@@ -242,3 +242,19 @@ describe("insufficient_data is a successful result", () => {
     expect(c.summary).not.toMatch(/\bmedian 0\b/);
   });
 });
+
+describe("regression — empty inputs must not produce strong answers", () => {
+  it("compareGroups([]) is insufficient_data, not the strongest verdict", () => {
+    // Found by the strategy-milestone audit and confirmed by execution:
+    // `verdicts.includes(...)` is false on BOTH branches for an empty
+    // array, so this previously returned verdict_permitted — the
+    // strongest possible conclusion drawn from no data at all.
+    const c = compareGroups([]);
+    expect(c.verdict).toBe("insufficient_data");
+    expect(c.causalClaimPermitted).toBe(false);
+  });
+
+  it("a single empty group is also insufficient", () => {
+    expect(compareGroups([{ label: "a", values: [] }]).verdict).toBe("insufficient_data");
+  });
+});

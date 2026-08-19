@@ -80,10 +80,20 @@ export const CROSS_PLATFORM_HIGH_THRESHOLD = 0.3;
 /** Verbatim threshold, shared with the existing near-duplicate QA gate. */
 export const VERBATIM_THRESHOLD = 0.45;
 
-/** Jaccard over k-token shingles of two texts. */
+/**
+ * Jaccard over k-token shingles of two texts.
+ *
+ * EMPTY-INPUT GUARD. `tokenize("")` yields `[]`, and `shingles([], k)`
+ * collapses that to `Set([""])` — so two empty strings produced a
+ * Jaccard of 1.0 and two posts with null bodies on different platforms
+ * were reported as a 100%-similar cross-platform copy at severity
+ * "high". Empty text is not similar to anything, including other empty
+ * text, so it scores 0.
+ */
 export function shingleSimilarity(a: string, b: string, k: number): number {
   const ta = tokenize(a);
   const tb = tokenize(b);
+  if (ta.length === 0 || tb.length === 0) return 0;
   // `shingles` collapses inputs shorter than k into a single whole-text
   // shingle, so two short posts still compare sensibly.
   return jaccard(shingles(ta, k), shingles(tb, k));

@@ -189,11 +189,16 @@ export function compareGroups(groups: readonly GroupInput[]): GroupComparison {
   }));
 
   const verdicts = summarised.map((g) => g.summary.verdict);
-  const verdict: SampleVerdict = verdicts.includes("insufficient_data")
-    ? "insufficient_data"
-    : verdicts.includes("descriptive_only")
-      ? "descriptive_only"
-      : "verdict_permitted";
+  // An EMPTY group array must not fall through to the strongest verdict.
+  // `includes` is false on both branches for [], which previously made
+  // "no data at all" return verdict_permitted — the exact inversion this
+  // module exists to prevent.
+  const verdict: SampleVerdict =
+    summarised.length === 0 || verdicts.includes("insufficient_data")
+      ? "insufficient_data"
+      : verdicts.includes("descriptive_only")
+        ? "descriptive_only"
+        : "verdict_permitted";
 
   const warnings: string[] = [];
   for (const g of summarised) {
