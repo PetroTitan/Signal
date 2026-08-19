@@ -25,9 +25,7 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { fetchWithTimeout, isTimeoutError } from "@/core/publishing/fetch-with-timeout";
-import { ensureFreshXAccessToken } from "@/core/platform-oauth/x-token-refresh";
-import { getTokenCipher } from "@/core/platform-oauth/token-encryption";
-import { getConnectionForAccount } from "@/repositories/platform-connection-repository";
+import { resolveXAccessTokenForMetrics } from "./x-token-access";
 import {
   metricSource,
   rateLimitedResult,
@@ -90,7 +88,7 @@ export async function fetchXMetrics(
     );
   }
 
-  const token = await resolveAccessToken(ctx);
+  const token = await resolveXAccessTokenForMetrics(ctx);
   if (!token.ok) {
     return unavailableResult("x", externalPostId, token.reason);
   }
@@ -178,109 +176,6 @@ export async function fetchXMetrics(
     metrics: tweet.metrics,
     providerPublishedAt: tweet.createdAt,
   };
-}
-
-type TokenResolution =
-  | { ok: true; accessToken: string }
-  | { ok: false; reason: string };
-
-/**
- * Resolve a usable access token for the identity, refreshing it if it is
- * about to expire. Deliberately mirrors the publisher's path so a token
- * that can publish can also be read with.
- */
-async function resolveAccessToken(ctx: XMetricsContext): Promise<TokenResolution> {
-  if (!ctx.accountId) {
-    return { ok: false, reason: "No account id for this publication." };
-  }
-
-  let connection;
-  try {
-    connection = await getConnectionForAccount(
-      ctx.workspaceId,
-      ctx.accountId,
-      "x",
-      ctx.db,
-    );
-  } catch (err) {
-    return {
-      ok: false,
-      reason: `Could not load the X connection: ${err instanceof Error ? err.message : "unknown error"}.`,
-    };
-  }
-
-  if (!connection) {
-    return {
-      ok: false,
-      reason: "No X connection is attached to this identity.",
-    };
-  }
-  if (connection.connectionStatus !== "connected") {
-    return {
-      ok: false,
-      reason: `The X connection is ${connection.connectionStatus}; reconnect it to read metrics.`,
-    };
-  }
-
-  const tokens = await readTokens(ctx, connection.id);
-  if (!tokens) {
-    return { ok: false, reason: "No stored tokens for the X connection." };
-  }
-
-  const refreshed = await ensureFreshXAccessToken({
-    db: ctx.db,
-    workspaceId: ctx.workspaceId,
-    connectionId: connection.id,
-    currentAccessTokenEncrypted: tokens.accessTokenEncrypted,
-    currentRefreshTokenEncrypted: tokens.refreshTokenEncrypted,
-    currentExpiresAt: tokens.expiresAt,
-    nowIso: ctx.nowIso ?? new Date().toISOString(),
-  });
-
-  if (refreshed.outcome.kind === "reauthorization_required") {
-    return {
-      ok: false,
-      reason:
-        "The X connection needs reauthorization before metrics can be read. " +
-        "Reconnect it from the identity card. (Metrics never trigger a " +
-        "reauthorization flow on their own.)",
-    };
-  }
-  if (refreshed.outcome.kind === "transient_error") {
-    return {
-      ok: false,
-      reason: `X token refresh failed transiently: ${refreshed.outcome.reason}`,
-    };
-  }
-  if (!refreshed.accessTokenEncrypted) {
-    return { ok: false, reason: "No X access token is stored for this identity." };
-  }
-
-  const cipher = getTokenCipher();
-  if (!cipher.isAvailable()) {
-    return {
-      ok: false,
-      reason:
-        "Token decryption is unavailable in this environment " +
-        "(TOKEN_ENCRYPTION_KEY is unset), so the X token cannot be used.",
-    };
-  }
-  const accessToken = cipher.decrypt(refreshed.accessTokenEncrypted);
-  if (!accessToken) {
-    return { ok: false, reason: "The stored X access token could not be decrypted." };
-  }
-  return { ok: true, accessToken };
-}
-
-async function readTokens(ctx: XMetricsContext, connectionId: string) {
-  const { readEncryptedTokens } = await import(
-    "@/repositories/platform-connection-repository"
-  );
-  try {
-    return await readEncryptedTokens(ctx.workspaceId, connectionId, ctx.db);
-  } catch {
-    return null;
-  }
 }
 
 async function safeJson(resp: Response): Promise<unknown> {
