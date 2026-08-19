@@ -1,6 +1,8 @@
 import { Topbar } from "@/components/topbar";
 import { isSupabaseConfigured, createSupabaseServerClient } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
+import { loadStrategyHints } from "@/core/strategy/load-strategy-hints.server";
+import { StrategyHints } from "@/components/strategy-hints";
 import {
   getCurrentWeeklyPlan,
   listPlanItems,
@@ -314,6 +316,10 @@ export default async function WeeklyPlanPage({
     (p) => p.reviewStatus === "confirmed",
   );
   const aiProviderStatus = readGenerationProviderStatus();
+  // Advisory only, and failure-tolerant: loadStrategyHints swallows its
+  // own errors so the composer opens either way.
+  const strategyHints = await loadStrategyHints(workspaceId);
+
   const composeDefaults = {
     timezoneLabel,
     defaultAccountId:
@@ -332,6 +338,7 @@ export default async function WeeklyPlanPage({
     // destination from an unconnected one. Projected down to the two
     // fields the destination model reads.
     connections: destinationConnections,
+    strategyHints,
   };
 
   // ---- Recently published (last 5 successful) ----
@@ -915,6 +922,7 @@ export default async function WeeklyPlanPage({
       />
       <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-3xl space-y-5">
         <NeedsAttentionStrip entries={needsAttention} />
+        <StrategyHints hints={strategyHints} />
         {!plan || items.length === 0 ? (
           <section className="rounded-2xl border border-dashed border-ink-300 bg-ink-50/40 p-8 text-center">
             <h2 className="text-base font-semibold text-ink-900">

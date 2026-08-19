@@ -178,6 +178,96 @@ describe("the social tools are registered read-only", () => {
   });
 });
 
+describe("the strategy loader is workspace-scoped too", () => {
+  // The strategy tools delegate to this loader rather than querying
+  // directly, and it receives the SERVICE-ROLE client from ctx.db — so
+  // RLS does not apply and the explicit filter is the only isolation.
+  const file = path.join(process.cwd(), "src/core/strategy/load-strategy.server.ts");
+  const source = readFileSync(file, "utf8");
+
+  it("reads at least one table", () => {
+    expect(tableAccesses(source).length).toBeGreaterThan(0);
+  });
+
+  it("scopes every workspace-owned read", () => {
+    for (const access of tableAccesses(source)) {
+      if (GLOBAL_TABLES[access.table]) continue;
+      const statement = source.slice(access.index, access.index + 1200).split(/;\s*\n/)[0];
+      expect(
+        statement,
+        `.from("${access.table}") is not scoped to the workspace`,
+      ).toMatch(/\.eq\(\s*"workspace_id"\s*,\s*workspaceId\s*\)/);
+    }
+  });
+
+  it("performs no write", () => {
+    for (const forbidden of [".insert(", ".update(", ".upsert(", ".delete("]) {
+      expect(source).not.toContain(forbidden);
+    }
+  });
+});
+
+describe("the strategy tools are registered read-only and advisory", () => {
+  const strategyTools = TOOLS.filter((t) => t.name.startsWith("signal.strategy."));
+  const source = readFileSync(path.join(TOOLS_DIR, "strategy-tools.ts"), "utf8");
+
+  it("registers the full strategy surface", () => {
+    expect(strategyTools.map((t) => t.name).sort()).toEqual([
+      "signal.strategy.content_mix",
+      "signal.strategy.cross_platform",
+      "signal.strategy.experiments",
+      "signal.strategy.recommendations",
+      "signal.strategy.summary",
+    ]);
+  });
+
+  it("contains no mutation call", () => {
+    for (const forbidden of [".insert(", ".update(", ".upsert(", ".delete("]) {
+      expect(source, `strategy tools must not call ${forbidden}`).not.toContain(forbidden);
+    }
+  });
+
+  it("cannot approve, schedule or publish", () => {
+    // An advisory surface that could act would stop being advisory.
+    for (const forbidden of ["approve", "schedulePublish", "publishNow", "executePlan"]) {
+      expect(source, `strategy tools must not call ${forbidden}`).not.toContain(forbidden);
+    }
+  });
+
+  it("tells every caller the options are not instructions", () => {
+    expect(source).toContain("not instructions");
+    expect(source).toContain("blocking: option.blocking");
+  });
+
+  it("declares none of them as writing or touching production", () => {
+    for (const t of strategyTools) {
+      expect(t.writesDatabase, t.name).toBe(false);
+      expect(t.touchesProduction, t.name).toBe(false);
+      expect(t.riskLevel, t.name).toBe("safe_read");
+      expect(t.approvalMode, t.name).toBe("no_approval_needed");
+    }
+  });
+
+  it("requires a scope, and one that already exists", () => {
+    for (const t of strategyTools) {
+      expect(t.requiredScopes, t.name).toContain("execution:read");
+    }
+  });
+
+  it("follows the signal.<domain>.<action> naming convention", () => {
+    for (const t of strategyTools) {
+      expect(t.name).toMatch(/^signal\.strategy\.[a-z][a-z0-9_]*$/);
+    }
+  });
+
+  it("has a JSON input schema, keeping the drift test satisfied", () => {
+    for (const t of strategyTools) {
+      expect(TOOL_INPUT_SCHEMAS[t.name], t.name).toBeTruthy();
+      expect(TOOL_INPUT_SCHEMAS[t.name].type).toBe("object");
+    }
+  });
+});
+
 describe("the isolation guard actually detects a missing scope", () => {
   // Proves the test above is not vacuous: a handler written WITHOUT the
   // workspace filter must be caught by the same matcher.
