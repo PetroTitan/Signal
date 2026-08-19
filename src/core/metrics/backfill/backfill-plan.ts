@@ -16,18 +16,25 @@
  * Pure module — no I/O, no clock, no randomness.
  */
 
+import { providerRate } from "./backfill-cost";
 import {
-  describeCostEstimate,
-  estimateBackfillCost,
-  evaluateCostGate,
-  providerRate,
-  type CostEstimate,
-  type CostGateVerdict,
-} from "./backfill-cost";
+  assessCost,
+  describeResourcePlan,
+  evaluateBudget,
+  evaluateSpend,
+  type BudgetState,
+  type CostAssessment,
+  type SpendVerdict,
+} from "../budget/x-read-budget";
 
 /** Hard ceiling regardless of what the caller asks for. A backfill is a
  *  repair operation, not a crawler. */
 export const MAX_BACKFILL_POSTS = 500;
+
+/** Used when the caller supplies no budget state — matches the default
+ *  daily ceiling so a plan built without one is not accidentally
+ *  unbounded. */
+const DEFAULT_BUDGET_FOR_PLAN = 500;
 
 export interface BackfillCandidate {
   workspaceId: string;
@@ -80,9 +87,10 @@ export interface BackfillPlan {
   rejected: Array<{ candidate: BackfillCandidate; reason: BackfillRejection }>;
   batches: BackfillBatch[];
   postsByPlatform: Record<string, number>;
-  cost: CostEstimate;
+  cost: CostAssessment;
   costSummary: string;
-  gate: CostGateVerdict;
+  budget: BudgetState;
+  gate: SpendVerdict;
   /** True when the plan may execute against live providers. */
   executable: boolean;
 }
@@ -91,6 +99,12 @@ export interface PlanInput {
   candidates: BackfillCandidate[];
   bounds: Partial<BackfillBounds> & { since: string; until: string };
   confirmedMaxUsd?: number | null;
+  /** Authorise by resource count when the price cannot be established. */
+  confirmedMaxResources?: number | null;
+  /** Environment for price resolution. */
+  priceEnv?: { configuredRate?: string | null; nowIso: string };
+  /** Remaining X read budget for the day. */
+  budget?: BudgetState;
 }
 
 /**
@@ -149,8 +163,17 @@ export function planBackfill(input: PlanInput): BackfillPlan {
     postsByPlatform[c.platform] = (postsByPlatform[c.platform] ?? 0) + 1;
   }
 
-  const cost = estimateBackfillCost(postsByPlatform);
-  const gate = evaluateCostGate(cost, input.confirmedMaxUsd);
+  const cost = assessCost(
+    postsByPlatform,
+    input.priceEnv ?? { configuredRate: null, nowIso: input.bounds.until },
+  );
+  const budget = input.budget ?? evaluateBudget(0, DEFAULT_BUDGET_FOR_PLAN);
+  const gate = evaluateSpend({
+    assessment: cost,
+    budget,
+    confirmedMaxUsd: input.confirmedMaxUsd,
+    confirmedMaxResources: input.confirmedMaxResources,
+  });
 
   return {
     bounds,
@@ -159,7 +182,8 @@ export function planBackfill(input: PlanInput): BackfillPlan {
     batches: buildBatches(selected),
     postsByPlatform,
     cost,
-    costSummary: describeCostEstimate(cost),
+    costSummary: describeResourcePlan(cost),
+    budget,
     gate,
     executable: gate.allowed && selected.length > 0,
   };

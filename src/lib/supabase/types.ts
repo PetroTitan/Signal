@@ -1719,6 +1719,86 @@ export interface PostMetricsUpdate {
   provider_payload_version?: string | null;
 }
 
+// Production reliability — canonical refresh-run record.
+
+export type RefreshRunPhase = "started" | "completed" | "failed";
+export type RefreshRunTrigger = "cron" | "manual" | "backfill" | "smoke_test";
+export type RefreshZeroReason =
+  | "zero_candidates"
+  | "all_outside_window"
+  | "all_already_fresh"
+  | "all_skipped_no_identifier"
+  | "provider_unavailable"
+  | "workspace_query_failed"
+  | "credentials_missing"
+  | "rate_limited"
+  | "fatal_error";
+
+export interface MetricsRefreshRunRow {
+  id: string;
+  run_id: string;
+  trigger: RefreshRunTrigger;
+  phase: RefreshRunPhase;
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
+  workspace_count: number;
+  seed_window_days: number | null;
+  publication_candidates: number;
+  eligible_posts: number;
+  provider_reads_attempted: number;
+  provider_reads_succeeded: number;
+  provider_reads_failed: number;
+  snapshots_written: number;
+  snapshots_skipped_duplicate: number;
+  rate_limited_count: number;
+  unavailable_count: number;
+  unsupported_count: number;
+  stale_count: number;
+  provider_error_count: number;
+  skipped_count: number;
+  account_snapshots_attempted: number;
+  account_snapshots_written: number;
+  account_snapshots_failed: number;
+  by_provider: Record<string, unknown>;
+  zero_reason: RefreshZeroReason | null;
+  fatal_error: string | null;
+  diagnosis: string;
+  created_at: string;
+}
+
+export interface MetricsRefreshRunInsert {
+  id?: string;
+  run_id: string;
+  trigger?: RefreshRunTrigger;
+  phase: RefreshRunPhase;
+  started_at: string;
+  finished_at?: string | null;
+  duration_ms?: number | null;
+  workspace_count?: number;
+  seed_window_days?: number | null;
+  publication_candidates?: number;
+  eligible_posts?: number;
+  provider_reads_attempted?: number;
+  provider_reads_succeeded?: number;
+  provider_reads_failed?: number;
+  snapshots_written?: number;
+  snapshots_skipped_duplicate?: number;
+  rate_limited_count?: number;
+  unavailable_count?: number;
+  unsupported_count?: number;
+  stale_count?: number;
+  provider_error_count?: number;
+  skipped_count?: number;
+  account_snapshots_attempted?: number;
+  account_snapshots_written?: number;
+  account_snapshots_failed?: number;
+  by_provider?: Record<string, unknown>;
+  zero_reason?: RefreshZeroReason | null;
+  fatal_error?: string | null;
+  diagnosis: string;
+}
+
 // Social Trust & Performance Intelligence — account-level context.
 
 export interface AccountSnapshotRow {
@@ -1782,6 +1862,12 @@ export interface Database {
         Row: PostMetricsRow;
         Insert: PostMetricsInsert;
         Update: PostMetricsUpdate;
+        Relationships: [];
+      };
+      metrics_refresh_runs: {
+        Row: MetricsRefreshRunRow;
+        Insert: MetricsRefreshRunInsert;
+        Update: Partial<MetricsRefreshRunInsert>;
         Relationships: [];
       };
       account_snapshots: {

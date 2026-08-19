@@ -48,6 +48,10 @@ const GLOBAL_TABLES: Record<string, string> = {
   mcp_operator_tokens: "keyed by token hash; the workspace is derived FROM it",
   workspaces: "the workspace row itself, fetched by id",
   workspace_members: "membership lookup, scoped by user + workspace id inline",
+  metrics_refresh_runs:
+    "a sweep spans every workspace, so a run is not workspace-owned; the " +
+    "table carries no workspace identifier by design and assertNoIds " +
+    "enforces that at the write",
 };
 
 describe("every social intelligence query is workspace-scoped", () => {
@@ -83,16 +87,63 @@ describe("every social intelligence query is workspace-scoped", () => {
   });
 });
 
+describe("the shared status assembler is workspace-scoped too", () => {
+  // The MCP measurement tools delegate to this rather than querying
+  // directly, so the handler-level scan above would not see their reads.
+  const file = path.join(
+    process.cwd(),
+    "src/core/metrics/health/load-measurement-status.server.ts",
+  );
+  const source = readFileSync(file, "utf8");
+
+  it("scopes every workspace-owned read", () => {
+    for (const access of tableAccesses(source)) {
+      if (GLOBAL_TABLES[access.table]) continue;
+      const statement = source.slice(access.index, access.index + 1200).split(/;\s*\n/)[0];
+      expect(
+        statement,
+        `.from("${access.table}") is not scoped to the workspace`,
+      ).toMatch(/\.eq\(\s*"workspace_id"\s*,\s*workspaceId\s*\)/);
+    }
+  });
+
+  it("performs no write", () => {
+    for (const forbidden of [".insert(", ".update(", ".upsert(", ".delete("]) {
+      expect(source).not.toContain(forbidden);
+    }
+  });
+});
+
+describe("the measurement tools perform no write", () => {
+  const source = readFileSync(
+    path.join(TOOLS_DIR, "measurement-health-tools.ts"),
+    "utf8",
+  );
+  it("contains no mutation call", () => {
+    for (const forbidden of [".insert(", ".update(", ".upsert(", ".delete("]) {
+      expect(source).not.toContain(forbidden);
+    }
+  });
+  it("cannot execute a backfill — preview only", () => {
+    expect(source).not.toContain("executePlan");
+    expect(source).toContain("Preview only");
+  });
+});
+
 describe("the social tools are registered read-only", () => {
   const socialTools = TOOLS.filter((t) => t.name.startsWith("signal.social."));
 
-  it("registers all six", () => {
+  it("registers the full social surface", () => {
     expect(socialTools.map((t) => t.name).sort()).toEqual([
       "signal.social.account_health",
+      "signal.social.backfill_preview",
       "signal.social.cadence",
+      "signal.social.measurement_coverage",
+      "signal.social.measurement_health",
       "signal.social.performance",
       "signal.social.recent_posts",
       "signal.social.recommend_next_action",
+      "signal.social.refresh_history",
       "signal.social.repetition",
     ]);
   });

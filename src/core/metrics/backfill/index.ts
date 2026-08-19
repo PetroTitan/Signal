@@ -32,6 +32,24 @@ export {
   type CostGateVerdict,
 } from "./backfill-cost";
 
+// Pricing moved to the budget module this milestone. Re-exported so
+// callers have one import path for a backfill decision.
+export {
+  assessCost,
+  describeResourcePlan,
+  evaluateBudget,
+  evaluateSpend,
+  planResources,
+  resolveBudgets,
+  resolveXReadPrice,
+  DEFAULT_DAILY_X_READ_BUDGET,
+  PRICE_FRESHNESS_DAYS,
+  type BudgetState,
+  type CostAssessment,
+  type ResolvedPrice,
+  type SpendVerdict,
+} from "../budget/x-read-budget";
+
 export {
   executePlan,
   buildLiveBackfillDeps,

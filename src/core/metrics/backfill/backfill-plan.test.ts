@@ -6,12 +6,15 @@ import {
   planBackfill,
   type BackfillCandidate,
 } from "./backfill-plan";
+import { batchCount, providerRate } from "./backfill-cost";
 import {
-  batchCount,
-  estimateBackfillCost,
-  evaluateCostGate,
-  providerRate,
-} from "./backfill-cost";
+  assessCost,
+  evaluateBudget,
+  evaluateSpend,
+} from "../budget/x-read-budget";
+
+const FRESH = { configuredRate: null, nowIso: "2026-08-19T12:00:00.000Z" };
+const OPEN_BUDGET = evaluateBudget(0, 500);
 
 function candidate(over: Partial<BackfillCandidate> = {}): BackfillCandidate {
   return {
@@ -28,70 +31,38 @@ function candidate(over: Partial<BackfillCandidate> = {}): BackfillCandidate {
 
 const RANGE = { since: "2026-01-01T00:00:00.000Z", until: "2026-09-01T00:00:00.000Z" };
 
-describe("cost model", () => {
-  it("prices X owned reads at $0.001 and Bluesky at zero", () => {
-    expect(providerRate("x")?.usdPerResource).toBe(0.001);
-    expect(providerRate("bluesky")?.usdPerResource).toBe(0);
-  });
-
-  it("estimates the real production backfill at well under a cent", () => {
-    // 15 X posts + 13 Bluesky posts — the actual publication history.
-    const est = estimateBackfillCost({ x: 15, bluesky: 13 });
-    expect(est.totalEstimatedUsd).toBeCloseTo(0.015, 6);
-    expect(est.fullyPriced).toBe(true);
-    expect(est.requiresPaidRun).toBe(true);
-  });
-
+describe("batching is an API property and stays here", () => {
   it("batches to the provider's documented limit", () => {
+    expect(providerRate("bluesky")?.batchSize).toBe(25);
     expect(batchCount(13, 25)).toBe(1); // one Bluesky getPosts call
     expect(batchCount(150, 100)).toBe(2);
     expect(batchCount(0, 25)).toBe(0);
   });
-
-  it("does NOT apply X's 24h billing dedup — the estimate is an upper bound", () => {
-    // The docs describe dedup as a billing behaviour and say nothing about
-    // value freshness. Estimating the discount would be assuming in our
-    // own favour on an unverified premise.
-    const once = estimateBackfillCost({ x: 10 });
-    expect(once.totalEstimatedUsd).toBeCloseTo(0.01, 6);
-  });
 });
 
-describe("cost gate", () => {
-  it("allows a free run without any confirmation", () => {
-    const gate = evaluateCostGate(estimateBackfillCost({ bluesky: 13 }), null);
-    expect(gate).toEqual({ allowed: true, reason: "free" });
+describe("cost now comes from the budget module", () => {
+  it("prices the real production backfill", () => {
+    const a = assessCost({ x: 15, bluesky: 13 }, FRESH);
+    expect(a.estimatedUsd).toBeCloseTo(0.015, 6);
+    expect(a.costKnown).toBe(true);
   });
 
-  it("refuses a paid run with no confirmation, and says what it would cost", () => {
-    const gate = evaluateCostGate(estimateBackfillCost({ x: 15 }), null);
-    expect(gate.allowed).toBe(false);
-    if (!gate.allowed) {
-      expect(gate.reason).toBe("confirmation_required");
-      expect(gate.message).toContain("0.0150");
-      expect(gate.message).toContain("console.x.com");
-    }
+  it("allows a free run without confirmation", () => {
+    expect(
+      evaluateSpend({ assessment: assessCost({ bluesky: 13 }, FRESH), budget: OPEN_BUDGET }),
+    ).toEqual({ allowed: true, reason: "free" });
   });
 
-  it("refuses when the confirmed ceiling is below the estimate", () => {
-    const gate = evaluateCostGate(estimateBackfillCost({ x: 100 }), 0.01);
-    expect(gate.allowed).toBe(false);
-    if (!gate.allowed) expect(gate.reason).toBe("confirmation_too_low");
+  it("refuses a paid run with no confirmation", () => {
+    const v = evaluateSpend({ assessment: assessCost({ x: 15 }, FRESH), budget: OPEN_BUDGET });
+    expect(v.allowed).toBe(false);
+    if (!v.allowed) expect(v.reason).toBe("confirmation_required");
   });
 
-  it("allows a paid run once the operator confirms a sufficient ceiling", () => {
-    const gate = evaluateCostGate(estimateBackfillCost({ x: 15 }), 1);
-    expect(gate).toEqual({ allowed: true, reason: "confirmed" });
-  });
-
-  it("blocks entirely when a platform has no documented rate", () => {
-    // "If cost cannot be verified at execution time: do not execute."
-    const gate = evaluateCostGate(estimateBackfillCost({ mastodon: 5 }), 1000);
-    expect(gate.allowed).toBe(false);
-    if (!gate.allowed) {
-      expect(gate.reason).toBe("unpriced_platform");
-      expect(gate.message).toContain("mastodon");
-    }
+  it("allows it once confirmed", () => {
+    expect(
+      evaluateSpend({ assessment: assessCost({ x: 15 }, FRESH), budget: OPEN_BUDGET, confirmedMaxUsd: 1 }),
+    ).toEqual({ allowed: true, reason: "confirmed" });
   });
 });
 
@@ -130,7 +101,7 @@ describe("planBackfill bounds", () => {
     });
     expect(plan.selected).toHaveLength(0);
     expect(plan.rejected[0].reason).toBe("no_provider_identifier");
-    expect(plan.cost.totalEstimatedUsd).toBe(0);
+    expect(plan.cost.resources.totalResources).toBe(0);
   });
 
   it("caps at maxPosts and keeps the MOST RECENT posts", () => {
