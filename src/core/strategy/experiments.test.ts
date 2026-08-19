@@ -14,6 +14,7 @@ import { classified, containsStrategyOverclaim } from "./evidence";
 import {
   UNREALISTIC_AFTER_WEEKS,
   describeExperiments,
+  publishingRate,
   suggestExperiments,
 } from "./experiments";
 
@@ -177,5 +178,39 @@ describe("the suggestion set stays a shortlist", () => {
     const suggestions = suggestExperiments({ mix: mixOf(12), postsPerWeek: 1.4, nowIso: NOW });
     expect(describeExperiments(suggestions, 1.4)).toContain("1.4 post(s) a week");
     expect(describeExperiments(suggestions, null)).toContain("not established");
+  });
+});
+
+describe("the publishing rate refuses to be invented", () => {
+  const daily = (day: number) =>
+    new Date(Date.parse("2026-04-01T12:00:00Z") + day * 86_400_000).toISOString();
+
+  it("returns null below three posts", () => {
+    expect(publishingRate([daily(0), daily(30)], NOW).postsPerWeek).toBeNull();
+  });
+
+  it("returns null when the span is too short to carry a rate", () => {
+    // Three posts in one afternoon, read a day later, is not 21 posts
+    // a week — and a fortnight of history is the floor for saying so.
+    const rate = publishingRate([daily(0), daily(0), daily(0)], daily(1));
+    expect(rate.postsPerWeek).toBeNull();
+    expect(rate.spanDays).toBe(1);
+  });
+
+  it("computes a rate over a real span", () => {
+    // 28 posts across 135 days is a little under 1.5 a week.
+    const posts = Array.from({ length: 28 }, (_, i) => daily(i * 5));
+    const rate = publishingRate(posts, daily(135));
+    expect(rate.spanDays).toBe(135);
+    expect(rate.postsPerWeek).toBe(1.5);
+  });
+
+  it("counts the silence since the last post, not only the posting span", () => {
+    // Six posts in a fortnight then three months of nothing is not
+    // "3 posts a week" — the rate must include the gap.
+    const posts = Array.from({ length: 6 }, (_, i) => daily(i * 2));
+    const busy = publishingRate(posts, daily(10));
+    const silent = publishingRate(posts, daily(120));
+    expect(silent.postsPerWeek!).toBeLessThan(busy.postsPerWeek ?? Infinity);
   });
 });

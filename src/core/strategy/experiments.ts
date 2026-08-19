@@ -342,3 +342,35 @@ function roundTo(value: number, places: number): number {
   const factor = 10 ** places;
   return Math.round(value * factor) / factor;
 }
+
+/**
+ * Posts per week over the observed span.
+ *
+ * Returns null rather than a number when the span is too short to carry
+ * a rate: three posts in one afternoon is not "21 posts a week", and
+ * projecting it forward would make every experiment estimate a fantasy.
+ */
+export function publishingRate(
+  publishedAt: readonly string[],
+  nowIso: string,
+): { postsPerWeek: number | null; spanDays: number | null } {
+  const times = publishedAt
+    .map((iso) => Date.parse(iso))
+    .filter((t) => Number.isFinite(t))
+    .sort((a, b) => a - b);
+  if (times.length < 3) return { postsPerWeek: null, spanDays: null };
+
+  const end = Math.max(times[times.length - 1], Date.parse(nowIso));
+  const spanDays = (end - times[0]) / 86_400_000;
+  if (!Number.isFinite(spanDays) || spanDays < 14) {
+    return { postsPerWeek: null, spanDays: Number.isFinite(spanDays) ? round1(spanDays) : null };
+  }
+  return {
+    postsPerWeek: round1((times.length / spanDays) * 7),
+    spanDays: round1(spanDays),
+  };
+}
+
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
+}
