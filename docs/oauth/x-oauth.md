@@ -31,7 +31,17 @@ X_REDIRECT_URI=https://your-domain.example/api/oauth/x/callback
 
 ## Notes
 
-- API access tiers matter. The Free tier blocks several read endpoints; the OAuth flow itself works on any tier, but the publishing-phase write endpoints require Basic or higher.
+- **Access model (corrected 2026-08-19).** X moved to pay-per-usage credits in
+  February 2026; the Free / Basic / Pro tier model this note previously
+  described no longer governs new access, and the claim that "the Free tier
+  blocks several read endpoints" is obsolete. Post metrics — including
+  `impression_count` — are readable via `public_metrics` with a bearer token,
+  and the scopes Signal already requests (`users.read`, `tweet.read`) are
+  sufficient. The limit is cost, not capability. See
+  [../platforms/provider-metric-capabilities.md](../platforms/provider-metric-capabilities.md).
+- Publishing scopes (`tweet.write`, `media.write`) **are** requested, gated by
+  `SAFE_TEST_MODE` in `allRequestedScopes()`. An earlier version of this note
+  said they were not.
 - X access tokens expire in 2 hours; refresh tokens are long-lived. The Phase E3 layer records `expires_at`; a future PR adds automatic refresh.
 - The revoke endpoint accepts `token` + `token_type_hint`.
 
