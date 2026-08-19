@@ -1,5 +1,15 @@
 /**
- * Provider cost model for the historical backfill.
+ * Provider BATCHING model for the historical backfill.
+ *
+ * NOTE ON PRICING (changed this milestone): the cost half of this module
+ * has moved to `src/core/metrics/budget/x-read-budget.ts`. A provider
+ * price is not code — it changes without a deploy and a stale constant
+ * looks authoritative while being wrong — so it is now resolved from
+ * configuration with a freshness horizon, and an unknown price blocks
+ * rather than defaulting to free. What stays here is batch size, which
+ * IS a stable API property.
+ *
+ * Historical note on the original module:
  *
  * Why a whole module for this: the scheduled sweep reads a handful of
  * recent posts and its cost is noise. A backfill deliberately reaches
@@ -35,6 +45,7 @@ export interface ProviderRate {
  *
  * Bluesky: no paid tier, no API key, no quota. getPosts accepts 25 uris.
  */
+/** @deprecated for pricing — use assessCost(). Retained for batchSize. */
 export const PROVIDER_RATES: Record<string, ProviderRate> = {
   x: {
     usdPerResource: 0.001,

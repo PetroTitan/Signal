@@ -12,6 +12,11 @@ import {
 import { authorizeCronRequest } from "@/lib/cron-auth";
 import { listBackfillCandidates } from "@/repositories/post-metrics-repository";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
+import {
+  evaluateBudget,
+  resolveBudgets,
+} from "@/core/metrics/budget/x-read-budget";
+import { sumXResourcesSince } from "@/repositories/metrics-refresh-run-repository";
 
 /**
  * Bounded historical metrics backfill.
@@ -61,6 +66,7 @@ interface BackfillBody {
   includeAlreadyMeasured?: unknown;
   execute?: unknown;
   confirmedMaxUsd?: unknown;
+  confirmedMaxResources?: unknown;
 }
 
 function isoOr(value: unknown, fallback: string): string | null {
@@ -127,6 +133,15 @@ export async function POST(request: Request) {
     typeof body.confirmedMaxUsd === "number" && Number.isFinite(body.confirmedMaxUsd)
       ? body.confirmedMaxUsd
       : null;
+  // Authorise by RESOURCE COUNT when the price cannot be established.
+  // Signal can always state how many resources a plan reads, even when
+  // it cannot price them, and that is what an operator can meaningfully
+  // approve in that situation.
+  const confirmedMaxResources =
+    typeof body.confirmedMaxResources === "number" &&
+    Number.isFinite(body.confirmedMaxResources)
+      ? Math.floor(body.confirmedMaxResources)
+      : null;
   const execute = body.execute === true;
 
   const db = createSupabaseServiceRoleClient();
@@ -140,6 +155,11 @@ export async function POST(request: Request) {
       { status: 503 },
     );
   }
+
+  // Actual X reads already spent today, from the run history. This is
+  // the only place the budget can be measured rather than guessed.
+  const dayStartIso = `${nowIso.slice(0, 10)}T00:00:00.000Z`;
+  const xResourcesSpentToday = await sumXResourcesSince(db, dayStartIso).catch(() => 0);
 
   let candidates: BackfillCandidate[];
   try {
@@ -164,6 +184,18 @@ export async function POST(request: Request) {
       includeAlreadyMeasured: body.includeAlreadyMeasured === true,
     },
     confirmedMaxUsd,
+    confirmedMaxResources,
+    priceEnv: {
+      configuredRate: process.env.X_READ_PRICE_USD_PER_RESOURCE ?? null,
+      nowIso,
+    },
+    budget: evaluateBudget(
+      xResourcesSpentToday,
+      resolveBudgets({
+        dailyXReads: process.env.SIGNAL_DAILY_X_READ_BUDGET ?? null,
+        backfillXReads: process.env.SIGNAL_BACKFILL_X_READ_BUDGET ?? null,
+      }).backfillXReads,
+    ),
   });
 
   const planView = {
@@ -174,6 +206,7 @@ export async function POST(request: Request) {
     postsByPlatform: plan.postsByPlatform,
     cost: plan.cost,
     costSummary: plan.costSummary,
+    budget: plan.budget,
     gate: plan.gate,
     executable: plan.executable,
     description: describePlan(plan),
@@ -213,7 +246,9 @@ export async function POST(request: Request) {
       measured: result.measured,
       rateLimited: result.rateLimited,
       failed: result.failed,
-      estimatedUsd: plan.cost.totalEstimatedUsd,
+      estimatedUsd: plan.cost.estimatedUsd,
+      xResources: plan.cost.resources.xResources,
+      costKnown: plan.cost.costKnown,
       summary: result.summary,
     }),
   );

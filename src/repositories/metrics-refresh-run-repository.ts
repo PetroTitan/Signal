@@ -166,6 +166,32 @@ function toSummary(row: MetricsRefreshRunRow): RefreshRunSummary {
   };
 }
 
+/**
+ * X resources actually read since an instant, summed from run history.
+ *
+ * This is what makes the budget measured rather than assumed: every run
+ * records its per-provider attempt count, so the day's spend is a fact
+ * in the database rather than an estimate carried in memory.
+ */
+export async function sumXResourcesSince(
+  db: SupabaseClient,
+  sinceIso: string,
+): Promise<number> {
+  const { data, error } = await db
+    .from("metrics_refresh_runs")
+    .select("by_provider")
+    .gte("started_at", sinceIso)
+    .limit(500);
+  if (error) throw fromPostgres(error, "Failed to sum X read usage.");
+
+  let total = 0;
+  for (const row of (data ?? []) as unknown as Array<{ by_provider: Record<string, unknown> }>) {
+    const x = row.by_provider?.x as { attempted?: unknown } | undefined;
+    if (x && typeof x.attempted === "number") total += x.attempted;
+  }
+  return total;
+}
+
 /** Most recent runs, newest first. */
 export async function listRecentRefreshRuns(
   db: SupabaseClient,
