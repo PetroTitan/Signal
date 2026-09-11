@@ -662,7 +662,7 @@ export async function reserveAndClaim(input: {
   leaseSeconds: number;
   claimedBy: string;
   db?: Db;
-}): Promise<{ reserved: number; members: ClaimedMember[] }> {
+}): Promise<QuotaReservation> {
   const { data, error } = await client(input.db).rpc(
     "reserve_bluesky_campaign_quota",
     {
@@ -682,6 +682,8 @@ export async function reserveAndClaim(input: {
 
   const rows = (data ?? []) as unknown as {
     reserved: number;
+    reservation_id: string | null;
+    reason: string | null;
     member_id: string | null;
     subject_did: string | null;
     current_handle: string | null;
@@ -690,7 +692,8 @@ export async function reserveAndClaim(input: {
     provider_record_rkey: string | null;
   }[];
 
-  // A zero reservation returns one row with a null member.
+  // A zero reservation returns one row with a null member and the
+  // reason it granted nothing.
   const members = rows
     .filter((r) => r.member_id !== null)
     .map((r) => ({
@@ -702,7 +705,46 @@ export async function reserveAndClaim(input: {
       provider_record_rkey: r.provider_record_rkey,
     }));
 
-  return { reserved: members.length, members };
+  return {
+    reserved: members.length,
+    reservationId: rows[0]?.reservation_id ?? null,
+    reason: (rows[0]?.reason ?? "queue_empty") as ReservationReason,
+    members,
+  };
+}
+
+/**
+ * Why a reservation granted nothing.
+ *
+ * "Reserved zero" is several different situations and the caller must
+ * act differently on each: a spent quota should close the day's run and
+ * schedule tomorrow, an empty queue should complete the campaign, and a
+ * paused run should do neither. Collapsing them into a bare zero is how
+ * the dispatcher ended up spinning on a finished campaign every tick.
+ */
+export type ReservationReason =
+  | "granted"
+  /** Took over a held reservation to reconcile it. Consumes no quota. */
+  | "reconcile"
+  | "quota_exhausted"
+  | "identity_exhausted"
+  | "queue_empty"
+  | "nothing_requested"
+  | "run_not_running"
+  | "run_missing";
+
+export interface QuotaReservation {
+  reserved: number;
+  /**
+   * The reservation that OWNS this quota until it is settled.
+   *
+   * Settlement quotes it back, which is what makes settlement
+   * idempotent and stops a late worker consuming a reservation that
+   * belongs to someone else.
+   */
+  reservationId: string | null;
+  reason: ReservationReason;
+  members: ClaimedMember[];
 }
 
 export interface ClaimedMember {
@@ -715,35 +757,14 @@ export interface ClaimedMember {
 }
 
 /**
- * Give back quota that was reserved and never attempted.
+ * Settle one reservation: apply outcome DELTAS and release its quota.
  *
- * Must equal exactly the unspent reservation: releasing too little
- * shrinks the day silently, releasing too much lets it overrun.
- */
-export async function releaseReservation(input: {
-  workspaceId: string;
-  runId: string;
-  operatorAccountId: string;
-  usageDate: string;
-  amount: number;
-  db?: Db;
-}): Promise<void> {
-  if (input.amount <= 0) return;
-  const { error } = await client(input.db).rpc(
-    "release_bluesky_campaign_reservation",
-    {
-      p_workspace_id: input.workspaceId,
-      p_run_id: input.runId,
-      p_operator_account_id: input.operatorAccountId,
-      p_usage_date: input.usageDate,
-      p_amount: input.amount,
-    },
-  );
-  if (error) throw fromPostgres(error, "Could not release the reservation.");
-}
-
-/**
- * Apply outcome DELTAS and consume the reservation, in one statement.
+ * Takes the reservation's ID rather than a count. A count was the
+ * defect: it was subtracted from whatever `reserved_count` happened to
+ * hold at that moment, so a worker that settled late could consume a
+ * reservation another worker had just opened. Quoting the ID lets the
+ * RPC verify ownership, apply the deltas exactly once, and treat a
+ * duplicate settlement as a no-op.
  *
  * Never write absolute counters computed from a snapshot: the previous
  * code read the run at the start of a tick, added its chunk totals in
@@ -760,13 +781,13 @@ export async function applyRunOutcome(input: {
   skipped: number;
   failed: number;
   recordsCreated: number;
-  consumeReservation: number;
+  reservationId: string;
   consecutiveFailures: number;
   rateLimitedUntil?: string | null;
   rateLimitRemaining?: number | null;
   rateLimitResetAt?: string | null;
   db?: Db;
-}): Promise<BlueskyFollowCampaignRunRow | null> {
+}): Promise<SettlementResult | null> {
   const { data, error } = await client(input.db).rpc(
     "apply_bluesky_run_outcome",
     {
@@ -774,13 +795,13 @@ export async function applyRunOutcome(input: {
       p_run_id: input.runId,
       p_operator_account_id: input.operatorAccountId,
       p_usage_date: input.usageDate,
+      p_reservation_id: input.reservationId,
       p_attempted: input.attempted,
       p_succeeded: input.succeeded,
       p_already_following: input.alreadyFollowing,
       p_skipped: input.skipped,
       p_failed: input.failed,
       p_records_created: input.recordsCreated,
-      p_consume_reservation: input.consumeReservation,
       p_consecutive_failures: input.consecutiveFailures,
       p_rate_limited_until: input.rateLimitedUntil ?? null,
       p_rate_limit_remaining: input.rateLimitRemaining ?? null,
@@ -789,9 +810,80 @@ export async function applyRunOutcome(input: {
   );
   if (error) throw fromPostgres(error, "Could not record the run outcome.");
   const row = (Array.isArray(data) ? data[0] : data) as
-    | BlueskyFollowCampaignRunRow
+    | {
+        settled: boolean;
+        already_settled: boolean;
+        out_run_id: string | null;
+        out_attempted: number | null;
+        out_succeeded: number | null;
+        out_reserved: number | null;
+      }
     | undefined;
-  return row ?? null;
+  if (!row) return null;
+  return {
+    settled: row.settled === true,
+    alreadySettled: row.already_settled === true,
+    attemptedCount: Number(row.out_attempted ?? 0),
+    succeededCount: Number(row.out_succeeded ?? 0),
+    reservedCount: Number(row.out_reserved ?? 0),
+  };
+}
+
+export interface SettlementResult {
+  /** True only when THIS call applied the deltas. */
+  settled: boolean;
+  /** True when the reservation had already been settled. */
+  alreadySettled: boolean;
+  attemptedCount: number;
+  succeededCount: number;
+  reservedCount: number;
+}
+
+/**
+ * Serialise dispatching per campaign-day.
+ *
+ * The reservation system bounds how much quota concurrent workers can
+ * spend, but "consecutive failures" is a property of a SEQUENCE, and
+ * two interleaved workers do not have one: both read 3, both write 4,
+ * and a breaker set to trip at 5 never trips. A lease rather than a
+ * lock because the holder is a serverless function that can vanish
+ * without releasing anything.
+ */
+export async function acquireDispatchLease(input: {
+  workspaceId: string;
+  runId: string;
+  owner: string;
+  leaseSeconds: number;
+  db?: Db;
+}): Promise<boolean> {
+  const { data, error } = await client(input.db).rpc(
+    "acquire_bluesky_run_dispatch_lease",
+    {
+      p_workspace_id: input.workspaceId,
+      p_run_id: input.runId,
+      p_owner: input.owner,
+      p_lease_seconds: input.leaseSeconds,
+    },
+  );
+  if (error) throw fromPostgres(error, "Could not acquire the dispatch lease.");
+  return data === true;
+}
+
+export async function releaseDispatchLease(input: {
+  workspaceId: string;
+  runId: string;
+  owner: string;
+  db?: Db;
+}): Promise<void> {
+  const { error } = await client(input.db).rpc(
+    "release_bluesky_run_dispatch_lease",
+    {
+      p_workspace_id: input.workspaceId,
+      p_run_id: input.runId,
+      p_owner: input.owner,
+    },
+  );
+  if (error) throw fromPostgres(error, "Could not release the dispatch lease.");
 }
 
 /** The audit row's verdict on whether this worker may call the provider. */

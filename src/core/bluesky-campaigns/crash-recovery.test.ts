@@ -119,7 +119,23 @@ function simulateProcessDeath(db: FakeDb): void {
   campaign.last_error_code = null;
   campaign.last_error_message = null;
   const run = db.rows("bluesky_follow_campaign_runs")[0];
-  if (run) run.status = "running";
+  if (run) {
+    run.status = "running";
+    // The dispatch lease outlives the process that took it — nothing
+    // ran to release it. It lapses on its own clock, which is what lets
+    // the next tick pick the campaign up rather than being locked out
+    // of it forever.
+    run.dispatch_lease_expires_at = new Date(db.nowMs() - 1000).toISOString();
+  }
+  // The quota reservation lapses on the same clock as the member
+  // leases — `reserve` issues both with the same duration — so a killed
+  // worker releases its rows and its quota at the same moment. Expiring
+  // one without the other would model a state production cannot reach.
+  for (const r of db.rows("bluesky_campaign_quota_reservations")) {
+    if (r.status === "open") {
+      r.expires_at = new Date(db.nowMs() - 1000).toISOString();
+    }
+  }
   for (const m of db.rows("bluesky_follow_campaign_members")) {
     if (m.status === "claimed" || m.status === "running") {
       // Against the DATABASE clock, not this machine's. The lease was
@@ -228,6 +244,8 @@ describe("a crash after provider success is never retried", () => {
 
     // The lease lapses and the member returns to the queue.
     simulateProcessDeath(db);
+    // eslint-disable-next-line no-console
+    console.log("DBG res", JSON.stringify(db.rows("bluesky_campaign_quota_reservations")));
 
     // Worker 2. The provider would happily create a SECOND record.
     const second = healthyProvider();

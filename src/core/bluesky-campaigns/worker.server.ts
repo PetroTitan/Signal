@@ -71,6 +71,16 @@ export const CAMPAIGN_CHUNK_SIZE = MAX_RELATIONSHIP_BATCH_SIZE;
  */
 export const LEASE_SECONDS = 300;
 
+/**
+ * How long one dispatcher may hold a campaign-day.
+ *
+ * Bounded by the platform's own function limit (`maxDuration = 300`) so
+ * a killed dispatcher's campaign becomes available again on roughly the
+ * next cron tick, plus a margin for the settlement writes that follow
+ * the last chunk.
+ */
+export const DISPATCH_LEASE_SECONDS = 360;
+
 export interface ChunkOutcomeCounts {
   attempted: number;
   succeeded: number;
@@ -256,12 +266,42 @@ export async function processCampaignChunk(
       db: input.db,
     });
 
-    if (claim.terminal) {
-      // Someone already finished this member. Not an attempt, no quota.
+    // A terminal claim means the audit row already reached a final
+    // state — but WHICH final state decides everything, and collapsing
+    // them all into "succeeded" was a false success: a member whose
+    // follow was never confirmed, or which structurally failed, was
+    // reported to the operator as followed.
+    if (claim.terminal && claim.existingStatus === "succeeded") {
+      // Confirmed by a previous pass. Not an attempt, no quota.
       untouched.delete(member.id);
       await persist(input, member, "succeeded", null, member.attempt_count);
       continue;
     }
+
+    if (claim.terminal && claim.existingStatus === "failed") {
+      // A previous pass established this cannot succeed. Terminal, but
+      // terminal-failed — never reported as a follow.
+      untouched.delete(member.id);
+      await persist(
+        input,
+        member,
+        "failed_structural",
+        null,
+        member.attempt_count,
+      );
+      counts.failed += 1;
+      continue;
+    }
+
+    // `reconciliation_required` is terminal for the ACTION and
+    // unresolved for the MEMBER. The outcome of a possible provider
+    // mutation is unknown, so this pass may read relationship truth and
+    // may never send anything. It resolves only when Bluesky confirms
+    // the follow; until then the member stays retryable and the action
+    // stays reconciliation_required, however many passes go by.
+    const reconcileOnlyClaim =
+      claim.needsReconcile ||
+      (claim.terminal && claim.existingStatus === "reconciliation_required");
 
     if (known === "following") {
       // Observed, not assumed. No record is created and no quota is
@@ -272,7 +312,7 @@ export async function processCampaignChunk(
         workspaceId: input.campaign.workspace_id,
         actionId: claim.actionId,
         status: "succeeded",
-        reconciliationNote: claim.needsReconcile
+        reconciliationNote: reconcileOnlyClaim
           ? "A previous attempt may have been sent before this worker took over. Bluesky reports the follow exists, so nothing was re-sent."
           : "Already following before this campaign reached them. No follow record was created and no quota was consumed.",
         db: input.db,
@@ -283,7 +323,7 @@ export async function processCampaignChunk(
       continue;
     }
 
-    const result = claim.needsReconcile
+    const result = reconcileOnlyClaim
       ? // RECONCILIATION-ONLY MODE. No mutation may be sent while a
         // prior attempt's outcome is unknown.
         await reconcileOnly(input, member, claim.actionId)
@@ -292,9 +332,21 @@ export async function processCampaignChunk(
     untouched.delete(member.id);
     rateLimit = result.rateLimit ?? rateLimit;
 
+    // A reconciliation-only pass sends nothing, so it must not spend an
+    // attempt or a unit of quota.
+    //
+    // Spending an attempt would eventually exhaust MAX_MEMBER_ATTEMPTS
+    // and turn an UNRESOLVED member into `failed_structural` — a false
+    // terminal state reached without a single request being made. And
+    // counting it as attempted would shrink the day's quota to pay for
+    // reads that never touched the provider.
+    const attemptsAfter = reconcileOnlyClaim
+      ? member.attempt_count
+      : member.attempt_count + 1;
+
     const decision = classifyOutcome({
       kind: result.kind,
-      attemptCount: member.attempt_count + 1,
+      attemptCount: attemptsAfter,
       resumeAfter: result.resumeAfter,
     });
 
@@ -323,16 +375,12 @@ export async function processCampaignChunk(
       db: input.db,
     });
 
-    await persist(
-      input,
-      member,
-      decision.memberStatus,
-      result,
-      member.attempt_count + 1,
-    );
+    await persist(input, member, decision.memberStatus, result, attemptsAfter);
 
-    counts.attempted += 1;
-    if (decision.consumesQuota) counts.quotaConsumed += 1;
+    if (!reconcileOnlyClaim) {
+      counts.attempted += 1;
+      if (decision.consumesQuota) counts.quotaConsumed += 1;
+    }
     if (decision.kind === "succeeded") {
       counts.succeeded += 1;
       counts.recordsCreated += 1;

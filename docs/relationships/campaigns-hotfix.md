@@ -37,7 +37,7 @@ production", and nothing here should be read as the latter.
 Every defect below was reproduced against the merged code before any
 fix was written. None was accepted on description.
 
-### 1. Quota reservation was not atomic
+### 1. Quota reservation was not atomic — and the first fix was still wrong
 
 The dispatcher read usage, claimed a chunk, and incremented counters
 *after* the chunk finished. Two dispatchers both read "0 used today",
@@ -49,17 +49,53 @@ not *how many* follows happen. Two dispatchers at a quota of 100
 performed 200 follows with no member followed twice, and the test stayed
 green.
 
-Fixed by `reserve_bluesky_campaign_quota`, which under a row lock
-reserves quota and claims exactly the reserved number in one
-transaction, and by `apply_bluesky_run_outcome`, which writes every
-counter as a **delta** and consumes the reservation in the same
-statement. `reserved_count` is tracked separately from `attempted_count`
-on both the run and the identity's daily usage.
+The first version of this hotfix replaced that with a scalar
+`reserved_count` reconciled against member LEASE status. That was still
+wrong, and the window is narrow enough to be worth spelling out:
+
+```
+A reserves 20   → reserved_count = 20
+A finishes all 20 members, clearing each lease in persist()
+── here ──      → 0 live leases, and the run counters are still 0
+B reserves      → concludes reserved_count "drifted", resets it to 0,
+                  and finds the whole day's quota available again
+B reserves 20   → reserved_count = 20 (B's)
+A settles       → consumes 20, which is now B's reservation
+```
+
+The day goes over its limit and both workers believe they behaved.
+Lease status answers "is anyone holding this row", which is a different
+question from "is this quota spent".
+
+So a reservation is now a **row with an identity**
+(`bluesky_campaign_quota_reservations`), every claimed member names the
+reservation that paid for it, and outstanding quota is the sum over
+`open` and `held` reservations — never inferred from a lease.
+Settlement quotes the reservation ID back, so
+`apply_bluesky_run_outcome` can verify ownership, apply the deltas
+exactly once, and treat a duplicate as a no-op. A late worker cannot
+consume a reservation that is not its own.
+
+Expiry splits in two, because a lapsed reservation must return its
+quota unless a follow may already have been sent under it:
+
+- **`held`** — a member under it has an action still marked in-flight.
+  A `createRecord` may have reached a real person, so the quota stays
+  consumed until reconciliation resolves it.
+- **`expired`** — no member under it could have reached the provider.
+  The quota returns.
+
+A held reservation would otherwise deadlock the very reconciliation
+that resolves it: a campaign whose last unit of quota is held has zero
+headroom, so it could never claim the member whose resolution would
+release that unit. Reconciliation reads truth and can never send a
+mutation, so it **takes over** the held reservation — same rows, same
+quota, fresh lease — rather than competing for headroom.
 
 The assertion is now on **provider calls**, which is the number that
 reaches real people.
 
-### 2. Mutation idempotency was decorative
+### 2. Mutation idempotency was decorative — and "terminal" meant "succeeded"
 
 The worker never inserted a `bluesky_relationship_actions` row. The
 campaign-member unique index therefore guarded nothing, and campaign
@@ -77,6 +113,29 @@ A lease reclaimed while `provider_in_flight_at` is set enters
 calls `createRecord` again. If truth is also unavailable the action
 stays `reconciliation_required` — unknown on top of unknown is the
 strongest possible reason not to send.
+
+The first version of this hotfix then threw that away. The claim RPC
+treats `succeeded`, `failed` **and** `reconciliation_required` as
+terminal, and the worker mapped every terminal claim to member status
+`succeeded`. So a member whose follow was never confirmed — or which
+structurally failed — was reported to the operator as followed, and the
+campaign counted it as done.
+
+That is the worst failure mode this feature has: a lie about a public
+action taken in the operator's name, invisible because everything
+downstream agrees. The worker now branches on `existingStatus`:
+
+| Action status | Member outcome |
+| --- | --- |
+| `succeeded` | `succeeded` — confirmed by a previous pass |
+| `failed` | `failed_structural` — never reported as a follow |
+| `reconciliation_required` | reconciliation-only; resolves **only** when Bluesky confirms the follow |
+
+A reconciliation pass also consumes neither an attempt nor a unit of
+quota. Spending an attempt would eventually exhaust
+`MAX_MEMBER_ATTEMPTS` and turn an *unresolved* member into
+`failed_structural` without a single request having been made — a false
+terminal state reached by counting alone.
 
 ### 3. The RPCs were not executable by the worker (**this is the big one**)
 
@@ -112,7 +171,24 @@ Replaced with a generated `identity_key` column (the operator id, or the
 nil UUID for the global row) under one total unique index. Failure
 remains fail-closed.
 
-### 6. A 429 forfeited the rest of the day
+### 6a. The consecutive-failure breaker could not count
+
+"Consecutive" is a property of a SEQUENCE, and two interleaved workers
+do not have one: both read 3 failures, both write 4, and a breaker set
+to trip at 5 never trips while eight follows in a row fail. No
+arithmetic fixes that.
+
+So a dispatcher pass is serialised per campaign-day by a lease on the
+run (`acquire_bluesky_run_dispatch_lease`). A lease rather than a lock
+because the holder is a serverless function that can vanish without
+releasing anything. Losing the race is a normal outcome, not an error —
+another tick already has the campaign.
+
+This is the FIRST line of defence. The reservation system is the
+second, and it is what has to hold when a pass outlives its lease or the
+platform kills and replaces a function mid-chunk.
+
+### 6b. A 429 forfeited the rest of the day
 
 The dispatcher returned early on any run not in `running`, so the first
 rate limit of the day ended the day — even though Bluesky's write budget
@@ -124,6 +200,19 @@ and `resume_bluesky_campaign_run` returns the **same** run to `running`
 once the reset has elapsed. It is guarded so that an operator pause is
 never undone and no second run is opened for the day — a second run
 would hand the day a second quota.
+
+### 6c. A quota exhausted mid-pass never closed the day
+
+The dispatcher decided whether to finish the run from a `quotaRemaining`
+figure computed BEFORE the chunk loop. That figure is stale the moment
+any chunk runs, so a campaign that spent its quota during the pass left
+its run open and `next_run_at` unchanged — and the dispatcher woke on it
+every five minutes until midnight, reserving nothing each time.
+
+`reserve_bluesky_campaign_quota` now reports WHY it granted nothing
+(`quota_exhausted`, `identity_exhausted`, `queue_empty`,
+`run_not_running`, …), and the caller acts on the reason rather than on
+a pre-loop number.
 
 ### 7. Stale production claims
 
@@ -146,14 +235,33 @@ shipped**, against a Supabase-shaped prelude (the `auth` and `storage`
 schemas, `auth.uid()`, and the `anon` / `authenticated` / `service_role`
 roles). Nothing in `supabase/migrations/` is edited to make it apply.
 
-**Known limitation:** PGlite is a single backend. It cannot hold two
-simultaneous sessions, so it proves *constraints, permissions, RLS and
-RPC behaviour* but cannot demonstrate two genuinely parallel
-transactions contending for a lock. The concurrency proof therefore runs
-against the fake, where two complete `dispatchCampaigns` calls are
-interleaved and the assertion is on provider calls. The two halves are
-complementary: PGlite proves the SQL is what we think it is, the fake
-proves the dispatcher uses it correctly under contention.
+**PGlite's limit, and how it is now covered.** PGlite runs a single
+backend: two simultaneous sessions do not exist, so a lock held by one
+transaction can never be observed blocking another. That is structural,
+not configuration, and it means PGlite cannot prove the single most
+important property here.
+
+So there is a second real-Postgres harness. `embedded-postgres`
+downloads the official PostgreSQL binaries and runs an ordinary server
+on a loopback port — no Docker, no system install — and every connection
+is a real backend. `src/test/pg/two-session-concurrency.pg.test.ts`
+opens several and proves, among other things, that the second session
+genuinely BLOCKS on the first's row lock (the premise everything else
+rests on), that four concurrent backends reserving in a loop hand out
+exactly the quota and no more, that three backends settling the same
+reservation produce exactly one settlement, and that a late settle
+cannot touch a reservation opened after it.
+
+That suite immediately earned its place: it caught two runtime defects
+in this migration that no PGlite test executed — an OUT parameter that
+shadowed the column it was updating (`attempted_count`), which plpgsql
+rejects as ambiguous only when the function is CALLED, and an `update`
+against a column that does not exist on `bluesky_identity_daily_usage`.
+Both would have reached production as a failing RPC.
+
+Both harnesses share one Supabase prelude (`src/test/pg/supabase-prelude.ts`).
+They did not at first, the copies drifted, and a migration that applied
+in one failed in the other.
 
 Two near-misses are worth recording, because both were tests that passed
 for the wrong reason:
@@ -166,6 +274,11 @@ for the wrong reason:
   the injected `nowIso`. The rate-limit test "does not resume before the
   reset" was therefore answering a question about the hour the suite was
   run. The fake now has a pinned database clock.
+- **The interleaving test never interleaved.** Worker A holds the
+  dispatch lease, so worker B was turned away at the door and the
+  reservation layer was never exercised — the test passed while proving
+  nothing about the thing it was written for. It now lapses A's lease
+  explicitly, and the lease's own exclusion is asserted separately.
 
 ### The gates
 
@@ -177,6 +290,9 @@ for the wrong reason:
 | Two complete dispatchers ≤ quota, measured in provider calls | `quota-concurrency.test.ts` (10) |
 | Crash after provider success → zero further mutations | `crash-recovery.test.ts` (7) |
 | Same-day 429 recovery | `rate-limit-recovery.test.ts` (7) |
+| Two REAL sessions contending for one quota | `two-session-concurrency.pg.test.ts` (7) |
+| Deterministic A-reserves / A-unsettled / B-reserves interleaving | `reservation-interleaving.test.ts` (9) |
+| Three passes over an unconfirmable follow | `reconciliation-terminal.test.ts` (5) |
 | Kill-switch engage / update / release on PostgreSQL | `migration.pg.test.ts` |
 | Campaign actions visible in History | `quota-concurrency.test.ts` |
 

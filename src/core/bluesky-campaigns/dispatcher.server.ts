@@ -39,9 +39,11 @@ import {
   ensureRun,
   getIdentityUsage,
   listDueCampaigns,
-  releaseReservation,
   reserveAndClaim,
   resumeRateLimitedRun,
+  type ReservationReason,
+  acquireDispatchLease,
+  releaseDispatchLease,
   updateCampaign,
   updateRun,
 } from "@/repositories/bluesky-campaign-repository";
@@ -56,6 +58,7 @@ import {
   processCampaignChunk,
   CAMPAIGN_CHUNK_SIZE,
   LEASE_SECONDS,
+  DISPATCH_LEASE_SECONDS,
 } from "./worker.server";
 import type { NextAction } from "./outcomes";
 
@@ -442,9 +445,75 @@ async function runCampaign(args: {
   // only a reservation taken under a row lock stops them collectively
   // exceeding the day.
   const claimedBy = `tick-${now.toISOString()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  // ── One dispatcher per campaign-day.
+  //
+  // Reservations bound how much quota concurrent workers can spend, but
+  // the consecutive-failure breaker cannot be made correct by
+  // arithmetic: "consecutive" is a property of a sequence, and two
+  // interleaved workers do not have one. Both read 3 failures, both
+  // write 4, and a breaker set to trip at 5 never trips while eight
+  // follows in a row fail.
+  //
+  // Losing the race is a normal outcome, not an error: another tick
+  // already has this campaign.
+  const holdsLease = await acquireDispatchLease({
+    workspaceId: campaign.workspace_id,
+    runId: run.id,
+    owner: claimedBy,
+    leaseSeconds: DISPATCH_LEASE_SECONDS,
+    db: input.db,
+  });
+  if (!holdsLease) {
+    out.note = "another dispatcher holds this campaign";
+    return out;
+  }
+
+  try {
+    return await runChunks({
+      args, input, campaign, run, session, live, usageDate, claimedBy, now, out,
+    });
+  } finally {
+    await releaseDispatchLease({
+      workspaceId: campaign.workspace_id,
+      runId: run.id,
+      owner: claimedBy,
+      db: input.db,
+    });
+  }
+}
+
+/**
+ * The chunk loop, under the dispatch lease.
+ *
+ * Split out so the lease is released on every exit path — including the
+ * rate-limit and failure returns, which are the ones most likely to be
+ * taken.
+ */
+async function runChunks(ctx: {
+  args: { remainingBudgetMs: () => number };
+  input: DispatchInput;
+  campaign: BlueskyFollowCampaignRow;
+  run: BlueskyFollowCampaignRunRow;
+  session: Awaited<ReturnType<typeof resolveRelationshipSession>> & { ok: true };
+  live: { effective: number };
+  usageDate: string;
+  claimedBy: string;
+  now: Date;
+  out: RunCampaignResult;
+}): Promise<RunCampaignResult> {
+  const { args, input, campaign, session, live, usageDate, claimedBy, now, out } = ctx;
+  const run = ctx.run;
   let consecutive = run.consecutive_failures;
   let stop: NextAction | null = null;
   let totalSucceeded = run.succeeded_count;
+  // Why the loop stopped. Set from the reservation itself rather than
+  // from a quota figure computed before the loop began — that figure is
+  // stale the moment any chunk runs, and relying on it left a campaign
+  // whose quota ran out mid-pass with its run never closed and
+  // `next_run_at` still pointing at now, so every subsequent tick
+  // re-entered it for the rest of the day.
+  let lastReason: ReservationReason = "queue_empty";
 
   while (args.remainingBudgetMs() > 0) {
     const reservation = await reserveAndClaim({
@@ -461,8 +530,9 @@ async function runCampaign(args: {
       db: input.db,
     });
 
-    // Nothing reserved means the quota is spent or the queue is empty.
-    if (reservation.reserved === 0) break;
+    lastReason = reservation.reason;
+    // Nothing reserved. WHY decides what happens after the loop.
+    if (reservation.reserved === 0 || !reservation.reservationId) break;
 
     const chunk = await processCampaignChunk({
       campaign,
@@ -502,11 +572,11 @@ async function runCampaign(args: {
       skipped: chunk.skipped,
       failed: chunk.failed,
       recordsCreated: chunk.recordsCreated,
-      // The whole reservation is consumed: what was attempted counted
-      // against it, and what was not attempted was released back to the
-      // queue by the worker, so holding the difference would leak quota
-      // nothing will ever return.
-      consumeReservation: reservation.reserved,
+      // The reservation ITSELF, not a count. The RPC verifies that
+      // this reservation belongs to this run before applying anything,
+      // marks it settled so a duplicate settlement is a no-op, and
+      // releases exactly its own quota — never someone else's.
+      reservationId: reservation.reservationId,
       consecutiveFailures: consecutive,
       rateLimitedUntil:
         chunk.next.kind === "stop_run" && chunk.next.resumeAfter
@@ -519,7 +589,7 @@ async function runCampaign(args: {
           : null,
       db: input.db,
     });
-    if (updated) totalSucceeded = updated.succeeded_count;
+    if (updated?.settled) totalSucceeded = updated.succeededCount;
 
     if (chunk.next.kind !== "continue") {
       stop = chunk.next;
@@ -588,7 +658,7 @@ async function runCampaign(args: {
     return out;
   }
 
-  // Quota spent for today, or nothing left to claim.
+  // Why the loop ended decides what happens now.
   const after = await countMembersByStatus({
     workspaceId: campaign.workspace_id,
     campaignId: campaign.id,
@@ -600,10 +670,26 @@ async function runCampaign(args: {
     out.note = "campaign completed";
     return out;
   }
-  if (quotaRemaining <= 0) {
-    await finishRun(campaign, run, input.db, "daily quota reached", now);
-    out.note = `daily quota reached (${totalSucceeded} follow(s) created today)`;
+
+  // A quota that ran out DURING the pass must still close the day and
+  // schedule tomorrow. Reading a pre-loop figure here meant a campaign
+  // that spent its quota mid-pass left the run open and `next_run_at`
+  // unchanged, so the dispatcher woke on it every five minutes until
+  // midnight and reserved nothing each time.
+  if (lastReason === "quota_exhausted" || lastReason === "identity_exhausted") {
+    const reason =
+      lastReason === "identity_exhausted"
+        ? "identity daily ceiling reached"
+        : "daily quota reached";
+    await finishRun(campaign, run, input.db, reason, now);
+    out.note = `${reason} (${totalSucceeded} follow(s) created today)`;
+    return out;
   }
+
+  // `queue_empty` with members still eligible means every remaining row
+  // is leased by someone else or waiting on a backoff. Leave the run
+  // open; the next tick picks them up.
+  out.note = out.note ?? `stopped: ${lastReason}`;
   return out;
 }
 
