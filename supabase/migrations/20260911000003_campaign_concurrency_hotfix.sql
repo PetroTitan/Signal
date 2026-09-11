@@ -136,6 +136,7 @@ declare
   v_run public.bluesky_follow_campaign_runs;
   v_usage public.bluesky_identity_daily_usage;
   v_run_headroom integer;
+  v_live_leases integer;
   v_identity_headroom integer;
   v_grant integer;
 begin
@@ -175,11 +176,54 @@ begin
 
   -- Headroom is against effective quota minus BOTH what has been
   -- attempted and what is already reserved by another worker.
+  -- Reconcile the reservation against ground truth.
+  --
+  -- `reserved_count` should equal the members that are ACTUALLY leased
+  -- right now — including another live worker's claims, which is what
+  -- keeps two dispatchers honest with each other.
+  --
+  -- Recomputing rather than decrementing matters. A worker killed
+  -- mid-chunk never reports its outcome, so a decrement leaves a
+  -- residue for every member it had already finished, and those
+  -- residues accumulate across crashes until a small daily quota is
+  -- permanently consumed. Setting the value from the rows themselves is
+  -- self-healing: one crash costs a bounded under-count of attempts,
+  -- never a shrinking day.
+  select count(*)::int into v_live_leases
+    from public.bluesky_follow_campaign_members c
+   where c.workspace_id = p_workspace_id
+     and c.campaign_id = p_campaign_id
+     and c.status in ('claimed', 'running')
+     and c.lease_expires_at is not null
+     and c.lease_expires_at >= now();
+
+  if v_live_leases <> v_run.reserved_count then
+    update public.bluesky_follow_campaign_runs
+       set reserved_count = v_live_leases
+     where id = p_run_id;
+    update public.bluesky_identity_daily_usage
+       set reserved_count = greatest(
+             reserved_count - (v_run.reserved_count - v_live_leases), 0)
+     where id = v_usage.id;
+
+    select * into v_run
+      from public.bluesky_follow_campaign_runs where id = p_run_id;
+    select * into v_usage
+      from public.bluesky_identity_daily_usage where id = v_usage.id;
+  end if;
+
+  -- Quota consumed so far today.
+  --
+  -- `attempted_count` counts members that reached the provider path.
+  -- `already_following_count` is NOT among them — that branch returns
+  -- before an attempt is made — so subtracting it here would
+  -- double-count and let the day overrun. Only `skipped_count`
+  -- (dry run, deleted account, ineligible) is an attempt that consumed
+  -- no quota.
   v_run_headroom := greatest(
     0,
     v_run.effective_daily_quota
-      - greatest(v_run.attempted_count - v_run.already_following_count
-                 - v_run.skipped_count, 0)
+      - greatest(v_run.attempted_count - v_run.skipped_count, 0)
       - v_run.reserved_count
   );
 
