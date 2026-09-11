@@ -21,6 +21,7 @@ import {
   parseProductsPrepare,
   parseReportsSubmit,
   parseVerificationRunCheck,
+  parseBlueskyRelationshipHistory,
   parseWeeklyPlanAttachCreative,
   parseUploadCreativeAsset,
   parseWeeklyPlanPrepareItem,
@@ -58,6 +59,11 @@ import {
   strategyRecommendations,
   strategySummary,
 } from "./tools/strategy-tools";
+import {
+  relationshipHistory,
+  relationshipSummary,
+  relationshipTargets,
+} from "./tools/relationship-tools";
 import {
   accountsPrepare,
   importsPrepareMapping,
@@ -623,6 +629,47 @@ export const TOOLS: ToolDefinition[] = [
     parseArgs: parseEmptyArgs,
     handler: wrap(socialBackfillPreview),
   },
+  // Bluesky relationships — READ ONLY. Relationship WRITE tools are
+  // deliberately out of scope: a follow acts as the operator's account
+  // in public, and "explicitly initiated by the operator" is not a
+  // property an agent tool call can carry.
+  {
+    name: "signal.bluesky.relationship_targets",
+    description:
+      "Bluesky profiles whose followers have been imported, and how far each import actually got. An import is complete only when Bluesky stopped returning a pagination cursor. Read-only.",
+    requiredScopes: ["accounts:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(relationshipTargets),
+  },
+  {
+    name: "signal.bluesky.relationship_summary",
+    description:
+      "How the Bluesky candidate corpus breaks down by observed relationship state, plus how many actions are open or need reconciliation. `unknown` means never checked or a failed lookup — never 'not following'. Read-only.",
+    requiredScopes: ["accounts:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseEmptyArgs,
+    handler: wrap(relationshipSummary),
+  },
+  {
+    name: "signal.bluesky.relationship_history",
+    description:
+      "The append-only audit trail of every follow and unfollow, optionally for one DID. Handles are recorded as they appeared at action time, not as they are now. Read-only.",
+    requiredScopes: ["accounts:read"],
+    riskLevel: "safe_read",
+    approvalMode: "no_approval_needed",
+    writesDatabase: false,
+    touchesProduction: false,
+    parseArgs: parseBlueskyRelationshipHistory,
+    handler: wrap(relationshipHistory),
+  },
+
   // Content strategy — READ ONLY, ADVISORY ONLY. "What should I post
   // next, and on what evidence?" Every option these return carries
   // blocking: false; none of them can approve, schedule or publish.

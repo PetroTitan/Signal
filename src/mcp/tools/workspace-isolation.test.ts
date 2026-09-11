@@ -268,6 +268,84 @@ describe("the strategy tools are registered read-only and advisory", () => {
   });
 });
 
+describe("the Bluesky relationship tools are workspace-scoped and read-only", () => {
+  const file = path.join(TOOLS_DIR, "relationship-tools.ts");
+  const source = readFileSync(file, "utf8");
+  const relationshipTools = TOOLS.filter((t) =>
+    t.name.startsWith("signal.bluesky.relationship_"),
+  );
+
+  it("every table access carries the workspace filter", () => {
+    // These handlers get the service-role client, which bypasses RLS
+    // entirely, so the filter in the query IS the isolation.
+    const accesses = tableAccesses(source);
+    expect(accesses.length).toBeGreaterThan(0);
+    for (const access of accesses) {
+      expect(GLOBAL_TABLES[access.table], access.table).toBeUndefined();
+      const statement = source.slice(access.index).split(/;\s*\n/)[0];
+      expect(
+        statement,
+        `${access.table} query is not scoped to ctx.workspaceId`,
+      ).toMatch(/\.eq\(\s*"workspace_id"\s*,\s*ctx\.workspaceId\s*\)/);
+    }
+  });
+
+  it("performs no write of any kind", () => {
+    // Relationship WRITE tools are out of scope for this milestone: a
+    // follow acts as the operator's account in public, and "explicitly
+    // initiated by the operator" is not something an agent tool call
+    // can carry.
+    for (const mutation of [".insert(", ".update(", ".upsert(", ".delete("]) {
+      expect(source, `relationship tools must not ${mutation}`).not.toContain(
+        mutation,
+      );
+    }
+  });
+
+  it("cannot follow, unfollow or start a batch", () => {
+    for (const forbidden of [
+      "createFollowRecord",
+      "deleteFollowRecord",
+      "executeFollowAction",
+      "executeUnfollowAction",
+      "processBatchActions",
+      "createBatch",
+      "confirmBatch",
+    ]) {
+      expect(source, `must not call ${forbidden}`).not.toContain(forbidden);
+    }
+  });
+
+  it("is registered as three read-only tools and nothing more", () => {
+    expect(relationshipTools.map((t) => t.name).sort()).toEqual([
+      "signal.bluesky.relationship_history",
+      "signal.bluesky.relationship_summary",
+      "signal.bluesky.relationship_targets",
+    ]);
+    for (const t of relationshipTools) {
+      expect(t.writesDatabase, t.name).toBe(false);
+      expect(t.touchesProduction, t.name).toBe(false);
+      expect(t.riskLevel, t.name).toBe("safe_read");
+      expect(t.approvalMode, t.name).toBe("no_approval_needed");
+      expect(t.requiredScopes, t.name).toContain("accounts:read");
+      expect(TOOL_INPUT_SCHEMAS[t.name], t.name).toBeTruthy();
+    }
+  });
+
+  it("warns every caller that unknown is not 'not following'", () => {
+    // The single most consequential thing an agent could get wrong
+    // about this data, stated in the response rather than left to be
+    // inferred from a field name.
+    // In the response envelope every one of these tools returns...
+    expect(source).toContain("it does not mean 'not following'");
+    // ...and in the tool description an agent reads before calling.
+    const summary = TOOLS.find(
+      (t) => t.name === "signal.bluesky.relationship_summary",
+    )!;
+    expect(summary.description).toContain("never 'not following'");
+  });
+});
+
 describe("the isolation guard actually detects a missing scope", () => {
   // Proves the test above is not vacuous: a handler written WITHOUT the
   // workspace filter must be caught by the same matcher.

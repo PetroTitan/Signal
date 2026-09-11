@@ -469,6 +469,25 @@ export const TOOL_INPUT_SCHEMAS: Record<string, JsonSchema> = {
   "signal.strategy.content_mix": EMPTY_OBJECT_SCHEMA,
   "signal.strategy.cross_platform": EMPTY_OBJECT_SCHEMA,
   "signal.strategy.experiments": EMPTY_OBJECT_SCHEMA,
+
+  // Bluesky relationships — read-only.
+  "signal.bluesky.relationship_targets": EMPTY_OBJECT_SCHEMA,
+  "signal.bluesky.relationship_summary": EMPTY_OBJECT_SCHEMA,
+  "signal.bluesky.relationship_history": {
+    type: "object",
+    properties: {
+      subject_did: {
+        type: "string",
+        description:
+          "Optional. Narrow to one account by DID (did:plc:...). A handle is rejected rather than silently matching nothing — handles are not identity here.",
+      },
+      limit: {
+        type: "number",
+        description: "Optional. Maximum actions to return (1-200, default 50).",
+      },
+    },
+    additionalProperties: false,
+  },
 };
 
 /**
