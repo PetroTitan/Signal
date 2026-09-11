@@ -974,14 +974,51 @@ export async function releaseDispatchLease(input: {
   if (error) throw fromPostgres(error, "Could not release the dispatch lease.");
 }
 
-/** The audit row's verdict on whether this worker may call the provider. */
-export interface ActionClaim {
-  actionId: string;
-  mayMutate: boolean;
-  needsReconcile: boolean;
-  terminal: boolean;
-  existingStatus: string | null;
+/**
+ * Permission to call the provider for one member.
+ *
+ * Only `claimCampaignAction` constructs one, and only on the verdict
+ * that actually grants it. It is a type, not a boolean, because the
+ * boolean version was simply never read: the worker branched on
+ * `terminal` and `needsReconcile`, and the "this member is not yours"
+ * verdict fell through to the mutation path. A worker that had lost the
+ * race sent a second follow for a member another worker owned.
+ *
+ * Making the mutation function TAKE one of these means reaching it
+ * without permission is a compile error rather than a duplicate follow.
+ */
+declare const permitBrand: unique symbol;
+export interface MutationPermit {
+  readonly actionId: string;
+  readonly [permitBrand]: true;
 }
+
+/**
+ * The audit row's verdict, as a closed set.
+ *
+ * Four outcomes, and the caller must handle all four. The RPC reports
+ * them as three independent booleans, which is how a combination that
+ * meant "not yours" ended up looking like "nothing special".
+ */
+export type ActionClaimVerdict =
+  /** This worker owns the attempt and may call the provider. */
+  | { kind: "may_mutate"; actionId: string; permit: MutationPermit }
+  /** A request may already have been sent. Read truth, never re-send. */
+  | { kind: "reconcile_only"; actionId: string }
+  /** The audit row has already reached a final state. */
+  | {
+      kind: "terminal";
+      actionId: string;
+      status: "succeeded" | "failed" | "reconciliation_required";
+    }
+  /**
+   * The row belongs to another worker, or the verdict made no sense.
+   *
+   * NOT reconciliation: no provider intent exists for this worker and
+   * nothing has been sent on its behalf. The only correct response is
+   * to leave the member entirely alone.
+   */
+  | { kind: "denied"; actionId: string | null; existingStatus: string | null };
 
 /**
  * Create or take over the audit row for one member.
@@ -1005,7 +1042,7 @@ export async function claimCampaignAction(input: {
   actorHandle: string | null;
   initiatedBy: string | null;
   db?: Db;
-}): Promise<ActionClaim> {
+}): Promise<ActionClaimVerdict> {
   const { data, error } = await client(input.db).rpc(
     "claim_bluesky_campaign_action",
     {
@@ -1024,7 +1061,7 @@ export async function claimCampaignAction(input: {
   if (error) throw fromPostgres(error, "Could not claim the audit row.");
   const row = (Array.isArray(data) ? data[0] : data) as
     | {
-        action_id: string;
+        action_id: string | null;
         may_mutate: boolean;
         needs_reconcile: boolean;
         terminal: boolean;
@@ -1032,13 +1069,55 @@ export async function claimCampaignAction(input: {
       }
     | undefined;
   if (!row) throw fromPostgres(null, "Audit row could not be claimed.");
-  return {
-    actionId: row.action_id,
-    mayMutate: row.may_mutate,
-    needsReconcile: row.needs_reconcile,
-    terminal: row.terminal,
-    existingStatus: row.existing_status,
-  };
+  return toClaimVerdict(row);
+}
+
+/**
+ * Collapse the RPC's three booleans into the closed set, fail-closed.
+ *
+ * Order matters. A terminal row is terminal whatever else is set; a row
+ * that may have a request in flight is reconciliation-only; permission
+ * is granted only when the RPC says so explicitly. Anything left over —
+ * including the lost-race verdict, where all three are false — is
+ * DENIED, because the one thing worse than refusing work we could have
+ * done is doing work that belongs to someone else.
+ */
+export function toClaimVerdict(row: {
+  action_id: string | null;
+  may_mutate: boolean;
+  needs_reconcile: boolean;
+  terminal: boolean;
+  existing_status: string | null;
+}): ActionClaimVerdict {
+  const actionId = row.action_id;
+
+  if (row.terminal) {
+    if (
+      actionId &&
+      (row.existing_status === "succeeded" ||
+        row.existing_status === "failed" ||
+        row.existing_status === "reconciliation_required")
+    ) {
+      return { kind: "terminal", actionId, status: row.existing_status };
+    }
+    // Terminal with a status we do not recognise. Refuse rather than
+    // guess what a future status means for a public action.
+    return { kind: "denied", actionId, existingStatus: row.existing_status };
+  }
+
+  if (actionId && row.needs_reconcile) {
+    return { kind: "reconcile_only", actionId };
+  }
+
+  if (actionId && row.may_mutate) {
+    return {
+      kind: "may_mutate",
+      actionId,
+      permit: { actionId } as MutationPermit,
+    };
+  }
+
+  return { kind: "denied", actionId, existingStatus: row.existing_status };
 }
 
 /** Finalise the audit row. Always clears the in-flight marker. */
@@ -1110,6 +1189,37 @@ export async function resumeRateLimitedRun(input: {
 }
 
 /** Return untouched leased rows to the queue without spending an attempt. */
+/**
+ * Return leased members to the queue — ONLY those still held by this
+ * worker under this reservation.
+ *
+ * The unqualified version releases by id alone, so a worker whose lease
+ * had lapsed could clear the lease of whoever reclaimed the row, while
+ * a request for it was potentially in flight.
+ */
+export async function releaseOwnedMembers(input: {
+  workspaceId: string;
+  campaignId: string;
+  memberIds: string[];
+  claimedBy: string;
+  reservationId: string;
+  db?: Db;
+}): Promise<number> {
+  if (input.memberIds.length === 0) return 0;
+  const { data, error } = await client(input.db).rpc(
+    "release_bluesky_campaign_members_owned",
+    {
+      p_workspace_id: input.workspaceId,
+      p_campaign_id: input.campaignId,
+      p_member_ids: input.memberIds,
+      p_claimed_by: input.claimedBy,
+      p_reservation_id: input.reservationId,
+    },
+  );
+  if (error) throw fromPostgres(error, "Could not release campaign members.");
+  return Number(data ?? 0);
+}
+
 export async function releaseMembers(input: {
   workspaceId: string;
   campaignId: string;

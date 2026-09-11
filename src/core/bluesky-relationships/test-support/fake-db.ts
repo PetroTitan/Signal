@@ -143,7 +143,9 @@ export class FakeDb {
       case "claim_bluesky_campaign_members":
         return this.claimCampaignMembers(args);
       case "release_bluesky_campaign_members":
-        return this.releaseCampaignMembers(args);
+        return this.releaseCampaignMembers(args, false);
+      case "release_bluesky_campaign_members_owned":
+        return this.releaseCampaignMembers(args, true);
       case "ensure_bluesky_campaign_run":
         return this.ensureCampaignRun(args);
       case "record_bluesky_identity_usage":
@@ -229,7 +231,19 @@ export class FakeDb {
     return { data: claimed, error: null };
   }
 
-  private releaseCampaignMembers(args: Record<string, unknown>): QueryResult {
+  /**
+   * Mirrors release_bluesky_campaign_members(_owned).
+   *
+   * With `checkOwnership`, a worker may hand back only the rows it
+   * still holds under the reservation that paid for them. Releasing by
+   * id alone let a worker whose lease had lapsed clear the lease of
+   * whoever had since reclaimed the row — while a request for it may
+   * have been in flight.
+   */
+  private releaseCampaignMembers(
+    args: Record<string, unknown>,
+    checkOwnership: boolean,
+  ): QueryResult {
     const ids = new Set((args.p_member_ids as string[]) ?? []);
     let count = 0;
     for (const m of this.rows("bluesky_follow_campaign_members")) {
@@ -237,10 +251,19 @@ export class FakeDb {
       if (m.campaign_id !== args.p_campaign_id) continue;
       if (!ids.has(String(m.id))) continue;
       if (m.status !== "claimed" && m.status !== "running") continue;
-      m.status = "queued";
+      if (checkOwnership) {
+        if ((m.claimed_by ?? null) !== (args.p_claimed_by ?? null)) continue;
+        if ((m.reservation_id ?? null) !== (args.p_reservation_id ?? null)) {
+          continue;
+        }
+      }
+      // A member that has already been attempted comes back as
+      // retryable, not queued, so its history is not erased.
+      m.status = num(m.attempt_count) > 0 ? "retryable" : "queued";
       m.claimed_at = null;
       m.claimed_by = null;
       m.lease_expires_at = null;
+      m.reservation_id = null;
       count += 1;
     }
     return { data: count, error: null };

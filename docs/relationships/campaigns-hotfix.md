@@ -305,6 +305,64 @@ row out into two outcomes.
 ledger's ownership columns — otherwise the outcome could be rewritten
 after the fact by repointing the row.
 
+### 6g. The claim RPC's ownership verdict was ignored
+
+`claim_bluesky_campaign_action` can lose a race. Two workers reach the
+same member — one holds a lease the other reclaimed after it lapsed —
+and both try to create the audit row. The unique index lets exactly one
+through; the loser lands in the `unique_violation` handler and gets:
+
+```
+may_mutate = false, needs_reconcile = false, terminal = false
+```
+
+That combination means *this member is not yours*. It is not terminal
+(the winner is still working) and it is **not** reconciliation (nothing
+has been sent on the loser's behalf, and no provider intent exists for
+it).
+
+The worker branched on `terminal` and `needsReconcile` and **never read
+`mayMutate` at all**, so the denied verdict looked like "nothing
+special" and fell through to `attemptFollow`. The losing worker sent a
+second follow for a member another worker owned, and spent a unit of
+quota doing it. Measured: **12 duplicate provider calls** for a chunk of
+12 denied members.
+
+Three changes, because a fourth boolean would have been a fourth thing
+to forget:
+
+- the verdict is a **closed set** — `may_mutate`, `reconcile_only`,
+  `terminal`, `denied` — mapped fail-closed, so an unrecognised
+  combination is denied rather than assumed safe;
+- `attemptFollow` takes a **`MutationPermit`**, which only the
+  `may_mutate` verdict constructs. Reaching the provider without
+  permission is now a compile error, not a duplicate follow. The switch
+  ends in a `never` check so a verdict added later cannot be silently
+  ignored the way `may_mutate` was;
+- a denied member is **left entirely alone** — not persisted, not
+  counted, its audit row untouched, and not handed back. Returning it
+  would put it straight into the same pass's next reservation to be
+  denied again (the first version of this fix spun on exactly that), and
+  a member someone else is working on is not ours to return. The lease
+  lapses on its own, which is the same mechanism that recovers a member
+  from a worker that died.
+
+### 6h. Releasing by id could clear another worker's lease
+
+`release_bluesky_campaign_members` returns members to the queue by id
+with no ownership check. A lease lapses while its worker is still alive,
+another worker reclaims the member and starts work, and the first worker
+then "returns" it — clearing the new owner's lease while a request for
+it may be in flight.
+
+`20260911000006` adds `release_bluesky_campaign_members_owned`, which
+releases only rows whose `claimed_by` **and** `reservation_id` still
+match the caller. Both halves are needed: the first identifies the
+worker, the second the attempt, and a worker that lost a lease and
+reclaimed the same row under a new reservation is a different owner for
+this purpose. The old function is left in place — it is deployed — but
+nothing in the worker calls it.
+
 ### 7. Stale production claims
 
 Corrected; see section 1.
@@ -382,7 +440,8 @@ for the wrong reason:
 | Crash after provider success → zero further mutations | `crash-recovery.test.ts` (7) |
 | Same-day 429 recovery | `rate-limit-recovery.test.ts` (7) |
 | Crash between per-member work and settlement | `crash-accounting.pg.test.ts` (9, real Postgres) |
-| Crash BEFORE provider intent; lock order; exact-action folding | `intent-and-locking.pg.test.ts` (6, real Postgres) + `crash-recovery.test.ts` |
+| Crash BEFORE provider intent; lock order; exact-action folding | `intent-and-locking.pg.test.ts` (8, real Postgres) + `crash-recovery.test.ts` |
+| Losing the audit-row race sends and spends nothing | `claim-ownership.test.ts` (5) + `intent-and-locking.pg.test.ts` |
 | Two REAL sessions contending for one quota | `two-session-concurrency.pg.test.ts` (7) |
 | Deterministic A-reserves / A-unsettled / B-reserves interleaving | `reservation-interleaving.test.ts` (9) |
 | Three passes over an unconfirmable follow | `reconciliation-terminal.test.ts` (5) |
@@ -406,13 +465,14 @@ below; check which one applies before doing anything.
 | `20260911000003` | RPC grants, tenant FKs, kill switch, RLS, 429 recovery |
 | `20260911000004` | Durable reservation ownership, per-member quota consumption |
 | `20260911000005` | Provider intent, one lock order, exact-action folding |
+| `20260911000006` | Ownership-checked release |
 
 They are cumulative and must be applied **in order**. Each is additive
 and idempotent, and `005` assumes `003` and `004` have run.
 
-### State A — `003` and `004` are NOT yet applied
+### State A — the campaign migrations are NOT yet applied
 
-Deploy the compatible code **first**, then apply `003 + 004 + 005`
+Deploy the compatible code **first**, then apply `003 + 004 + 005 + 006`
 together.
 
 The reason is specific: `003` contains the `service_role` grants that
@@ -422,9 +482,10 @@ members for the first time — without the reservation logic, without
 per-member consumption, and without any of the three fixes in `005`.
 Code first, then all three migrations in one step.
 
-### State B — `003` and `004` ARE already applied
+### State B — some campaign migrations ARE already applied
 
-Apply `005` **before activating any campaign**.
+Apply whichever of `004`, `005` and `006` are missing, **before
+activating any campaign**.
 
 In this state the deployed system can already claim members, and it
 carries all three defects `005` repairs:
@@ -432,7 +493,10 @@ carries all three defects `005` repairs:
 - a worker that dies before its quota transaction commits leaves the
   member marked in-flight and it is **never followed at all**;
 - two backends doing ordinary work on one identity can deadlock;
-- folding can attribute the wrong outcome to an attempt.
+- folding can attribute the wrong outcome to an attempt;
+- a worker that loses the audit-row race sends a duplicate follow;
+- a worker whose lease lapsed can clear the lease of whoever reclaimed
+  the row.
 
 None of these damage data at rest, and none can be triggered while no
 campaign is active — which is why "before activating any campaign" is
@@ -447,7 +511,7 @@ test harnesses.
 
 One consequence to know rather than discover: `003` cannot be replayed
 after `004`, and `004`'s `consume_bluesky_member_quota` is dropped by
-`005`. A migration runner applies each file once, in order, and never
+`005`. `006` is additive and replays cleanly on its own. A migration runner applies each file once, in order, and never
 rewinds, so this is correct — but it means the idempotency gate asserts
 that the migration at the HEAD of the chain replays cleanly, not that
 every file does.
