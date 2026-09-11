@@ -43,6 +43,12 @@ import {
   type RemoveTargetActionResult,
 } from "./_actions";
 import { relationshipLabel } from "@/core/bluesky-relationships/relationship-state";
+import {
+  bareHandle,
+  formatAccountName,
+  formatHandle,
+  formatIdentityLabel,
+} from "@/core/bluesky-relationships/handle-display";
 import type {
   BlueskyRelationshipActionRow,
   BlueskyRelationshipState,
@@ -227,7 +233,7 @@ export function RelationshipUi(props: RelationshipUiProps) {
           >
             {props.identities.map((i) => (
               <option key={i.id} value={i.id}>
-                {i.handle ? `@${i.handle}` : (i.displayName ?? i.id)}
+                {formatIdentityLabel(i)}
               </option>
             ))}
           </select>
@@ -393,10 +399,13 @@ function TargetsView(props: {
               )}
               <div className="min-w-0 flex-1">
                 <p className="font-medium text-ink-900 break-words">
-                  {target.display_name ?? target.handle ?? "Bluesky account"}
+                  {formatAccountName({
+                    displayName: target.display_name,
+                    handle: target.handle,
+                  })}
                 </p>
                 <p className="text-sm text-ink-600 break-all">
-                  @{target.handle ?? "handle unavailable"}
+                  {formatHandle(target.handle)}
                 </p>
                 <p className="text-xs text-ink-500 break-all mt-0.5">
                   {target.subject_did}
@@ -592,7 +601,7 @@ function CandidateListView(props: {
                 type="checkbox"
                 checked={props.selected.has(candidate.id)}
                 onChange={() => props.onToggle(candidate.id)}
-                aria-label={`Select ${candidate.handle ?? candidate.subject_did}`}
+                aria-label={`Select ${bareHandle(candidate.handle) ?? candidate.subject_did}`}
                 className="mt-1 shrink-0 w-5 h-5"
               />
               {candidate.avatar_url ? (
@@ -608,10 +617,13 @@ function CandidateListView(props: {
 
               <div className="min-w-0 flex-1">
                 <p className="font-medium text-ink-900 break-words">
-                  {candidate.display_name ?? candidate.handle ?? "Bluesky account"}
+                  {formatAccountName({
+                    displayName: candidate.display_name,
+                    handle: candidate.handle,
+                  })}
                 </p>
                 <p className="text-sm text-ink-600 break-all">
-                  @{candidate.handle ?? "handle unavailable"}
+                  {formatHandle(candidate.handle)}
                 </p>
 
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -623,7 +635,7 @@ function CandidateListView(props: {
                   ) : null}
                   {candidate.sourceTargetProfileIds.map((id) => (
                     <span key={id} className="badge-neutral break-all">
-                      from @{props.targetLabels[id] ?? "unknown"}
+                      from {formatHandle(props.targetLabels[id], "unknown source")}
                     </span>
                   ))}
                 </div>
@@ -737,12 +749,12 @@ function HistoryView(props: {
           <p className="text-sm text-ink-800 mt-2 break-all">
             {/* The handle AS IT WAS when the operator acted. A later
                 rename must not rewrite the record. */}
-            @{action.subject_handle_at_action ?? "handle unavailable"}
+            {formatHandle(action.subject_handle_at_action)}
           </p>
           <p className="text-xs text-ink-500 break-all">{action.subject_did}</p>
           {action.actor_handle_at_action ? (
             <p className="text-xs text-ink-500 break-all mt-0.5">
-              as @{action.actor_handle_at_action}
+              as {formatHandle(action.actor_handle_at_action)}
             </p>
           ) : null}
 
@@ -750,7 +762,7 @@ function HistoryView(props: {
             <div className="mt-2 flex flex-wrap gap-1.5">
               {action.source_target_profile_ids.map((id) => (
                 <span key={id} className="badge-neutral break-all">
-                  from @{props.targetLabels[id] ?? "unknown"}
+                  from {formatHandle(props.targetLabels[id], "unknown source")}
                 </span>
               ))}
             </div>

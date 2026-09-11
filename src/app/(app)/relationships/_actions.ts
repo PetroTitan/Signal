@@ -47,6 +47,7 @@ import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { getAccountById } from "@/repositories/account-repository";
 import { recordActivity } from "@/repositories/activity-repository";
 import { can, type Permission } from "@/core/teams/permissions";
+import { formatHandle } from "@/core/bluesky-relationships/handle-display";
 import type { WorkspaceRole } from "@/lib/supabase/types";
 import {
   actionFail,
@@ -187,7 +188,10 @@ export async function addTargetAction(
       eventType: "bluesky_relationships.target_added",
       entityType: "bluesky_target_profile",
       entityId: result.target.id,
-      title: `Bluesky target added: @${result.target.handle ?? result.target.subject_did}`,
+      title: `Bluesky target added: ${formatHandle(
+        result.target.handle,
+        result.target.subject_did,
+      )}`,
       description: `Resolved "${identifier}" to ${result.target.subject_did}.`,
     }).catch(() => undefined);
 

@@ -149,7 +149,11 @@ describe("touch targets and inputs", () => {
   it("every checkbox has an accessible name naming the account", () => {
     // A column of unlabelled checkboxes is unusable with a screen
     // reader, and on this page each one authorises a public action.
-    expect(UI).toMatch(/aria-label=\{`Select \$\{candidate\.handle/);
+    expect(UI).toMatch(/aria-label=\{`Select \$\{/);
+    // The name is built from the BARE handle, so a stored "@name" is
+    // not announced as "at at name", and it falls back to the DID
+    // rather than to an empty string.
+    expect(UI).toMatch(/aria-label=\{`Select \$\{bareHandle\(candidate\.handle\) \?\? candidate\.subject_did\}`\}/);
   });
 
   it("text inputs use the .input class, which is 16px on mobile", () => {
