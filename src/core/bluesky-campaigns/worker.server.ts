@@ -42,14 +42,13 @@ import { INTER_REQUEST_MS } from "@/core/bluesky-relationships/execute-actions.s
 import { MAX_RELATIONSHIP_BATCH_SIZE } from "@/core/bluesky-relationships/limits";
 import type { RelationshipSession } from "@/core/bluesky-relationships/session.server";
 import {
-  claimMembers,
+  claimCampaignAction,
+  completeCampaignAction,
   releaseMembers,
   updateMember,
+  type ClaimedMember,
 } from "@/repositories/bluesky-campaign-repository";
-import type {
-  BlueskyFollowCampaignMemberRow,
-  BlueskyFollowCampaignRow,
-} from "@/lib/supabase/types";
+import type { BlueskyFollowCampaignRow } from "@/lib/supabase/types";
 import {
   backoffDelayMs,
   classifyOutcome,
@@ -108,12 +107,23 @@ export interface ProcessChunkInput {
   campaign: BlueskyFollowCampaignRow;
   runId: string;
   session: RelationshipSession;
+  /**
+   * The members this chunk may process — already claimed and already
+   * covered by a quota reservation taken by the dispatcher.
+   *
+   * Passed in rather than claimed here: a worker that claimed its own
+   * work could claim more than was reserved, which is the hole that
+   * let two dispatchers exceed the daily quota.
+   */
+  members: ClaimedMember[];
   /** Quota units still available. Bounds the claim. */
   quotaRemaining: number;
   /** Consecutive failures carried in from earlier chunks in this run. */
   consecutiveFailures: number;
   /** Worker identity, for lease attribution. */
   claimedBy: string;
+  /** Who started the campaign, for the audit row. */
+  initiatedBy?: string | null;
   appView?: string;
   fetchImpl?: typeof fetch;
   db?: SupabaseClient;
@@ -191,22 +201,7 @@ export async function processCampaignChunk(
   let next: NextAction = { kind: "continue" };
   let rateLimit: RateLimitSnapshot | null = null;
 
-  const chunkSize = Math.max(
-    0,
-    Math.min(CAMPAIGN_CHUNK_SIZE, input.quotaRemaining),
-  );
-  if (chunkSize === 0) {
-    return { ...counts, claimed: 0, consecutiveFailures, next, rateLimit };
-  }
-
-  const claimed = await claimMembers({
-    workspaceId: input.campaign.workspace_id,
-    campaignId: input.campaign.id,
-    chunkSize,
-    leaseSeconds: LEASE_SECONDS,
-    claimedBy: input.claimedBy,
-    db: input.db,
-  });
+  const claimed = input.members;
   if (claimed.length === 0) {
     return { ...counts, claimed: 0, consecutiveFailures, next, rateLimit };
   }
@@ -232,16 +227,68 @@ export async function processCampaignChunk(
     if (counts.quotaConsumed >= input.quotaRemaining) break;
 
     const known = relationships.get(member.subject_did) ?? "unknown";
+
+    // ── The audit row comes BEFORE anything else. ───────────────────
+    //
+    // Claimed even on the already-following path, which is not merely
+    // tidiness: a worker killed mid-mutation leaves an action row
+    // marked in-flight, and if the next pass short-circuits on
+    // "already following" without touching it, that row stays `running`
+    // with its in-flight marker forever — the member looks finished
+    // while History says a request is still outstanding.
+    //
+    // It is both the History entry and the crash-safety record. A row
+    // already marked in-flight means a previous worker MAY have issued
+    // a createRecord before dying; createRecord is not idempotent, so
+    // the only safe move is to read relationship truth. Sending again
+    // would leave two follow records with Signal tracking one.
+    const claim = await claimCampaignAction({
+      workspaceId: input.campaign.workspace_id,
+      campaignId: input.campaign.id,
+      runId: input.runId,
+      memberId: member.id,
+      operatorAccountId: input.campaign.operator_account_id,
+      subjectDid: member.subject_did,
+      subjectHandle: member.current_handle,
+      actorDid: input.session.actorDid,
+      actorHandle: input.session.actorHandle,
+      initiatedBy: input.initiatedBy ?? null,
+      db: input.db,
+    });
+
+    if (claim.terminal) {
+      // Someone already finished this member. Not an attempt, no quota.
+      untouched.delete(member.id);
+      await persist(input, member, "succeeded", null, member.attempt_count);
+      continue;
+    }
+
     if (known === "following") {
       // Observed, not assumed. No record is created and no quota is
-      // consumed — the requirement is explicit about this.
+      // consumed — the requirement is explicit about this. The audit
+      // row is still finalised, which is what clears an in-flight
+      // marker left by a worker that died mid-mutation.
+      await completeCampaignAction({
+        workspaceId: input.campaign.workspace_id,
+        actionId: claim.actionId,
+        status: "succeeded",
+        reconciliationNote: claim.needsReconcile
+          ? "A previous attempt may have been sent before this worker took over. Bluesky reports the follow exists, so nothing was re-sent."
+          : "Already following before this campaign reached them. No follow record was created and no quota was consumed.",
+        db: input.db,
+      });
       await persist(input, member, "already_following", null, 0);
       untouched.delete(member.id);
       counts.alreadyFollowing += 1;
       continue;
     }
 
-    const result = await attemptFollow(input, member);
+    const result = claim.needsReconcile
+      ? // RECONCILIATION-ONLY MODE. No mutation may be sent while a
+        // prior attempt's outcome is unknown.
+        await reconcileOnly(input, member, claim.actionId)
+      : await attemptFollow(input, member, claim.actionId);
+
     untouched.delete(member.id);
     rateLimit = result.rateLimit ?? rateLimit;
 
@@ -249,6 +296,31 @@ export async function processCampaignChunk(
       kind: result.kind,
       attemptCount: member.attempt_count + 1,
       resumeAfter: result.resumeAfter,
+    });
+
+    await completeCampaignAction({
+      workspaceId: input.campaign.workspace_id,
+      actionId: claim.actionId,
+      status:
+        decision.kind === "succeeded"
+          ? "succeeded"
+          : decision.kind === "already_following"
+            ? "succeeded"
+            : decision.memberStatus === "retryable"
+              ? "reconciliation_required"
+              : decision.memberStatus === "skipped" ||
+                  decision.memberStatus === "protected"
+                ? "skipped"
+                : "failed",
+      followUri: result.uri ?? null,
+      followRkey: result.rkey ?? null,
+      followCid: result.cid ?? null,
+      providerErrorCode: result.errorCode ?? null,
+      providerErrorMessage: result.errorMessage ?? null,
+      ...(result.reconciliationNote
+        ? { reconciliationNote: result.reconciliationNote }
+        : {}),
+      db: input.db,
     });
 
     await persist(
@@ -321,6 +393,51 @@ interface AttemptResult {
   errorMessage?: string | null;
   resumeAfter?: Date | null;
   rateLimit?: RateLimitSnapshot | null;
+  reconciliationNote?: string | null;
+}
+
+/**
+ * Reconciliation-only mode.
+ *
+ * Reached when a previous attempt may already have issued a
+ * createRecord — a lease reclaimed after a crash, or a concurrent
+ * worker that won the audit-row race. **No mutation is sent from this
+ * path.** There is no call to createFollowRecord in this function, and
+ * a test asserts the worker performs zero additional Follow mutations
+ * in exactly this situation.
+ *
+ * Three readings:
+ *   following  → the earlier attempt landed. Succeeded.
+ *   unknown    → we still cannot tell. Stays retryable; nothing sent.
+ *   otherwise  → not visible yet. Bluesky's read API indexes writes
+ *                with a delay, so "not there" is NOT proof it failed.
+ *                Recorded, not re-sent.
+ */
+async function reconcileOnly(
+  input: ProcessChunkInput,
+  member: ClaimedMember,
+  _actionId: string,
+): Promise<AttemptResult> {
+  const truth = await readRelationships(input, [member.subject_did]);
+  const state = truth.get(member.subject_did) ?? "unknown";
+
+  if (state === "following") {
+    return {
+      kind: "already_following",
+      reconciliationNote:
+        "A previous attempt may have been sent before this worker took over. Bluesky reports the follow exists, so nothing was re-sent.",
+    };
+  }
+  return {
+    kind: "retryable_transport_failure",
+    errorCode: "reconciliation_pending",
+    errorMessage:
+      "A previous attempt for this profile may have reached Bluesky. Its outcome could not be confirmed, so NO further follow was sent.",
+    reconciliationNote:
+      state === "unknown"
+        ? "The relationship could not be read either, so the outcome remains unknown. Nothing was re-sent."
+        : "Bluesky does not currently report this follow. That is not proof it failed — Bluesky's read API indexes writes with a delay — so nothing was re-sent.",
+  };
 }
 
 /**
@@ -331,7 +448,8 @@ interface AttemptResult {
  */
 async function attemptFollow(
   input: ProcessChunkInput,
-  member: BlueskyFollowCampaignMemberRow,
+  member: ClaimedMember,
+  _actionId: string,
 ): Promise<AttemptResult> {
   if (input.campaign.dry_run) {
     return {
@@ -398,7 +516,7 @@ async function attemptFollow(
 /** Persist one member's outcome. Always clears the lease. */
 async function persist(
   input: ProcessChunkInput,
-  member: BlueskyFollowCampaignMemberRow,
+  member: ClaimedMember,
   status: string,
   result: AttemptResult | null,
   attemptCount: number,

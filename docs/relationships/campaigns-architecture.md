@@ -205,7 +205,7 @@ to `queued` when their lease expires.
 
 | Risk | Severity | Handling |
 | --- | --- | --- |
-| **The migration is still unapplied** (pre-existing; see PR #178/#180) | High | Campaigns cannot run until it is. The read-failure classifier already names this state rather than hiding it. |
+| ~~The migration is still unapplied~~ — **RESOLVED 2026-09-11.** The relationship schema is applied in production, real manual follows have been executed against it, and the live campaign page reads the campaign schema. | — | Superseded. The read-failure classifier stays as defence against a *future* unapplied migration, but it no longer describes current production. |
 | Vercel egress IP shares the 3,000-req/5-min limit with other tenants | Medium | Honour returned headers; stop on 429 and wait for reset. Cannot be eliminated from our side. |
 | Moderation action despite being inside documented limits | Medium | Cannot be prevented technically. Confirmation states it; circuit breakers pause on a falling success rate. |
 | Cron delivery skipped entirely (platform incident) | Low | Idempotent dispatcher; the next tick resumes. Quota is per local day, so a missed day is simply a missed day — no catch-up burst. |

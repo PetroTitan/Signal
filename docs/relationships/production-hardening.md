@@ -174,7 +174,7 @@ code in `cause`, so a genuine `42P01` classified as unrecognised.
 | Continue re-runs against stale candidate state | Low | Candidate state re-read per continuation | A relationship changed *during* the continuation is handled by the executor's preflight |
 | Native `<dialog>` unsupported | Low | Baseline since Safari 15.4 / Chrome 37 | Very old browsers get an unstyled non-modal dialog, still functional |
 | Handle formatter hides a genuinely malformed handle | Low | `handle.invalid` is preserved and rendered | A handle that is only `@` renders as "handle unavailable" rather than raising |
-| **Migration still unapplied** | **Certain** | Classifier names it explicitly instead of hiding it | **The feature cannot work until it is applied — unchanged by this milestone** |
+| ~~Migration still unapplied~~ | **Resolved 2026-09-11** | Applied in production; real manual relationship follows have since been executed against it | None. The classifier remains, but as a guard against a future missing table — not a description of today. |
 
 ## Manual QA checklist
 

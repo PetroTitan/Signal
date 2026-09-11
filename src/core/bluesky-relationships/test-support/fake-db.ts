@@ -69,6 +69,29 @@ export class FakeDb {
    */
   private readonly naturalKeyIndex = new Map<string, Map<string, Row>>();
 
+  /**
+   * The database clock.
+   *
+   * Postgres evaluates `now()` inside the RPCs; here that has to be the
+   * SAME instant the caller passed as `nowIso`, not this machine's wall
+   * clock. When they drift, every deadline test answers a question
+   * nobody asked: a rate-limit reset at 13:00 on a fixed test date
+   * "correctly" refused to resume simply because the real clock had not
+   * reached 13:00 yet, and would have started passing or failing
+   * depending on the hour the suite was run.
+   */
+  private clockMs: number | null = null;
+
+  /** Pin the database clock. Tests that inject `nowIso` must call this. */
+  setNow(iso: string): void {
+    this.clockMs = Date.parse(iso);
+  }
+
+  /** `now()`, as the RPCs see it. */
+  nowMs(): number {
+    return this.clockMs ?? Date.now();
+  }
+
   constructor(seed: Record<string, Row[]> = {}) {
     for (const [table, rows] of Object.entries(seed)) {
       this.tables.set(table, rows.map((r) => ({ ...r })));
@@ -119,6 +142,16 @@ export class FakeDb {
         return this.ensureCampaignRun(args);
       case "record_bluesky_identity_usage":
         return this.recordIdentityUsage(args);
+      case "reserve_bluesky_campaign_quota":
+        return this.reserveCampaignQuota(args);
+      case "release_bluesky_campaign_reservation":
+        return this.releaseReservation(args);
+      case "apply_bluesky_run_outcome":
+        return this.applyRunOutcome(args);
+      case "claim_bluesky_campaign_action":
+        return this.claimCampaignAction(args);
+      case "resume_bluesky_campaign_run":
+        return this.resumeRun(args);
       default:
         return {
           data: null,
@@ -128,7 +161,7 @@ export class FakeDb {
   }
 
   private claimCampaignMembers(args: Record<string, unknown>): QueryResult {
-    const now = Date.now();
+    const now = this.nowMs();
     const chunk = Math.min(
       Math.max(Number(args.p_chunk_size ?? 1), 1),
       100,
@@ -219,6 +252,7 @@ export class FakeDb {
       skipped_count: 0,
       failed_count: 0,
       consecutive_failures: 0,
+      reserved_count: 0,
       rate_limited_until: null,
       rate_limit_remaining: null,
       rate_limit_reset_at: null,
@@ -232,6 +266,306 @@ export class FakeDb {
     };
     rows.push(row);
     return { data: row, error: null };
+  }
+
+  /**
+   * Reserve quota AND claim that many members, atomically.
+   *
+   * Mirrors `reserve_bluesky_campaign_quota`. The body is synchronous,
+   * which in a single-threaded runtime gives the same guarantee the
+   * real function gets from its row locks: an interleaved caller cannot
+   * observe a half-applied reservation. That is what makes the
+   * concurrent-dispatcher test meaningful rather than decorative.
+   */
+  private reserveCampaignQuota(args: Record<string, unknown>): QueryResult {
+    const runs = this.rows("bluesky_follow_campaign_runs");
+    const run = runs.find(
+      (r) => r.id === args.p_run_id && r.workspace_id === args.p_workspace_id,
+    );
+    if (!run || run.status !== "running") {
+      return { data: [{ reserved: 0, member_id: null }], error: null };
+    }
+
+    const usageRows = this.rows("bluesky_identity_daily_usage");
+    let usage = usageRows.find(
+      (u) =>
+        u.workspace_id === args.p_workspace_id &&
+        u.operator_account_id === args.p_operator_account_id &&
+        u.usage_date === args.p_usage_date,
+    );
+    if (!usage) {
+      usage = {
+        id: this.nextId("usage"),
+        workspace_id: args.p_workspace_id,
+        operator_account_id: args.p_operator_account_id,
+        usage_date: args.p_usage_date,
+        follows_created: 0,
+        attempts_made: 0,
+        reserved_count: 0,
+      };
+      usageRows.push(usage);
+    }
+
+    const num = (v: unknown) => Number(v ?? 0);
+
+    // Reconcile the reservation against ground truth: the members
+    // ACTUALLY leased right now. Recomputing rather than decrementing
+    // is what makes a crash self-healing — a decrement leaves a residue
+    // for every member the dead worker had already finished, and those
+    // accumulate until a small daily quota is permanently consumed.
+    const liveLeases = this.rows("bluesky_follow_campaign_members").filter(
+      (m) =>
+        m.workspace_id === args.p_workspace_id &&
+        m.campaign_id === args.p_campaign_id &&
+        (m.status === "claimed" || m.status === "running") &&
+        m.lease_expires_at !== null &&
+        m.lease_expires_at !== undefined &&
+        new Date(String(m.lease_expires_at)).getTime() >= this.nowMs(),
+    ).length;
+    if (liveLeases !== num(run.reserved_count)) {
+      const delta = num(run.reserved_count) - liveLeases;
+      run.reserved_count = liveLeases;
+      usage.reserved_count = Math.max(num(usage.reserved_count) - delta, 0);
+    }
+
+    // Headroom counts what is ALREADY RESERVED as spent. A second
+    // dispatcher must not see the first's unattempted reservation as
+    // available.
+    const runHeadroom = Math.max(
+      0,
+      num(run.effective_daily_quota) -
+        // already_following is NOT part of attempted_count — that
+        // branch returns before an attempt — so subtracting it too
+        // would double-count and let the day overrun.
+        Math.max(num(run.attempted_count) - num(run.skipped_count), 0) -
+        num(run.reserved_count),
+    );
+    const identityHeadroom = Math.max(
+      0,
+      num(args.p_identity_ceiling) -
+        num(usage.follows_created) -
+        num(usage.reserved_count),
+    );
+    const grantCap = Math.min(
+      Math.max(num(args.p_requested), 0),
+      runHeadroom,
+      identityHeadroom,
+      Math.min(Math.max(num(args.p_chunk_size) || 1, 1), 100),
+    );
+    if (grantCap <= 0) {
+      return { data: [{ reserved: 0, member_id: null }], error: null };
+    }
+
+    const now = this.nowMs();
+    const leaseSeconds = Math.min(
+      Math.max(num(args.p_lease_seconds) || 60, 10),
+      3600,
+    );
+    const eligible = this.rows("bluesky_follow_campaign_members")
+      .filter((m) => {
+        if (m.workspace_id !== args.p_workspace_id) return false;
+        if (m.campaign_id !== args.p_campaign_id) return false;
+        const status = String(m.status);
+        if (status === "queued" || status === "retryable") {
+          const next = m.next_attempt_at as string | null;
+          return !next || new Date(next).getTime() <= now;
+        }
+        if (status === "claimed" || status === "running") {
+          const expiry = m.lease_expires_at as string | null;
+          return Boolean(expiry) && new Date(expiry!).getTime() < now;
+        }
+        return false;
+      })
+      .sort((a, b) => Number(a.import_sequence) - Number(b.import_sequence))
+      .slice(0, grantCap);
+
+    const claimedAt = new Date(now).toISOString();
+    for (const m of eligible) {
+      m.status = "claimed";
+      m.claimed_at = claimedAt;
+      m.claimed_by = args.p_claimed_by;
+      m.lease_expires_at = new Date(now + leaseSeconds * 1000).toISOString();
+    }
+
+    // Reserve only what was actually claimed — reserving more would
+    // leak quota that nothing releases.
+    const reserved = eligible.length;
+    if (reserved === 0) {
+      return { data: [{ reserved: 0, member_id: null }], error: null };
+    }
+    run.reserved_count = num(run.reserved_count) + reserved;
+    usage.reserved_count = num(usage.reserved_count) + reserved;
+
+    return {
+      data: eligible.map((m) => ({
+        reserved,
+        member_id: m.id,
+        subject_did: m.subject_did,
+        current_handle: m.current_handle ?? null,
+        import_sequence: m.import_sequence,
+        attempt_count: m.attempt_count ?? 0,
+        provider_record_rkey: m.provider_record_rkey ?? null,
+      })),
+      error: null,
+    };
+  }
+
+  private releaseReservation(args: Record<string, unknown>): QueryResult {
+    const amount = Math.max(Number(args.p_amount ?? 0), 0);
+    if (amount === 0) return { data: null, error: null };
+    const run = this.rows("bluesky_follow_campaign_runs").find(
+      (r) => r.id === args.p_run_id,
+    );
+    if (run) {
+      run.reserved_count = Math.max(Number(run.reserved_count ?? 0) - amount, 0);
+    }
+    const usage = this.rows("bluesky_identity_daily_usage").find(
+      (u) =>
+        u.workspace_id === args.p_workspace_id &&
+        u.operator_account_id === args.p_operator_account_id &&
+        u.usage_date === args.p_usage_date,
+    );
+    if (usage) {
+      usage.reserved_count = Math.max(
+        Number(usage.reserved_count ?? 0) - amount,
+        0,
+      );
+    }
+    return { data: null, error: null };
+  }
+
+  /** Counter DELTAS, never absolutes. Mirrors apply_bluesky_run_outcome. */
+  private applyRunOutcome(args: Record<string, unknown>): QueryResult {
+    const n = (v: unknown) => Math.max(Number(v ?? 0), 0);
+    const run = this.rows("bluesky_follow_campaign_runs").find(
+      (r) => r.id === args.p_run_id && r.workspace_id === args.p_workspace_id,
+    );
+    if (!run) return { data: null, error: null };
+
+    run.attempted_count = Number(run.attempted_count ?? 0) + n(args.p_attempted);
+    run.succeeded_count = Number(run.succeeded_count ?? 0) + n(args.p_succeeded);
+    run.already_following_count =
+      Number(run.already_following_count ?? 0) + n(args.p_already_following);
+    run.skipped_count = Number(run.skipped_count ?? 0) + n(args.p_skipped);
+    run.failed_count = Number(run.failed_count ?? 0) + n(args.p_failed);
+    run.consecutive_failures = n(args.p_consecutive_failures);
+    run.reserved_count = Math.max(
+      Number(run.reserved_count ?? 0) - n(args.p_consume_reservation),
+      0,
+    );
+    if (args.p_rate_limited_until) run.rate_limited_until = args.p_rate_limited_until;
+    if (args.p_rate_limit_remaining !== null && args.p_rate_limit_remaining !== undefined) {
+      run.rate_limit_remaining = args.p_rate_limit_remaining;
+    }
+    if (args.p_rate_limit_reset_at) run.rate_limit_reset_at = args.p_rate_limit_reset_at;
+    run.last_chunk_at = new Date().toISOString();
+
+    const usage = this.rows("bluesky_identity_daily_usage").find(
+      (u) =>
+        u.workspace_id === args.p_workspace_id &&
+        u.operator_account_id === args.p_operator_account_id &&
+        u.usage_date === args.p_usage_date,
+    );
+    if (usage) {
+      usage.follows_created =
+        Number(usage.follows_created ?? 0) + n(args.p_records_created);
+      usage.attempts_made = Number(usage.attempts_made ?? 0) + n(args.p_attempted);
+      usage.reserved_count = Math.max(
+        Number(usage.reserved_count ?? 0) - n(args.p_consume_reservation),
+        0,
+      );
+    }
+    return { data: run, error: null };
+  }
+
+  /** Mirrors claim_bluesky_campaign_action, including the in-flight rule. */
+  private claimCampaignAction(args: Record<string, unknown>): QueryResult {
+    const rows = this.rows("bluesky_relationship_actions");
+    const existing = rows.find(
+      (r) =>
+        r.campaign_id === args.p_campaign_id &&
+        r.campaign_member_id === args.p_member_id &&
+        r.status !== "skipped",
+    );
+
+    if (existing) {
+      const terminal = ["succeeded", "failed", "reconciliation_required"].includes(
+        String(existing.status),
+      );
+      if (!terminal) existing.status = "running";
+      return {
+        data: [
+          {
+            action_id: existing.id,
+            may_mutate: false,
+            // A row that is not terminal may have had a createRecord
+            // issued before its worker died. Reconcile, never re-send.
+            needs_reconcile: !terminal,
+            terminal,
+            existing_status: existing.status,
+          },
+        ],
+        error: null,
+      };
+    }
+
+    const row: Row = {
+      id: this.nextId("action"),
+      workspace_id: args.p_workspace_id,
+      operator_account_id: args.p_operator_account_id,
+      candidate_id: null,
+      batch_id: null,
+      action_type: "follow",
+      subject_did: args.p_subject_did,
+      subject_handle_at_action: args.p_subject_handle,
+      actor_did: args.p_actor_did,
+      actor_handle_at_action: args.p_actor_handle,
+      status: "running",
+      source_target_profile_ids: [],
+      initiated_by: args.p_initiated_by,
+      initiator_kind: "operator_batch",
+      campaign_id: args.p_campaign_id,
+      campaign_run_id: args.p_run_id,
+      campaign_member_id: args.p_member_id,
+      provider_in_flight_at: new Date().toISOString(),
+      started_at: new Date().toISOString(),
+      requested_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    rows.push(row);
+    return {
+      data: [
+        {
+          action_id: row.id,
+          may_mutate: true,
+          needs_reconcile: false,
+          terminal: false,
+          existing_status: null,
+        },
+      ],
+      error: null,
+    };
+  }
+
+  private resumeRun(args: Record<string, unknown>): QueryResult {
+    const run = this.rows("bluesky_follow_campaign_runs").find(
+      (r) => r.id === args.p_run_id && r.workspace_id === args.p_workspace_id,
+    );
+    if (!run) return { data: null, error: null };
+    const until = run.rate_limited_until as string | null;
+    // Only a rate-limited run whose reset has passed. An operator pause
+    // is never undone here.
+    if (
+      run.status === "rate_limited" &&
+      (!until || new Date(until).getTime() <= this.nowMs())
+    ) {
+      run.status = "running";
+      run.rate_limited_until = null;
+      run.last_error_code = null;
+      run.last_error_message = null;
+    }
+    return { data: run, error: null };
   }
 
   private recordIdentityUsage(args: Record<string, unknown>): QueryResult {
@@ -258,6 +592,7 @@ export class FakeDb {
       usage_date: args.p_usage_date,
       follows_created: follows,
       attempts_made: attempts,
+      reserved_count: 0,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -281,6 +616,14 @@ export class FakeDb {
         return ["campaign_id", "local_date"];
       case "bluesky_identity_daily_usage":
         return ["workspace_id", "operator_account_id", "usage_date"];
+      // One workspace-global row and one row per identity. In Postgres
+      // this is a TOTAL unique index over a generated `identity_key`
+      // column (the operator id, or the nil UUID for the global row);
+      // here the null operator id collapses to the same sentinel, which
+      // gives the global switch one stable slot instead of a new row on
+      // every engage.
+      case "bluesky_campaign_kill_switches":
+        return ["workspace_id", "operator_account_id"];
       default:
         return null;
     }
@@ -753,6 +1096,20 @@ function defaultsFor(table: string): Row {
         first_seen_at: new Date().toISOString(),
         last_seen_at: new Date().toISOString(),
         times_seen: 1,
+      };
+    case "bluesky_follow_campaign_runs":
+      return {
+        status: "running",
+        attempted_count: 0,
+        succeeded_count: 0,
+        already_following_count: 0,
+        skipped_count: 0,
+        failed_count: 0,
+        consecutive_failures: 0,
+        reserved_count: 0,
+        rate_limited_until: null,
+        rate_limit_remaining: null,
+        rate_limit_reset_at: null,
       };
     case "bluesky_follow_campaign_members":
       return {

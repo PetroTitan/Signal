@@ -467,7 +467,15 @@ export interface MemberStatusCounts {
   retryable: number;
   failed_structural: number;
   cancelled: number;
-  /** queued + retryable — what could still be attempted. */
+  /**
+   * What is not finished.
+   *
+   * Includes `claimed` and `running`. A member leased by a worker that
+   * then died is NOT terminal — its lease lapses and it returns to the
+   * queue — and counting it as finished let a crash silently COMPLETE a
+   * campaign with work outstanding. Including it costs at most one
+   * extra tick before a genuinely finished campaign closes.
+   */
   remainingEligible: number;
 }
 
@@ -539,7 +547,7 @@ export async function countMembersByStatus(input: {
     retryable,
     failed_structural: failedStructural,
     cancelled,
-    remainingEligible: queued + retryable,
+    remainingEligible: queued + retryable + claimed + running,
   };
 }
 
@@ -627,6 +635,298 @@ export async function claimMembers(input: {
   );
   if (error) throw fromPostgres(error, "Could not claim campaign members.");
   return (data ?? []) as unknown as BlueskyFollowCampaignMemberRow[];
+}
+
+/**
+ * Atomically reserve quota AND claim exactly that many members.
+ *
+ * This replaces the read-compute-claim-later-increment sequence that
+ * allowed two dispatchers to collectively exceed the daily quota. Both
+ * read "0 used today", both computed the full quota, and both proceeded
+ * — disjoint member claims bound who touches which row, not how many
+ * attempts happen in total.
+ *
+ * The reservation is what bounds the total, and it is taken under row
+ * locks inside the RPC so the read of remaining headroom and the write
+ * claiming it cannot interleave.
+ */
+export async function reserveAndClaim(input: {
+  workspaceId: string;
+  campaignId: string;
+  runId: string;
+  operatorAccountId: string;
+  usageDate: string;
+  requested: number;
+  identityCeiling: number;
+  chunkSize: number;
+  leaseSeconds: number;
+  claimedBy: string;
+  db?: Db;
+}): Promise<{ reserved: number; members: ClaimedMember[] }> {
+  const { data, error } = await client(input.db).rpc(
+    "reserve_bluesky_campaign_quota",
+    {
+      p_workspace_id: input.workspaceId,
+      p_campaign_id: input.campaignId,
+      p_run_id: input.runId,
+      p_operator_account_id: input.operatorAccountId,
+      p_usage_date: input.usageDate,
+      p_requested: input.requested,
+      p_identity_ceiling: input.identityCeiling,
+      p_chunk_size: input.chunkSize,
+      p_lease_seconds: input.leaseSeconds,
+      p_claimed_by: input.claimedBy,
+    },
+  );
+  if (error) throw fromPostgres(error, "Could not reserve campaign quota.");
+
+  const rows = (data ?? []) as unknown as {
+    reserved: number;
+    member_id: string | null;
+    subject_did: string | null;
+    current_handle: string | null;
+    import_sequence: number | null;
+    attempt_count: number | null;
+    provider_record_rkey: string | null;
+  }[];
+
+  // A zero reservation returns one row with a null member.
+  const members = rows
+    .filter((r) => r.member_id !== null)
+    .map((r) => ({
+      id: r.member_id as string,
+      subject_did: r.subject_did as string,
+      current_handle: r.current_handle,
+      import_sequence: Number(r.import_sequence ?? 0),
+      attempt_count: Number(r.attempt_count ?? 0),
+      provider_record_rkey: r.provider_record_rkey,
+    }));
+
+  return { reserved: members.length, members };
+}
+
+export interface ClaimedMember {
+  id: string;
+  subject_did: string;
+  current_handle: string | null;
+  import_sequence: number;
+  attempt_count: number;
+  provider_record_rkey: string | null;
+}
+
+/**
+ * Give back quota that was reserved and never attempted.
+ *
+ * Must equal exactly the unspent reservation: releasing too little
+ * shrinks the day silently, releasing too much lets it overrun.
+ */
+export async function releaseReservation(input: {
+  workspaceId: string;
+  runId: string;
+  operatorAccountId: string;
+  usageDate: string;
+  amount: number;
+  db?: Db;
+}): Promise<void> {
+  if (input.amount <= 0) return;
+  const { error } = await client(input.db).rpc(
+    "release_bluesky_campaign_reservation",
+    {
+      p_workspace_id: input.workspaceId,
+      p_run_id: input.runId,
+      p_operator_account_id: input.operatorAccountId,
+      p_usage_date: input.usageDate,
+      p_amount: input.amount,
+    },
+  );
+  if (error) throw fromPostgres(error, "Could not release the reservation.");
+}
+
+/**
+ * Apply outcome DELTAS and consume the reservation, in one statement.
+ *
+ * Never write absolute counters computed from a snapshot: the previous
+ * code read the run at the start of a tick, added its chunk totals in
+ * memory and wrote the result, which loses every concurrent increment.
+ */
+export async function applyRunOutcome(input: {
+  workspaceId: string;
+  runId: string;
+  operatorAccountId: string;
+  usageDate: string;
+  attempted: number;
+  succeeded: number;
+  alreadyFollowing: number;
+  skipped: number;
+  failed: number;
+  recordsCreated: number;
+  consumeReservation: number;
+  consecutiveFailures: number;
+  rateLimitedUntil?: string | null;
+  rateLimitRemaining?: number | null;
+  rateLimitResetAt?: string | null;
+  db?: Db;
+}): Promise<BlueskyFollowCampaignRunRow | null> {
+  const { data, error } = await client(input.db).rpc(
+    "apply_bluesky_run_outcome",
+    {
+      p_workspace_id: input.workspaceId,
+      p_run_id: input.runId,
+      p_operator_account_id: input.operatorAccountId,
+      p_usage_date: input.usageDate,
+      p_attempted: input.attempted,
+      p_succeeded: input.succeeded,
+      p_already_following: input.alreadyFollowing,
+      p_skipped: input.skipped,
+      p_failed: input.failed,
+      p_records_created: input.recordsCreated,
+      p_consume_reservation: input.consumeReservation,
+      p_consecutive_failures: input.consecutiveFailures,
+      p_rate_limited_until: input.rateLimitedUntil ?? null,
+      p_rate_limit_remaining: input.rateLimitRemaining ?? null,
+      p_rate_limit_reset_at: input.rateLimitResetAt ?? null,
+    },
+  );
+  if (error) throw fromPostgres(error, "Could not record the run outcome.");
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | BlueskyFollowCampaignRunRow
+    | undefined;
+  return row ?? null;
+}
+
+/** The audit row's verdict on whether this worker may call the provider. */
+export interface ActionClaim {
+  actionId: string;
+  mayMutate: boolean;
+  needsReconcile: boolean;
+  terminal: boolean;
+  existingStatus: string | null;
+}
+
+/**
+ * Create or take over the audit row for one member.
+ *
+ * The worker previously never wrote one, which meant the unique index
+ * on (campaign_id, campaign_member_id) guarded an empty set and History
+ * showed nothing for campaign work. Creating the row BEFORE the
+ * provider call is what makes a crash recoverable: a row still marked
+ * in-flight after a lease lapses means the request MAY have succeeded,
+ * and the answer is to reconcile, never to send again.
+ */
+export async function claimCampaignAction(input: {
+  workspaceId: string;
+  campaignId: string;
+  runId: string;
+  memberId: string;
+  operatorAccountId: string;
+  subjectDid: string;
+  subjectHandle: string | null;
+  actorDid: string;
+  actorHandle: string | null;
+  initiatedBy: string | null;
+  db?: Db;
+}): Promise<ActionClaim> {
+  const { data, error } = await client(input.db).rpc(
+    "claim_bluesky_campaign_action",
+    {
+      p_workspace_id: input.workspaceId,
+      p_campaign_id: input.campaignId,
+      p_run_id: input.runId,
+      p_member_id: input.memberId,
+      p_operator_account_id: input.operatorAccountId,
+      p_subject_did: input.subjectDid,
+      p_subject_handle: input.subjectHandle,
+      p_actor_did: input.actorDid,
+      p_actor_handle: input.actorHandle,
+      p_initiated_by: input.initiatedBy,
+    },
+  );
+  if (error) throw fromPostgres(error, "Could not claim the audit row.");
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | {
+        action_id: string;
+        may_mutate: boolean;
+        needs_reconcile: boolean;
+        terminal: boolean;
+        existing_status: string | null;
+      }
+    | undefined;
+  if (!row) throw fromPostgres(null, "Audit row could not be claimed.");
+  return {
+    actionId: row.action_id,
+    mayMutate: row.may_mutate,
+    needsReconcile: row.needs_reconcile,
+    terminal: row.terminal,
+    existingStatus: row.existing_status,
+  };
+}
+
+/** Finalise the audit row. Always clears the in-flight marker. */
+export async function completeCampaignAction(input: {
+  workspaceId: string;
+  actionId: string;
+  status: "succeeded" | "failed" | "reconciliation_required" | "skipped";
+  followUri?: string | null;
+  followRkey?: string | null;
+  followCid?: string | null;
+  providerStatusCode?: number | null;
+  providerErrorCode?: string | null;
+  providerErrorMessage?: string | null;
+  reconciledState?: string | null;
+  reconciliationNote?: string | null;
+  db?: Db;
+}): Promise<void> {
+  const patch: Record<string, unknown> = {
+    status: input.status,
+    // Cleared on every terminal path: a lingering marker would send the
+    // next worker into reconciliation for an action that is finished.
+    provider_in_flight_at: null,
+    finished_at: new Date().toISOString(),
+  };
+  const set = <K extends keyof typeof input>(key: K, column: string) => {
+    if (input[key] !== undefined) patch[column] = input[key];
+  };
+  set("followUri", "follow_uri");
+  set("followRkey", "follow_rkey");
+  set("followCid", "follow_cid");
+  set("providerStatusCode", "provider_status_code");
+  set("providerErrorCode", "provider_error_code");
+  set("providerErrorMessage", "provider_error_message");
+  set("reconciledState", "reconciled_state");
+  set("reconciliationNote", "reconciliation_note");
+  if (input.reconciliationNote !== undefined) {
+    patch.reconciled_at = new Date().toISOString();
+  }
+
+  const { error } = await client(input.db)
+    .from("bluesky_relationship_actions")
+    .update(patch as never)
+    .eq("workspace_id", input.workspaceId)
+    .eq("id", input.actionId);
+  if (error) throw fromPostgres(error, "Could not finalise the audit row.");
+}
+
+/**
+ * Return a rate-limited run to running once the provider reset passed.
+ *
+ * Same run, same local day, same remaining quota — a second run for the
+ * day would double the day's budget. Guarded inside the RPC so an
+ * operator pause is never undone by the scheduler.
+ */
+export async function resumeRateLimitedRun(input: {
+  workspaceId: string;
+  runId: string;
+  db?: Db;
+}): Promise<BlueskyFollowCampaignRunRow | null> {
+  const { data, error } = await client(input.db).rpc(
+    "resume_bluesky_campaign_run",
+    { p_workspace_id: input.workspaceId, p_run_id: input.runId },
+  );
+  if (error) throw fromPostgres(error, "Could not resume the run.");
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | BlueskyFollowCampaignRunRow
+    | undefined;
+  return row ?? null;
 }
 
 /** Return untouched leased rows to the queue without spending an attempt. */
@@ -890,9 +1190,15 @@ export async function setKillSwitch(input: {
         released_at: input.engaged ? null : now,
       } as never,
       {
-        onConflict: input.operatorAccountId
-          ? "workspace_id,operator_account_id"
-          : "workspace_id",
+        // Single conflict target for both rows. The table previously
+        // carried two PARTIAL unique indexes (one where
+        // operator_account_id is null, one where it is not), and
+        // ON CONFLICT cannot infer a partial index — so the global
+        // switch's upsert never matched and a second engage raised a
+        // duplicate instead of updating. The hotfix replaced them with
+        // one total unique index over the generated `identity_key`
+        // column, which both rows share.
+        onConflict: "workspace_id,identity_key",
       },
     );
   if (error) throw fromPostgres(error, "Could not set the kill switch.");

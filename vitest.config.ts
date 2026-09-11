@@ -17,5 +17,9 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // The real-Postgres suites boot a WASM Postgres and replay all 37
+    // migrations per file, so they need more than the 5s default.
+    testTimeout: 30_000,
+    hookTimeout: 180_000,
   },
 });

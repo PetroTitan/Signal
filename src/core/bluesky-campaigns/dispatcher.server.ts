@@ -34,11 +34,14 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { resolveRelationshipSession } from "@/core/bluesky-relationships/session.server";
 import {
+  applyRunOutcome,
+  countMembersByStatus,
   ensureRun,
   getIdentityUsage,
-  countMembersByStatus,
   listDueCampaigns,
-  recordIdentityUsage,
+  releaseReservation,
+  reserveAndClaim,
+  resumeRateLimitedRun,
   updateCampaign,
   updateRun,
 } from "@/repositories/bluesky-campaign-repository";
@@ -46,10 +49,14 @@ import type {
   BlueskyFollowCampaignRow,
   BlueskyFollowCampaignRunRow,
 } from "@/lib/supabase/types";
-import { computeEffectiveQuota } from "./quota";
+import { computeEffectiveQuota, IDENTITY_DAILY_FOLLOW_CEILING } from "./quota";
 import { computeNextRunAt, isWithinWindow, localClockAt } from "./campaign-day";
 import { resolveKillSwitch } from "./kill-switch.server";
-import { processCampaignChunk, CAMPAIGN_CHUNK_SIZE } from "./worker.server";
+import {
+  processCampaignChunk,
+  CAMPAIGN_CHUNK_SIZE,
+  LEASE_SECONDS,
+} from "./worker.server";
 import type { NextAction } from "./outcomes";
 
 /**
@@ -301,7 +308,7 @@ async function runCampaign(args: {
     now,
   });
 
-  const run = await ensureRun({
+  let run = await ensureRun({
     workspaceId: campaign.workspace_id,
     campaignId: campaign.id,
     localDate: clock.localDate,
@@ -310,6 +317,33 @@ async function runCampaign(args: {
     effectiveReason: quota.reason,
     db: input.db,
   });
+
+  // A rate-limited run may return to life LATER THE SAME DAY.
+  //
+  // Previously `status !== 'running'` bailed out permanently, so a 429
+  // at 10:00 forfeited the rest of the day's quota even after the
+  // provider's own reset had passed. The transition is guarded inside
+  // the RPC: only a rate_limited run whose reset has elapsed moves, so
+  // an operator pause is never undone, and it is the SAME run — a
+  // second run for the day would double the budget.
+  if (run.status === "rate_limited") {
+    const resumed = await resumeRateLimitedRun({
+      workspaceId: campaign.workspace_id,
+      runId: run.id,
+      db: input.db,
+    });
+    if (resumed && resumed.status === "running") {
+      run = resumed;
+      await updateCampaign({
+        workspaceId: campaign.workspace_id,
+        campaignId: campaign.id,
+        status: "active",
+        rateLimitedUntil: null,
+        expectedStatuses: ["active", "rate_limited"],
+        db: input.db,
+      });
+    }
+  }
 
   if (run.status !== "running") {
     out.note = `today's run is ${run.status}`;
@@ -353,11 +387,17 @@ async function runCampaign(args: {
     return out;
   }
 
-  // Quota ALREADY consumed today, so a tick mid-day does not restart
-  // the day's budget. Attempted minus the outcomes that cost nothing.
-  const consumedToday =
-    run.attempted_count - run.already_following_count - run.skipped_count;
-  let quotaRemaining = Math.max(0, live.effective - Math.max(0, consumedToday));
+  // A cheap pre-check so an exhausted day does not resolve a session or
+  // touch the provider. It is NOT the authority: the reservation RPC
+  // recomputes headroom under a row lock, and only that is binding.
+  //
+  // `already_following_count` is deliberately absent — those members
+  // return before an attempt is made, so they are not in
+  // `attempted_count` and subtracting them would double-count and let
+  // the day overrun. Only `skipped_count` is an attempt that cost no
+  // quota.
+  const consumedToday = Math.max(0, run.attempted_count - run.skipped_count);
+  const quotaRemaining = Math.max(0, live.effective - consumedToday);
   if (quotaRemaining === 0) {
     await finishRun(campaign, run, input.db, "daily quota reached", now);
     out.note = "daily quota already reached";
@@ -395,23 +435,44 @@ async function runCampaign(args: {
   }
 
   // ── The chunk loop.
+  //
+  // Each iteration RESERVES quota and receives exactly the members that
+  // reservation covers. The reservation is what bounds total attempts:
+  // two dispatchers claiming disjoint members still both attempt, and
+  // only a reservation taken under a row lock stops them collectively
+  // exceeding the day.
   const claimedBy = `tick-${now.toISOString()}-${Math.random().toString(36).slice(2, 8)}`;
-  let attempted = run.attempted_count;
-  let succeeded = run.succeeded_count;
-  let alreadyFollowing = run.already_following_count;
-  let skipped = run.skipped_count;
-  let failed = run.failed_count;
   let consecutive = run.consecutive_failures;
   let stop: NextAction | null = null;
+  let totalSucceeded = run.succeeded_count;
 
-  while (quotaRemaining > 0 && args.remainingBudgetMs() > 0) {
+  while (args.remainingBudgetMs() > 0) {
+    const reservation = await reserveAndClaim({
+      workspaceId: campaign.workspace_id,
+      campaignId: campaign.id,
+      runId: run.id,
+      operatorAccountId: campaign.operator_account_id,
+      usageDate,
+      requested: live.effective,
+      identityCeiling: IDENTITY_DAILY_FOLLOW_CEILING,
+      chunkSize: CAMPAIGN_CHUNK_SIZE,
+      leaseSeconds: LEASE_SECONDS,
+      claimedBy,
+      db: input.db,
+    });
+
+    // Nothing reserved means the quota is spent or the queue is empty.
+    if (reservation.reserved === 0) break;
+
     const chunk = await processCampaignChunk({
       campaign,
       runId: run.id,
       session,
-      quotaRemaining: Math.min(quotaRemaining, CAMPAIGN_CHUNK_SIZE),
+      members: reservation.members,
+      quotaRemaining: reservation.reserved,
       consecutiveFailures: consecutive,
       claimedBy,
+      initiatedBy: campaign.created_by,
       appView: input.appView,
       fetchImpl: input.fetchImpl,
       db: input.db,
@@ -419,49 +480,46 @@ async function runCampaign(args: {
       interRequestMs: input.interRequestMs,
     });
 
-    if (chunk.claimed === 0) break;
-
     out.ranChunks += 1;
-    attempted += chunk.attempted;
-    succeeded += chunk.succeeded;
-    alreadyFollowing += chunk.alreadyFollowing;
-    skipped += chunk.skipped;
-    failed += chunk.failed;
     consecutive = chunk.consecutiveFailures;
-    quotaRemaining -= chunk.quotaConsumed;
-
     out.attempted += chunk.attempted;
     out.succeeded += chunk.succeeded;
     out.alreadyFollowing += chunk.alreadyFollowing;
     out.skipped += chunk.skipped;
     out.failed += chunk.failed;
 
-    // Record the provider-visible consumption immediately, so a crash
-    // after this point cannot let a second campaign on the same
-    // identity re-spend the same allowance.
-    if (chunk.recordsCreated > 0 || chunk.attempted > 0) {
-      await recordIdentityUsage({
-        workspaceId: campaign.workspace_id,
-        operatorAccountId: campaign.operator_account_id,
-        usageDate,
-        followsCreated: chunk.recordsCreated,
-        attemptsMade: chunk.attempted,
-      db: input.db,
-      });
-    }
-
-    await updateRun({
+    // Counters as DELTAS, and the reservation consumed in the same
+    // statement. Writing absolutes from the snapshot read at the top of
+    // this function loses every concurrent increment.
+    const updated = await applyRunOutcome({
       workspaceId: campaign.workspace_id,
       runId: run.id,
-      attemptedCount: attempted,
-      succeededCount: succeeded,
-      alreadyFollowingCount: alreadyFollowing,
-      skippedCount: skipped,
-      failedCount: failed,
+      operatorAccountId: campaign.operator_account_id,
+      usageDate,
+      attempted: chunk.attempted,
+      succeeded: chunk.succeeded,
+      alreadyFollowing: chunk.alreadyFollowing,
+      skipped: chunk.skipped,
+      failed: chunk.failed,
+      recordsCreated: chunk.recordsCreated,
+      // The whole reservation is consumed: what was attempted counted
+      // against it, and what was not attempted was released back to the
+      // queue by the worker, so holding the difference would leak quota
+      // nothing will ever return.
+      consumeReservation: reservation.reserved,
       consecutiveFailures: consecutive,
-      lastChunkAt: now.toISOString(),
+      rateLimitedUntil:
+        chunk.next.kind === "stop_run" && chunk.next.resumeAfter
+          ? chunk.next.resumeAfter.toISOString()
+          : null,
+      rateLimitRemaining: chunk.rateLimit?.remaining ?? null,
+      rateLimitResetAt:
+        chunk.rateLimit?.resetAt != null
+          ? new Date(chunk.rateLimit.resetAt * 1000).toISOString()
+          : null,
       db: input.db,
     });
+    if (updated) totalSucceeded = updated.succeeded_count;
 
     if (chunk.next.kind !== "continue") {
       stop = chunk.next;
@@ -504,10 +562,24 @@ async function runCampaign(args: {
       db: input.db,
     });
     if (resumeAfter) {
+      // Come back NO EARLIER than the provider's own reset, and only
+      // inside the execution window. Leaving `next_run_at` untouched
+      // made the campaign due immediately: every tick re-read it, found
+      // the run still rate-limited, and burned a dispatcher pass doing
+      // nothing until the reset finally elapsed.
+      const retryAt = computeNextRunAt({
+        from: resumeAfter,
+        timezone: campaign.timezone,
+        window: {
+          startMinute: campaign.execution_window_start_minute,
+          endMinute: campaign.execution_window_end_minute,
+        },
+      });
       await updateCampaign({
         workspaceId: campaign.workspace_id,
         campaignId: campaign.id,
         rateLimitedUntil: resumeAfter.toISOString(),
+        nextRunAt: retryAt.toISOString(),
         expectedStatuses: ["active"],
         db: input.db,
       });
@@ -530,7 +602,7 @@ async function runCampaign(args: {
   }
   if (quotaRemaining <= 0) {
     await finishRun(campaign, run, input.db, "daily quota reached", now);
-    out.note = `daily quota reached (${succeeded} follow(s) created today)`;
+    out.note = `daily quota reached (${totalSucceeded} follow(s) created today)`;
   }
   return out;
 }
