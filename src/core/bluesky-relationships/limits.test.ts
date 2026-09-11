@@ -90,12 +90,25 @@ describe("the cap actually fits the declared execution budget", () => {
     expect(oneMore).toBeGreaterThan(RELATIONSHIP_MAX_DURATION_SECONDS);
   });
 
-  it("the page segment declares the same maxDuration", () => {
+  it("the page segment declares the same maxDuration, as a literal", () => {
+    // Next.js reads segment config STATICALLY. An imported constant
+    // here is not resolved — the build warns "Unknown identifier … The
+    // default config will be used instead" and silently reverts to the
+    // platform default, which is far below the worst case computed
+    // above. The first version of this file did exactly that; the build
+    // warning was the only evidence.
+    //
+    // So the page must carry a literal, and this parses it and compares
+    // it to the constant the arithmetic uses.
     const page = readFileSync(
       path.join(process.cwd(), "src/app/(app)/relationships/page.tsx"),
       "utf8",
     );
-    expect(page).toContain("export const maxDuration = RELATIONSHIP_MAX_DURATION_SECONDS");
+    const match = /export const maxDuration = (\d+);/.exec(page);
+    expect(match, "page must declare `export const maxDuration = <number>;`").not.toBeNull();
+    expect(Number(match![1])).toBe(RELATIONSHIP_MAX_DURATION_SECONDS);
+    // And it must not be an identifier, however tempting the DRY is.
+    expect(page).not.toMatch(/export const maxDuration = [A-Za-z_]/);
   });
 
   it("pacing and rate-limit floors are unchanged by this cap", () => {

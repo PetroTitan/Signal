@@ -2,7 +2,6 @@ import { Topbar } from "@/components/topbar";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { loadRelationships } from "@/core/bluesky-relationships/load-relationships.server";
-import { RELATIONSHIP_MAX_DURATION_SECONDS } from "@/core/bluesky-relationships/limits";
 import { ReadFailureNotice } from "./_read-failure-notice";
 import { RelationshipUi } from "./_relationship-ui";
 
@@ -10,13 +9,19 @@ export const dynamic = "force-dynamic";
 
 /**
  * Relationship batches run synchronously inside the operator's request
- * — there is no queue and no background worker, by design. The default
- * serverless budget is far below the worst case for a full batch, so it
- * is declared explicitly and kept in step with the batch cap by
- * `RELATIONSHIP_MAX_DURATION_SECONDS`. See `limits.ts` for the
- * arithmetic tying the two together.
+ * — there is no queue and no background worker, by design. The platform
+ * default is far below the worst case for a full batch, so the budget
+ * is declared explicitly.
+ *
+ * This MUST be a literal. Next.js reads segment config statically, and
+ * an imported constant here is not resolved: the build warns "Unknown
+ * identifier … The default config will be used instead", which is a
+ * silent revert to the default that no test would otherwise notice.
+ * `RELATIONSHIP_MAX_DURATION_SECONDS` in `limits.ts` carries the
+ * arithmetic that chose this number, and a test parses this literal and
+ * fails if the two drift apart.
  */
-export const maxDuration = RELATIONSHIP_MAX_DURATION_SECONDS;
+export const maxDuration = 60;
 
 /**
  * Bluesky Relationships.

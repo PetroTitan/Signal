@@ -73,6 +73,15 @@ against `maxDuration = 60` now declared on the page segment. 25 would be
 64s worst case. A test asserts the cap and the budget stay in step, so
 raising one without the other fails.
 
+The segment value must be a **literal**. The first version imported the
+constant, and Next.js — which reads segment config statically — emitted
+*"Unknown identifier `RELATIONSHIP_MAX_DURATION_SECONDS`… The default
+config will be used instead"* and silently kept the platform default.
+The budget was inert, and only the build warning showed it. The test now
+parses the literal out of the page and compares it to the constant, and
+fails if either drifts or if the literal is replaced by an identifier
+again.
+
 **Spacing was not reduced to buy headroom.** `INTER_REQUEST_MS` and both
 rate-limit floors are asserted unchanged.
 
