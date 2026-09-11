@@ -68,6 +68,7 @@ import { resolveRelationshipSession } from "@/core/bluesky-relationships/session
 import {
   BatchMembershipFrozenError,
   confirmBatch,
+  getBatch,
   createAction,
   createBatch,
   deleteTargetProfile,
@@ -646,6 +647,230 @@ async function runRelationshipBatch(
     remaining: progress.remaining,
     summary: notes.join(" "),
   });
+}
+
+/**
+ * Continue a paused batch.
+ *
+ * This is the ONLY resumption path, and it is operator-triggered — there
+ * is no cron, no retry timer and nothing that resumes a batch on its
+ * own. A batch pauses when Bluesky throttles, when the session dies, or
+ * when the request runs out of time, and it stays paused until a person
+ * asks for it to go on.
+ *
+ * Everything is re-established from scratch on every continuation,
+ * because arbitrarily long may have passed since the batch was
+ * confirmed: the caller's session, their workspace membership, their
+ * `connect_platforms` permission, that the identity is still theirs, and
+ * that the Bluesky session is still usable. A confirmation from an hour
+ * ago authorizes nothing now.
+ *
+ * What it continues is the batch's EXISTING, FROZEN membership — read
+ * back from the database, not rebuilt from a filter — and within that,
+ * only rows still `pending`. It never:
+ *
+ *   - creates an action row (the membership trigger would refuse anyway);
+ *   - widens membership with candidates imported since;
+ *   - re-sends a mutation that ended `reconciliation_required`, whose
+ *     whole point is that the next move is a human decision;
+ *   - retries a `failed` row, which was a definitive provider refusal.
+ */
+export type ContinueBatchResult = ActionResult<{
+  batchId: string;
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  reconciliationRequired: number;
+  remaining: number;
+  summary: string;
+}>;
+
+export async function continueBatchAction(
+  _prev: ContinueBatchResult,
+  formData: FormData,
+): Promise<ContinueBatchResult> {
+  const operatorAccountId = String(formData.get("operator_account_id") ?? "");
+  const batchId = String(formData.get("batch_id") ?? "");
+
+  // 1-4: authenticated user, workspace membership, connect_platforms,
+  // and that this identity belongs to that workspace. Re-run, not
+  // remembered.
+  const ctx = await requireRelationshipContext(
+    operatorAccountId,
+    "connect_platforms",
+  );
+  if (ctx.kind !== "ok") return actionFail(ctx.message);
+  if (!batchId) return actionFail("Pick a batch to continue.");
+
+  try {
+    const batch = await getBatch(ctx.workspaceId, batchId);
+    if (!batch) {
+      return actionFail("That batch is not in this workspace.");
+    }
+    // The batch must belong to the identity the caller authorised for.
+    // A batch id is a bare uuid in a form field until this holds.
+    if (batch.operator_account_id !== ctx.operatorAccountId) {
+      return actionFail("That batch belongs to a different identity.");
+    }
+    if (!batch.confirmed_at) {
+      // An unconfirmed batch has no frozen membership to continue.
+      return actionFail("That batch was never confirmed, so there is nothing to continue.");
+    }
+    if (batch.status !== "paused") {
+      return actionFail(
+        `That batch is ${batch.status}, not paused. Only a paused batch can be continued.`,
+      );
+    }
+
+    // 5: the Bluesky session, re-resolved now. An auth failure that
+    // paused the batch stays non-resumable until the operator
+    // reconnects the identity — this is where that is enforced.
+    const session = await resolveRelationshipSession({
+      workspaceId: ctx.workspaceId,
+      accountId: ctx.operatorAccountId,
+    });
+    if (!session.ok) {
+      return actionFail(
+        `${session.message} The batch stays paused; nothing was re-sent.`,
+      );
+    }
+
+    // The frozen membership, read back from the database rather than
+    // rebuilt. Only rows never attempted are eligible.
+    const all = await listBatchActions(ctx.workspaceId, batch.id);
+    const pending = all.filter((a) => a.status === "pending");
+    if (pending.length === 0) {
+      await updateBatchProgress({
+        workspaceId: ctx.workspaceId,
+        batchId: batch.id,
+        status: "completed",
+        processed: all.length,
+        succeeded: all.filter((a) => a.status === "succeeded").length,
+        failed: all.filter((a) => a.status === "failed").length,
+        reconciliationRequired: all.filter(
+          (a) => a.status === "reconciliation_required",
+        ).length,
+        finishedAt: new Date().toISOString(),
+      });
+      revalidatePath(RELATIONSHIPS_PATH);
+      return actionFail(
+        "Every action in that batch has already been attempted. Nothing was re-sent.",
+      );
+    }
+
+    // Current candidate state for the pending subjects only. A
+    // relationship may have changed since the batch was confirmed, and
+    // the executor's preflight must see today's truth — including
+    // protection applied after confirmation.
+    const candidates = await getCandidatesByIds(
+      ctx.workspaceId,
+      ctx.operatorAccountId,
+      pending.map((a) => a.candidate_id).filter((id): id is string => Boolean(id)),
+    );
+    const candidateMap: RelationshipStateByDid = new Map(
+      candidates.map((c) => [
+        c.subject_did,
+        {
+          subject_did: c.subject_did,
+          relationship_state: c.relationship_state,
+          protected: c.protected,
+          follow_rkey: c.follow_rkey,
+          follow_cid: c.follow_cid,
+        },
+      ]),
+    );
+
+    await updateBatchProgress({
+      workspaceId: ctx.workspaceId,
+      batchId: batch.id,
+      status: "running",
+      processed: all.length - pending.length,
+      succeeded: all.filter((a) => a.status === "succeeded").length,
+      failed: all.filter((a) => a.status === "failed").length,
+      reconciliationRequired: all.filter(
+        (a) => a.status === "reconciliation_required",
+      ).length,
+      lastError: null,
+    });
+
+    const progress = await processBatchActions({
+      ctx: {
+        workspaceId: ctx.workspaceId,
+        operatorAccountId: ctx.operatorAccountId,
+        session,
+      },
+      actionType: batch.action_type,
+      // Exactly the remaining rows. Not a re-query, not a filter.
+      actions: pending,
+      candidates: candidateMap,
+    });
+
+    // Re-read so the totals describe the whole batch, not this slice.
+    const after = await listBatchActions(ctx.workspaceId, batch.id);
+    const stillPending = after.filter((a) => a.status === "pending").length;
+    const succeeded = after.filter((a) => a.status === "succeeded").length;
+    const failed = after.filter((a) => a.status === "failed").length;
+    const needsReconciliation = after.filter(
+      (a) => a.status === "reconciliation_required",
+    ).length;
+
+    await updateBatchProgress({
+      workspaceId: ctx.workspaceId,
+      batchId: batch.id,
+      status: stillPending > 0 ? "paused" : "completed",
+      processed: after.length - stillPending,
+      succeeded,
+      failed,
+      reconciliationRequired: needsReconciliation,
+      stopReason: progress.halted ? "provider" : null,
+      lastError: progress.haltReason,
+      finishedAt: stillPending > 0 ? null : new Date().toISOString(),
+    });
+
+    await recordActivity({
+      workspaceId: ctx.workspaceId,
+      eventType: `bluesky_relationships.${batch.action_type}_batch_continued`,
+      entityType: "bluesky_action_batch",
+      entityId: batch.id,
+      title: `Bluesky ${batch.action_type} batch continued: ${progress.processed} more`,
+      description: progress.haltReason,
+      metadata: {
+        attempted: progress.processed,
+        still_pending: stillPending,
+      },
+    }).catch(() => undefined);
+
+    revalidatePath(RELATIONSHIPS_PATH);
+
+    const notes = [
+      `Continued ${progress.processed} of ${pending.length} remaining.`,
+      `${succeeded} of ${after.length} done overall.`,
+    ];
+    if (needsReconciliation > 0) {
+      notes.push(
+        `${needsReconciliation} still need reconciliation — those are never re-sent automatically.`,
+      );
+    }
+    if (progress.halted) {
+      notes.push(
+        `Stopped again: ${progress.haltReason ?? "provider limit"}. ${stillPending} left; progress is saved.`,
+      );
+    }
+
+    return actionOk({
+      batchId: batch.id,
+      attempted: progress.processed,
+      succeeded,
+      failed,
+      reconciliationRequired: needsReconciliation,
+      remaining: stillPending,
+      summary: notes.join(" "),
+    });
+  } catch (err) {
+    return actionFail(
+      err instanceof Error ? err.message : "The batch could not be continued.",
+    );
+  }
 }
 
 export async function followSelectedAction(

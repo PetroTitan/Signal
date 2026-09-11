@@ -59,6 +59,7 @@ describe("every server action is gated", () => {
   it("exports the actions the UI needs and nothing unexpected", () => {
     expect(exportedActions().sort()).toEqual([
       "addTargetAction",
+      "continueBatchAction",
       "followSelectedAction",
       "importFollowersAction",
       "refreshRelationshipsAction",
@@ -105,6 +106,9 @@ describe("every server action is gated", () => {
       "removeTargetAction",
       "setProtectedAction",
       "refreshRelationshipsAction",
+      // Continuing a batch re-sends real mutations, so it needs the
+      // same permission as starting one.
+      "continueBatchAction",
     ];
     for (const name of mutations) {
       expect(bodyOf(name)).toContain('"connect_platforms"');
@@ -258,6 +262,66 @@ describe("no action can run without an operator", () => {
       const body = code(readFileSync(path.join(process.cwd(), file), "utf8"));
       expect(body, file).not.toMatch(/followBack|follow_back|reciprocat/i);
       expect(body, file).not.toMatch(/randomDelay|jitter|humanize|humanise/i);
+    }
+  });
+});
+
+describe("continuing a paused batch re-establishes everything", () => {
+  const body = bodyOf("continueBatchAction");
+
+  it("re-runs the full context gate rather than trusting the confirmation", () => {
+    // A batch confirmed an hour ago authorizes nothing now. The
+    // operator may have lost the permission, left the workspace, or
+    // had the identity reassigned.
+    expect(body).toContain("requireRelationshipContext");
+    expect(body).toContain('"connect_platforms"');
+  });
+
+  it("verifies the batch belongs to this workspace AND this identity", () => {
+    expect(body).toContain("getBatch(ctx.workspaceId, batchId)");
+    expect(body).toContain("batch.operator_account_id !== ctx.operatorAccountId");
+  });
+
+  it("re-resolves the Bluesky session on every continuation", () => {
+    // This is where an auth-paused batch stays non-resumable: the
+    // session will not resolve until the operator reconnects.
+    expect(body).toContain("resolveRelationshipSession");
+    expect(body).toMatch(/if \(!session\.ok\)[\s\S]{0,200}actionFail/);
+    expect(body).toContain("The batch stays paused");
+  });
+
+  it("refuses anything that is not a confirmed, paused batch", () => {
+    expect(body).toContain("if (!batch.confirmed_at)");
+    expect(body).toMatch(/batch\.status !== "paused"/);
+  });
+
+  it("continues the frozen membership read back from the database", () => {
+    expect(body).toContain("listBatchActions(ctx.workspaceId, batch.id)");
+    // Only never-attempted rows.
+    expect(body).toMatch(/filter\(\(a\) => a\.status === "pending"\)/);
+    // The executor receives exactly those rows.
+    expect(body).toMatch(/actions: pending/);
+  });
+
+  it("creates no action row and cannot widen membership", () => {
+    // createAction is the only way to add a row, and it is absent.
+    expect(body).not.toContain("createAction(");
+    expect(body).not.toContain("confirmBatch(");
+    // It does not rebuild membership from a filter over candidates.
+    expect(body).not.toContain("listCandidatesPage(");
+    expect(body).not.toContain("listCandidates(");
+  });
+
+  it("re-reads candidate state so protection applied since is honoured", () => {
+    expect(body).toContain("getCandidatesByIds");
+  });
+
+  it("is operator-triggered — no timer, cron or automatic resumption", () => {
+    const stripped = code(body);
+    for (const forbidden of ["setTimeout", "setInterval", "cron"]) {
+      expect(stripped, `continueBatchAction must not use ${forbidden}`).not.toContain(
+        forbidden,
+      );
     }
   });
 });

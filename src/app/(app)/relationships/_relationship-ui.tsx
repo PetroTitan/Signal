@@ -32,6 +32,7 @@ import {
   followSelectedAction,
   importFollowersAction,
   refreshRelationshipsAction,
+  continueBatchAction,
   removeTargetAction,
   setProtectedAction,
   unfollowSelectedAction,
@@ -39,6 +40,7 @@ import {
   type ImportActionResult,
   type ProtectActionResult,
   type RefreshActionResult,
+  type ContinueBatchResult,
   type RelationshipBatchResult,
   type RemoveTargetActionResult,
 } from "./_actions";
@@ -103,6 +105,7 @@ const EMPTY_REFRESH: RefreshActionResult = { ok: false, error: "" };
 const EMPTY_BATCH: RelationshipBatchResult = { ok: false, error: "" };
 const EMPTY_PROTECT: ProtectActionResult = { ok: false, error: "" };
 const EMPTY_REMOVE: RemoveTargetActionResult = { ok: false, error: "" };
+const EMPTY_CONTINUE: ContinueBatchResult = { ok: false, error: "" };
 
 function stateBadgeClass(state: BlueskyRelationshipState): string {
   switch (state) {
@@ -179,6 +182,10 @@ export function RelationshipUi(props: RelationshipUiProps) {
     removeTargetAction,
     EMPTY_REMOVE,
   );
+  const [continueState, runContinue] = useFormState(
+    continueBatchAction,
+    EMPTY_CONTINUE,
+  );
 
   /**
    * The pending confirmation, or null.
@@ -232,6 +239,7 @@ export function RelationshipUi(props: RelationshipUiProps) {
       count: props.counts.following + props.counts.mutual,
     },
     { key: "mutual", label: "Mutual", count: props.counts.mutual },
+    { key: "batches", label: "Batches", count: props.batches.length },
     { key: "history", label: "History", count: props.historyPage.total },
   ];
 
@@ -335,7 +343,17 @@ export function RelationshipUi(props: RelationshipUiProps) {
         />
       ) : null}
 
-      {tab !== "targets" && tab !== "history" ? (
+      {tab === "batches" ? (
+        <BatchesView
+          identityId={identityId}
+          batches={props.batches}
+          connected={props.connected}
+          runContinue={runContinue}
+          continueState={continueState}
+        />
+      ) : null}
+
+      {tab !== "targets" && tab !== "history" && tab !== "batches" ? (
         <CandidateListView
           identityId={identityId}
           candidates={visible}
@@ -909,6 +927,138 @@ function HistoryView(props: {
       ))}
       </ul>
       <Pager info={props.historyPage} param="hpage" label="History" />
+    </div>
+  );
+}
+
+// =====================================================================
+// Batches
+// =====================================================================
+
+const BATCH_BADGE: Record<string, string> = {
+  completed: "badge-low",
+  running: "badge-info",
+  paused: "badge-medium",
+  failed: "badge-high",
+  confirmed: "badge-neutral",
+  pending: "badge-neutral",
+};
+
+/**
+ * Recent batches and their progress.
+ *
+ * The loader always read these; nothing rendered them, so a batch that
+ * stopped halfway was invisible — the operator saw a summary once and
+ * had no way back to it. Paused batches are the reason this view
+ * exists.
+ *
+ * Continue is a submit, not a confirmation dialog: it does not choose
+ * new targets or widen anything. It resumes work the operator already
+ * reviewed and approved, on the frozen membership, and the server
+ * re-authorizes everything before sending a single request.
+ */
+function BatchesView(props: {
+  identityId: string;
+  batches: BlueskyActionBatchRow[];
+  connected: boolean;
+  runContinue: (formData: FormData) => void;
+  continueState: ContinueBatchResult;
+}) {
+  if (props.batches.length === 0) {
+    return (
+      <div className="card card-padded">
+        <p className="text-sm text-ink-600 leading-relaxed">
+          No batches yet. Selecting accounts and confirming a Follow or Unfollow
+          creates one, and it appears here with its progress.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <Notice result={props.continueState} />
+
+      <ul className="list-none p-0 m-0 space-y-2">
+        {props.batches.map((batch) => {
+          const attempted = batch.processed_count;
+          const remaining = Math.max(0, batch.requested_count - attempted);
+          const resumable = batch.status === "paused" && remaining > 0;
+
+          return (
+            <li key={batch.id} className="card p-3 sm:p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={
+                    batch.action_type === "follow" ? "badge-info" : "badge-neutral"
+                  }
+                >
+                  {batch.action_type === "follow" ? "Follow" : "Unfollow"}
+                </span>
+                <span className={BATCH_BADGE[batch.status] ?? "badge-neutral"}>
+                  {batch.status}
+                </span>
+                <span className="text-xs text-ink-500">
+                  {new Date(batch.created_at).toLocaleString()}
+                </span>
+              </div>
+
+              <p className="text-sm text-ink-800 mt-2">
+                {attempted} of {batch.requested_count} attempted
+                {batch.succeeded_count > 0
+                  ? ` \u00b7 ${batch.succeeded_count} succeeded`
+                  : ""}
+                {batch.failed_count > 0 ? ` \u00b7 ${batch.failed_count} failed` : ""}
+                {batch.reconciliation_required_count > 0
+                  ? ` \u00b7 ${batch.reconciliation_required_count} need reconciliation`
+                  : ""}
+              </p>
+
+              {remaining > 0 ? (
+                <p className="text-sm text-ink-600 mt-1 leading-relaxed">
+                  {remaining} not attempted. Membership is fixed at the{" "}
+                  {batch.requested_count} accounts you confirmed — continuing
+                  never adds newly imported ones.
+                </p>
+              ) : null}
+
+              {batch.last_error ? (
+                <p className="text-xs text-amber-700 mt-2 leading-relaxed break-words">
+                  {batch.last_error}
+                </p>
+              ) : null}
+
+              {resumable ? (
+                <form action={props.runContinue} className="mt-3">
+                  <input
+                    type="hidden"
+                    name="operator_account_id"
+                    value={props.identityId}
+                  />
+                  <input type="hidden" name="batch_id" value={batch.id} />
+                  <SubmitButton
+                    className="btn-primary"
+                    disabled={!props.connected}
+                  >
+                    Continue ({remaining})
+                  </SubmitButton>
+                </form>
+              ) : null}
+
+              {batch.status === "paused" && !props.connected ? (
+                <p className="text-sm text-amber-700 mt-2 leading-relaxed">
+                  This identity is not signed in to Bluesky, so the batch cannot
+                  continue. Reconnect it on Accounts first.
+                </p>
+              ) : null}
+
+              <p className="text-xs text-ink-400 mt-2 break-all">
+                batch {batch.id}
+              </p>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
