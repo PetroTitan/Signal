@@ -43,6 +43,7 @@ import { MAX_RELATIONSHIP_BATCH_SIZE } from "@/core/bluesky-relationships/limits
 import type { RelationshipSession } from "@/core/bluesky-relationships/session.server";
 import {
   claimCampaignAction,
+  consumeMemberQuota,
   completeCampaignAction,
   releaseMembers,
   updateMember,
@@ -70,6 +71,16 @@ export const CAMPAIGN_CHUNK_SIZE = MAX_RELATIONSHIP_BATCH_SIZE;
  * within one cron interval rather than stranding them for an hour.
  */
 export const LEASE_SECONDS = 300;
+
+/**
+ * How long one dispatcher may hold a campaign-day.
+ *
+ * Bounded by the platform's own function limit (`maxDuration = 300`) so
+ * a killed dispatcher's campaign becomes available again on roughly the
+ * next cron tick, plus a margin for the settlement writes that follow
+ * the last chunk.
+ */
+export const DISPATCH_LEASE_SECONDS = 360;
 
 export interface ChunkOutcomeCounts {
   attempted: number;
@@ -116,6 +127,13 @@ export interface ProcessChunkInput {
    * let two dispatchers exceed the daily quota.
    */
   members: ClaimedMember[];
+  /**
+   * The reservation that paid for these members.
+   *
+   * Quoted back to the database before every provider mutation, to
+   * convert one of its reserved units into a durable attempted one.
+   */
+  reservationId: string;
   /** Quota units still available. Bounds the claim. */
   quotaRemaining: number;
   /** Consecutive failures carried in from earlier chunks in this run. */
@@ -124,6 +142,16 @@ export interface ProcessChunkInput {
   claimedBy: string;
   /** Who started the campaign, for the audit row. */
   initiatedBy?: string | null;
+  /**
+   * The instant this tick is working from.
+   *
+   * Passed in rather than read here so every timestamp the chunk writes
+   * agrees with the rest of the pass. Reading the wall clock made a
+   * retry backoff land relative to a different "now" than the
+   * dispatcher's, which is invisible in production and makes a test
+   * measure the hour it was run at.
+   */
+  now: Date;
   appView?: string;
   fetchImpl?: typeof fetch;
   db?: SupabaseClient;
@@ -256,12 +284,42 @@ export async function processCampaignChunk(
       db: input.db,
     });
 
-    if (claim.terminal) {
-      // Someone already finished this member. Not an attempt, no quota.
+    // A terminal claim means the audit row already reached a final
+    // state — but WHICH final state decides everything, and collapsing
+    // them all into "succeeded" was a false success: a member whose
+    // follow was never confirmed, or which structurally failed, was
+    // reported to the operator as followed.
+    if (claim.terminal && claim.existingStatus === "succeeded") {
+      // Confirmed by a previous pass. Not an attempt, no quota.
       untouched.delete(member.id);
       await persist(input, member, "succeeded", null, member.attempt_count);
       continue;
     }
+
+    if (claim.terminal && claim.existingStatus === "failed") {
+      // A previous pass established this cannot succeed. Terminal, but
+      // terminal-failed — never reported as a follow.
+      untouched.delete(member.id);
+      await persist(
+        input,
+        member,
+        "failed_structural",
+        null,
+        member.attempt_count,
+      );
+      counts.failed += 1;
+      continue;
+    }
+
+    // `reconciliation_required` is terminal for the ACTION and
+    // unresolved for the MEMBER. The outcome of a possible provider
+    // mutation is unknown, so this pass may read relationship truth and
+    // may never send anything. It resolves only when Bluesky confirms
+    // the follow; until then the member stays retryable and the action
+    // stays reconciliation_required, however many passes go by.
+    const reconcileOnlyClaim =
+      claim.needsReconcile ||
+      (claim.terminal && claim.existingStatus === "reconciliation_required");
 
     if (known === "following") {
       // Observed, not assumed. No record is created and no quota is
@@ -272,7 +330,7 @@ export async function processCampaignChunk(
         workspaceId: input.campaign.workspace_id,
         actionId: claim.actionId,
         status: "succeeded",
-        reconciliationNote: claim.needsReconcile
+        reconciliationNote: reconcileOnlyClaim
           ? "A previous attempt may have been sent before this worker took over. Bluesky reports the follow exists, so nothing was re-sent."
           : "Already following before this campaign reached them. No follow record was created and no quota was consumed.",
         db: input.db,
@@ -283,7 +341,7 @@ export async function processCampaignChunk(
       continue;
     }
 
-    const result = claim.needsReconcile
+    const result = reconcileOnlyClaim
       ? // RECONCILIATION-ONLY MODE. No mutation may be sent while a
         // prior attempt's outcome is unknown.
         await reconcileOnly(input, member, claim.actionId)
@@ -292,9 +350,21 @@ export async function processCampaignChunk(
     untouched.delete(member.id);
     rateLimit = result.rateLimit ?? rateLimit;
 
+    // A reconciliation-only pass sends nothing, so it must not spend an
+    // attempt or a unit of quota.
+    //
+    // Spending an attempt would eventually exhaust MAX_MEMBER_ATTEMPTS
+    // and turn an UNRESOLVED member into `failed_structural` — a false
+    // terminal state reached without a single request being made. And
+    // counting it as attempted would shrink the day's quota to pay for
+    // reads that never touched the provider.
+    const attemptsAfter = reconcileOnlyClaim
+      ? member.attempt_count
+      : member.attempt_count + 1;
+
     const decision = classifyOutcome({
       kind: result.kind,
-      attemptCount: member.attempt_count + 1,
+      attemptCount: attemptsAfter,
       resumeAfter: result.resumeAfter,
     });
 
@@ -323,16 +393,12 @@ export async function processCampaignChunk(
       db: input.db,
     });
 
-    await persist(
-      input,
-      member,
-      decision.memberStatus,
-      result,
-      member.attempt_count + 1,
-    );
+    await persist(input, member, decision.memberStatus, result, attemptsAfter);
 
-    counts.attempted += 1;
-    if (decision.consumesQuota) counts.quotaConsumed += 1;
+    if (!reconcileOnlyClaim) {
+      counts.attempted += 1;
+      if (decision.consumesQuota) counts.quotaConsumed += 1;
+    }
     if (decision.kind === "succeeded") {
       counts.succeeded += 1;
       counts.recordsCreated += 1;
@@ -449,7 +515,7 @@ async function reconcileOnly(
 async function attemptFollow(
   input: ProcessChunkInput,
   member: ClaimedMember,
-  _actionId: string,
+  actionId: string,
 ): Promise<AttemptResult> {
   if (input.campaign.dry_run) {
     return {
@@ -457,6 +523,36 @@ async function attemptFollow(
       errorCode: "dry_run",
       errorMessage:
         "Dry run: no follow was created and no request was sent to Bluesky.",
+    };
+  }
+
+  // SPEND THE UNIT FIRST.
+  //
+  // This is the last line before the provider, and it is where quota
+  // stops being a promise and becomes a fact. The stamp it writes is
+  // never cleared, so a process killed on the next line still leaves
+  // the day's books showing that this attempt was made.
+  //
+  // Reporting attempts in bulk at settlement is what made that
+  // impossible: a worker that died after following four people left
+  // those four recorded nowhere, and the sweep handed their quota back.
+  const unit = await consumeMemberQuota({
+    workspaceId: input.campaign.workspace_id,
+    reservationId: input.reservationId,
+    memberId: member.id,
+    actionId,
+    db: input.db,
+  });
+
+  if (!unit.mayMutate) {
+    // The database declined to fund this attempt, so no request is
+    // sent. Retryable rather than terminal: the member did nothing
+    // wrong and the next tick will reserve for it properly.
+    return {
+      kind: "retryable_transport_failure",
+      errorCode: unit.refusedReason ?? "quota_unavailable",
+      errorMessage:
+        "The daily allowance for this identity could not be reserved for this profile, so no follow was sent.",
     };
   }
 
@@ -499,7 +595,7 @@ async function attemptFollow(
     result.rateLimit?.resetAt != null
       ? new Date(result.rateLimit.resetAt * 1000)
       : result.rateLimit?.retryAfterSeconds != null
-        ? new Date(Date.now() + result.rateLimit.retryAfterSeconds * 1000)
+        ? new Date(input.now.getTime() + result.rateLimit.retryAfterSeconds * 1000)
         : null;
 
   return {
@@ -521,7 +617,7 @@ async function persist(
   result: AttemptResult | null,
   attemptCount: number,
 ): Promise<void> {
-  const now = new Date().toISOString();
+  const now = input.now.toISOString();
   const terminal = status !== "retryable";
 
   await updateMember({
@@ -532,7 +628,7 @@ async function persist(
     nextAttemptAt:
       status === "retryable"
         ? new Date(
-            Date.now() + backoffDelayMs(Math.max(1, attemptCount)),
+            input.now.getTime() + backoffDelayMs(Math.max(1, attemptCount)),
           ).toISOString()
         : null,
     providerRecordUri: result?.uri ?? undefined,

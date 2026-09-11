@@ -34,7 +34,7 @@ async function freshCampaign(
   members: number,
   effectiveQuota = 100,
   sharedIdentityId?: string,
-): Promise<void> {
+): Promise<{ campaignId: string; runId: string }> {
   if (sharedIdentityId) {
     identityId = sharedIdentityId;
   } else {
@@ -69,10 +69,16 @@ async function freshCampaign(
     [t.workspaceId, campaignId, TODAY, 100, effectiveQuota, null],
   );
   runId = r.rows[0].id;
+  return { campaignId, runId };
 }
 
 const reserve = (requested: number, chunk = 20, ceiling = 1000) =>
-  h.db.query<{ reserved: number; member_id: string | null }>(
+  h.db.query<{
+    reserved: number;
+    reservation_id: string | null;
+    reason: string;
+    member_id: string | null;
+  }>(
     `select * from public.reserve_bluesky_campaign_quota(
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
     [
@@ -211,12 +217,21 @@ describe("reserve_bluesky_campaign_quota", () => {
     const first = await reserve(10, 10);
     expect(first.rows).toHaveLength(10);
 
-    // The worker dies: leases lapse, the outcome is never reported.
+    // The worker dies. `reserve` issues the member leases and the
+    // reservation with the SAME duration, so both lapse together —
+    // expiring one without the other models a state production cannot
+    // reach.
     await h.db.query(
       `update public.bluesky_follow_campaign_members
           set lease_expires_at = now() - interval '1 minute'
         where campaign_id=$1 and status='claimed'`,
       [campaignId],
+    );
+    await h.db.query(
+      `update public.bluesky_campaign_quota_reservations
+          set expires_at = now() - interval '1 minute'
+        where run_id=$1 and status='open'`,
+      [runId],
     );
 
     const second = await reserve(10, 10);
@@ -227,52 +242,124 @@ describe("reserve_bluesky_campaign_quota", () => {
 });
 
 describe("apply_bluesky_run_outcome", () => {
-  it("applies deltas and releases the reservation", async () => {
-    await freshCampaign(50, 50);
-    await reserve(50, 20);
-
-    await h.db.query(
-      `select * from public.apply_bluesky_run_outcome(
-         $1,$2,$3,$4, 20, 18, 1, 1, 0, 18, 20, 0, null, null, null)`,
-      [t.workspaceId, runId, identityId, TODAY],
+  /** Spend one unit the way the worker does, just before a mutation. */
+  const consume = (reservationId: string, memberId: string) =>
+    h.db.query<{ consumed: boolean }>(
+      `select * from public.consume_bluesky_member_quota($1,$2,$3,null)`,
+      [t.workspaceId, reservationId, memberId],
     );
+
+  const settle = (reservationId: string) =>
+    h.db.query<{ settled: boolean; already_settled: boolean }>(
+      `select * from public.apply_bluesky_run_outcome(
+         $1,$2,$3,$4,$5,$6, 0, null, null, null)`,
+      [t.workspaceId, campaignId, runId, identityId, TODAY, reservationId],
+    );
+
+  it("counts what was SPENT, not what the caller claims", async () => {
+    // Settlement takes no totals at all now. The numbers come from the
+    // ledger the worker wrote as it went, which is the only version
+    // that survives the worker.
+    await freshCampaign(50, 50);
+    const res = await reserve(50, 20);
+    const reservationId = res.rows[0].reservation_id!;
+    const members = res.rows
+      .filter((r) => r.member_id)
+      .map((r) => r.member_id as string);
+
+    for (let i = 0; i < 5; i += 1) await consume(reservationId, members[i]);
+
     const run = await h.db.query<{
       attempted_count: number;
-      succeeded_count: number;
       reserved_count: number;
     }>(
-      `select attempted_count, succeeded_count, reserved_count
+      `select attempted_count, reserved_count
          from public.bluesky_follow_campaign_runs where id=$1`,
       [runId],
     );
-    expect(run.rows[0].attempted_count).toBe(20);
-    expect(run.rows[0].succeeded_count).toBe(18);
-    expect(run.rows[0].reserved_count).toBe(0);
+    // Five units moved from promised to spent, before any settlement.
+    expect(run.rows[0].attempted_count).toBe(5);
+    expect(run.rows[0].reserved_count).toBe(15);
 
-    const usage = await h.db.query<{ follows_created: number }>(
-      `select follows_created from public.bluesky_identity_daily_usage
-        where workspace_id=$1 and operator_account_id=$2 and usage_date=$3`,
-      [t.workspaceId, identityId, TODAY],
+    await settle(reservationId);
+
+    const after = await h.db.query<{
+      attempted_count: number;
+      reserved_count: number;
+    }>(
+      `select attempted_count, reserved_count
+         from public.bluesky_follow_campaign_runs where id=$1`,
+      [runId],
     );
-    expect(usage.rows[0].follows_created).toBe(18);
+    // Settling returns the 15 that were never spent, and leaves the 5
+    // that were.
+    expect(after.rows[0].attempted_count).toBe(5);
+    expect(after.rows[0].reserved_count).toBe(0);
   });
 
-  it("two applications ACCUMULATE — no lost update", async () => {
+  it("two DIFFERENT reservations ACCUMULATE — no lost update", async () => {
     await freshCampaign(50, 50);
-    const apply = () =>
-      h.db.query(
-        `select * from public.apply_bluesky_run_outcome(
-           $1,$2,$3,$4, 5, 5, 0, 0, 0, 5, 0, 0, null, null, null)`,
-        [t.workspaceId, runId, identityId, TODAY],
-      );
-    await apply();
-    await apply();
-    const run = await h.db.query<{ succeeded_count: number }>(
-      `select succeeded_count from public.bluesky_follow_campaign_runs where id=$1`,
+    const first = await reserve(50, 5);
+    for (const r of first.rows.filter((x) => x.member_id)) {
+      await consume(first.rows[0].reservation_id!, r.member_id!);
+    }
+    await settle(first.rows[0].reservation_id!);
+
+    const second = await reserve(50, 5);
+    for (const r of second.rows.filter((x) => x.member_id)) {
+      await consume(second.rows[0].reservation_id!, r.member_id!);
+    }
+    await settle(second.rows[0].reservation_id!);
+
+    const run = await h.db.query<{ attempted_count: number }>(
+      `select attempted_count from public.bluesky_follow_campaign_runs where id=$1`,
       [runId],
     );
     // Absolute writes from a stale snapshot would give 5.
-    expect(run.rows[0].succeeded_count).toBe(10);
+    expect(run.rows[0].attempted_count).toBe(10);
+  });
+
+  it("settling the SAME reservation twice applies nothing twice", async () => {
+    await freshCampaign(50, 50);
+    const res = await reserve(50, 10);
+    const reservationId = res.rows[0].reservation_id!;
+    for (const r of res.rows.filter((x) => x.member_id)) {
+      await consume(reservationId, r.member_id!);
+    }
+
+    const one = await settle(reservationId);
+    const two = await settle(reservationId);
+    expect(one.rows[0].settled).toBe(true);
+    expect(two.rows[0].settled).toBe(false);
+    expect(two.rows[0].already_settled).toBe(true);
+
+    const run = await h.db.query<{ attempted_count: number }>(
+      `select attempted_count from public.bluesky_follow_campaign_runs where id=$1`,
+      [runId],
+    );
+    expect(run.rows[0].attempted_count).toBe(10);
+  });
+
+  it("a reservation from ANOTHER run settles nothing", async () => {
+    await freshCampaign(50, 50);
+    const foreign = await reserve(50, 10);
+    const foreignReservation = foreign.rows[0].reservation_id!;
+
+    // A different campaign, a different run.
+    await freshCampaign(50, 50);
+    const before = await h.db.query<{ attempted_count: number }>(
+      `select attempted_count from public.bluesky_follow_campaign_runs where id=$1`,
+      [runId],
+    );
+
+    const out = await settle(foreignReservation);
+    expect(out.rows[0].settled).toBe(false);
+
+    const after = await h.db.query<{ attempted_count: number }>(
+      `select attempted_count from public.bluesky_follow_campaign_runs where id=$1`,
+      [runId],
+    );
+    expect(after.rows[0].attempted_count).toBe(before.rows[0].attempted_count);
   });
 });
 

@@ -338,7 +338,12 @@ describe("transport failures and structural failures", () => {
       // A backoff is set, so the next tick does not immediately re-hit
       // a provider that is already struggling.
       expect(m.next_attempt_at).toBeTruthy();
-      expect(new Date(String(m.next_attempt_at)).getTime()).toBeGreaterThan(Date.now());
+      // Against the tick's own instant, not the machine's. Backoff is
+      // computed from the injected `now` so every timestamp a pass
+      // writes agrees with the rest of it.
+      expect(new Date(String(m.next_attempt_at)).getTime()).toBeGreaterThan(
+        Date.parse(NOW),
+      );
     }
   });
 
