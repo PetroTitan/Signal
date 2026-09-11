@@ -15,6 +15,10 @@
     {
       "path": "/api/metrics/refresh",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/campaigns/bluesky/tick",
+      "schedule": "*/5 * * * *"
     }
   ]
 }

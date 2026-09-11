@@ -38,6 +38,28 @@ import { useFormStatus } from "react-dom";
 
 export type ConfirmKind = "follow" | "unfollow" | "remove_target";
 
+/**
+ * A finished action, rendered in place of the confirm control.
+ *
+ * THE DEFECT THIS FIXES
+ * ---------------------
+ * After a batch completed, the dialog stayed open with its confirm
+ * button still live. The operator saw "Follow" sitting under a result
+ * they had already caused, and pressing it submitted the SAME
+ * selection again — the action rows were already terminal, so the
+ * second submit was a no-op the UI reported as another batch. The
+ * dialog was, in effect, offering to repeat work it had just done.
+ *
+ * The fix is that a terminal outcome REPLACES the form. Once `result`
+ * is set the dialog renders a summary and a single Close button; there
+ * is no submit control in the tree at all, so there is nothing to
+ * press twice.
+ */
+export interface ConfirmResult {
+  ok: boolean;
+  message: string;
+}
+
 export interface ConfirmRequest {
   kind: ConfirmKind;
   /** The Bluesky identity the action runs as, already formatted. */
@@ -93,9 +115,16 @@ export function ConfirmActionDialog(props: {
   /** The `useFormState` dispatcher for the action being confirmed. */
   dispatch: (formData: FormData) => void;
   onCancel: () => void;
+  /**
+   * Set once the action has produced a terminal outcome. While this is
+   * non-null the dialog is a RESULT, not a prompt: the form is gone and
+   * the same batch cannot be submitted again.
+   */
+  result?: ConfirmResult | null;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const { request, onCancel } = props;
+  const result = props.result ?? null;
 
   useEffect(() => {
     const node = ref.current;
@@ -188,24 +217,48 @@ export function ConfirmActionDialog(props: {
           </p>
         ) : null}
 
+        {result ? (
+          <p
+            className={`text-sm leading-relaxed border rounded-md p-3 ${
+              result.ok
+                ? "text-emerald-900 bg-emerald-50 border-emerald-200"
+                : "text-red-900 bg-red-50 border-red-200"
+            }`}
+            role="status"
+          >
+            {result.message}
+          </p>
+        ) : null}
+
         <div className="flex flex-wrap gap-2 justify-end">
-          {/* Cancel is a plain button inside no form of its own. It
-              clears the parent's state, which unmounts the form below —
-              there is no path from here to a dispatch. */}
-          <button type="button" className="btn-secondary" onClick={onCancel}>
-            Cancel
-          </button>
-          <form action={props.dispatch}>
-            {request.fields.map((f, i) => (
-              <input
-                key={`${f.name}-${i}`}
-                type="hidden"
-                name={f.name}
-                value={f.value}
-              />
-            ))}
-            <ConfirmButton kind={request.kind} />
-          </form>
+          {result ? (
+            // Terminal. The form is not rendered at all, so the same
+            // batch cannot be submitted a second time — there is no
+            // submit control in the tree to press.
+            <button type="button" className="btn-primary" onClick={onCancel}>
+              Close
+            </button>
+          ) : (
+            <>
+              {/* Cancel is a plain button inside no form of its own. It
+                  clears the parent's state, which unmounts the form
+                  below — there is no path from here to a dispatch. */}
+              <button type="button" className="btn-secondary" onClick={onCancel}>
+                Cancel
+              </button>
+              <form action={props.dispatch}>
+                {request.fields.map((f, i) => (
+                  <input
+                    key={`${f.name}-${i}`}
+                    type="hidden"
+                    name={f.name}
+                    value={f.value}
+                  />
+                ))}
+                <ConfirmButton kind={request.kind} />
+              </form>
+            </>
+          )}
         </div>
       </div>
     </dialog>

@@ -2100,6 +2100,10 @@ export interface BlueskyRelationshipActionRow {
   requested_at: string;
   started_at: string | null;
   finished_at: string | null;
+  /** Set when a follow campaign performed this action. Null for manual work. */
+  campaign_id: string | null;
+  campaign_run_id: string | null;
+  campaign_member_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -2131,6 +2135,274 @@ export interface BlueskyRelationshipActionInsert {
   requested_at?: string;
   started_at?: string | null;
   finished_at?: string | null;
+  campaign_id?: string | null;
+  campaign_run_id?: string | null;
+  campaign_member_id?: string | null;
+}
+
+
+// =====================================================================
+// Bluesky Follow Campaigns
+// =====================================================================
+//
+// DID is identity throughout, exactly as in the relationship tables.
+// `import_sequence` is a BIGINT because the queue has no
+// application-level maximum; it is modelled as `number` here because
+// JavaScript integers are exact to 2^53, far beyond any realistic
+// queue, and a string would make ordering comparisons error-prone.
+
+export type BlueskyCampaignStatus =
+  | "draft"
+  | "active"
+  | "paused"
+  | "completed"
+  | "reauthorization_required"
+  | "rate_limited"
+  | "failed"
+  | "cancelled";
+
+export type BlueskyCampaignMemberStatus =
+  | "queued"
+  | "claimed"
+  | "running"
+  | "succeeded"
+  | "already_following"
+  | "protected"
+  | "skipped"
+  | "retryable"
+  | "failed_structural"
+  | "cancelled";
+
+export type BlueskyCampaignRunStatus =
+  | "running"
+  | "completed"
+  | "paused"
+  | "rate_limited"
+  | "failed"
+  | "cancelled";
+
+export interface BlueskyFollowCampaignRow {
+  id: string;
+  workspace_id: string;
+  operator_account_id: string;
+  name: string;
+  status: BlueskyCampaignStatus;
+  /** Operator intent. NEVER an attempt budget — see the run's effective quota. */
+  requested_daily_quota: number;
+  timezone: string;
+  execution_window_start_minute: number;
+  execution_window_end_minute: number;
+  start_date: string | null;
+  dry_run: boolean;
+  max_consecutive_failures: number;
+  min_success_rate_percent: number;
+  next_run_at: string | null;
+  activated_at: string | null;
+  completed_at: string | null;
+  paused_at: string | null;
+  cancelled_at: string | null;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  rate_limited_until: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BlueskyFollowCampaignInsert {
+  id?: string;
+  workspace_id: string;
+  operator_account_id: string;
+  name: string;
+  status?: BlueskyCampaignStatus;
+  requested_daily_quota?: number;
+  timezone?: string;
+  execution_window_start_minute?: number;
+  execution_window_end_minute?: number;
+  start_date?: string | null;
+  dry_run?: boolean;
+  max_consecutive_failures?: number;
+  min_success_rate_percent?: number;
+  next_run_at?: string | null;
+  activated_at?: string | null;
+  completed_at?: string | null;
+  paused_at?: string | null;
+  cancelled_at?: string | null;
+  last_error_code?: string | null;
+  last_error_message?: string | null;
+  rate_limited_until?: string | null;
+  created_by?: string | null;
+}
+
+export interface BlueskyFollowCampaignMemberRow {
+  id: string;
+  workspace_id: string;
+  campaign_id: string;
+  subject_did: string;
+  current_handle: string | null;
+  display_name: string | null;
+  import_sequence: number;
+  status: BlueskyCampaignMemberStatus;
+  attempt_count: number;
+  next_attempt_at: string | null;
+  claimed_at: string | null;
+  claimed_by: string | null;
+  lease_expires_at: string | null;
+  provider_record_uri: string | null;
+  provider_record_rkey: string | null;
+  provider_record_cid: string | null;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  last_attempted_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BlueskyFollowCampaignMemberInsert {
+  id?: string;
+  workspace_id: string;
+  campaign_id: string;
+  subject_did: string;
+  current_handle?: string | null;
+  display_name?: string | null;
+  import_sequence: number;
+  status?: BlueskyCampaignMemberStatus;
+  attempt_count?: number;
+  next_attempt_at?: string | null;
+  claimed_at?: string | null;
+  claimed_by?: string | null;
+  lease_expires_at?: string | null;
+  provider_record_uri?: string | null;
+  provider_record_rkey?: string | null;
+  provider_record_cid?: string | null;
+  last_error_code?: string | null;
+  last_error_message?: string | null;
+  last_attempted_at?: string | null;
+  completed_at?: string | null;
+}
+
+export interface BlueskyCampaignMemberSourceRow {
+  id: string;
+  workspace_id: string;
+  member_id: string;
+  target_profile_id: string | null;
+  source_label: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  times_seen: number;
+  created_at: string;
+}
+
+export interface BlueskyCampaignMemberSourceInsert {
+  id?: string;
+  workspace_id: string;
+  member_id: string;
+  target_profile_id?: string | null;
+  source_label?: string;
+  first_seen_at?: string;
+  last_seen_at?: string;
+  times_seen?: number;
+}
+
+export interface BlueskyFollowCampaignRunRow {
+  id: string;
+  workspace_id: string;
+  campaign_id: string;
+  /** Local calendar date in the campaign timezone. The idempotency key. */
+  local_date: string;
+  status: BlueskyCampaignRunStatus;
+  requested_daily_quota: number;
+  /** Server-computed. Always <= requested, enforced by a CHECK. */
+  effective_daily_quota: number;
+  effective_quota_reason: string | null;
+  attempted_count: number;
+  succeeded_count: number;
+  already_following_count: number;
+  skipped_count: number;
+  failed_count: number;
+  consecutive_failures: number;
+  rate_limited_until: string | null;
+  rate_limit_remaining: number | null;
+  rate_limit_reset_at: string | null;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  started_at: string;
+  completed_at: string | null;
+  last_chunk_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BlueskyFollowCampaignRunInsert {
+  id?: string;
+  workspace_id: string;
+  campaign_id: string;
+  local_date: string;
+  status?: BlueskyCampaignRunStatus;
+  requested_daily_quota: number;
+  effective_daily_quota: number;
+  effective_quota_reason?: string | null;
+  attempted_count?: number;
+  succeeded_count?: number;
+  already_following_count?: number;
+  skipped_count?: number;
+  failed_count?: number;
+  consecutive_failures?: number;
+  rate_limited_until?: string | null;
+  rate_limit_remaining?: number | null;
+  rate_limit_reset_at?: string | null;
+  last_error_code?: string | null;
+  last_error_message?: string | null;
+  started_at?: string;
+  completed_at?: string | null;
+  last_chunk_at?: string | null;
+}
+
+export interface BlueskyIdentityDailyUsageRow {
+  id: string;
+  workspace_id: string;
+  operator_account_id: string;
+  /** UTC date — the provider's budget knows nothing of campaign timezones. */
+  usage_date: string;
+  follows_created: number;
+  attempts_made: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BlueskyIdentityDailyUsageInsert {
+  id?: string;
+  workspace_id: string;
+  operator_account_id: string;
+  usage_date: string;
+  follows_created?: number;
+  attempts_made?: number;
+}
+
+export interface BlueskyCampaignKillSwitchRow {
+  id: string;
+  workspace_id: string;
+  /** Null = the workspace-global switch. */
+  operator_account_id: string | null;
+  engaged: boolean;
+  reason: string | null;
+  engaged_by: string | null;
+  engaged_at: string;
+  released_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BlueskyCampaignKillSwitchInsert {
+  id?: string;
+  workspace_id: string;
+  operator_account_id?: string | null;
+  engaged?: boolean;
+  reason?: string | null;
+  engaged_by?: string | null;
+  engaged_at?: string;
+  released_at?: string | null;
 }
 
 export interface Database {
@@ -2416,6 +2688,42 @@ export interface Database {
         Row: BlueskyRelationshipActionRow;
         Insert: BlueskyRelationshipActionInsert;
         Update: Partial<BlueskyRelationshipActionInsert>;
+        Relationships: [];
+      };
+      bluesky_follow_campaigns: {
+        Row: BlueskyFollowCampaignRow;
+        Insert: BlueskyFollowCampaignInsert;
+        Update: Partial<BlueskyFollowCampaignInsert>;
+        Relationships: [];
+      };
+      bluesky_follow_campaign_members: {
+        Row: BlueskyFollowCampaignMemberRow;
+        Insert: BlueskyFollowCampaignMemberInsert;
+        Update: Partial<BlueskyFollowCampaignMemberInsert>;
+        Relationships: [];
+      };
+      bluesky_campaign_member_sources: {
+        Row: BlueskyCampaignMemberSourceRow;
+        Insert: BlueskyCampaignMemberSourceInsert;
+        Update: Partial<BlueskyCampaignMemberSourceInsert>;
+        Relationships: [];
+      };
+      bluesky_follow_campaign_runs: {
+        Row: BlueskyFollowCampaignRunRow;
+        Insert: BlueskyFollowCampaignRunInsert;
+        Update: Partial<BlueskyFollowCampaignRunInsert>;
+        Relationships: [];
+      };
+      bluesky_identity_daily_usage: {
+        Row: BlueskyIdentityDailyUsageRow;
+        Insert: BlueskyIdentityDailyUsageInsert;
+        Update: Partial<BlueskyIdentityDailyUsageInsert>;
+        Relationships: [];
+      };
+      bluesky_campaign_kill_switches: {
+        Row: BlueskyCampaignKillSwitchRow;
+        Insert: BlueskyCampaignKillSwitchInsert;
+        Update: Partial<BlueskyCampaignKillSwitchInsert>;
         Relationships: [];
       };
     };

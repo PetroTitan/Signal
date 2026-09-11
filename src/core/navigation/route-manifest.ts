@@ -178,6 +178,18 @@ export const AUTHENTICATED_ROUTES: ReadonlyArray<RouteEntry> = [
     permission: "connect_platforms",
   },
   {
+    href: "/relationships/campaigns",
+    label: "Follow campaigns",
+    tier: "secondary",
+    group: "publish",
+    description:
+      "Queue profiles and follow them on a daily schedule you approve.",
+    // Same permission as the manual relationship actions: a campaign
+    // follows real people from the operator's account in public, and
+    // unattended. This hides the entry; the server actions enforce it.
+    permission: "connect_platforms",
+  },
+  {
     href: "/measurement-health",
     label: "Measurement health",
     tier: "secondary",

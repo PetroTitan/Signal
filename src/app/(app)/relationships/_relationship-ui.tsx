@@ -60,6 +60,7 @@ import {
   ConfirmActionDialog,
   type ConfirmKind,
   type ConfirmRequest,
+  type ConfirmResult,
 } from "./_confirm-dialog";
 import { Pager, SearchAndFilter, TabStrip } from "./_nav-controls";
 import type {
@@ -200,6 +201,34 @@ export function RelationshipUi(props: RelationshipUiProps) {
   const dispatchFor = (kind: ConfirmKind) =>
     kind === "follow" ? runFollow : kind === "unfollow" ? runUnfollow : runRemove;
 
+  /**
+   * The terminal outcome for whatever is being confirmed.
+   *
+   * Derived from the matching action's form state rather than held
+   * separately, so it cannot get out of step with what actually
+   * happened. Once this is non-null the dialog stops being a prompt and
+   * becomes a result — the submit control is removed from the tree, so
+   * the same batch cannot be submitted twice.
+   */
+  const confirmResult: ConfirmResult | null = (() => {
+    if (!confirming) return null;
+    const state =
+      confirming.kind === "follow"
+        ? followState
+        : confirming.kind === "unfollow"
+          ? unfollowState
+          : removeState;
+    if (state.ok) {
+      const summary =
+        "summary" in state && typeof state.summary === "string"
+          ? state.summary
+          : "Done.";
+      return { ok: true, message: summary };
+    }
+    // An empty error is the initial state, not a failure.
+    return state.error ? { ok: false, message: state.error } : null;
+  })();
+
   // The server already filtered and paged. Filtering again here would
   // re-introduce exactly the defect this replaces: a client deciding
   // what a total means from the one page it happens to hold.
@@ -272,6 +301,7 @@ export function RelationshipUi(props: RelationshipUiProps) {
         request={confirming}
         dispatch={confirming ? dispatchFor(confirming.kind) : () => undefined}
         onCancel={() => setConfirming(null)}
+        result={confirmResult}
       />
 
       {/* Identity picker + connection state. */}
