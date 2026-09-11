@@ -1837,6 +1837,302 @@ export interface AccountSnapshotInsert {
   fetched_at?: string;
 }
 
+
+// =====================================================================
+// Bluesky relationship actions
+// =====================================================================
+//
+// DID is identity in every one of these shapes. Handles appear only as
+// refreshable metadata (`handle`) or as a frozen historical observation
+// (`subject_handle_at_action`), never as a key and never as a join
+// column.
+
+export type BlueskyRelationshipState =
+  | "unknown"
+  | "not_following"
+  | "following"
+  | "follows_you"
+  | "mutual";
+
+export type BlueskyImportRunStatus =
+  | "pending"
+  | "running"
+  | "paused"
+  | "completed"
+  | "failed";
+
+export type BlueskyActionType = "follow" | "unfollow";
+
+export type BlueskyActionStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "skipped"
+  | "reconciliation_required";
+
+export type BlueskyBatchStatus =
+  | "pending"
+  | "confirmed"
+  | "running"
+  | "paused"
+  | "completed"
+  | "failed";
+
+export type BlueskyFollowRecordSource = "create_record" | "reconciled";
+
+export type BlueskyActionInitiatorKind = "operator_single" | "operator_batch";
+
+export interface BlueskyTargetProfileRow {
+  id: string;
+  workspace_id: string;
+  operator_account_id: string;
+  subject_did: string;
+  handle: string | null;
+  display_name: string | null;
+  avatar_url: string | null;
+  followers_count: number | null;
+  requested_identifier: string;
+  profile_fetched_at: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BlueskyTargetProfileInsert {
+  id?: string;
+  workspace_id: string;
+  operator_account_id: string;
+  subject_did: string;
+  handle?: string | null;
+  display_name?: string | null;
+  avatar_url?: string | null;
+  followers_count?: number | null;
+  requested_identifier: string;
+  profile_fetched_at?: string | null;
+  created_by?: string | null;
+}
+
+export interface BlueskyImportRunRow {
+  id: string;
+  workspace_id: string;
+  target_profile_id: string;
+  status: BlueskyImportRunStatus;
+  /** Provider continuation token. Opaque — never constructed locally. */
+  cursor: string | null;
+  /** True only when the provider returned a page with no cursor. */
+  cursor_exhausted: boolean;
+  pages_fetched: number;
+  followers_seen: number;
+  candidates_created: number;
+  candidates_updated: number;
+  stop_reason: string | null;
+  last_error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  started_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BlueskyImportRunInsert {
+  id?: string;
+  workspace_id: string;
+  target_profile_id: string;
+  status?: BlueskyImportRunStatus;
+  cursor?: string | null;
+  cursor_exhausted?: boolean;
+  pages_fetched?: number;
+  followers_seen?: number;
+  candidates_created?: number;
+  candidates_updated?: number;
+  stop_reason?: string | null;
+  last_error?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  started_by?: string | null;
+}
+
+export interface BlueskyCandidateRow {
+  id: string;
+  workspace_id: string;
+  operator_account_id: string;
+  subject_did: string;
+  handle: string | null;
+  display_name: string | null;
+  avatar_url: string | null;
+  profile_refreshed_at: string | null;
+  first_discovered_at: string;
+  last_discovered_at: string;
+  relationship_state: BlueskyRelationshipState;
+  relationship_checked_at: string | null;
+  /** Set when the last lookup FAILED — distinguishes "not checked" from
+   *  "checked and the provider did not answer". */
+  relationship_error: string | null;
+  followed_at: string | null;
+  unfollowed_at: string | null;
+  follow_uri: string | null;
+  /** Read from the provider. Never derived from subject_did. */
+  follow_rkey: string | null;
+  follow_cid: string | null;
+  follow_record_source: BlueskyFollowRecordSource | null;
+  protected: boolean;
+  protected_at: string | null;
+  protected_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BlueskyCandidateInsert {
+  id?: string;
+  workspace_id: string;
+  operator_account_id: string;
+  subject_did: string;
+  handle?: string | null;
+  display_name?: string | null;
+  avatar_url?: string | null;
+  profile_refreshed_at?: string | null;
+  first_discovered_at?: string;
+  last_discovered_at?: string;
+  relationship_state?: BlueskyRelationshipState;
+  relationship_checked_at?: string | null;
+  relationship_error?: string | null;
+  followed_at?: string | null;
+  unfollowed_at?: string | null;
+  follow_uri?: string | null;
+  follow_rkey?: string | null;
+  follow_cid?: string | null;
+  follow_record_source?: BlueskyFollowRecordSource | null;
+  protected?: boolean;
+  protected_at?: string | null;
+  protected_by?: string | null;
+}
+
+export interface BlueskyCandidateSourceRow {
+  id: string;
+  workspace_id: string;
+  candidate_id: string;
+  target_profile_id: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  times_seen: number;
+  created_at: string;
+}
+
+export interface BlueskyCandidateSourceInsert {
+  id?: string;
+  workspace_id: string;
+  candidate_id: string;
+  target_profile_id: string;
+  first_seen_at?: string;
+  last_seen_at?: string;
+  times_seen?: number;
+}
+
+export interface BlueskyActionBatchRow {
+  id: string;
+  workspace_id: string;
+  operator_account_id: string;
+  action_type: BlueskyActionType;
+  status: BlueskyBatchStatus;
+  /** Frozen at confirmation. */
+  requested_count: number;
+  processed_count: number;
+  succeeded_count: number;
+  failed_count: number;
+  reconciliation_required_count: number;
+  stop_reason: string | null;
+  last_error: string | null;
+  confirmed_at: string | null;
+  confirmed_by: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BlueskyActionBatchInsert {
+  id?: string;
+  workspace_id: string;
+  operator_account_id: string;
+  action_type: BlueskyActionType;
+  status?: BlueskyBatchStatus;
+  requested_count?: number;
+  processed_count?: number;
+  succeeded_count?: number;
+  failed_count?: number;
+  reconciliation_required_count?: number;
+  stop_reason?: string | null;
+  last_error?: string | null;
+  confirmed_at?: string | null;
+  confirmed_by?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  created_by?: string | null;
+}
+
+export interface BlueskyRelationshipActionRow {
+  id: string;
+  workspace_id: string;
+  operator_account_id: string;
+  candidate_id: string | null;
+  batch_id: string | null;
+  action_type: BlueskyActionType;
+  subject_did: string;
+  /** The handle as it looked when the operator acted. Never backfilled. */
+  subject_handle_at_action: string | null;
+  actor_did: string | null;
+  actor_handle_at_action: string | null;
+  status: BlueskyActionStatus;
+  follow_uri: string | null;
+  follow_rkey: string | null;
+  follow_cid: string | null;
+  provider_status_code: number | null;
+  provider_error_code: string | null;
+  provider_error_message: string | null;
+  reconciled_state: BlueskyRelationshipState | null;
+  reconciled_at: string | null;
+  reconciliation_note: string | null;
+  source_target_profile_ids: string[];
+  initiated_by: string | null;
+  initiator_kind: BlueskyActionInitiatorKind;
+  requested_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BlueskyRelationshipActionInsert {
+  id?: string;
+  workspace_id: string;
+  operator_account_id: string;
+  candidate_id?: string | null;
+  batch_id?: string | null;
+  action_type: BlueskyActionType;
+  subject_did: string;
+  subject_handle_at_action?: string | null;
+  actor_did?: string | null;
+  actor_handle_at_action?: string | null;
+  status?: BlueskyActionStatus;
+  follow_uri?: string | null;
+  follow_rkey?: string | null;
+  follow_cid?: string | null;
+  provider_status_code?: number | null;
+  provider_error_code?: string | null;
+  provider_error_message?: string | null;
+  reconciled_state?: BlueskyRelationshipState | null;
+  reconciled_at?: string | null;
+  reconciliation_note?: string | null;
+  source_target_profile_ids?: string[];
+  initiated_by?: string | null;
+  initiator_kind?: BlueskyActionInitiatorKind;
+  requested_at?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
 export interface Database {
   public: {
     Tables: {
@@ -2084,6 +2380,42 @@ export interface Database {
         Row: McpToolCallRow;
         Insert: McpToolCallInsert;
         Update: Partial<McpToolCallInsert>;
+        Relationships: [];
+      };
+      bluesky_target_profiles: {
+        Row: BlueskyTargetProfileRow;
+        Insert: BlueskyTargetProfileInsert;
+        Update: Partial<BlueskyTargetProfileInsert>;
+        Relationships: [];
+      };
+      bluesky_import_runs: {
+        Row: BlueskyImportRunRow;
+        Insert: BlueskyImportRunInsert;
+        Update: Partial<BlueskyImportRunInsert>;
+        Relationships: [];
+      };
+      bluesky_candidates: {
+        Row: BlueskyCandidateRow;
+        Insert: BlueskyCandidateInsert;
+        Update: Partial<BlueskyCandidateInsert>;
+        Relationships: [];
+      };
+      bluesky_candidate_sources: {
+        Row: BlueskyCandidateSourceRow;
+        Insert: BlueskyCandidateSourceInsert;
+        Update: Partial<BlueskyCandidateSourceInsert>;
+        Relationships: [];
+      };
+      bluesky_action_batches: {
+        Row: BlueskyActionBatchRow;
+        Insert: BlueskyActionBatchInsert;
+        Update: Partial<BlueskyActionBatchInsert>;
+        Relationships: [];
+      };
+      bluesky_relationship_actions: {
+        Row: BlueskyRelationshipActionRow;
+        Insert: BlueskyRelationshipActionInsert;
+        Update: Partial<BlueskyRelationshipActionInsert>;
         Relationships: [];
       };
     };
