@@ -4,7 +4,7 @@
  * Single source of truth for the action types, status lifecycle, risk
  * ceiling, and outcome / reason vocabulary used by the contract engine.
  * Mirrors the CHECK constraints in
- *   supabase/migrations/20260522040001_phase_e1_weekly_contract_schema.sql
+ *   supabase/migrations/20260522161241_phase_e1_weekly_contract_schema.sql
  *
  * Any change to either side must be made to both at the same time. The
  * engine reads from this file and writes through the repository layer.

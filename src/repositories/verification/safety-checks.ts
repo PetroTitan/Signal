@@ -396,7 +396,7 @@ export async function runExecutionSafetyCheck(): Promise<CheckResult> {
 
   // 3. RLS on execution_logs is append-only (no UPDATE / DELETE policy).
   const rls = await readSource(
-    "supabase/migrations/20260522050002_phase_e2_execution_rls.sql",
+    "supabase/migrations/20260522164423_phase_e2_execution_rls.sql",
   );
   if (!rls) {
     findings.push("Could not read execution RLS migration.");

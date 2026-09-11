@@ -1,0 +1,29 @@
+-- Phase F2.5 — per-upload metadata on weekly_plan_item_creatives.
+
+alter table public.weekly_plan_item_creatives
+  add column if not exists storage_path text,
+  add column if not exists mime_type text,
+  add column if not exists size_bytes bigint,
+  add column if not exists uploaded_by uuid references auth.users(id) on delete set null,
+  add column if not exists uploaded_at timestamptz;
+
+-- Defence in depth: even rows attached via MCP cannot land with a
+-- bogus mime_type. NULL is allowed for URL-only attachments.
+do $$ begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'creatives_mime_whitelist'
+  ) then
+    alter table public.weekly_plan_item_creatives
+      add constraint creatives_mime_whitelist
+      check (
+        mime_type is null
+        or mime_type in (
+          'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+          'video/mp4', 'video/webm'
+        )
+      );
+  end if;
+end $$;
+
+create index if not exists weekly_plan_item_creatives_uploaded_by_idx
+  on public.weekly_plan_item_creatives (uploaded_by, uploaded_at desc);

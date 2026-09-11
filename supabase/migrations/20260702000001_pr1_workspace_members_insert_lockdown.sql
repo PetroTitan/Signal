@@ -25,7 +25,7 @@
 -- not owner-driven never used this policy branch — they run through
 -- SECURITY DEFINER RPCs that bypass RLS entirely:
 --   * public.bootstrap_workspace()          — workspace creation; the
---       creator is inserted as owner (20260522020001).
+--       creator is inserted as owner (20260522143718).
 --   * public.accept_workspace_invitation()  — invitee is inserted at the
 --       invited role (20260616000001).
 -- The owner "add member" path (repositories/workspace-repository.ts

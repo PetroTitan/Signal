@@ -7,7 +7,7 @@ fail readiness with an explicit reason code.
 
 ## Data model
 
-The [weekly_plan_item_creatives](../../supabase/migrations/20260522100001_phase_f1_creative_assets.sql)
+The [weekly_plan_item_creatives](../../supabase/migrations/20260522221531_phase_f1_creative_assets.sql)
 table holds the creative plan for each `weekly_plan_item`.
 
 | Column | Type | Notes |

@@ -14,7 +14,7 @@
 -- Rules:
 --   * All tables are workspace-scoped and reference
 --     public.workspaces(id) on delete cascade.
---   * RLS lives in 20260522040002_phase_e1_weekly_contract_rls.sql.
+--   * RLS lives in 20260522161314_phase_e1_weekly_contract_rls.sql.
 --   * No service-role-key path. All writes go through the standard
 --     authenticated user + is_workspace_member checks.
 
