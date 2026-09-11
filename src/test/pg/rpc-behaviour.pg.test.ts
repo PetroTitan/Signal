@@ -34,7 +34,7 @@ async function freshCampaign(
   members: number,
   effectiveQuota = 100,
   sharedIdentityId?: string,
-): Promise<void> {
+): Promise<{ campaignId: string; runId: string }> {
   if (sharedIdentityId) {
     identityId = sharedIdentityId;
   } else {
@@ -69,10 +69,16 @@ async function freshCampaign(
     [t.workspaceId, campaignId, TODAY, 100, effectiveQuota, null],
   );
   runId = r.rows[0].id;
+  return { campaignId, runId };
 }
 
 const reserve = (requested: number, chunk = 20, ceiling = 1000) =>
-  h.db.query<{ reserved: number; member_id: string | null }>(
+  h.db.query<{
+    reserved: number;
+    reservation_id: string | null;
+    reason: string;
+    member_id: string | null;
+  }>(
     `select * from public.reserve_bluesky_campaign_quota(
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
     [
@@ -211,12 +217,21 @@ describe("reserve_bluesky_campaign_quota", () => {
     const first = await reserve(10, 10);
     expect(first.rows).toHaveLength(10);
 
-    // The worker dies: leases lapse, the outcome is never reported.
+    // The worker dies. `reserve` issues the member leases and the
+    // reservation with the SAME duration, so both lapse together —
+    // expiring one without the other models a state production cannot
+    // reach.
     await h.db.query(
       `update public.bluesky_follow_campaign_members
           set lease_expires_at = now() - interval '1 minute'
         where campaign_id=$1 and status='claimed'`,
       [campaignId],
+    );
+    await h.db.query(
+      `update public.bluesky_campaign_quota_reservations
+          set expires_at = now() - interval '1 minute'
+        where run_id=$1 and status='open'`,
+      [runId],
     );
 
     const second = await reserve(10, 10);
@@ -229,12 +244,14 @@ describe("reserve_bluesky_campaign_quota", () => {
 describe("apply_bluesky_run_outcome", () => {
   it("applies deltas and releases the reservation", async () => {
     await freshCampaign(50, 50);
-    await reserve(50, 20);
+    const res = await reserve(50, 20);
+    const reservationId = res.rows[0].reservation_id;
+    expect(reservationId).toBeTruthy();
 
     await h.db.query(
       `select * from public.apply_bluesky_run_outcome(
-         $1,$2,$3,$4, 20, 18, 1, 1, 0, 18, 20, 0, null, null, null)`,
-      [t.workspaceId, runId, identityId, TODAY],
+         $1,$2,$3,$4,$5, 20, 18, 1, 1, 0, 18, 0, null, null, null)`,
+      [t.workspaceId, runId, identityId, TODAY, reservationId],
     );
     const run = await h.db.query<{
       attempted_count: number;
@@ -257,22 +274,77 @@ describe("apply_bluesky_run_outcome", () => {
     expect(usage.rows[0].follows_created).toBe(18);
   });
 
-  it("two applications ACCUMULATE — no lost update", async () => {
+  it("two DIFFERENT reservations ACCUMULATE — no lost update", async () => {
     await freshCampaign(50, 50);
-    const apply = () =>
+    const apply = (reservationId: string) =>
       h.db.query(
         `select * from public.apply_bluesky_run_outcome(
-           $1,$2,$3,$4, 5, 5, 0, 0, 0, 5, 0, 0, null, null, null)`,
-        [t.workspaceId, runId, identityId, TODAY],
+           $1,$2,$3,$4,$5, 5, 5, 0, 0, 0, 5, 0, null, null, null)`,
+        [t.workspaceId, runId, identityId, TODAY, reservationId],
       );
-    await apply();
-    await apply();
+
+    const first = await reserve(50, 5);
+    await apply(first.rows[0].reservation_id!);
+    const second = await reserve(50, 5);
+    await apply(second.rows[0].reservation_id!);
+
     const run = await h.db.query<{ succeeded_count: number }>(
       `select succeeded_count from public.bluesky_follow_campaign_runs where id=$1`,
       [runId],
     );
     // Absolute writes from a stale snapshot would give 5.
     expect(run.rows[0].succeeded_count).toBe(10);
+  });
+
+  it("settling the SAME reservation twice applies nothing twice", async () => {
+    await freshCampaign(50, 50);
+    const res = await reserve(50, 10);
+    const reservationId = res.rows[0].reservation_id!;
+    const apply = () =>
+      h.db.query<{ settled: boolean; already_settled: boolean }>(
+        `select * from public.apply_bluesky_run_outcome(
+           $1,$2,$3,$4,$5, 10, 10, 0, 0, 0, 10, 0, null, null, null)`,
+        [t.workspaceId, runId, identityId, TODAY, reservationId],
+      );
+
+    const one = await apply();
+    const two = await apply();
+    expect(one.rows[0].settled).toBe(true);
+    expect(two.rows[0].settled).toBe(false);
+    expect(two.rows[0].already_settled).toBe(true);
+
+    const run = await h.db.query<{ attempted_count: number }>(
+      `select attempted_count from public.bluesky_follow_campaign_runs where id=$1`,
+      [runId],
+    );
+    expect(run.rows[0].attempted_count).toBe(10);
+  });
+
+  it("a reservation from ANOTHER run settles nothing", async () => {
+    const a = await freshCampaign(50, 50);
+    const foreign = await reserve(50, 10);
+    const foreignReservation = foreign.rows[0].reservation_id!;
+    void a;
+
+    // A different campaign, a different run.
+    await freshCampaign(50, 50);
+    const before = await h.db.query<{ attempted_count: number }>(
+      `select attempted_count from public.bluesky_follow_campaign_runs where id=$1`,
+      [runId],
+    );
+
+    const out = await h.db.query<{ settled: boolean }>(
+      `select * from public.apply_bluesky_run_outcome(
+         $1,$2,$3,$4,$5, 50, 50, 0, 0, 0, 50, 0, null, null, null)`,
+      [t.workspaceId, runId, identityId, TODAY, foreignReservation],
+    );
+    expect(out.rows[0].settled).toBe(false);
+
+    const after = await h.db.query<{ attempted_count: number }>(
+      `select attempted_count from public.bluesky_follow_campaign_runs where id=$1`,
+      [runId],
+    );
+    expect(after.rows[0].attempted_count).toBe(before.rows[0].attempted_count);
   });
 });
 

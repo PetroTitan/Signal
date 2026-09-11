@@ -60,7 +60,9 @@ describe("the migration chain applies for real", () => {
       "ensure_bluesky_campaign_run",
       "record_bluesky_identity_usage",
       "reserve_bluesky_campaign_quota",
-      "release_bluesky_campaign_reservation",
+      "sweep_bluesky_quota_reservations",
+      "acquire_bluesky_run_dispatch_lease",
+      "release_bluesky_run_dispatch_lease",
       "apply_bluesky_run_outcome",
       "claim_bluesky_campaign_action",
       "resume_bluesky_campaign_run",
@@ -69,17 +71,34 @@ describe("the migration chain applies for real", () => {
     }
   });
 
-  it("is idempotent — applying the hotfix twice changes nothing", async () => {
+  it("is idempotent — re-applying the latest hotfix migration changes nothing", async () => {
     const { readFileSync } = await import("node:fs");
     const path = await import("node:path");
+    // 20260911000004, the LATEST migration, replayed.
+    //
+    // Deliberately not 20260911000003 as well. 004 changes the return
+    // type of two functions that 003 defines, and Postgres rejects
+    // replaying the older definition over the newer one — correctly.
+    // That is not a defect: a migration runner applies each file once,
+    // in order, and never rewinds. What has to hold is that the file at
+    // the head of the chain can be re-run without damage, which is the
+    // state a partial or retried deploy leaves behind.
     const sql = readFileSync(
       path.join(
         process.cwd(),
-        "supabase/migrations/20260911000003_campaign_concurrency_hotfix.sql",
+        "supabase/migrations/20260911000004_campaign_reservation_ownership.sql",
       ),
       "utf8",
     );
     await expect(h.db.exec(sql)).resolves.toBeDefined();
+
+    // And it really is a replay, not a no-op against a missing object.
+    const t = await h.db.query<{ n: number }>(
+      `select count(*)::int n from pg_tables
+        where schemaname='public'
+          and tablename='bluesky_campaign_quota_reservations'`,
+    );
+    expect(t.rows[0].n).toBe(1);
   }, 60_000);
 });
 
@@ -90,7 +109,9 @@ describe("RPC EXECUTE — the defect that made the feature inert", () => {
     "ensure_bluesky_campaign_run",
     "record_bluesky_identity_usage",
     "reserve_bluesky_campaign_quota",
-    "release_bluesky_campaign_reservation",
+    "sweep_bluesky_quota_reservations",
+    "acquire_bluesky_run_dispatch_lease",
+    "release_bluesky_run_dispatch_lease",
     "apply_bluesky_run_outcome",
     "claim_bluesky_campaign_action",
     "resume_bluesky_campaign_run",
