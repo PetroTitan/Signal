@@ -10,6 +10,7 @@ import {
 
 const ALL: CampaignOutcomeKind[] = [
   "succeeded",
+  "dry_run",
   "already_following",
   "actor_not_found",
   "ineligible",
@@ -179,6 +180,19 @@ describe("a stale queue does not trip the breakers", () => {
     expect(d.memberStatus).toBe("protected");
     expect(d.retryable).toBe(false);
     expect(d.countsAsFailure).toBe(false);
+  });
+});
+
+describe("dry run creates nothing and claims nothing", () => {
+  it("is recorded as skipped, never as a success", () => {
+    // If a dry run recorded `succeeded` it would inflate the success
+    // rate, satisfy the completion check, and look like real progress.
+    const d = classifyOutcome({ kind: "dry_run", attemptCount: 1 });
+    expect(d.memberStatus).toBe("skipped");
+    expect(d.countsAsSuccess).toBe(false);
+    expect(d.consumesQuota).toBe(false);
+    expect(d.countsAsFailure).toBe(false);
+    expect(d.retryable).toBe(false);
   });
 });
 

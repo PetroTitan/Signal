@@ -49,6 +49,13 @@ const PUBLIC_PATH_PREFIXES = [
   // the secret; the middleware must not redirect to /login. Only
   // /api/metrics/refresh exists under this prefix.
   "/api/metrics",
+  // Bluesky follow campaigns: the dispatcher tick is triggered by
+  // Vercel Cron / curl with the same shared secret as the scheduler
+  // tick. The route handler enforces the secret (503 unconfigured, 401
+  // on mismatch) and the deploy-level kill switch; the middleware must
+  // not redirect it to /login. Only /api/campaigns/bluesky/tick exists
+  // under this prefix.
+  "/api/campaigns",
   // Phase F9 — OAuth callback path. The OAuth handshake has its own
   // security model:
   //   - PKCE code_verifier persisted server-side at /start; the

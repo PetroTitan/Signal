@@ -144,7 +144,7 @@ create table if not exists public.bluesky_follow_campaign_members (
   -- unique index on a handle anywhere: the provider returns
   -- `handle.invalid` as a real value, so a handle is not even
   -- guaranteed well-formed.
-  actor_did text not null check (actor_did like 'did:%'),
+  subject_did text not null check (subject_did like 'did:%'),
   current_handle text,
   display_name text,
 
@@ -192,7 +192,7 @@ create table if not exists public.bluesky_follow_campaign_members (
 
   -- One row per DID per campaign. A DID imported from five sources is
   -- ONE member with five rows in bluesky_campaign_member_sources.
-  unique (campaign_id, actor_did),
+  unique (campaign_id, subject_did),
   -- Stable ordering key, unique within the campaign.
   unique (campaign_id, import_sequence)
 );
@@ -225,7 +225,7 @@ create index if not exists bluesky_campaign_members_ws_idx
 
 -- Finding a person across campaigns (and the per-identity guard).
 create index if not exists bluesky_campaign_members_did_idx
-  on public.bluesky_follow_campaign_members (workspace_id, actor_did);
+  on public.bluesky_follow_campaign_members (workspace_id, subject_did);
 
 drop trigger if exists bluesky_campaign_members_touch
   on public.bluesky_follow_campaign_members;

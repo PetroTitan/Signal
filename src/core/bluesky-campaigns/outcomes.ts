@@ -26,6 +26,8 @@
 
 export type CampaignOutcomeKind =
   | "succeeded"
+  /** Dry run: every step ran EXCEPT the provider call. */
+  | "dry_run"
   | "already_following"
   | "actor_not_found"
   | "ineligible"
@@ -124,6 +126,21 @@ export function classifyOutcome(input: ClassifyInput): OutcomeDecision {
         memberStatus: "succeeded",
         consumesQuota: true,
         countsAsSuccess: true,
+        countsAsFailure: false,
+        next: { kind: "continue" },
+        retryable: false,
+      };
+
+    case "dry_run":
+      // A dry run makes no request at all, so it creates nothing,
+      // consumes nothing, and proves nothing about the provider. It is
+      // recorded as `skipped` rather than `succeeded` precisely so a
+      // dry run can never be mistaken for real progress.
+      return {
+        kind,
+        memberStatus: "skipped",
+        consumesQuota: false,
+        countsAsSuccess: false,
         countsAsFailure: false,
         next: { kind: "continue" },
         retryable: false,
