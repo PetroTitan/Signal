@@ -236,9 +236,18 @@ describe("two backends, one quota", () => {
     const settle = (db: Client) =>
       db.query<{ settled: boolean; already_settled: boolean }>(
         `select * from public.apply_bluesky_run_outcome(
-           $1,$2,$3,$4,$5, 20, 20, 0, 0, 0, 20, 0, null, null, null)`,
-        [t.workspaceId, runId, t.identityId, TODAY, reservationId],
+           $1,$2,$3,$4,$5,$6, 0, null, null, null)`,
+        [t.workspaceId, campaignId, runId, t.identityId, TODAY, reservationId],
       );
+
+    // Spend every unit first, the way the worker does — one member at
+    // a time, immediately before its mutation.
+    for (const row of r.rows.filter((x) => x.member_id)) {
+      await a.query(
+        `select * from public.consume_bluesky_member_quota($1,$2,$3,null)`,
+        [t.workspaceId, reservationId, row.member_id],
+      );
+    }
 
     const sessions = await Promise.all([h.connect(), h.connect(), h.connect()]);
     // Three backends settle the SAME reservation simultaneously.
@@ -252,7 +261,8 @@ describe("two backends, one quota", () => {
       `select attempted_count from public.bluesky_follow_campaign_runs where id=$1`,
       [runId],
     );
-    // Not 60. The deltas were applied once.
+    // Not 60. Each unit was spent once, and settling three times over
+    // folded the ledger once.
     expect(Number(run.rows[0].attempted_count)).toBe(20);
 
     await a.end();
@@ -270,8 +280,15 @@ describe("two backends, one quota", () => {
     const ra = await reserve(a, campaignId, runId, { chunk: 20, by: "A" });
     const aRes = ra.rows[0].reservation_id!;
 
-    // A finishes its members and clears their leases WITHOUT settling —
-    // the exact window the old lease-derived accounting misread.
+    // A spends every unit and finishes its members, clearing their
+    // leases, WITHOUT settling — the exact window the old lease-derived
+    // accounting misread.
+    for (const row of ra.rows.filter((x) => x.member_id)) {
+      await a.query(
+        `select * from public.consume_bluesky_member_quota($1,$2,$3,null)`,
+        [t.workspaceId, aRes, row.member_id],
+      );
+    }
     await h.admin.query(
       `update public.bluesky_follow_campaign_members
           set status='succeeded', lease_expires_at=null, claimed_at=null
@@ -286,8 +303,8 @@ describe("two backends, one quota", () => {
     // Now A settles, late.
     await a.query(
       `select * from public.apply_bluesky_run_outcome(
-         $1,$2,$3,$4,$5, 20, 20, 0, 0, 0, 20, 0, null, null, null)`,
-      [t.workspaceId, runId, t.identityId, TODAY, aRes],
+         $1,$2,$3,$4,$5,$6, 0, null, null, null)`,
+      [t.workspaceId, campaignId, runId, t.identityId, TODAY, aRes],
     );
 
     // B's reservation is untouched and still open.

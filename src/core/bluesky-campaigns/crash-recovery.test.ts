@@ -245,6 +245,8 @@ describe("a crash after provider success is never retried", () => {
     // The lease lapses and the member returns to the queue.
     simulateProcessDeath(db);
     // eslint-disable-next-line no-console
+    console.log("DBGact", JSON.stringify(db.rows("bluesky_relationship_actions")));
+    // eslint-disable-next-line no-console
     console.log("DBG res", JSON.stringify(db.rows("bluesky_campaign_quota_reservations")));
 
     // Worker 2. The provider would happily create a SECOND record.

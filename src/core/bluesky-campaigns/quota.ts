@@ -109,6 +109,18 @@ export interface EffectiveQuotaInput {
   consecutiveFailures: number;
   maxConsecutiveFailures: number;
   /** Attempts and successes so far in the current run. */
+  /**
+   * Attempts whose outcome is KNOWN.
+   *
+   * Not `attempted_count`. Quota is consumed at provider intent, so
+   * `attempted_count` rises the instant a worker decides to follow
+   * someone and before anything has come back — using it here made the
+   * success rate read 0% mid-chunk and tripped the breaker on a
+   * campaign that was working perfectly.
+   *
+   * The breaker is asking "are our follows failing?", and only a
+   * resolved attempt can answer.
+   */
   attemptedToday: number;
   succeededToday: number;
   minSuccessRatePercent: number;

@@ -43,6 +43,7 @@ import { MAX_RELATIONSHIP_BATCH_SIZE } from "@/core/bluesky-relationships/limits
 import type { RelationshipSession } from "@/core/bluesky-relationships/session.server";
 import {
   claimCampaignAction,
+  consumeMemberQuota,
   completeCampaignAction,
   releaseMembers,
   updateMember,
@@ -126,6 +127,13 @@ export interface ProcessChunkInput {
    * let two dispatchers exceed the daily quota.
    */
   members: ClaimedMember[];
+  /**
+   * The reservation that paid for these members.
+   *
+   * Quoted back to the database before every provider mutation, to
+   * convert one of its reserved units into a durable attempted one.
+   */
+  reservationId: string;
   /** Quota units still available. Bounds the claim. */
   quotaRemaining: number;
   /** Consecutive failures carried in from earlier chunks in this run. */
@@ -134,6 +142,16 @@ export interface ProcessChunkInput {
   claimedBy: string;
   /** Who started the campaign, for the audit row. */
   initiatedBy?: string | null;
+  /**
+   * The instant this tick is working from.
+   *
+   * Passed in rather than read here so every timestamp the chunk writes
+   * agrees with the rest of the pass. Reading the wall clock made a
+   * retry backoff land relative to a different "now" than the
+   * dispatcher's, which is invisible in production and makes a test
+   * measure the hour it was run at.
+   */
+  now: Date;
   appView?: string;
   fetchImpl?: typeof fetch;
   db?: SupabaseClient;
@@ -497,7 +515,7 @@ async function reconcileOnly(
 async function attemptFollow(
   input: ProcessChunkInput,
   member: ClaimedMember,
-  _actionId: string,
+  actionId: string,
 ): Promise<AttemptResult> {
   if (input.campaign.dry_run) {
     return {
@@ -505,6 +523,36 @@ async function attemptFollow(
       errorCode: "dry_run",
       errorMessage:
         "Dry run: no follow was created and no request was sent to Bluesky.",
+    };
+  }
+
+  // SPEND THE UNIT FIRST.
+  //
+  // This is the last line before the provider, and it is where quota
+  // stops being a promise and becomes a fact. The stamp it writes is
+  // never cleared, so a process killed on the next line still leaves
+  // the day's books showing that this attempt was made.
+  //
+  // Reporting attempts in bulk at settlement is what made that
+  // impossible: a worker that died after following four people left
+  // those four recorded nowhere, and the sweep handed their quota back.
+  const unit = await consumeMemberQuota({
+    workspaceId: input.campaign.workspace_id,
+    reservationId: input.reservationId,
+    memberId: member.id,
+    actionId,
+    db: input.db,
+  });
+
+  if (!unit.mayMutate) {
+    // The database declined to fund this attempt, so no request is
+    // sent. Retryable rather than terminal: the member did nothing
+    // wrong and the next tick will reserve for it properly.
+    return {
+      kind: "retryable_transport_failure",
+      errorCode: unit.refusedReason ?? "quota_unavailable",
+      errorMessage:
+        "The daily allowance for this identity could not be reserved for this profile, so no follow was sent.",
     };
   }
 
@@ -547,7 +595,7 @@ async function attemptFollow(
     result.rateLimit?.resetAt != null
       ? new Date(result.rateLimit.resetAt * 1000)
       : result.rateLimit?.retryAfterSeconds != null
-        ? new Date(Date.now() + result.rateLimit.retryAfterSeconds * 1000)
+        ? new Date(input.now.getTime() + result.rateLimit.retryAfterSeconds * 1000)
         : null;
 
   return {
@@ -569,7 +617,7 @@ async function persist(
   result: AttemptResult | null,
   attemptCount: number,
 ): Promise<void> {
-  const now = new Date().toISOString();
+  const now = input.now.toISOString();
   const terminal = status !== "retryable";
 
   await updateMember({
@@ -580,7 +628,7 @@ async function persist(
     nextAttemptAt:
       status === "retryable"
         ? new Date(
-            Date.now() + backoffDelayMs(Math.max(1, attemptCount)),
+            input.now.getTime() + backoffDelayMs(Math.max(1, attemptCount)),
           ).toISOString()
         : null,
     providerRecordUri: result?.uri ?? undefined,

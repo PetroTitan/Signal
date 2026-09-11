@@ -213,14 +213,18 @@ function readsConfirmFollowing() {
   return { impl, calls };
 }
 
+/** 10 minutes later. Past the member's backoff and the run's next hint. */
+const LATER = "2026-09-11T12:10:00Z";
+
 const dispatch = (
   db: FakeDb,
   impl: typeof fetch,
   client?: ReturnType<FakeDb["client"]>,
+  nowIso: string = NOW,
 ) => {
-  db.setNow(NOW);
+  db.setNow(nowIso);
   return dispatchCampaigns({
-    nowIso: NOW,
+    nowIso,
     db: client ?? db.client(),
     fetchImpl: impl,
     sleep: async () => undefined,
@@ -258,8 +262,7 @@ describe("three passes over an unconfirmable follow", () => {
     // ── Pass 3: the action is now TERMINAL as far as the claim RPC is
     //    concerned. This is the pass that used to report success.
     const third = readsSayNotFollowing();
-    member(db).next_attempt_at = null;
-    await dispatch(db, third.impl);
+    await dispatch(db, third.impl, undefined, LATER);
 
     // Zero mutations, still.
     expect(third.calls.createRecord).toBe(0);
@@ -285,9 +288,13 @@ describe("three passes over an unconfirmable follow", () => {
     expect(action(db).status).toBe("reconciliation_required");
 
     // Now the AppView catches up and reports the follow.
+    //
+    // Ten minutes later, because that is how this actually happens: a
+    // day whose quota is spent but which still has an unresolved action
+    // schedules itself to come back shortly rather than closing, and
+    // the member is past its retry backoff by then.
     const confirming = readsConfirmFollowing();
-    member(db).next_attempt_at = null;
-    await dispatch(db, confirming.impl);
+    await dispatch(db, confirming.impl, undefined, LATER);
 
     expect(confirming.calls.createRecord).toBe(0);
     expect(action(db).status).toBe("succeeded");
@@ -308,8 +315,7 @@ describe("three passes over an unconfirmable follow", () => {
     );
 
     await dispatch(db, readsFailProvider().impl);
-    member(db).next_attempt_at = null;
-    await dispatch(db, readsFailProvider().impl);
+    await dispatch(db, readsFailProvider().impl, undefined, LATER);
 
     // A read-only pass that sends nothing must not spend an attempt —
     // otherwise MAX_MEMBER_ATTEMPTS eventually marks an UNRESOLVED

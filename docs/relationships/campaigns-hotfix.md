@@ -78,21 +78,52 @@ Settlement quotes the reservation ID back, so
 exactly once, and treat a duplicate as a no-op. A late worker cannot
 consume a reservation that is not its own.
 
-Expiry splits in two, because a lapsed reservation must return its
-quota unless a follow may already have been sent under it:
+### The third attempt: quota is spent per member, at provider intent
 
-- **`held`** — a member under it has an action still marked in-flight.
-  A `createRecord` may have reached a real person, so the quota stays
-  consumed until reconciliation resolves it.
-- **`expired`** — no member under it could have reached the provider.
-  The quota returns.
+Owning the reservation was necessary and still not sufficient. The
+second design released a lapsed reservation when no *unresolved*
+in-flight action remained under it — and `provider_in_flight_at` is
+cleared on every terminal path. So a worker that followed four people
+and then died before settling left those four attempts recorded
+nowhere: the run counters were untouched, the members looked finished,
+and the sweep concluded nothing could have reached the provider and
+returned the whole reservation to the pool. A real-Postgres control
+measured **104 available attempts against a quota of 100**.
 
-A held reservation would otherwise deadlock the very reconciliation
-that resolves it: a campaign whose last unit of quota is held has zero
-headroom, so it could never claim the member whose resolution would
-release that unit. Reconciliation reads truth and can never send a
-mutation, so it **takes over** the held reservation — same rows, same
-quota, fresh lease — rather than competing for headroom.
+`provider_in_flight_at` cannot answer this. It says "is a mutation in
+flight right now", not "did this member ever reach the provider", and
+only the second question bounds a day.
+
+So quota is now consumed **one member at a time, immediately before
+`createRecord`**, in its own transaction:
+
+- an immutable `provider_intent_at` is stamped on a ledger row that is
+  never deleted and cannot be edited (a trigger enforces it);
+- the run's and the identity's attempt counters go up by one;
+- the unit comes off the reservation.
+
+A crash can therefore lose the **outcome** of an attempt, never the
+fact that it was made. What remains on a reservation is, by
+construction, only units that never reached provider intent — so the
+sweep can release them freely, and the question it used to ask is gone.
+
+Recovery reads the same durable rows: `fold_bluesky_ledger_outcomes`
+aggregates the ledger against the action rows, and is called by both
+settlement and the crash sweep, idempotently through `counted_at`.
+Settlement accepts **no chunk totals at all** — a worker that dies has
+none — and validates the whole tenant tuple (workspace, campaign, run,
+identity, usage date), because each of those is a different budget.
+
+An attempt whose outcome is never learned counts as an attempt and as
+no success: unknown is not optimism, and its unit is never returned.
+
+Reconciling a member costs nothing, because its unit was already spent.
+So reconciliation claims run **regardless of headroom** — requiring
+headroom would deadlock exactly when it matters, a campaign that has
+spent its whole quota being unable to claim the one member whose
+outcome is still unknown. And a day whose quota is exhausted but which
+still has unresolved actions now comes back shortly rather than closing
+until tomorrow.
 
 The assertion is now on **provider calls**, which is the number that
 reaches real people.
@@ -292,6 +323,7 @@ for the wrong reason:
 | Two complete dispatchers ≤ quota, measured in provider calls | `quota-concurrency.test.ts` (10) |
 | Crash after provider success → zero further mutations | `crash-recovery.test.ts` (7) |
 | Same-day 429 recovery | `rate-limit-recovery.test.ts` (7) |
+| Crash between per-member work and settlement | `crash-accounting.pg.test.ts` (9, real Postgres) |
 | Two REAL sessions contending for one quota | `two-session-concurrency.pg.test.ts` (7) |
 | Deterministic A-reserves / A-unsettled / B-reserves interleaving | `reservation-interleaving.test.ts` (9) |
 | Three passes over an unconfirmable follow | `reconciliation-terminal.test.ts` (5) |

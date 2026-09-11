@@ -55,6 +55,10 @@ drop function if exists public.apply_bluesky_run_outcome(
   uuid, uuid, uuid, date, integer, integer, integer, integer, integer,
   integer, integer, integer, timestamptz, integer, timestamptz);
 
+drop function if exists public.apply_bluesky_run_outcome(
+  uuid, uuid, uuid, date, uuid, integer, integer, integer, integer,
+  integer, integer, integer, timestamptz, integer, timestamptz);
+
 -- Superseded entirely: quota is released by settling the reservation
 -- that owns it, or by the sweep expiring it. A free-floating "give back
 -- N units" call is the very thing that let one worker return another's
@@ -108,7 +112,10 @@ create table if not exists public.bluesky_campaign_quota_reservations (
   run_id uuid not null references public.bluesky_follow_campaign_runs(id) on delete cascade,
   operator_account_id uuid not null,
   usage_date date not null,
-  reserved_count integer not null check (reserved_count > 0),
+  -- Units still PROMISED but not yet converted into attempts. Counts
+  -- down as members reach provider intent, so it can legitimately
+  -- reach zero while the reservation is still open.
+  reserved_count integer not null check (reserved_count >= 0),
   -- open    — quota is outstanding; the worker is still processing.
   -- settled — the outcome was applied, exactly once.
   -- held    — the lease lapsed but a provider mutation MAY have been
@@ -166,6 +173,117 @@ create index if not exists bluesky_quota_reservations_sweep_idx
 
 alter table public.bluesky_campaign_quota_reservations enable row level security;
 
+-- ── The attempt ledger ───────────────────────────────────────────────
+--
+-- One durable row per (reservation, member), created when the member is
+-- claimed for work and NEVER deleted.
+--
+-- This exists because a chunk's totals used to reach the database only
+-- at settlement. A worker that died after following four people but
+-- before settling left those four attempts recorded nowhere: the run
+-- counters were untouched, the members looked finished, and their
+-- actions had `provider_in_flight_at` cleared — so the sweep concluded
+-- nothing could have reached the provider and returned the WHOLE
+-- reservation to the pool. A real-Postgres control measured 104
+-- available attempts against a quota of 100.
+--
+-- `provider_in_flight_at` cannot answer this question. It is cleared on
+-- every terminal path, so it says "is a mutation in flight RIGHT NOW",
+-- not "did this member ever reach the provider". The second question
+-- needs a marker that is never cleared.
+--
+-- `provider_intent_at` is that marker. It is set immediately BEFORE
+-- `createRecord` and never unset, and setting it is what converts a
+-- reserved unit into a durable attempted one. Quota is therefore spent
+-- at the moment of intent, in the same transaction, one member at a
+-- time — so a crash can lose at most the OUTCOME of an attempt, never
+-- the fact that it was made.
+create table if not exists public.bluesky_campaign_attempt_ledger (
+  id uuid primary key default gen_random_uuid(),
+  workspace_id uuid not null references public.workspaces(id) on delete cascade,
+  campaign_id uuid not null,
+  run_id uuid not null
+    references public.bluesky_follow_campaign_runs(id) on delete cascade,
+  operator_account_id uuid not null,
+  usage_date date not null,
+  reservation_id uuid not null
+    references public.bluesky_campaign_quota_reservations(id) on delete cascade,
+  member_id uuid not null,
+  action_id uuid,
+
+  -- IMMUTABLE. Set once, immediately before the provider mutation, and
+  -- never cleared. A row with this set has consumed a unit of quota
+  -- whatever happened next — including "we never found out".
+  provider_intent_at timestamptz,
+
+  -- When this row's outcome was folded into the run counters. Null
+  -- means "not yet counted", which is what makes folding idempotent
+  -- whether it is done by settlement or by the crash sweep.
+  counted_at timestamptz,
+
+  created_at timestamptz not null default now(),
+
+  -- Named, because `on conflict (reservation_id, member_id)` inside
+  -- `reserve_bluesky_campaign_quota` is AMBIGUOUS: that function has
+  -- OUT parameters of the same names, and plpgsql cannot tell the
+  -- column from the parameter. Naming the constraint sidesteps the
+  -- shadowing without renaming the function's result columns, which are
+  -- part of its contract.
+  constraint bluesky_attempt_ledger_once unique (reservation_id, member_id)
+);
+
+comment on column public.bluesky_campaign_attempt_ledger.provider_intent_at is
+  'Set immediately before createRecord and NEVER cleared. The durable '
+  'proof that a member reached the provider path. Distinct from '
+  'bluesky_relationship_actions.provider_in_flight_at, which is cleared '
+  'on every terminal path and therefore cannot answer a question about '
+  'the past.';
+
+create index if not exists bluesky_attempt_ledger_reservation_idx
+  on public.bluesky_campaign_attempt_ledger (reservation_id);
+
+create index if not exists bluesky_attempt_ledger_uncounted_idx
+  on public.bluesky_campaign_attempt_ledger (run_id)
+  where counted_at is null;
+
+create index if not exists bluesky_attempt_ledger_member_idx
+  on public.bluesky_campaign_attempt_ledger (member_id);
+
+alter table public.bluesky_campaign_attempt_ledger enable row level security;
+
+-- A ledger row is a historical fact. Nothing may edit one except to
+-- stamp the two timestamps that only ever go from null to a value.
+create or replace function public.bluesky_attempt_ledger_is_append_only()
+returns trigger
+language plpgsql
+as $ledger$
+begin
+  if old.provider_intent_at is not null
+     and new.provider_intent_at is distinct from old.provider_intent_at then
+    raise exception
+      'bluesky_campaign_attempt_ledger.provider_intent_at is immutable';
+  end if;
+  if old.counted_at is not null
+     and new.counted_at is distinct from old.counted_at then
+    raise exception
+      'bluesky_campaign_attempt_ledger.counted_at is immutable once set';
+  end if;
+  if new.reservation_id <> old.reservation_id
+     or new.member_id <> old.member_id
+     or new.run_id <> old.run_id then
+    raise exception
+      'bluesky_campaign_attempt_ledger identity columns are immutable';
+  end if;
+  return new;
+end;
+$ledger$;
+
+drop trigger if exists bluesky_attempt_ledger_append_only
+  on public.bluesky_campaign_attempt_ledger;
+create trigger bluesky_attempt_ledger_append_only
+  before update on public.bluesky_campaign_attempt_ledger
+  for each row execute function public.bluesky_attempt_ledger_is_append_only();
+
 -- Every claimed member names the reservation that paid for it. This is
 -- what makes "which quota is this attempt spending" answerable without
 -- consulting a lease.
@@ -195,27 +313,273 @@ comment on column public.bluesky_identity_daily_usage.reserved_count is
   'across every campaign using it. Observability only.';
 
 -- =====================================================================
--- 2. Reservation sweep — expiry that cannot silently free spent quota
+-- 2. Folding durable outcomes into the run counters
 -- =====================================================================
 --
--- An open reservation whose lease lapsed belongs to a worker that is
--- gone. Its quota must come back or one crash permanently shrinks the
--- day. But it must NOT come back if a follow may already have been
--- sent under it: that follow reached a real person and consumed real
--- provider budget whether or not we recorded it.
+-- Settlement used to add the surviving worker's in-memory chunk totals.
+-- A worker that dies has no in-memory totals, so its real work was
+-- simply lost. Recovery therefore has to read the same durable rows the
+-- worker was writing as it went: the ledger, joined to the action rows
+-- that record what each attempt turned into.
 --
--- So expiry splits in two:
+-- Called by BOTH settlement and the crash sweep, and idempotent through
+-- `counted_at` — each row is folded exactly once, by whichever gets
+-- there first.
+
+create or replace function public.fold_bluesky_ledger_outcomes(
+  p_reservation_id uuid
+)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_run_id uuid;
+  v_usage_id uuid;
+  v_succeeded integer := 0;
+  v_already integer := 0;
+  v_failed integer := 0;
+  v_skipped integer := 0;
+  v_records integer := 0;
+  v_folded integer := 0;
+begin
+  select run_id into v_run_id
+    from public.bluesky_campaign_quota_reservations
+   where id = p_reservation_id;
+  if v_run_id is null then
+    return 0;
+  end if;
+
+  with pending as (
+    select l.id, l.member_id
+      from public.bluesky_campaign_attempt_ledger l
+     where l.reservation_id = p_reservation_id
+       and l.counted_at is null
+       for update
+  ),
+  resolved as (
+    select p.id,
+           a.status as action_status,
+           a.follow_uri
+      from pending p
+      left join public.bluesky_relationship_actions a
+        on a.campaign_member_id = p.member_id
+  ),
+  classified as (
+    select id,
+           case
+             -- A succeeded action WITHOUT a follow record is the
+             -- already-following path: observed, not created, and no
+             -- provider budget was spent.
+             when action_status = 'succeeded' and follow_uri is not null
+               then 'succeeded'
+             when action_status = 'succeeded' then 'already_following'
+             when action_status = 'failed' then 'failed'
+             when action_status = 'skipped' then 'skipped'
+             -- reconciliation_required, still running, or no action row
+             -- at all. The outcome is UNKNOWN, and unknown is counted
+             -- as nothing but stays quota-consuming: its unit was spent
+             -- at provider intent and is never given back.
+             else 'unknown'
+           end as outcome
+      from resolved
+  ),
+  counted as (
+    update public.bluesky_campaign_attempt_ledger l
+       set counted_at = now()
+      from classified c
+     where l.id = c.id
+     returning c.outcome
+  )
+  select
+    count(*) filter (where outcome = 'succeeded')::int,
+    count(*) filter (where outcome = 'already_following')::int,
+    count(*) filter (where outcome = 'failed')::int,
+    count(*) filter (where outcome = 'skipped')::int,
+    count(*) filter (where outcome = 'succeeded')::int,
+    count(*)::int
+  into v_succeeded, v_already, v_failed, v_skipped, v_records, v_folded
+  from counted;
+
+  if v_folded = 0 then
+    return 0;
+  end if;
+
+  -- `attempted_count` is NOT touched here. It was incremented at
+  -- provider intent, one member at a time, which is the whole point:
+  -- attempts survive a crash because they were never batched.
+  update public.bluesky_follow_campaign_runs
+     set succeeded_count = succeeded_count + v_succeeded,
+         already_following_count = already_following_count + v_already,
+         failed_count = failed_count + v_failed,
+         skipped_count = skipped_count + v_skipped,
+         last_chunk_at = now()
+   where id = v_run_id;
+
+  select u.id into v_usage_id
+    from public.bluesky_identity_daily_usage u
+    join public.bluesky_campaign_quota_reservations r
+      on r.workspace_id = u.workspace_id
+     and r.operator_account_id = u.operator_account_id
+     and r.usage_date = u.usage_date
+   where r.id = p_reservation_id;
+
+  if v_usage_id is not null then
+    update public.bluesky_identity_daily_usage
+       set follows_created = follows_created + v_records,
+           updated_at = now()
+     where id = v_usage_id;
+  end if;
+
+  return v_folded;
+end;
+$$;
+
+revoke execute on function public.fold_bluesky_ledger_outcomes(uuid)
+  from public, anon, authenticated;
+grant execute on function public.fold_bluesky_ledger_outcomes(uuid)
+  to service_role;
+
+-- =====================================================================
+-- 2b. Consuming a unit of quota, one member at a time
+-- =====================================================================
 --
---   held    — some member under this reservation has an action row
---             marked in-flight and not yet resolved. A createRecord may
---             have been issued. Quota stays consumed.
---   expired — no member under it could have reached the provider.
---             Quota returns.
+-- Called immediately BEFORE `createRecord`, and nowhere else.
 --
--- A held reservation is released later, once reconciliation resolves
--- every action under it to a terminal state. Being wrong in this
--- direction costs a bounded under-count of attempts for one day; being
--- wrong in the other direction over-follows a real account.
+-- It converts one reserved unit into a durable attempted unit in a
+-- single transaction: stamp the immutable `provider_intent_at`,
+-- increment the run's and the identity's attempt counters, and take the
+-- unit off the reservation. After this returns, the quota is spent as
+-- far as every other worker is concerned — regardless of what happens
+-- to this one.
+--
+-- Idempotent per (reservation, member): a retry after a lost response
+-- reports `already_consumed` and changes nothing.
+--
+-- It also refuses. A worker asking to mutate a member whose reservation
+-- has no unit left is a worker that has lost track of its own budget,
+-- and the honest answer is no.
+
+create or replace function public.consume_bluesky_member_quota(
+  p_workspace_id uuid,
+  p_reservation_id uuid,
+  p_member_id uuid,
+  p_action_id uuid
+)
+returns table (
+  consumed boolean,
+  already_consumed boolean,
+  refused_reason text
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_res public.bluesky_campaign_quota_reservations;
+  v_usage public.bluesky_identity_daily_usage;
+  v_ledger public.bluesky_campaign_attempt_ledger;
+begin
+  select * into v_res
+    from public.bluesky_campaign_quota_reservations
+   where id = p_reservation_id
+     and workspace_id = p_workspace_id
+     for update;
+
+  if v_res.id is null then
+    consumed := false; already_consumed := false;
+    refused_reason := 'unknown_reservation'; return next; return;
+  end if;
+
+  select * into v_ledger
+    from public.bluesky_campaign_attempt_ledger
+   where reservation_id = p_reservation_id
+     and member_id = p_member_id
+     for update;
+
+  -- Already spent. Say so and change nothing.
+  if v_ledger.id is not null and v_ledger.provider_intent_at is not null then
+    consumed := false; already_consumed := true;
+    refused_reason := null; return next; return;
+  end if;
+
+  if v_res.reserved_count <= 0 then
+    consumed := false; already_consumed := false;
+    refused_reason := 'reservation_exhausted'; return next; return;
+  end if;
+
+  -- Lock the identity's usage row in the same order the reservation
+  -- path uses: identity, then run, then reservation.
+  select * into v_usage
+    from public.bluesky_identity_daily_usage
+   where workspace_id = v_res.workspace_id
+     and operator_account_id = v_res.operator_account_id
+     and usage_date = v_res.usage_date
+     for update;
+
+  if v_ledger.id is null then
+    insert into public.bluesky_campaign_attempt_ledger (
+      workspace_id, campaign_id, run_id, operator_account_id, usage_date,
+      reservation_id, member_id, action_id, provider_intent_at
+    )
+    values (
+      v_res.workspace_id, v_res.campaign_id, v_res.run_id,
+      v_res.operator_account_id, v_res.usage_date,
+      p_reservation_id, p_member_id, p_action_id, now()
+    );
+  else
+    update public.bluesky_campaign_attempt_ledger
+       set provider_intent_at = now(),
+           action_id = coalesce(p_action_id, action_id)
+     where id = v_ledger.id;
+  end if;
+
+  update public.bluesky_campaign_quota_reservations
+     set reserved_count = reserved_count - 1
+   where id = p_reservation_id;
+
+  update public.bluesky_follow_campaign_runs
+     set attempted_count = attempted_count + 1,
+         reserved_count = greatest(reserved_count - 1, 0)
+   where id = v_res.run_id;
+
+  if v_usage.id is not null then
+    update public.bluesky_identity_daily_usage
+       set attempts_made = attempts_made + 1,
+           reserved_count = greatest(reserved_count - 1, 0),
+           updated_at = now()
+     where id = v_usage.id;
+  end if;
+
+  consumed := true; already_consumed := false; refused_reason := null;
+  return next;
+end;
+$$;
+
+revoke execute on function public.consume_bluesky_member_quota(uuid, uuid, uuid, uuid)
+  from public, anon, authenticated;
+grant execute on function public.consume_bluesky_member_quota(uuid, uuid, uuid, uuid)
+  to service_role;
+
+-- =====================================================================
+-- 2c. Reservation sweep
+-- =====================================================================
+--
+-- A lapsed reservation belongs to a worker that is gone. Two things
+-- have to happen, in this order:
+--
+--   1. fold whatever its members durably achieved into the run
+--      counters, because the worker never got to report them;
+--   2. release what is LEFT on the reservation.
+--
+-- What is left is, by construction, only units that never reached
+-- provider intent — every unit that did was taken off the reservation
+-- at the moment it was spent. So the sweep can no longer give back
+-- quota that a real follow already consumed, and the old question "does
+-- an unresolved in-flight action exist?" is gone: it was the wrong
+-- question, because a SUCCEEDED action has that marker cleared and
+-- still spent a unit.
 
 create or replace function public.sweep_bluesky_quota_reservations(
   p_workspace_id uuid,
@@ -228,10 +592,10 @@ security definer
 set search_path = public
 as $$
 declare
+  v_id uuid;
   v_swept integer := 0;
 begin
-  -- Open, lapsed, and possibly mid-mutation → held.
-  with lapsed as (
+  for v_id in
     select r.id
       from public.bluesky_campaign_quota_reservations r
      where r.workspace_id = p_workspace_id
@@ -239,44 +603,14 @@ begin
        and r.usage_date = p_usage_date
        and r.status = 'open'
        and r.expires_at < now()
-       for update
-  ),
-  classified as (
-    select l.id,
-           exists (
-             select 1
-               from public.bluesky_follow_campaign_members m
-               join public.bluesky_relationship_actions a
-                 on a.campaign_member_id = m.id
-              where m.reservation_id = l.id
-                and a.provider_in_flight_at is not null
-                and a.status not in ('succeeded', 'failed', 'skipped')
-           ) as maybe_mutated
-      from lapsed l
-  )
-  update public.bluesky_campaign_quota_reservations r
-     set status = case when c.maybe_mutated then 'held' else 'expired' end
-    from classified c
-   where r.id = c.id;
-  get diagnostics v_swept = row_count;
-
-  -- A held reservation whose actions have all resolved is no longer
-  -- ambiguous, so its quota returns.
-  update public.bluesky_campaign_quota_reservations r
-     set status = 'expired'
-   where r.workspace_id = p_workspace_id
-     and r.operator_account_id = p_operator_account_id
-     and r.usage_date = p_usage_date
-     and r.status = 'held'
-     and not exists (
-       select 1
-         from public.bluesky_follow_campaign_members m
-         join public.bluesky_relationship_actions a
-           on a.campaign_member_id = m.id
-        where m.reservation_id = r.id
-          and a.provider_in_flight_at is not null
-          and a.status not in ('succeeded', 'failed', 'skipped')
-     );
+     for update skip locked
+  loop
+    perform public.fold_bluesky_ledger_outcomes(v_id);
+    update public.bluesky_campaign_quota_reservations
+       set status = 'expired', reserved_count = 0
+     where id = v_id;
+    v_swept := v_swept + 1;
+  end loop;
 
   return v_swept;
 end;
@@ -347,7 +681,6 @@ declare
   v_grant integer;
   v_actual integer;
   v_reservation_id uuid;
-  v_held public.bluesky_campaign_quota_reservations;
   v_lease integer;
   v_reason text;
 begin
@@ -389,75 +722,109 @@ begin
 
   -- RECONCILIATION TAKEOVER, before any quota arithmetic.
   --
-  -- A `held` reservation is quota kept consumed because a follow may
-  -- have been issued under it. Its members must still be reconciled —
-  -- but reconciliation reads relationship truth and can never send a
-  -- mutation, so it consumes nothing and must not have to compete for
-  -- headroom.
+  -- A member whose action is unresolved has ALREADY spent its unit —
+  -- `provider_intent_at` is stamped and the unit came off its
+  -- reservation at that moment. Reconciling it reads relationship truth
+  -- and can never send a mutation, so it costs nothing more and must
+  -- not have to compete for headroom.
   --
   -- Requiring headroom here deadlocks exactly when it matters most: a
-  -- campaign whose last unit of quota is held by a crashed worker has
-  -- zero headroom, so it can never claim the member whose resolution
-  -- would release that unit. The member sits `claimed` forever and the
-  -- day never closes.
+  -- campaign that has spent its whole quota has none left, so it could
+  -- never claim the member whose outcome is still unknown, and that
+  -- member would sit unresolved forever.
   --
-  -- So the reconciliation pass TAKES OVER the held reservation: the
-  -- same rows, the same quota, a fresh lease. Settling it is what
-  -- finally releases the quota.
-  select * into v_held
-    from public.bluesky_campaign_quota_reservations
-   where run_id = p_run_id
-     and status = 'held'
-   order by created_at
-   for update skip locked
-   limit 1;
+  -- These members are handed a ZERO-unit reservation. It is a real
+  -- reservation — it owns the settlement, carries the ledger rows and
+  -- is swept like any other — it simply promises no new quota.
+  create temp table if not exists _claimed_members (
+    id uuid, subject_did text, current_handle text,
+    import_sequence bigint, attempt_count integer, provider_record_rkey text
+  ) on commit drop;
+  delete from _claimed_members;
 
-  if v_held.id is not null then
-    create temp table if not exists _claimed_members (
-      id uuid, subject_did text, current_handle text,
-      import_sequence bigint, attempt_count integer, provider_record_rkey text
-    ) on commit drop;
-    delete from _claimed_members;
+  with picked as (
+    select c.id
+      from public.bluesky_follow_campaign_members c
+     where c.workspace_id = p_workspace_id
+       and c.campaign_id = p_campaign_id
+       -- Whatever state the member is IN. A worker that reconciles
+       -- without learning anything persists it as `retryable`, and
+       -- matching only leased rows meant such a member could never be
+       -- picked up again: the takeover skipped it, and the ordinary
+       -- path wanted quota it does not need.
+       and (
+         (c.status in ('claimed', 'running')
+            and c.lease_expires_at is not null
+            and c.lease_expires_at < now())
+         or (c.status in ('queued', 'retryable')
+            and (c.next_attempt_at is null or c.next_attempt_at <= now()))
+       )
+       -- Already paid: the unit left its reservation at provider intent.
+       and exists (
+         select 1
+           from public.bluesky_campaign_attempt_ledger l
+          where l.member_id = c.id
+            and l.provider_intent_at is not null
+       )
+       -- And still unresolved, so there is something to find out.
+       and exists (
+         select 1
+           from public.bluesky_relationship_actions a
+          where a.campaign_member_id = c.id
+            and a.status not in ('succeeded', 'failed', 'skipped')
+       )
+     order by c.import_sequence
+     for update skip locked
+     limit least(greatest(coalesce(p_chunk_size, 1), 1), 100)
+  )
+  insert into _claimed_members
+  select m.id, m.subject_did, m.current_handle, m.import_sequence,
+         m.attempt_count, m.provider_record_rkey
+    from public.bluesky_follow_campaign_members m
+   where m.id in (select id from picked);
 
-    with picked as (
-      select c.id
-        from public.bluesky_follow_campaign_members c
-       where c.reservation_id = v_held.id
-         and c.status in ('claimed', 'running')
-         and c.lease_expires_at is not null
-         and c.lease_expires_at < now()
-       order by c.import_sequence
-       for update skip locked
+  select count(*)::int into v_actual from _claimed_members;
+
+  if v_actual > 0 then
+    insert into public.bluesky_campaign_quota_reservations (
+      workspace_id, campaign_id, run_id, operator_account_id, usage_date,
+      reserved_count, status, claimed_by, expires_at
     )
-    insert into _claimed_members
-    select m.id, m.subject_did, m.current_handle, m.import_sequence,
-           m.attempt_count, m.provider_record_rkey
-      from public.bluesky_follow_campaign_members m
-     where m.id in (select id from picked);
+    values (
+      p_workspace_id, p_campaign_id, p_run_id, p_operator_account_id,
+      p_usage_date, 0, 'open', p_claimed_by,
+      now() + make_interval(secs => v_lease)
+    )
+    returning id into v_reservation_id;
 
-    select count(*)::int into v_actual from _claimed_members;
+    update public.bluesky_follow_campaign_members m
+       set status = 'claimed',
+           claimed_at = now(),
+           claimed_by = p_claimed_by,
+           reservation_id = v_reservation_id,
+           lease_expires_at = now() + make_interval(secs => v_lease)
+     where m.id in (select id from _claimed_members);
 
-    if v_actual > 0 then
-      update public.bluesky_follow_campaign_members m
-         set status = 'claimed',
-             claimed_at = now(),
-             claimed_by = p_claimed_by,
-             lease_expires_at = now() + make_interval(secs => v_lease)
-       where m.id in (select id from _claimed_members);
+    -- A ledger row for the new reservation, carrying no intent: this
+    -- pass may only read. If it does reach provider intent — it must
+    -- not — `consume` would refuse, because a zero-unit reservation has
+    -- nothing to spend.
+    insert into public.bluesky_campaign_attempt_ledger (
+      workspace_id, campaign_id, run_id, operator_account_id, usage_date,
+      reservation_id, member_id
+    )
+    select p_workspace_id, p_campaign_id, p_run_id, p_operator_account_id,
+           p_usage_date, v_reservation_id, c.id
+      from _claimed_members c
+    on conflict on constraint bluesky_attempt_ledger_once do nothing;
 
-      update public.bluesky_campaign_quota_reservations
-         set status = 'open',
-             expires_at = now() + make_interval(secs => v_lease)
-       where id = v_held.id;
-
-      return query
-      select v_actual, v_held.id, 'reconcile'::text, c.id, c.subject_did,
-             c.current_handle, c.import_sequence, c.attempt_count,
-             c.provider_record_rkey
-        from _claimed_members c
-       order by c.import_sequence;
-      return;
-    end if;
+    return query
+    select 0, v_reservation_id, 'reconcile'::text, c.id, c.subject_did,
+           c.current_handle, c.import_sequence, c.attempt_count,
+           c.provider_record_rkey
+      from _claimed_members c
+     order by c.import_sequence;
+    return;
   end if;
 
   -- Outstanding quota, read from the reservations that OWN it. Both
@@ -474,22 +841,28 @@ begin
      and usage_date = p_usage_date
      and status in ('open', 'held');
 
-  -- `attempted_count` counts members that reached the provider path.
-  -- `already_following_count` is NOT among them — that branch returns
-  -- before an attempt is made — so subtracting it here would
-  -- double-count and let the day overrun. Only `skipped_count` is an
-  -- attempt that consumed no quota.
+  -- `attempted_count` is now exactly the number of units DURABLY
+  -- consumed: incremented at provider intent, one member at a time, and
+  -- never batched. So headroom is the plain subtraction, with no
+  -- correction terms.
+  --
+  -- It used to be adjusted by `skipped_count`, because attempts were
+  -- reported in bulk at settlement and a dry run or an ineligible
+  -- account counted among them. Neither reaches provider intent now, so
+  -- neither is in `attempted_count`, and subtracting skips would credit
+  -- back quota that was never taken.
   v_run_headroom := greatest(
     0,
-    v_run.effective_daily_quota
-      - greatest(v_run.attempted_count - v_run.skipped_count, 0)
-      - v_run_reserved
+    v_run.effective_daily_quota - v_run.attempted_count - v_run_reserved
   );
 
+  -- The identity is bounded by ATTEMPTS, not by records created. A
+  -- follow that failed still cost provider budget, and an attempt whose
+  -- outcome was never learned cost it too.
   v_identity_headroom := greatest(
     0,
     coalesce(p_identity_ceiling, 0)
-      - v_usage.follows_created
+      - greatest(v_usage.attempts_made, v_usage.follows_created)
       - v_identity_reserved
   );
 
@@ -566,6 +939,18 @@ begin
          reservation_id = v_reservation_id,
          lease_expires_at = now() + make_interval(secs => v_lease)
    where m.id in (select id from _claimed_members);
+
+  -- A ledger row per claimed member, with NO intent yet. Intent — and
+  -- with it the unit of quota — is stamped only when the worker is
+  -- about to call the provider.
+  insert into public.bluesky_campaign_attempt_ledger (
+    workspace_id, campaign_id, run_id, operator_account_id, usage_date,
+    reservation_id, member_id
+  )
+  select p_workspace_id, p_campaign_id, p_run_id, p_operator_account_id,
+         p_usage_date, v_reservation_id, c.id
+    from _claimed_members c
+  on conflict on constraint bluesky_attempt_ledger_once do nothing;
 
   select count(*)::int into v_actual from _claimed_members;
 
@@ -648,42 +1033,35 @@ grant execute on function public.release_bluesky_campaign_members(uuid, uuid, uu
   to service_role;
 
 -- =====================================================================
--- 4. Settlement — exactly once, and only of your own reservation
+-- 4. Settlement — exactly once, from durable rows, and only your own
 -- =====================================================================
 --
--- Settlement validates OWNERSHIP before it applies anything. The
--- previous version took a scalar `consumeReservation` count and
--- subtracted it from whatever `reserved_count` happened to hold, which
--- is how worker A could consume worker B's reservation.
+-- Settlement no longer accepts the worker's chunk totals. It folds the
+-- LEDGER, which is what the worker was writing as it went, so a chunk
+-- that ended in a crash and a chunk that ended normally are recovered
+-- by the same code path.
 --
--- Counters are deltas. Writing absolutes computed from a snapshot read
--- at the top of a dispatcher pass loses every concurrent increment.
+-- It also validates the whole tenant tuple. Checking only `run_id` left
+-- a reservation from another workspace, campaign, identity or usage
+-- date able to settle against this run — every one of those is a
+-- different budget.
 
 create or replace function public.apply_bluesky_run_outcome(
   p_workspace_id uuid,
+  p_campaign_id uuid,
   p_run_id uuid,
   p_operator_account_id uuid,
   p_usage_date date,
   p_reservation_id uuid,
-  p_attempted integer,
-  p_succeeded integer,
-  p_already_following integer,
-  p_skipped integer,
-  p_failed integer,
-  p_records_created integer,
   p_consecutive_failures integer,
   p_rate_limited_until timestamptz,
   p_rate_limit_remaining integer,
   p_rate_limit_reset_at timestamptz
 )
--- Deliberately NOT named after the columns they report. An OUT
--- parameter called `attempted_count` shadows the column of the same
--- name inside `update … set attempted_count = attempted_count + …`,
--- which plpgsql rejects as ambiguous at RUNTIME — the function creates
--- cleanly and fails the first time it is called.
 returns table (
   settled boolean,
   already_settled boolean,
+  refused_reason text,
   out_run_id uuid,
   out_attempted integer,
   out_succeeded integer,
@@ -700,7 +1078,6 @@ declare
   v_run_reserved integer;
   v_identity_reserved integer;
 begin
-  -- Same lock order as the reservation path.
   insert into public.bluesky_identity_daily_usage (
     workspace_id, operator_account_id, usage_date
   )
@@ -720,7 +1097,8 @@ begin
      for update;
 
   if v_run.id is null then
-    settled := false; already_settled := false; return next; return;
+    settled := false; already_settled := false;
+    refused_reason := 'unknown_run'; return next; return;
   end if;
 
   select * into v_res
@@ -728,13 +1106,33 @@ begin
    where id = p_reservation_id
      for update;
 
-  -- OWNERSHIP. A reservation belonging to another run, another
-  -- workspace, or to nothing at all settles nothing. This is what stops
-  -- a late worker consuming a reservation that is not its own.
-  if v_res.id is null
-     or v_res.run_id <> p_run_id
-     or v_res.workspace_id <> p_workspace_id then
+  -- OWNERSHIP, in full. Each of these is a distinct budget, and a
+  -- reservation that disagrees on any of them is not this run's to
+  -- settle.
+  if v_res.id is null then
     settled := false; already_settled := false;
+    refused_reason := 'unknown_reservation';
+  elsif v_res.workspace_id <> p_workspace_id then
+    settled := false; already_settled := false;
+    refused_reason := 'workspace_mismatch';
+  elsif v_res.campaign_id <> p_campaign_id then
+    settled := false; already_settled := false;
+    refused_reason := 'campaign_mismatch';
+  elsif v_res.run_id <> p_run_id then
+    settled := false; already_settled := false;
+    refused_reason := 'run_mismatch';
+  elsif v_res.operator_account_id <> p_operator_account_id then
+    settled := false; already_settled := false;
+    refused_reason := 'identity_mismatch';
+  elsif v_res.usage_date <> p_usage_date then
+    settled := false; already_settled := false;
+    refused_reason := 'usage_date_mismatch';
+  elsif v_res.status = 'settled' then
+    -- IDEMPOTENCE: a duplicate settlement applies nothing twice.
+    settled := false; already_settled := true; refused_reason := null;
+  end if;
+
+  if refused_reason is not null or already_settled then
     out_run_id := v_run.id;
     out_attempted := v_run.attempted_count;
     out_succeeded := v_run.succeeded_count;
@@ -742,33 +1140,16 @@ begin
     return next; return;
   end if;
 
-  -- IDEMPOTENCE. A duplicate settlement applies nothing a second time.
-  -- Both halves matter: the deltas must not be double-counted, and the
-  -- quota must not be released twice.
-  if v_res.status = 'settled' then
-    settled := false; already_settled := true;
-    out_run_id := v_run.id;
-    out_attempted := v_run.attempted_count;
-    out_succeeded := v_run.succeeded_count;
-    out_reserved := v_run.reserved_count;
-    return next; return;
-  end if;
+  -- Fold what actually happened, from the ledger. Idempotent per row.
+  perform public.fold_bluesky_ledger_outcomes(p_reservation_id);
 
-  -- A reservation swept to `held` or `expired` still settles: the
-  -- attempts under it really happened and must be counted. Marking it
-  -- settled is what releases its quota, and it can only happen once.
+  -- Release whatever is LEFT: units that never reached provider intent.
   update public.bluesky_campaign_quota_reservations
-     set status = 'settled', settled_at = now()
+     set status = 'settled', settled_at = now(), reserved_count = 0
    where id = v_res.id;
 
   update public.bluesky_follow_campaign_runs
-     set attempted_count = attempted_count + greatest(coalesce(p_attempted, 0), 0),
-         succeeded_count = succeeded_count + greatest(coalesce(p_succeeded, 0), 0),
-         already_following_count = already_following_count
-           + greatest(coalesce(p_already_following, 0), 0),
-         skipped_count = skipped_count + greatest(coalesce(p_skipped, 0), 0),
-         failed_count = failed_count + greatest(coalesce(p_failed, 0), 0),
-         consecutive_failures = greatest(coalesce(p_consecutive_failures, 0), 0),
+     set consecutive_failures = greatest(coalesce(p_consecutive_failures, 0), 0),
          rate_limited_until = coalesce(p_rate_limited_until, rate_limited_until),
          rate_limit_remaining = coalesce(p_rate_limit_remaining, rate_limit_remaining),
          rate_limit_reset_at = coalesce(p_rate_limit_reset_at, rate_limit_reset_at),
@@ -779,13 +1160,7 @@ begin
          end
    where id = p_run_id;
 
-  update public.bluesky_identity_daily_usage
-     set follows_created = follows_created + greatest(coalesce(p_records_created, 0), 0),
-         attempts_made = attempts_made + greatest(coalesce(p_attempted, 0), 0),
-         updated_at = now()
-   where id = v_usage.id;
-
-  -- Refresh the caches from the rows that own the quota.
+  -- Caches recomputed from the rows that own the quota.
   select coalesce(sum(r.reserved_count), 0)::int into v_run_reserved
     from public.bluesky_campaign_quota_reservations r
    where r.run_id = p_run_id and r.status in ('open', 'held');
@@ -805,8 +1180,7 @@ begin
   select * into v_run
     from public.bluesky_follow_campaign_runs where id = p_run_id;
 
-  settled := true;
-  already_settled := false;
+  settled := true; already_settled := false; refused_reason := null;
   out_run_id := v_run.id;
   out_attempted := v_run.attempted_count;
   out_succeeded := v_run.succeeded_count;
@@ -816,12 +1190,10 @@ end;
 $$;
 
 revoke execute on function public.apply_bluesky_run_outcome(
-  uuid, uuid, uuid, date, uuid, integer, integer, integer, integer,
-  integer, integer, integer, timestamptz, integer, timestamptz)
+  uuid, uuid, uuid, uuid, date, uuid, integer, timestamptz, integer, timestamptz)
   from public, anon, authenticated;
 grant execute on function public.apply_bluesky_run_outcome(
-  uuid, uuid, uuid, date, uuid, integer, integer, integer, integer,
-  integer, integer, integer, timestamptz, integer, timestamptz)
+  uuid, uuid, uuid, uuid, date, uuid, integer, timestamptz, integer, timestamptz)
   to service_role;
 
 -- =====================================================================

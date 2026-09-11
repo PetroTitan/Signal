@@ -36,6 +36,7 @@ import { resolveRelationshipSession } from "@/core/bluesky-relationships/session
 import {
   applyRunOutcome,
   countMembersByStatus,
+  countUnresolvedCampaignActions,
   ensureRun,
   getIdentityUsage,
   listDueCampaigns,
@@ -360,7 +361,11 @@ async function runCampaign(args: {
     identityFollowsToday: usage?.follows_created ?? 0,
     consecutiveFailures: run.consecutive_failures,
     maxConsecutiveFailures: campaign.max_consecutive_failures,
-    attemptedToday: run.attempted_count,
+    // RESOLVED attempts, not consumed ones. `attempted_count` now rises
+    // at provider intent — before any response exists — so using it
+    // would read a chunk still in flight as a run of total failures and
+    // trip the breaker on a healthy campaign.
+    attemptedToday: run.succeeded_count + run.failed_count,
     succeededToday: run.succeeded_count,
     minSuccessRatePercent: campaign.min_success_rate_percent,
     // BOTH windows, whichever is later. The run is created fresh each
@@ -390,22 +395,20 @@ async function runCampaign(args: {
     return out;
   }
 
-  // A cheap pre-check so an exhausted day does not resolve a session or
-  // touch the provider. It is NOT the authority: the reservation RPC
-  // recomputes headroom under a row lock, and only that is binding.
+  // There is deliberately NO pre-loop quota check here.
   //
-  // `already_following_count` is deliberately absent — those members
-  // return before an attempt is made, so they are not in
-  // `attempted_count` and subtracting them would double-count and let
-  // the day overrun. Only `skipped_count` is an attempt that cost no
-  // quota.
-  const consumedToday = Math.max(0, run.attempted_count - run.skipped_count);
-  const quotaRemaining = Math.max(0, live.effective - consumedToday);
-  if (quotaRemaining === 0) {
-    await finishRun(campaign, run, input.db, "daily quota reached", now);
-    out.note = "daily quota already reached";
-    return out;
-  }
+  // There used to be one, as a cheap way to avoid resolving a session
+  // on an exhausted day. It became actively harmful once quota was
+  // consumed per member: a campaign that has spent its whole allowance
+  // returned here immediately — including when the only work left was
+  // RECONCILING a member whose outcome is unknown, which needs no quota
+  // at all. The member could never be claimed, so its outcome stayed
+  // unknown forever.
+  //
+  // `reserve_bluesky_campaign_quota` is the single authority on what
+  // may be worked on. It recomputes headroom under a row lock, hands
+  // back reconciliation work regardless of headroom, and says WHY when
+  // it grants nothing — and the end of the loop acts on that reason.
 
   // ── Session. Resolved once and reused across every chunk: Bluesky
   //    allows only 300 createSession calls per account per day, so a
@@ -539,10 +542,12 @@ async function runChunks(ctx: {
       runId: run.id,
       session,
       members: reservation.members,
+      reservationId: reservation.reservationId,
       quotaRemaining: reservation.reserved,
       consecutiveFailures: consecutive,
       claimedBy,
       initiatedBy: campaign.created_by,
+      now,
       appView: input.appView,
       fetchImpl: input.fetchImpl,
       db: input.db,
@@ -558,24 +563,20 @@ async function runChunks(ctx: {
     out.skipped += chunk.skipped;
     out.failed += chunk.failed;
 
-    // Counters as DELTAS, and the reservation consumed in the same
-    // statement. Writing absolutes from the snapshot read at the top of
-    // this function loses every concurrent increment.
+    // No chunk totals. Settlement folds the attempt LEDGER — the rows
+    // the worker wrote as it went — so a chunk that ended in a crash
+    // and one that ended normally are recovered by the same path. The
+    // in-memory numbers above are for this tick's report to the
+    // operator, and are not what the day's books are built from.
+    //
+    // The whole tenant tuple goes with the reservation ID so the RPC
+    // can verify it owns this settlement.
     const updated = await applyRunOutcome({
       workspaceId: campaign.workspace_id,
+      campaignId: campaign.id,
       runId: run.id,
       operatorAccountId: campaign.operator_account_id,
       usageDate,
-      attempted: chunk.attempted,
-      succeeded: chunk.succeeded,
-      alreadyFollowing: chunk.alreadyFollowing,
-      skipped: chunk.skipped,
-      failed: chunk.failed,
-      recordsCreated: chunk.recordsCreated,
-      // The reservation ITSELF, not a count. The RPC verifies that
-      // this reservation belongs to this run before applying anything,
-      // marks it settled so a duplicate settlement is a no-op, and
-      // releases exactly its own quota — never someone else's.
       reservationId: reservation.reservationId,
       consecutiveFailures: consecutive,
       rateLimitedUntil:
@@ -681,6 +682,38 @@ async function runChunks(ctx: {
       lastReason === "identity_exhausted"
         ? "identity daily ceiling reached"
         : "daily quota reached";
+
+    // An exhausted quota does NOT mean there is nothing left to do.
+    //
+    // An action that is still unresolved describes a follow that may
+    // have reached a real person and whose outcome we never learned.
+    // Reconciling it reads relationship truth and spends no quota, so
+    // closing the day here would leave a public ambiguity standing
+    // until tomorrow for no reason at all.
+    const unresolved = await countUnresolvedCampaignActions({
+      workspaceId: campaign.workspace_id,
+      campaignId: campaign.id,
+      db: input.db,
+    });
+    if (unresolved > 0) {
+      await updateCampaign({
+        workspaceId: campaign.workspace_id,
+        campaignId: campaign.id,
+        nextRunAt: computeNextRunAt({
+          from: now,
+          timezone: campaign.timezone,
+          window: {
+            startMinute: campaign.execution_window_start_minute,
+            endMinute: campaign.execution_window_end_minute,
+          },
+        }).toISOString(),
+        expectedStatuses: ["active"],
+        db: input.db,
+      });
+      out.note = `${reason}; ${unresolved} action(s) still awaiting reconciliation`;
+      return out;
+    }
+
     await finishRun(campaign, run, input.db, reason, now);
     out.note = `${reason} (${totalSucceeded} follow(s) created today)`;
     return out;

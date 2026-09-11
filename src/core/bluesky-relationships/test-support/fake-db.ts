@@ -150,6 +150,13 @@ export class FakeDb {
         return this.recordIdentityUsage(args);
       case "reserve_bluesky_campaign_quota":
         return this.reserveCampaignQuota(args);
+      case "consume_bluesky_member_quota":
+        return this.consumeMemberQuota(args);
+      case "fold_bluesky_ledger_outcomes":
+        return {
+          data: this.foldLedger(String(args.p_reservation_id)),
+          error: null,
+        };
       case "sweep_bluesky_quota_reservations":
         this.sweepReservations(
           String(args.p_workspace_id),
@@ -346,57 +353,101 @@ export class FakeDb {
 
     // RECONCILIATION TAKEOVER, before any quota arithmetic.
     //
-    // A `held` reservation is quota kept consumed because a follow may
-    // have been issued under it. Reconciling its members reads truth
-    // and can never send a mutation, so it consumes nothing and must
-    // not compete for headroom — requiring headroom deadlocks exactly
-    // when it matters: a campaign whose last unit of quota is held by a
-    // crashed worker could never claim the member whose resolution
-    // would release it.
-    const held = reservations.find(
-      (r) => r.run_id === args.p_run_id && r.status === "held",
-    );
-    if (held) {
-      const stranded = this.rows("bluesky_follow_campaign_members")
-        .filter(
-          (m) =>
-            m.reservation_id === held.id &&
-            (m.status === "claimed" || m.status === "running") &&
+    // A member whose action is unresolved has ALREADY spent its unit —
+    // provider_intent_at is stamped and the unit left its reservation
+    // at that moment. Reconciling reads truth and can never mutate, so
+    // it costs nothing more and must not compete for headroom.
+    //
+    // Requiring headroom here deadlocks exactly when it matters: a
+    // campaign that has spent its whole quota could never claim the
+    // member whose outcome is still unknown.
+    const ledgerRows = this.rows("bluesky_campaign_attempt_ledger");
+    const actionRows = this.rows("bluesky_relationship_actions");
+    const stranded = this.rows("bluesky_follow_campaign_members")
+      .filter(
+        (m) =>
+          m.workspace_id === args.p_workspace_id &&
+          m.campaign_id === args.p_campaign_id &&
+          // Whatever state the member is IN. A worker that reconciles
+          // without learning anything persists it as `retryable`, and
+          // matching only leased rows meant such a member could never
+          // be picked up again: the takeover skipped it, and the
+          // ordinary path wanted quota it does not need.
+          (((m.status === "claimed" || m.status === "running") &&
             m.lease_expires_at !== null &&
-            new Date(String(m.lease_expires_at)).getTime() < now0,
-        )
-        .sort((a, b) => Number(a.import_sequence) - Number(b.import_sequence));
+            new Date(String(m.lease_expires_at)).getTime() < now0) ||
+            ((m.status === "queued" || m.status === "retryable") &&
+              (!m.next_attempt_at ||
+                new Date(String(m.next_attempt_at)).getTime() <= now0))) &&
+          ledgerRows.some(
+            (l) => l.member_id === m.id && l.provider_intent_at,
+          ) &&
+          actionRows.some(
+            (a) =>
+              a.campaign_member_id === m.id &&
+              !["succeeded", "failed", "skipped"].includes(String(a.status)),
+          ),
+      )
+      .sort((a, b) => Number(a.import_sequence) - Number(b.import_sequence))
+      .slice(0, Math.min(Math.max(num(args.p_chunk_size) || 1, 1), 100));
 
-      if (stranded.length > 0) {
-        for (const m of stranded) {
-          m.status = "claimed";
-          m.claimed_at = new Date(now0).toISOString();
-          m.claimed_by = args.p_claimed_by ?? null;
-          m.lease_expires_at = new Date(now0 + lease0 * 1000).toISOString();
-        }
-        held.status = "open";
-        held.expires_at = new Date(now0 + lease0 * 1000).toISOString();
-        return {
-          data: stranded.map((m) => ({
-            reserved: stranded.length,
-            reservation_id: held.id,
-            reason: "reconcile",
-            member_id: m.id,
-            subject_did: m.subject_did,
-            current_handle: m.current_handle ?? null,
-            import_sequence: m.import_sequence,
-            attempt_count: m.attempt_count ?? 0,
-            provider_record_rkey: m.provider_record_rkey ?? null,
-          })),
-          error: null,
-        };
+    if (stranded.length > 0) {
+      // A ZERO-unit reservation: a real reservation that owns the
+      // settlement and carries the ledger rows, promising no new quota.
+      const reconcileId = this.nextId("reservation");
+      reservations.push({
+        id: reconcileId,
+        workspace_id: args.p_workspace_id,
+        campaign_id: args.p_campaign_id,
+        run_id: args.p_run_id,
+        operator_account_id: args.p_operator_account_id,
+        usage_date: args.p_usage_date,
+        reserved_count: 0,
+        status: "open",
+        claimed_by: args.p_claimed_by ?? null,
+        expires_at: new Date(now0 + lease0 * 1000).toISOString(),
+        settled_at: null,
+      });
+      for (const m of stranded) {
+        m.status = "claimed";
+        m.claimed_at = new Date(now0).toISOString();
+        m.claimed_by = args.p_claimed_by ?? null;
+        m.reservation_id = reconcileId;
+        m.lease_expires_at = new Date(now0 + lease0 * 1000).toISOString();
+        ledgerRows.push({
+          id: this.nextId("ledger"),
+          workspace_id: args.p_workspace_id,
+          campaign_id: args.p_campaign_id,
+          run_id: args.p_run_id,
+          operator_account_id: args.p_operator_account_id,
+          usage_date: args.p_usage_date,
+          reservation_id: reconcileId,
+          member_id: m.id,
+          action_id: null,
+          provider_intent_at: null,
+          counted_at: null,
+        });
       }
+      return {
+        data: stranded.map((m) => ({
+          reserved: 0,
+          reservation_id: reconcileId,
+          reason: "reconcile",
+          member_id: m.id,
+          subject_did: m.subject_did,
+          current_handle: m.current_handle ?? null,
+          import_sequence: m.import_sequence,
+          attempt_count: m.attempt_count ?? 0,
+          provider_record_rkey: m.provider_record_rkey ?? null,
+        })),
+        error: null,
+      };
     }
 
     const outstanding = (predicate: (r: Row) => boolean) =>
       reservations
         .filter((r) => predicate(r) && (r.status === "open" || r.status === "held"))
-        .reduce((sum, r) => sum + Number(r.reserved_count ?? 0), 0);
+        .reduce((sum, r) => sum + num(r.reserved_count), 0);
 
     const runReserved = outstanding((r) => r.run_id === args.p_run_id);
     const identityReserved = outstanding(
@@ -406,18 +457,24 @@ export class FakeDb {
         r.usage_date === args.p_usage_date,
     );
 
-    // already_following is NOT part of attempted_count — that branch
-    // returns before an attempt — so subtracting it too would
-    // double-count and let the day overrun.
+    // `attempted_count` is now exactly the units DURABLY consumed —
+    // incremented at provider intent, one member at a time. So headroom
+    // is the plain subtraction, with no correction terms: neither a dry
+    // run nor an ineligible account reaches provider intent, so neither
+    // is counted and subtracting skips would credit back quota that was
+    // never taken.
     const runHeadroom = Math.max(
       0,
-      num(run.effective_daily_quota) -
-        Math.max(num(run.attempted_count) - num(run.skipped_count), 0) -
-        runReserved,
+      num(run.effective_daily_quota) - num(run.attempted_count) - runReserved,
     );
+    // The identity is bounded by ATTEMPTS, not records created: a
+    // failed follow still cost provider budget, and so did one whose
+    // outcome was never learned.
     const identityHeadroom = Math.max(
       0,
-      num(args.p_identity_ceiling) - num(usage.follows_created) - identityReserved,
+      num(args.p_identity_ceiling) -
+        Math.max(num(usage.attempts_made), num(usage.follows_created)) -
+        identityReserved,
     );
     const grant = Math.min(
       Math.max(num(args.p_requested), 0),
@@ -482,6 +539,22 @@ export class FakeDb {
       m.claimed_by = args.p_claimed_by ?? null;
       m.reservation_id = reservationId;
       m.lease_expires_at = new Date(now + leaseSeconds * 1000).toISOString();
+      // A ledger row with NO intent yet. Intent — and with it the unit
+      // of quota — is stamped only when the worker is about to call the
+      // provider.
+      this.rows("bluesky_campaign_attempt_ledger").push({
+        id: this.nextId("ledger"),
+        workspace_id: args.p_workspace_id,
+        campaign_id: args.p_campaign_id,
+        run_id: args.p_run_id,
+        operator_account_id: args.p_operator_account_id,
+        usage_date: args.p_usage_date,
+        reservation_id: reservationId,
+        member_id: m.id,
+        action_id: null,
+        provider_intent_at: null,
+        counted_at: null,
+      });
     }
 
     run.reserved_count = runReserved + eligible.length;
@@ -504,13 +577,151 @@ export class FakeDb {
   }
 
   /**
+   * Mirrors fold_bluesky_ledger_outcomes.
+   *
+   * Recovery reads the DURABLE rows the worker was writing as it went,
+   * not totals it held in memory — a worker that dies has no totals.
+   * Idempotent through `counted_at`.
+   */
+  private foldLedger(reservationId: string): number {
+    const reservation = this.rows("bluesky_campaign_quota_reservations").find(
+      (r) => r.id === reservationId,
+    );
+    if (!reservation) return 0;
+    const run = this.rows("bluesky_follow_campaign_runs").find(
+      (r) => r.id === reservation.run_id,
+    );
+    if (!run) return 0;
+
+    const pending = this.rows("bluesky_campaign_attempt_ledger").filter(
+      (l) => l.reservation_id === reservationId && !l.counted_at,
+    );
+    if (pending.length === 0) return 0;
+
+    const actions = this.rows("bluesky_relationship_actions");
+    let succeeded = 0;
+    let already = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    for (const row of pending) {
+      const action = actions.find((a) => a.campaign_member_id === row.member_id);
+      const status = action ? String(action.status) : null;
+      if (status === "succeeded" && action?.follow_uri) succeeded += 1;
+      else if (status === "succeeded") already += 1;
+      else if (status === "failed") failed += 1;
+      else if (status === "skipped") skipped += 1;
+      // Anything else is UNKNOWN: counted as no outcome, but its unit
+      // was spent at provider intent and is never returned.
+      row.counted_at = new Date(this.nowMs()).toISOString();
+    }
+
+    // attempted_count is NOT touched: it was incremented at provider
+    // intent, one member at a time, which is why attempts survive a
+    // crash.
+    run.succeeded_count = num(run.succeeded_count) + succeeded;
+    run.already_following_count = num(run.already_following_count) + already;
+    run.failed_count = num(run.failed_count) + failed;
+    run.skipped_count = num(run.skipped_count) + skipped;
+    run.last_chunk_at = new Date(this.nowMs()).toISOString();
+
+    const usage = this.rows("bluesky_identity_daily_usage").find(
+      (u) =>
+        u.workspace_id === reservation.workspace_id &&
+        u.operator_account_id === reservation.operator_account_id &&
+        u.usage_date === reservation.usage_date,
+    );
+    if (usage) {
+      usage.follows_created = num(usage.follows_created) + succeeded;
+    }
+    return pending.length;
+  }
+
+  /**
+   * Mirrors consume_bluesky_member_quota.
+   *
+   * The last thing before the provider call: converts one reserved unit
+   * into a durable attempted one and stamps an IMMUTABLE marker. After
+   * this the quota is spent whatever happens to this worker.
+   */
+  private consumeMemberQuota(args: Record<string, unknown>): QueryResult {
+    const answer = (
+      consumed: boolean,
+      alreadyConsumed: boolean,
+      reason: string | null,
+    ): QueryResult => ({
+      data: [
+        { consumed, already_consumed: alreadyConsumed, refused_reason: reason },
+      ],
+      error: null,
+    });
+
+    const reservation = this.rows("bluesky_campaign_quota_reservations").find(
+      (r) =>
+        r.id === args.p_reservation_id &&
+        r.workspace_id === args.p_workspace_id,
+    );
+    if (!reservation) return answer(false, false, "unknown_reservation");
+
+    const ledger = this.rows("bluesky_campaign_attempt_ledger");
+    const existing = ledger.find(
+      (l) =>
+        l.reservation_id === args.p_reservation_id &&
+        l.member_id === args.p_member_id,
+    );
+    if (existing?.provider_intent_at) return answer(false, true, null);
+    if (num(reservation.reserved_count) <= 0) {
+      return answer(false, false, "reservation_exhausted");
+    }
+
+    const now = new Date(this.nowMs()).toISOString();
+    if (existing) {
+      existing.provider_intent_at = now;
+      existing.action_id = args.p_action_id ?? existing.action_id;
+    } else {
+      ledger.push({
+        id: this.nextId("ledger"),
+        workspace_id: reservation.workspace_id,
+        campaign_id: reservation.campaign_id,
+        run_id: reservation.run_id,
+        operator_account_id: reservation.operator_account_id,
+        usage_date: reservation.usage_date,
+        reservation_id: args.p_reservation_id,
+        member_id: args.p_member_id,
+        action_id: args.p_action_id ?? null,
+        provider_intent_at: now,
+        counted_at: null,
+      });
+    }
+
+    reservation.reserved_count = num(reservation.reserved_count) - 1;
+
+    const run = this.rows("bluesky_follow_campaign_runs").find(
+      (r) => r.id === reservation.run_id,
+    );
+    if (run) {
+      run.attempted_count = num(run.attempted_count) + 1;
+      run.reserved_count = Math.max(num(run.reserved_count) - 1, 0);
+    }
+    const usage = this.rows("bluesky_identity_daily_usage").find(
+      (u) =>
+        u.workspace_id === reservation.workspace_id &&
+        u.operator_account_id === reservation.operator_account_id &&
+        u.usage_date === reservation.usage_date,
+    );
+    if (usage) {
+      usage.attempts_made = num(usage.attempts_made) + 1;
+      usage.reserved_count = Math.max(num(usage.reserved_count) - 1, 0);
+    }
+    return answer(true, false, null);
+  }
+
+  /**
    * Mirrors sweep_bluesky_quota_reservations.
    *
-   * A lapsed reservation returns its quota ONLY when no follow could
-   * have been issued under it. If any member it paid for has an action
-   * still marked in-flight, a createRecord may already have reached a
-   * real person, so the quota stays consumed (`held`) until
-   * reconciliation resolves it.
+   * Fold first, then release what is LEFT — which is only ever units
+   * that never reached provider intent, because every unit that did was
+   * taken off the reservation at that moment.
    */
   private sweepReservations(
     workspaceId: string,
@@ -518,93 +729,84 @@ export class FakeDb {
     usageDate: string,
   ): void {
     const now = this.nowMs();
-    const members = this.rows("bluesky_follow_campaign_members");
-    const actions = this.rows("bluesky_relationship_actions");
-
-    const maybeMutated = (reservationId: unknown): boolean =>
-      members
-        .filter((m) => m.reservation_id === reservationId)
-        .some((m) =>
-          actions.some(
-            (a) =>
-              a.campaign_member_id === m.id &&
-              a.provider_in_flight_at !== null &&
-              a.provider_in_flight_at !== undefined &&
-              !["succeeded", "failed", "skipped"].includes(String(a.status)),
-          ),
-        );
-
     for (const r of this.rows("bluesky_campaign_quota_reservations")) {
       if (
         r.workspace_id !== workspaceId ||
         r.operator_account_id !== operatorAccountId ||
-        r.usage_date !== usageDate
+        r.usage_date !== usageDate ||
+        r.status !== "open" ||
+        new Date(String(r.expires_at)).getTime() >= now
       ) {
         continue;
       }
-      if (
-        r.status === "open" &&
-        new Date(String(r.expires_at)).getTime() < now
-      ) {
-        r.status = maybeMutated(r.id) ? "held" : "expired";
-      } else if (r.status === "held" && !maybeMutated(r.id)) {
-        r.status = "expired";
-      }
+      this.foldLedger(String(r.id));
+      r.status = "expired";
+      r.reserved_count = 0;
     }
   }
 
   /**
-   * Mirrors apply_bluesky_run_outcome: counter DELTAS, and settlement
-   * of ONE named reservation, exactly once.
+   * Mirrors apply_bluesky_run_outcome: fold the ledger, validate the
+   * WHOLE tenant tuple, settle exactly once.
    */
   private applyRunOutcome(args: Record<string, unknown>): QueryResult {
-    const n = (v: unknown) => Math.max(Number(v ?? 0), 0);
     const run = this.rows("bluesky_follow_campaign_runs").find(
       (r) => r.id === args.p_run_id && r.workspace_id === args.p_workspace_id,
     );
-    if (!run) {
-      return { data: [{ settled: false, already_settled: false }], error: null };
-    }
 
-    const snapshot = (settled: boolean, alreadySettled: boolean) => ({
+    const answer = (
+      settled: boolean,
+      alreadySettled: boolean,
+      reason: string | null,
+    ): QueryResult => ({
       data: [
         {
           settled,
           already_settled: alreadySettled,
-          out_run_id: run.id,
-          out_attempted: run.attempted_count,
-          out_succeeded: run.succeeded_count,
-          out_reserved: run.reserved_count,
+          refused_reason: reason,
+          out_run_id: run?.id ?? null,
+          out_attempted: run ? num(run.attempted_count) : 0,
+          out_succeeded: run ? num(run.succeeded_count) : 0,
+          out_reserved: run ? num(run.reserved_count) : 0,
         },
       ],
       error: null,
     });
 
+    if (!run) return answer(false, false, "unknown_run");
+
     const reservation = this.rows("bluesky_campaign_quota_reservations").find(
       (r) => r.id === args.p_reservation_id,
     );
 
-    // OWNERSHIP: a reservation belonging to another run settles nothing.
-    if (
-      !reservation ||
-      reservation.run_id !== args.p_run_id ||
-      reservation.workspace_id !== args.p_workspace_id
-    ) {
-      return snapshot(false, false);
+    // Each of these is a DISTINCT budget. Checking only the run left a
+    // reservation from another workspace, campaign, identity or day
+    // able to settle against this one.
+    if (!reservation) return answer(false, false, "unknown_reservation");
+    if (reservation.workspace_id !== args.p_workspace_id) {
+      return answer(false, false, "workspace_mismatch");
     }
-    // IDEMPOTENCE: a duplicate settlement applies nothing twice.
-    if (reservation.status === "settled") return snapshot(false, true);
+    if (reservation.campaign_id !== args.p_campaign_id) {
+      return answer(false, false, "campaign_mismatch");
+    }
+    if (reservation.run_id !== args.p_run_id) {
+      return answer(false, false, "run_mismatch");
+    }
+    if (reservation.operator_account_id !== args.p_operator_account_id) {
+      return answer(false, false, "identity_mismatch");
+    }
+    if (reservation.usage_date !== args.p_usage_date) {
+      return answer(false, false, "usage_date_mismatch");
+    }
+    if (reservation.status === "settled") return answer(false, true, null);
+
+    this.foldLedger(String(reservation.id));
 
     reservation.status = "settled";
     reservation.settled_at = new Date(this.nowMs()).toISOString();
+    reservation.reserved_count = 0;
 
-    run.attempted_count = Number(run.attempted_count ?? 0) + n(args.p_attempted);
-    run.succeeded_count = Number(run.succeeded_count ?? 0) + n(args.p_succeeded);
-    run.already_following_count =
-      Number(run.already_following_count ?? 0) + n(args.p_already_following);
-    run.skipped_count = Number(run.skipped_count ?? 0) + n(args.p_skipped);
-    run.failed_count = Number(run.failed_count ?? 0) + n(args.p_failed);
-    run.consecutive_failures = n(args.p_consecutive_failures);
+    run.consecutive_failures = num(args.p_consecutive_failures);
     if (args.p_rate_limited_until) {
       run.rate_limited_until = args.p_rate_limited_until;
       run.status = "rate_limited";
@@ -615,28 +817,23 @@ export class FakeDb {
     ) {
       run.rate_limit_remaining = args.p_rate_limit_remaining;
     }
-    if (args.p_rate_limit_reset_at) run.rate_limit_reset_at = args.p_rate_limit_reset_at;
+    if (args.p_rate_limit_reset_at) {
+      run.rate_limit_reset_at = args.p_rate_limit_reset_at;
+    }
     run.last_chunk_at = new Date(this.nowMs()).toISOString();
 
+    const open = this.rows("bluesky_campaign_quota_reservations").filter(
+      (r) => r.status === "open" || r.status === "held",
+    );
+    run.reserved_count = open
+      .filter((r) => r.run_id === args.p_run_id)
+      .reduce((sum, r) => sum + num(r.reserved_count), 0);
     const usage = this.rows("bluesky_identity_daily_usage").find(
       (u) =>
         u.workspace_id === args.p_workspace_id &&
         u.operator_account_id === args.p_operator_account_id &&
         u.usage_date === args.p_usage_date,
     );
-    if (usage) {
-      usage.follows_created =
-        Number(usage.follows_created ?? 0) + n(args.p_records_created);
-      usage.attempts_made = Number(usage.attempts_made ?? 0) + n(args.p_attempted);
-    }
-
-    // Caches recomputed from the rows that own the quota.
-    const open = this.rows("bluesky_campaign_quota_reservations").filter(
-      (r) => r.status === "open" || r.status === "held",
-    );
-    run.reserved_count = open
-      .filter((r) => r.run_id === args.p_run_id)
-      .reduce((sum, r) => sum + Number(r.reserved_count ?? 0), 0);
     if (usage) {
       usage.reserved_count = open
         .filter(
@@ -645,10 +842,10 @@ export class FakeDb {
             r.operator_account_id === args.p_operator_account_id &&
             r.usage_date === args.p_usage_date,
         )
-        .reduce((sum, r) => sum + Number(r.reserved_count ?? 0), 0);
+        .reduce((sum, r) => sum + num(r.reserved_count), 0);
     }
 
-    return snapshot(true, false);
+    return answer(true, false, null);
   }
 
   /** Mirrors acquire_bluesky_run_dispatch_lease. */

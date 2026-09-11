@@ -757,30 +757,25 @@ export interface ClaimedMember {
 }
 
 /**
- * Settle one reservation: apply outcome DELTAS and release its quota.
+ * Settle one reservation.
  *
- * Takes the reservation's ID rather than a count. A count was the
- * defect: it was subtracted from whatever `reserved_count` happened to
- * hold at that moment, so a worker that settled late could consume a
- * reservation another worker had just opened. Quoting the ID lets the
- * RPC verify ownership, apply the deltas exactly once, and treat a
- * duplicate settlement as a no-op.
+ * Deliberately takes NO chunk totals. It folds the attempt ledger —
+ * the rows the worker wrote as it went — so a chunk that ended in a
+ * crash and one that ended normally are recovered by the same path.
+ * Passing in-memory deltas was the defect: a worker that dies has no
+ * in-memory deltas, and its real attempts were simply lost.
  *
- * Never write absolute counters computed from a snapshot: the previous
- * code read the run at the start of a tick, added its chunk totals in
- * memory and wrote the result, which loses every concurrent increment.
+ * The whole tenant tuple is quoted so the RPC can verify it. Checking
+ * only the run left a reservation from another workspace, campaign,
+ * identity or usage date able to settle against this one — and every
+ * one of those is a different budget.
  */
 export async function applyRunOutcome(input: {
   workspaceId: string;
+  campaignId: string;
   runId: string;
   operatorAccountId: string;
   usageDate: string;
-  attempted: number;
-  succeeded: number;
-  alreadyFollowing: number;
-  skipped: number;
-  failed: number;
-  recordsCreated: number;
   reservationId: string;
   consecutiveFailures: number;
   rateLimitedUntil?: string | null;
@@ -792,16 +787,11 @@ export async function applyRunOutcome(input: {
     "apply_bluesky_run_outcome",
     {
       p_workspace_id: input.workspaceId,
+      p_campaign_id: input.campaignId,
       p_run_id: input.runId,
       p_operator_account_id: input.operatorAccountId,
       p_usage_date: input.usageDate,
       p_reservation_id: input.reservationId,
-      p_attempted: input.attempted,
-      p_succeeded: input.succeeded,
-      p_already_following: input.alreadyFollowing,
-      p_skipped: input.skipped,
-      p_failed: input.failed,
-      p_records_created: input.recordsCreated,
       p_consecutive_failures: input.consecutiveFailures,
       p_rate_limited_until: input.rateLimitedUntil ?? null,
       p_rate_limit_remaining: input.rateLimitRemaining ?? null,
@@ -813,6 +803,7 @@ export async function applyRunOutcome(input: {
     | {
         settled: boolean;
         already_settled: boolean;
+        refused_reason: string | null;
         out_run_id: string | null;
         out_attempted: number | null;
         out_succeeded: number | null;
@@ -823,17 +814,71 @@ export async function applyRunOutcome(input: {
   return {
     settled: row.settled === true,
     alreadySettled: row.already_settled === true,
+    refusedReason: row.refused_reason,
     attemptedCount: Number(row.out_attempted ?? 0),
     succeededCount: Number(row.out_succeeded ?? 0),
     reservedCount: Number(row.out_reserved ?? 0),
   };
 }
 
+/**
+ * Convert one reserved unit into a durable attempted unit.
+ *
+ * Called immediately BEFORE the provider mutation and nowhere else.
+ * After it returns, the quota is spent as far as every other worker is
+ * concerned — which is the property that survives this process being
+ * killed a millisecond later.
+ *
+ * Idempotent per (reservation, member). A `false` result with a reason
+ * means the mutation MUST NOT be sent.
+ */
+export async function consumeMemberQuota(input: {
+  workspaceId: string;
+  reservationId: string;
+  memberId: string;
+  actionId: string | null;
+  db?: Db;
+}): Promise<{
+  mayMutate: boolean;
+  alreadyConsumed: boolean;
+  refusedReason: string | null;
+}> {
+  const { data, error } = await client(input.db).rpc(
+    "consume_bluesky_member_quota",
+    {
+      p_workspace_id: input.workspaceId,
+      p_reservation_id: input.reservationId,
+      p_member_id: input.memberId,
+      p_action_id: input.actionId,
+    },
+  );
+  if (error) throw fromPostgres(error, "Could not reserve the attempt.");
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | {
+        consumed: boolean;
+        already_consumed: boolean;
+        refused_reason: string | null;
+      }
+    | undefined;
+  if (!row) {
+    return { mayMutate: false, alreadyConsumed: false, refusedReason: "no_result" };
+  }
+  return {
+    // An already-consumed unit still permits the mutation: this is the
+    // retry of a call whose response was lost, and the unit is paid for.
+    mayMutate: row.consumed === true || row.already_consumed === true,
+    alreadyConsumed: row.already_consumed === true,
+    refusedReason: row.refused_reason,
+  };
+}
+
 export interface SettlementResult {
-  /** True only when THIS call applied the deltas. */
+  /** True only when THIS call folded the ledger. */
   settled: boolean;
   /** True when the reservation had already been settled. */
   alreadySettled: boolean;
+  /** Which part of the tenant tuple disagreed, when it refused. */
+  refusedReason: string | null;
   attemptedCount: number;
   succeededCount: number;
   reservedCount: number;
@@ -849,6 +894,31 @@ export interface SettlementResult {
  * lock because the holder is a serverless function that can vanish
  * without releasing anything.
  */
+/**
+ * How many of this campaign's actions are still unresolved.
+ *
+ * An action that is neither succeeded, failed nor skipped describes a
+ * public mutation whose outcome we do not know. Reconciling it costs no
+ * quota, so a day whose allowance is spent should still come back for
+ * it rather than leaving the ambiguity standing until tomorrow.
+ */
+export async function countUnresolvedCampaignActions(input: {
+  workspaceId: string;
+  campaignId: string;
+  db?: Db;
+}): Promise<number> {
+  const { count, error } = await client(input.db)
+    .from("bluesky_relationship_actions")
+    .select("id", { count: "exact", head: true })
+    .eq("workspace_id", input.workspaceId)
+    .eq("campaign_id", input.campaignId)
+    .in("status", ["pending", "running", "reconciliation_required"]);
+  if (error) {
+    throw fromPostgres(error, "Could not count unresolved campaign actions.");
+  }
+  return count ?? 0;
+}
+
 export async function acquireDispatchLease(input: {
   workspaceId: string;
   runId: string;

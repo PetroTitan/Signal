@@ -230,24 +230,33 @@ describe("worker B reserving inside worker A's unsettled window", () => {
     const a = dispatch(db, p.impl, gate.client);
     await gate.reached;
 
-    // The window: A's members are all unleased, and the run counters
-    // are still zero because nothing has settled.
+    // The window: A's members are all unleased and A has not settled.
+    //
+    // The run counters are NOT zero here, and that is the fix. Quota is
+    // consumed at provider intent, one member at a time, so every
+    // follow A really made is already in `attempted_count` — settled or
+    // not, alive or not. When attempts were reported in bulk at
+    // settlement this read zero, and the day's remaining quota was
+    // computed from that zero.
     const leased = db
       .rows("bluesky_follow_campaign_members")
       .filter((m) => m.status === "claimed" || m.status === "running");
     const run = db.rows("bluesky_follow_campaign_runs")[0];
-    expect(Number(run.attempted_count)).toBe(0);
+    expect(Number(run.attempted_count)).toBeGreaterThan(0);
     expect(leased.length).toBeLessThan(20);
 
-    // The quota A is holding is owned by an OPEN reservation, which is
-    // the only thing that still says so.
+    // And every one of those units carries an immutable ledger stamp.
+    const intents = db
+      .rows("bluesky_campaign_attempt_ledger")
+      .filter((l) => l.provider_intent_at);
+    expect(intents.length).toBe(Number(run.attempted_count));
+
+    // A's reservation is still open, and what remains on it is only the
+    // units it has not spent yet.
     const open = db
       .rows("bluesky_campaign_quota_reservations")
       .filter((r) => r.status === "open");
     expect(open.length).toBeGreaterThan(0);
-    expect(
-      open.reduce((sum, r) => sum + Number(r.reserved_count), 0),
-    ).toBeGreaterThan(0);
 
     // Lapse A's dispatch lease so B genuinely proceeds.
     //
@@ -337,16 +346,11 @@ describe("worker B reserving inside worker A's unsettled window", () => {
 
     const replay = await db.client().rpc("apply_bluesky_run_outcome", {
       p_workspace_id: WS,
+      p_campaign_id: CAMPAIGN,
       p_run_id: run.id,
       p_operator_account_id: IDENTITY,
       p_usage_date: "2026-09-11",
       p_reservation_id: settled!.id,
-      p_attempted: 20,
-      p_succeeded: 20,
-      p_already_following: 0,
-      p_skipped: 0,
-      p_failed: 0,
-      p_records_created: 20,
       p_consecutive_failures: 0,
       p_rate_limited_until: null,
       p_rate_limit_remaining: null,
@@ -370,18 +374,13 @@ describe("worker B reserving inside worker A's unsettled window", () => {
 
     const foreign = await db.client().rpc("apply_bluesky_run_outcome", {
       p_workspace_id: WS,
+      p_campaign_id: CAMPAIGN,
       p_run_id: run.id,
       p_operator_account_id: IDENTITY,
       p_usage_date: "2026-09-11",
       // A reservation id that does not exist — stands in for one
       // belonging to a different run.
       p_reservation_id: "reservation-does-not-exist",
-      p_attempted: 50,
-      p_succeeded: 50,
-      p_already_following: 0,
-      p_skipped: 0,
-      p_failed: 0,
-      p_records_created: 50,
       p_consecutive_failures: 0,
       p_rate_limited_until: null,
       p_rate_limit_remaining: null,
