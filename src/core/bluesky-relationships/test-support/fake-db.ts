@@ -605,7 +605,31 @@ export class FakeDb {
     let skipped = 0;
 
     for (const row of pending) {
-      const action = actions.find((a) => a.campaign_member_id === row.member_id);
+      // The action this attempt actually paid for. Matching on
+      // member_id alone matched an older skipped attempt as well as the
+      // real one, and which of the two won was left to chance — the
+      // measured result recorded the SKIP and dropped the success.
+      //
+      // The legacy fallback, for rows written before the id was
+      // recorded, is explicit and totally ordered: a real attempt
+      // outranks a skip, then the most recent, then the id. It resolves
+      // to exactly one action or to none.
+      const action = row.action_id
+        ? actions.find((a) => a.id === row.action_id)
+        : actions
+            .filter(
+              (a) =>
+                a.campaign_member_id === row.member_id &&
+                a.campaign_id === row.campaign_id,
+            )
+            .sort((x, y) => {
+              const rank = (a: Row) => (a.status === "skipped" ? 1 : 0);
+              if (rank(x) !== rank(y)) return rank(x) - rank(y);
+              const t =
+                String(y.created_at ?? "").localeCompare(String(x.created_at ?? ""));
+              if (t !== 0) return t;
+              return String(x.id).localeCompare(String(y.id));
+            })[0];
       const status = action ? String(action.status) : null;
       if (status === "succeeded" && action?.follow_uri) succeeded += 1;
       else if (status === "succeeded") already += 1;
@@ -656,12 +680,43 @@ export class FakeDb {
       error: null,
     });
 
-    const reservation = this.rows("bluesky_campaign_quota_reservations").find(
+    const run = this.rows("bluesky_follow_campaign_runs").find(
       (r) =>
-        r.id === args.p_reservation_id &&
-        r.workspace_id === args.p_workspace_id,
+        r.id === args.p_run_id &&
+        r.workspace_id === args.p_workspace_id &&
+        r.campaign_id === args.p_campaign_id,
+    );
+    if (!run) return answer(false, false, "unknown_run");
+
+    const reservation = this.rows("bluesky_campaign_quota_reservations").find(
+      (r) => r.id === args.p_reservation_id,
     );
     if (!reservation) return answer(false, false, "unknown_reservation");
+    if (reservation.workspace_id !== args.p_workspace_id) {
+      return answer(false, false, "workspace_mismatch");
+    }
+    if (reservation.campaign_id !== args.p_campaign_id) {
+      return answer(false, false, "campaign_mismatch");
+    }
+    if (reservation.run_id !== args.p_run_id) {
+      return answer(false, false, "run_mismatch");
+    }
+    if (reservation.operator_account_id !== args.p_operator_account_id) {
+      return answer(false, false, "identity_mismatch");
+    }
+    // A settled or expired reservation cannot fund anything: its quota
+    // has already been accounted for and returned.
+    if (reservation.status !== "open") {
+      return answer(false, false, `reservation_${String(reservation.status)}`);
+    }
+
+    const member = this.rows("bluesky_follow_campaign_members").find(
+      (m) =>
+        m.id === args.p_member_id &&
+        m.workspace_id === args.p_workspace_id &&
+        m.campaign_id === args.p_campaign_id,
+    );
+    if (!member) return answer(false, false, "member_mismatch");
 
     const ledger = this.rows("bluesky_campaign_attempt_ledger");
     const existing = ledger.find(
@@ -674,10 +729,31 @@ export class FakeDb {
       return answer(false, false, "reservation_exhausted");
     }
 
+    const action = this.rows("bluesky_relationship_actions").find(
+      (a) => a.id === args.p_action_id,
+    );
+    if (!action) return answer(false, false, "unknown_action");
+    if (
+      action.workspace_id !== args.p_workspace_id ||
+      action.campaign_id !== args.p_campaign_id ||
+      action.campaign_member_id !== args.p_member_id
+    ) {
+      return answer(false, false, "action_mismatch");
+    }
+    if (
+      ["succeeded", "failed", "reconciliation_required"].includes(
+        String(action.status),
+      )
+    ) {
+      return answer(false, false, "action_terminal");
+    }
+
+    // Everything below is one transaction: both markers, both counters
+    // and the reservation move together or not at all.
     const now = new Date(this.nowMs()).toISOString();
     if (existing) {
       existing.provider_intent_at = now;
-      existing.action_id = args.p_action_id ?? existing.action_id;
+      existing.action_id = args.p_action_id;
     } else {
       ledger.push({
         id: this.nextId("ledger"),
@@ -688,21 +764,21 @@ export class FakeDb {
         usage_date: reservation.usage_date,
         reservation_id: args.p_reservation_id,
         member_id: args.p_member_id,
-        action_id: args.p_action_id ?? null,
+        action_id: args.p_action_id,
         provider_intent_at: now,
         counted_at: null,
       });
     }
 
-    reservation.reserved_count = num(reservation.reserved_count) - 1;
+    // The marker goes up HERE, one statement before the request, so it
+    // can never describe a mutation that was not attempted.
+    action.provider_in_flight_at = now;
+    action.started_at = action.started_at ?? now;
 
-    const run = this.rows("bluesky_follow_campaign_runs").find(
-      (r) => r.id === reservation.run_id,
-    );
-    if (run) {
-      run.attempted_count = num(run.attempted_count) + 1;
-      run.reserved_count = Math.max(num(run.reserved_count) - 1, 0);
-    }
+    reservation.reserved_count = num(reservation.reserved_count) - 1;
+    run.attempted_count = num(run.attempted_count) + 1;
+    run.reserved_count = Math.max(num(run.reserved_count) - 1, 0);
+
     const usage = this.rows("bluesky_identity_daily_usage").find(
       (u) =>
         u.workspace_id === reservation.workspace_id &&
@@ -899,14 +975,20 @@ export class FakeDb {
         String(existing.status),
       );
       if (!terminal) existing.status = "running";
+      // The MARKER decides whether this is reconciliation-only, not the
+      // status. A row sitting at `running` because a previous worker
+      // claimed it and died before spending its unit has nothing to
+      // reconcile — nothing was ever sent — and the member is still
+      // owed its first attempt.
+      const inFlight =
+        existing.provider_in_flight_at !== null &&
+        existing.provider_in_flight_at !== undefined;
       return {
         data: [
           {
             action_id: existing.id,
-            may_mutate: false,
-            // A row that is not terminal may have had a createRecord
-            // issued before its worker died. Reconcile, never re-send.
-            needs_reconcile: !terminal,
+            may_mutate: !terminal && !inFlight,
+            needs_reconcile: !terminal && inFlight,
             terminal,
             existing_status: existing.status,
           },
@@ -933,8 +1015,12 @@ export class FakeDb {
       campaign_id: args.p_campaign_id,
       campaign_run_id: args.p_run_id,
       campaign_member_id: args.p_member_id,
-      provider_in_flight_at: new Date().toISOString(),
-      started_at: new Date().toISOString(),
+      // NOT in flight. Creating the audit row says "this worker intends
+      // to handle this member", not "a request is in flight" — and
+      // conflating the two silenced members that were never touched.
+      // The marker goes up in `consume`, one statement before the call.
+      provider_in_flight_at: null,
+      started_at: new Date(this.nowMs()).toISOString(),
       requested_at: new Date().toISOString(),
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),

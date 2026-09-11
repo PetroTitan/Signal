@@ -829,14 +829,29 @@ export async function applyRunOutcome(input: {
  * concerned — which is the property that survives this process being
  * killed a millisecond later.
  *
+ * It also raises the audit row's in-flight marker, in the SAME
+ * transaction. The marker used to go up when the audit row was created,
+ * which described a request that had not been made: a worker that died
+ * before this point left the member permanently in reconciliation-only
+ * mode, and it was never followed at all.
+ *
+ * So the two halves of "an attempt was made" now commit together. A
+ * failure before this returns leaves the member safe to retry from
+ * scratch; a failure after it leaves the member reconciliation-only.
+ * There is no state in between.
+ *
  * Idempotent per (reservation, member). A `false` result with a reason
  * means the mutation MUST NOT be sent.
  */
 export async function consumeMemberQuota(input: {
   workspaceId: string;
+  campaignId: string;
+  runId: string;
   reservationId: string;
   memberId: string;
-  actionId: string | null;
+  /** The exact action this attempt is for. Required, and verified. */
+  actionId: string;
+  operatorAccountId: string;
   db?: Db;
 }): Promise<{
   mayMutate: boolean;
@@ -847,9 +862,12 @@ export async function consumeMemberQuota(input: {
     "consume_bluesky_member_quota",
     {
       p_workspace_id: input.workspaceId,
+      p_campaign_id: input.campaignId,
+      p_run_id: input.runId,
       p_reservation_id: input.reservationId,
       p_member_id: input.memberId,
       p_action_id: input.actionId,
+      p_operator_account_id: input.operatorAccountId,
     },
   );
   if (error) throw fromPostgres(error, "Could not reserve the attempt.");

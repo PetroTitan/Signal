@@ -63,6 +63,8 @@ describe("the migration chain applies for real", () => {
       "sweep_bluesky_quota_reservations",
       "acquire_bluesky_run_dispatch_lease",
       "release_bluesky_run_dispatch_lease",
+      "consume_bluesky_member_quota",
+      "fold_bluesky_ledger_outcomes",
       "apply_bluesky_run_outcome",
       "claim_bluesky_campaign_action",
       "resume_bluesky_campaign_run",
@@ -115,6 +117,8 @@ describe("RPC EXECUTE — the defect that made the feature inert", () => {
     "apply_bluesky_run_outcome",
     "claim_bluesky_campaign_action",
     "resume_bluesky_campaign_run",
+    "consume_bluesky_member_quota",
+    "fold_bluesky_ledger_outcomes",
   ];
 
   it("service_role can EXECUTE every worker RPC", async () => {

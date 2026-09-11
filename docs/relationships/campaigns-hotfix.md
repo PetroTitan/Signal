@@ -247,6 +247,64 @@ every five minutes until midnight, reserving nothing each time.
 `run_not_running`, …), and the caller acts on the reason rather than on
 a pre-loop number.
 
+### 6d. A crash before anything was sent silenced the member forever
+
+`claim_bluesky_campaign_action` stamped `provider_in_flight_at` when it
+CREATED the audit row — before the quota call, before the session,
+before any request existed. If the worker then died, the marker said "a
+mutation may be in flight" about a mutation that had never been
+attempted, and every later pass entered reconciliation-only mode and
+refused to send.
+
+Zero `createRecord` calls, forever, for a member whose first attempt had
+not yet happened. The profile is simply never followed, and nothing in
+the UI says so.
+
+The marker now goes up inside the same transaction that spends the
+quota unit, one statement before the provider call, and
+`needs_reconcile` is decided by the marker rather than by the row's
+status. So a failure **before** that transaction commits leaves the
+member safe to retry from scratch, and a failure **after** it leaves the
+member reconciliation-only. There is no state in between.
+
+### 6e. The quota functions could deadlock each other
+
+`reserve` and `apply_bluesky_run_outcome` locked identity usage first
+and the reservation later. `consume` locked the reservation first and
+identity usage later. Two backends doing ordinary work on the same
+identity formed a cycle and PostgreSQL killed one of them with
+**"deadlock detected"** — reproduced on a real server with two sessions
+and controlled blocking, not theorised.
+
+One global order now applies to `reserve`, `consume`, settlement, the
+sweep and folding:
+
+```
+identity usage → run → reservation → ledger → action
+```
+
+Re-acquiring a lock already held is free, so functions that call each
+other stay consistent by construction.
+
+### 6f. Folding read the wrong action
+
+`fold_bluesky_ledger_outcomes` joined actions on `member_id` alone. A
+member may legitimately have more than one action row — the unique index
+only forbids a second NON-skipped one — so an earlier skipped attempt
+plus a later successful one matched twice. One attempt produced two
+outcomes, and which one won was whatever the planner picked: the
+measured result recorded the **skip** and dropped the success.
+
+The ledger already records which action it paid for, and is now joined
+by that id. The legacy fallback for rows written before the id was
+recorded is a `LATERAL` with an explicit total order and `limit 1`, so
+it resolves to exactly one action or to none and can never fan a ledger
+row out into two outcomes.
+
+`action_id` is immutable once provider intent is stamped, along with the
+ledger's ownership columns — otherwise the outcome could be rewritten
+after the fact by repointing the row.
+
 ### 7. Stale production claims
 
 Corrected; see section 1.
@@ -324,6 +382,7 @@ for the wrong reason:
 | Crash after provider success → zero further mutations | `crash-recovery.test.ts` (7) |
 | Same-day 429 recovery | `rate-limit-recovery.test.ts` (7) |
 | Crash between per-member work and settlement | `crash-accounting.pg.test.ts` (9, real Postgres) |
+| Crash BEFORE provider intent; lock order; exact-action folding | `intent-and-locking.pg.test.ts` (6, real Postgres) + `crash-recovery.test.ts` |
 | Two REAL sessions contending for one quota | `two-session-concurrency.pg.test.ts` (7) |
 | Deterministic A-reserves / A-unsettled / B-reserves interleaving | `reservation-interleaving.test.ts` (9) |
 | Three passes over an unconfirmable follow | `reconciliation-terminal.test.ts` (5) |
@@ -338,15 +397,57 @@ to test anything.
 
 ## 4. Deployment order
 
-The migration must be applied **before** this code is deployed. It is
-additive, idempotent and forward-only, but the code depends on the new
-RPCs and on the `service_role` grants.
+There are **three** migrations now, and which of them a given database
+has already run changes the order of operations. Both states are covered
+below; check which one applies before doing anything.
 
-Applying the migration to a deployment still running `d955e88` is safe
-on its own: it only adds columns, functions, constraints and grants. It
-would in fact make the *currently deployed* feature able to run for the
-first time — which is a reason to apply it and deploy together rather
-than leaving a window where the old dispatcher can suddenly claim
-members without the reservation logic.
+| Migration | What it is |
+| --- | --- |
+| `20260911000003` | RPC grants, tenant FKs, kill switch, RLS, 429 recovery |
+| `20260911000004` | Durable reservation ownership, per-member quota consumption |
+| `20260911000005` | Provider intent, one lock order, exact-action folding |
 
-Neither step has been performed.
+They are cumulative and must be applied **in order**. Each is additive
+and idempotent, and `005` assumes `003` and `004` have run.
+
+### State A — `003` and `004` are NOT yet applied
+
+Deploy the compatible code **first**, then apply `003 + 004 + 005`
+together.
+
+The reason is specific: `003` contains the `service_role` grants that
+make the worker RPCs callable at all. Applying it to a deployment
+running older dispatcher code would make that older code able to claim
+members for the first time — without the reservation logic, without
+per-member consumption, and without any of the three fixes in `005`.
+Code first, then all three migrations in one step.
+
+### State B — `003` and `004` ARE already applied
+
+Apply `005` **before activating any campaign**.
+
+In this state the deployed system can already claim members, and it
+carries all three defects `005` repairs:
+
+- a worker that dies before its quota transaction commits leaves the
+  member marked in-flight and it is **never followed at all**;
+- two backends doing ordinary work on one identity can deadlock;
+- folding can attribute the wrong outcome to an attempt.
+
+None of these damage data at rest, and none can be triggered while no
+campaign is active — which is why "before activating any campaign" is
+the boundary. If a campaign is already active, pause it, apply `005`,
+deploy, then resume.
+
+### Either way
+
+Nothing here has been applied to production, and no campaign has been
+activated. `005` has been executed only against real PostgreSQL in the
+test harnesses.
+
+One consequence to know rather than discover: `003` cannot be replayed
+after `004`, and `004`'s `consume_bluesky_member_quota` is dropped by
+`005`. A migration runner applies each file once, in order, and never
+rewinds, so this is correct — but it means the idempotency gate asserts
+that the migration at the HEAD of the chain replays cleanly, not that
+every file does.

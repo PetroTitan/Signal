@@ -225,6 +225,120 @@ function crashAfterProviderSuccess(db: FakeDb, killOnCall: number) {
   return { impl, calls, client };
 }
 
+/**
+ * A worker that dies BEFORE the quota transaction commits.
+ *
+ * The audit row exists, because claiming it is the first thing the
+ * worker does. Nothing else does — no unit spent, no marker raised, no
+ * request sent.
+ */
+function crashBeforeProviderIntent(db: FakeDb) {
+  const calls = { createRecord: 0, relationships: 0 };
+  const real = db.client();
+
+  const impl = (async (url: string) => {
+    if (url.includes("createRecord")) {
+      calls.createRecord += 1;
+      return json({ uri: `at://${ACTOR}/app.bsky.graph.follow/3ok`, cid: "c" });
+    }
+    if (url.includes("getRelationships")) {
+      calls.relationships += 1;
+      const others = new URL(url).searchParams.getAll("others");
+      return json({ actor: ACTOR, relationships: others.map((d) => ({ did: d })) });
+    }
+    return json({});
+  }) as unknown as typeof fetch;
+
+  const client = {
+    from: real.from.bind(real),
+    rpc: (async (fn: string, args: Record<string, unknown>) => {
+      if (fn === "consume_bluesky_member_quota") {
+        throw new Error("process terminated before provider intent");
+      }
+      return real.rpc(fn, args);
+    }) as unknown as typeof real.rpc,
+  } as unknown as ReturnType<FakeDb["client"]>;
+
+  return { impl, calls, client };
+}
+
+describe("a crash BEFORE provider intent", () => {
+  it("the next worker sends exactly ONE first createRecord", async () => {
+    // Nothing was sent, so the member is still owed its first attempt.
+    //
+    // The audit row used to be stamped in-flight the moment it was
+    // created, which made every later pass read "a mutation may have
+    // been issued" about a request that had never been made. The member
+    // was never followed at all, silently, for the life of the
+    // campaign: zero calls, forever.
+    const db = new FakeDb();
+    seed(db, 1, { requested_daily_quota: 100 });
+
+    const first = crashBeforeProviderIntent(db);
+    await dispatchWith(db, first.client, first.impl);
+    expect(first.calls.createRecord).toBe(0);
+
+    // The audit row exists and must NOT claim anything is in flight.
+    const action = db.rows("bluesky_relationship_actions")[0];
+    expect(action).toBeTruthy();
+    expect(action.provider_in_flight_at ?? null).toBeNull();
+    // And no unit was spent.
+    expect(
+      db.rows("bluesky_campaign_attempt_ledger").filter((l) => l.provider_intent_at),
+    ).toEqual([]);
+    expect(Number(db.rows("bluesky_follow_campaign_runs")[0].attempted_count)).toBe(0);
+
+    simulateProcessDeath(db);
+
+    const second = healthyProvider();
+    await dispatch(db, second.impl);
+
+    // THE assertion. Exactly one, not zero and not two.
+    expect(second.calls.createRecord).toBe(1);
+    expect(db.rows("bluesky_follow_campaign_members")[0].status).toBe("succeeded");
+  });
+
+  it("a member left mid-claim is retried, not reconciled", async () => {
+    const db = new FakeDb();
+    seed(db, 5, { requested_daily_quota: 100 });
+
+    const first = crashBeforeProviderIntent(db);
+    await dispatchWith(db, first.client, first.impl);
+    simulateProcessDeath(db);
+
+    const second = healthyProvider();
+    await dispatch(db, second.impl);
+
+    // Every member gets its one attempt.
+    expect(second.calls.createRecord).toBe(5);
+    const actions = db.rows("bluesky_relationship_actions");
+    expect(actions).toHaveLength(5);
+    for (const a of actions) {
+      expect(a.status).toBe("succeeded");
+      expect(a.provider_in_flight_at).toBeNull();
+    }
+  });
+
+  it("but a crash AFTER intent is still reconciliation-only", async () => {
+    // The line between the two cases is the quota transaction, and it
+    // has to hold from both sides.
+    const db = new FakeDb();
+    seed(db, 1, { requested_daily_quota: 100 });
+
+    const first = crashAfterProviderSuccess(db, 1);
+    await dispatchWith(db, first.client, first.impl);
+    expect(first.calls.createRecord).toBe(1);
+    expect(db.rows("bluesky_relationship_actions")[0].provider_in_flight_at)
+      .toBeTruthy();
+
+    simulateProcessDeath(db);
+    const second = healthyProvider();
+    await dispatch(db, second.impl);
+
+    expect(second.calls.createRecord).toBe(0);
+  });
+});
+
 describe("a crash after provider success is never retried", () => {
   it("the second worker performs ZERO additional Follow mutations", async () => {
     const db = new FakeDb();
