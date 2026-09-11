@@ -320,7 +320,7 @@ export async function resolveActiveAuthorization(input: {
  *
  * Unlike `active`, `paused` is NOT constrained to one row per
  * workspace — `weekly_contracts_one_active_per_workspace`
- * (20260522040001:91) is a partial unique index `where status =
+ * (20260522161241:91) is a partial unique index `where status =
  * 'active'`. Several paused envelopes can therefore coexist, so this
  * returns a list and orders it so the classification is stable.
  */

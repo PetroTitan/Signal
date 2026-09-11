@@ -2,7 +2,7 @@
  * Phase E2 — Execution Engine canonical types.
  *
  * Mirrors the CHECK constraints in
- *   supabase/migrations/20260522050001_phase_e2_execution_schema.sql
+ *   supabase/migrations/20260522164341_phase_e2_execution_schema.sql
  *
  * The action types come from the weekly contract's allowed-action
  * vocabulary plus a few dry-run-only variants the engine uses to

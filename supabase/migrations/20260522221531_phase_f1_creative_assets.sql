@@ -57,6 +57,8 @@ create index if not exists weekly_plan_item_creatives_item_idx
 create index if not exists weekly_plan_item_creatives_workspace_status_idx
   on public.weekly_plan_item_creatives (workspace_id, status);
 
+drop trigger if exists weekly_plan_item_creatives_touch_updated_at
+  on public.weekly_plan_item_creatives;
 create trigger weekly_plan_item_creatives_touch_updated_at
   before update on public.weekly_plan_item_creatives
   for each row execute function public.touch_updated_at();

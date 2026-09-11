@@ -2,7 +2,7 @@
  * Phase E3 — OAuth connection types.
  *
  * The vocabulary mirrors the CHECK constraints in
- *   supabase/migrations/20260522060001_phase_e3_platform_connections.sql
+ *   supabase/migrations/20260522170102_phase_e3_platform_connections.sql
  *
  * `OAuthPlatform` only covers the three social publishing surfaces
  * we model OAuth for: Reddit, X, LinkedIn. Google search-console

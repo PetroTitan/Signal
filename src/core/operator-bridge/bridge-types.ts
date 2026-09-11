@@ -2,7 +2,7 @@
  * Phase E2.8 — Operator bridge canonical types.
  *
  * Mirrors the CHECK constraints in
- *   supabase/migrations/20260522080001_phase_e2_8_operator_bridge.sql
+ *   supabase/migrations/20260522181820_phase_e2_8_operator_bridge.sql
  */
 
 import type {

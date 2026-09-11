@@ -12,7 +12,7 @@
 -- dry-run only until a separate phase wires real platform adapters.
 --
 -- Every table is workspace-scoped and references public.workspaces(id)
--- on delete cascade. RLS lives in 20260522050002_phase_e2_execution_rls.sql.
+-- on delete cascade. RLS lives in 20260522164423_phase_e2_execution_rls.sql.
 
 set search_path = public;
 

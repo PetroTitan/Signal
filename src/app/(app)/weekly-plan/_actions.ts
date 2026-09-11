@@ -1782,7 +1782,7 @@ export async function cancelApprovalAction(
 //
 // Every one of those transitions is already legal in the state machine
 // (execution-state-machine.ts ITEM_TRANSITIONS), and the status value is
-// already in the DB CHECK (migration 20260523000004). No migration.
+// already in the DB CHECK (migration 20260523104938). No migration.
 //
 // CRITICAL — the item is never `scheduled`. The scheduler tick selects
 // `.eq("status", "scheduled")`, so a row parked at

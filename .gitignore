@@ -31,6 +31,10 @@ yarn-error.log*
 # vercel
 .vercel
 
+# Supabase CLI project-link metadata (keep the pinned CLI version file)
+/supabase/.temp/*
+!/supabase/.temp/cli-latest
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

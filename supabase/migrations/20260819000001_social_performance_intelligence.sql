@@ -36,7 +36,7 @@ set search_path = public;
 --   unknown   attribution genuinely undetermined; never a guess
 --
 -- The constraint is named `publish_history_mode_check` (auto-generated
--- from the inline column check in 20260523000004, verified against the
+-- from the inline column check in 20260523104938, verified against the
 -- live catalogue before this migration was written). `if exists` would
 -- silently no-op on a name mismatch and leave the OLD narrow constraint
 -- in force, so the drop is unconditional and will fail loudly instead.
