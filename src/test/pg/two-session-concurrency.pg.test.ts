@@ -95,6 +95,39 @@ const reserve = (
 const granted = (rows: { member_id: string | null }[]) =>
   rows.filter((r) => r.member_id !== null).length;
 
+
+/**
+ * Claim the audit row and spend the unit, exactly as the worker does.
+ *
+ * `consume` requires the action it is about: the marker it raises says
+ * "a request for THIS action is in flight", and an attempt that cannot
+ * name its action cannot raise it.
+ */
+async function spendOne(
+  db: { query: typeof h.admin.query },
+  campaignId: string,
+  runId: string,
+  reservationId: string,
+  memberId: string,
+): Promise<void> {
+  const claim = await db.query<{ action_id: string }>(
+    `select * from public.claim_bluesky_campaign_action(
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [
+      t.workspaceId, campaignId, runId, memberId, t.identityId,
+      `did:plc:${memberId.slice(0, 8)}`, "h.test", "did:plc:actor",
+      "actor.test", null,
+    ],
+  );
+  await db.query(
+    `select * from public.consume_bluesky_member_quota($1,$2,$3,$4,$5,$6,$7)`,
+    [
+      t.workspaceId, campaignId, runId, reservationId, memberId,
+      claim.rows[0].action_id, t.identityId,
+    ],
+  );
+}
+
 describe("two backends, one quota", () => {
   it("the second session BLOCKS on the first's row lock", async () => {
     // The premise everything else rests on. If this does not block, the
@@ -243,10 +276,7 @@ describe("two backends, one quota", () => {
     // Spend every unit first, the way the worker does — one member at
     // a time, immediately before its mutation.
     for (const row of r.rows.filter((x) => x.member_id)) {
-      await a.query(
-        `select * from public.consume_bluesky_member_quota($1,$2,$3,null)`,
-        [t.workspaceId, reservationId, row.member_id],
-      );
+      await spendOne(a, campaignId, runId, reservationId, row.member_id!);
     }
 
     const sessions = await Promise.all([h.connect(), h.connect(), h.connect()]);
@@ -284,10 +314,7 @@ describe("two backends, one quota", () => {
     // leases, WITHOUT settling — the exact window the old lease-derived
     // accounting misread.
     for (const row of ra.rows.filter((x) => x.member_id)) {
-      await a.query(
-        `select * from public.consume_bluesky_member_quota($1,$2,$3,null)`,
-        [t.workspaceId, aRes, row.member_id],
-      );
+      await spendOne(a, campaignId, runId, aRes, row.member_id!);
     }
     await h.admin.query(
       `update public.bluesky_follow_campaign_members

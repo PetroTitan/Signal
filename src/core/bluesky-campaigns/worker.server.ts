@@ -538,9 +538,12 @@ async function attemptFollow(
   // those four recorded nowhere, and the sweep handed their quota back.
   const unit = await consumeMemberQuota({
     workspaceId: input.campaign.workspace_id,
+    campaignId: input.campaign.id,
+    runId: input.runId,
     reservationId: input.reservationId,
     memberId: member.id,
     actionId,
+    operatorAccountId: input.campaign.operator_account_id,
     db: input.db,
   });
 

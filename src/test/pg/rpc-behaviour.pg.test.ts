@@ -96,6 +96,39 @@ afterAll(async () => {
   await h?.close();
 });
 
+
+/**
+ * Claim the audit row and spend the unit, exactly as the worker does.
+ *
+ * `consume` requires the action it is about: the marker it raises says
+ * "a request for THIS action is in flight", and an attempt that cannot
+ * name its action cannot raise it.
+ */
+async function spendOne(
+  db: { query: typeof h.db.query },
+  campaignId: string,
+  runId: string,
+  reservationId: string,
+  memberId: string,
+): Promise<void> {
+  const claim = await db.query<{ action_id: string }>(
+    `select * from public.claim_bluesky_campaign_action(
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [
+      t.workspaceId, campaignId, runId, memberId, identityId,
+      `did:plc:${memberId.slice(0, 8)}`, "h.test", "did:plc:actor",
+      "actor.test", null,
+    ],
+  );
+  await db.query(
+    `select * from public.consume_bluesky_member_quota($1,$2,$3,$4,$5,$6,$7)`,
+    [
+      t.workspaceId, campaignId, runId, reservationId, memberId,
+      claim.rows[0].action_id, identityId,
+    ],
+  );
+}
+
 describe("reserve_bluesky_campaign_quota", () => {
   it("reserves and claims exactly the granted number", async () => {
     await freshCampaign(100, 100);
@@ -244,10 +277,7 @@ describe("reserve_bluesky_campaign_quota", () => {
 describe("apply_bluesky_run_outcome", () => {
   /** Spend one unit the way the worker does, just before a mutation. */
   const consume = (reservationId: string, memberId: string) =>
-    h.db.query<{ consumed: boolean }>(
-      `select * from public.consume_bluesky_member_quota($1,$2,$3,null)`,
-      [t.workspaceId, reservationId, memberId],
-    );
+    spendOne(h.db, campaignId, runId, reservationId, memberId);
 
   const settle = (reservationId: string) =>
     h.db.query<{ settled: boolean; already_settled: boolean }>(
@@ -372,6 +402,7 @@ describe("claim_bluesky_campaign_action", () => {
       [campaignId],
     );
     const first = await h.db.query<{
+      action_id: string;
       may_mutate: boolean;
       needs_reconcile: boolean;
       terminal: boolean;
@@ -385,20 +416,38 @@ describe("claim_bluesky_campaign_action", () => {
     );
     expect(first.rows[0].may_mutate).toBe(true);
 
-    // A second claim for the same member must NOT permit a mutation.
-    const second = await h.db.query<{
-      may_mutate: boolean;
-      needs_reconcile: boolean;
-    }>(
-      `select * from public.claim_bluesky_campaign_action(
-         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    const reclaim = () =>
+      h.db.query<{ may_mutate: boolean; needs_reconcile: boolean }>(
+        `select * from public.claim_bluesky_campaign_action(
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [
+          t.workspaceId, campaignId, runId, m.rows[0].id, identityId,
+          "did:plc:m1", "m1.bsky.social", "did:plc:actor", "actor.bsky.social",
+          null,
+        ],
+      );
+
+    // A second claim while nothing has been SENT still permits the
+    // mutation. This used to refuse, and refusing was the defect: a
+    // worker that claimed the row and died before spending its unit
+    // left the member permanently in reconciliation-only mode, so it
+    // was never followed at all.
+    const second = await reclaim();
+    expect(second.rows[0].may_mutate).toBe(true);
+    expect(second.rows[0].needs_reconcile).toBe(false);
+
+    // Once a unit is spent, the marker is up and the answer flips.
+    const res = await reserve(5, 5);
+    await h.db.query(
+      `select * from public.consume_bluesky_member_quota($1,$2,$3,$4,$5,$6,$7)`,
       [
-        t.workspaceId, campaignId, runId, m.rows[0].id, identityId,
-        "did:plc:m1", "m1.bsky.social", "did:plc:actor", "actor.bsky.social", null,
+        t.workspaceId, campaignId, runId, res.rows[0].reservation_id,
+        m.rows[0].id, first.rows[0].action_id, identityId,
       ],
     );
-    expect(second.rows[0].may_mutate).toBe(false);
-    expect(second.rows[0].needs_reconcile).toBe(true);
+    const third = await reclaim();
+    expect(third.rows[0].may_mutate).toBe(false);
+    expect(third.rows[0].needs_reconcile).toBe(true);
 
     const rows = await h.db.query<{ n: number }>(
       `select count(*)::int n from public.bluesky_relationship_actions

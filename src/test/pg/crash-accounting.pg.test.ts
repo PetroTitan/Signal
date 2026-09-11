@@ -120,8 +120,11 @@ async function workOneMember(
   // its own transaction. This is the whole point: a process killed on
   // the next line still leaves the day's books showing the attempt.
   const unit = await h.admin.query<{ consumed: boolean }>(
-    `select * from public.consume_bluesky_member_quota($1,$2,$3,$4)`,
-    [t.workspaceId, reservationId, memberId, actionId],
+    `select * from public.consume_bluesky_member_quota($1,$2,$3,$4,$5,$6,$7)`,
+    [
+      t.workspaceId, campaignId, runId, reservationId, memberId,
+      actionId, identityId,
+    ],
   );
   expect(unit.rows[0].consumed).toBe(true);
 
@@ -145,6 +148,41 @@ async function workOneMember(
       where id=$1`,
     [memberId],
   );
+}
+
+/**
+ * Claim the audit row and spend the unit, exactly as the worker does.
+ *
+ * `consume` requires the action it is about: the marker it raises says
+ * "a request for THIS action is in flight", and an attempt that cannot
+ * name its action cannot raise it.
+ */
+async function spendOne(
+  campaignId: string,
+  runId: string,
+  reservationId: string,
+  memberId: string,
+  subjectDid = "did:plc:m1",
+): Promise<{ consumed: boolean; refused_reason: string | null }> {
+  const claim = await h.admin.query<{ action_id: string }>(
+    `select * from public.claim_bluesky_campaign_action(
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [
+      t.workspaceId, campaignId, runId, memberId, identityId,
+      subjectDid, `${subjectDid}.h`, "did:plc:actor", "actor.test", null,
+    ],
+  );
+  const out = await h.admin.query<{
+    consumed: boolean;
+    refused_reason: string | null;
+  }>(
+    `select * from public.consume_bluesky_member_quota($1,$2,$3,$4,$5,$6,$7)`,
+    [
+      t.workspaceId, campaignId, runId, reservationId, memberId,
+      claim.rows[0].action_id, identityId,
+    ],
+  );
+  return out.rows[0];
 }
 
 describe("a crash between per-member work and chunk settlement", () => {
@@ -337,8 +375,11 @@ describe("a crash between per-member work and chunk settlement", () => {
       ],
     );
     await h.admin.query(
-      `select * from public.consume_bluesky_member_quota($1,$2,$3,$4)`,
-      [t.workspaceId, reservationId, memberId, claim.rows[0].action_id],
+      `select * from public.consume_bluesky_member_quota($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        t.workspaceId, campaignId, runId, reservationId, memberId,
+        claim.rows[0].action_id, identityId,
+      ],
     );
     // ── dies here: the action stays mid-flight forever ──
 
@@ -433,10 +474,7 @@ describe("a crash between per-member work and chunk settlement", () => {
     const first = await reserve(campaignId, runId, 5, "A");
     const reservationId = first.rows[0].reservation_id!;
     const memberId = first.rows.filter((r) => r.member_id)[0].member_id!;
-    await h.admin.query(
-      `select * from public.consume_bluesky_member_quota($1,$2,$3,null)`,
-      [t.workspaceId, reservationId, memberId],
-    );
+    await spendOne(campaignId, runId, reservationId, memberId);
 
     // The record of a public action is not editable, by anyone.
     await expect(
@@ -456,17 +494,10 @@ describe("a crash between per-member work and chunk settlement", () => {
     const reservationId = first.rows[0].reservation_id!;
     const memberId = first.rows.filter((r) => r.member_id)[0].member_id!;
 
-    const one = await h.admin.query<{ consumed: boolean; already_consumed: boolean }>(
-      `select * from public.consume_bluesky_member_quota($1,$2,$3,null)`,
-      [t.workspaceId, reservationId, memberId],
-    );
-    const two = await h.admin.query<{ consumed: boolean; already_consumed: boolean }>(
-      `select * from public.consume_bluesky_member_quota($1,$2,$3,null)`,
-      [t.workspaceId, reservationId, memberId],
-    );
-    expect(one.rows[0].consumed).toBe(true);
-    expect(two.rows[0].consumed).toBe(false);
-    expect(two.rows[0].already_consumed).toBe(true);
+    const one = await spendOne(campaignId, runId, reservationId, memberId);
+    const two = await spendOne(campaignId, runId, reservationId, memberId);
+    expect(one.consumed).toBe(true);
+    expect(two.consumed).toBe(false);
 
     const run = await h.admin.query<{ attempted_count: number }>(
       `select attempted_count from public.bluesky_follow_campaign_runs where id=$1`,
@@ -484,11 +515,8 @@ describe("a crash between per-member work and chunk settlement", () => {
       .filter((r) => r.member_id)
       .map((r) => r.member_id as string);
 
-    for (const m of members) {
-      await h.admin.query(
-        `select * from public.consume_bluesky_member_quota($1,$2,$3,null)`,
-        [t.workspaceId, reservationId, m],
-      );
+    for (const [i, m] of members.entries()) {
+      await spendOne(campaignId, runId, reservationId, m, `did:plc:m${i + 1}`);
     }
 
     // A member this reservation never paid for.
@@ -497,15 +525,11 @@ describe("a crash between per-member work and chunk settlement", () => {
         where campaign_id=$1 and id <> all($2::uuid[]) limit 1`,
       [campaignId, members],
     );
-    const refused = await h.admin.query<{
-      consumed: boolean;
-      refused_reason: string | null;
-    }>(
-      `select * from public.consume_bluesky_member_quota($1,$2,$3,null)`,
-      [t.workspaceId, reservationId, other.rows[0].id],
+    const refused = await spendOne(
+      campaignId, runId, reservationId, other.rows[0].id, "did:plc:other",
     );
-    expect(refused.rows[0].consumed).toBe(false);
-    expect(refused.rows[0].refused_reason).toBe("reservation_exhausted");
+    expect(refused.consumed).toBe(false);
+    expect(refused.refused_reason).toBe("reservation_exhausted");
 
     const run = await h.admin.query<{ attempted_count: number }>(
       `select attempted_count from public.bluesky_follow_campaign_runs where id=$1`,
