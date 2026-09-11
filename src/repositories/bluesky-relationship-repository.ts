@@ -426,6 +426,7 @@ export async function recordCandidateSources(input: {
   const { data: current, error: currentError } = await supabase
     .from("bluesky_candidate_sources")
     .select("candidate_id, times_seen")
+    .eq("workspace_id", input.workspaceId)
     .eq("target_profile_id", input.targetProfileId)
     .in("candidate_id", input.candidateIds);
   if (currentError) {
