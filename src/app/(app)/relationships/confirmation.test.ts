@@ -181,3 +181,57 @@ describe("confirmation is not authorization", () => {
     expect(actions).toContain("checkBatchSize(candidateIds.length)");
   });
 });
+
+describe("a completed batch cannot be resubmitted", () => {
+  it("a terminal result REPLACES the form rather than sitting beside it", () => {
+    // The defect: after a batch completed the dialog stayed open with a
+    // live confirm button under the result, and pressing it submitted
+    // the same selection again. The fix is structural — while `result`
+    // is set there is no submit control in the tree at all.
+    expect(DIALOG).toMatch(/\{result \?/);
+    expect(DIALOG).toMatch(/result \?[\s\S]{0,400}Close[\s\S]{0,400}\) : \(/);
+  });
+
+  it("the form and the confirm button are inside the NOT-result branch", () => {
+    // Positional rather than a nested-parenthesis regex: JSX branches
+    // are not a regular language, and a non-greedy match stops at the
+    // first `) : (` it finds, which is not necessarily this one.
+    const controls = DIALOG.indexOf("{result ? (");
+    const elseBranch = DIALOG.indexOf(") : (", controls);
+    expect(controls).toBeGreaterThan(-1);
+    expect(elseBranch).toBeGreaterThan(controls);
+
+    const terminal = DIALOG.slice(controls, elseBranch);
+    const prompt = DIALOG.slice(elseBranch);
+
+    // The terminal branch offers Close and nothing that submits.
+    expect(terminal).toContain("Close");
+    expect(terminal).not.toContain("<form");
+    expect(terminal).not.toContain("ConfirmButton");
+
+    // The dispatching form exists only after the branch point.
+    expect(prompt).toContain("<form action={props.dispatch}");
+    expect(prompt).toContain("<ConfirmButton");
+  });
+
+  it("the terminal state offers exactly one control, and it only closes", () => {
+    expect(DIALOG).toMatch(/onClick=\{onCancel\}[\s\S]{0,40}>\s*Close/);
+  });
+
+  it("the outcome is announced to assistive technology", () => {
+    expect(DIALOG).toContain('role="status"');
+  });
+
+  it("the result is DERIVED from the action's own state, not held separately", () => {
+    // A second copy of "what happened" is how a dialog comes to show a
+    // stale success next to a new failure.
+    expect(UI).toContain("const confirmResult: ConfirmResult | null");
+    expect(UI).toMatch(/confirming\.kind === "follow"[\s\S]{0,200}followState/);
+  });
+
+  it("an empty error is treated as the initial state, not a failure", () => {
+    // useFormState starts with { ok: false, error: "" }; rendering that
+    // as a failed result would show an error before anything was done.
+    expect(UI).toMatch(/state\.error \? \{ ok: false/);
+  });
+});
