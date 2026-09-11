@@ -32,6 +32,7 @@ import {
   followSelectedAction,
   importFollowersAction,
   refreshRelationshipsAction,
+  continueBatchAction,
   removeTargetAction,
   setProtectedAction,
   unfollowSelectedAction,
@@ -39,10 +40,34 @@ import {
   type ImportActionResult,
   type ProtectActionResult,
   type RefreshActionResult,
+  type ContinueBatchResult,
   type RelationshipBatchResult,
   type RemoveTargetActionResult,
 } from "./_actions";
 import { relationshipLabel } from "@/core/bluesky-relationships/relationship-state";
+import {
+  bareHandle,
+  formatAccountName,
+  formatHandle,
+  formatIdentityLabel,
+} from "@/core/bluesky-relationships/handle-display";
+import {
+  canSelectMore,
+  MAX_RELATIONSHIP_BATCH_SIZE,
+  remainingSelectionCapacity,
+} from "@/core/bluesky-relationships/limits";
+import {
+  ConfirmActionDialog,
+  type ConfirmKind,
+  type ConfirmRequest,
+} from "./_confirm-dialog";
+import { Pager, SearchAndFilter, TabStrip } from "./_nav-controls";
+import type {
+  PageInfo,
+  RelationshipsQuery,
+  RelationshipTab,
+} from "@/core/bluesky-relationships/load-relationships.server.types";
+import type { BlueskyActionBatchRow } from "@/lib/supabase/types";
 import type {
   BlueskyRelationshipActionRow,
   BlueskyRelationshipState,
@@ -50,21 +75,24 @@ import type {
 import type { CandidateWithSources } from "@/repositories/bluesky-relationship-repository";
 import type { TargetWithImport } from "@/core/bluesky-relationships/load-relationships.server";
 
-type TabKey = "targets" | "candidates" | "following" | "mutual" | "history";
-
 export interface RelationshipUiProps {
   identities: { id: string; handle: string | null; displayName: string | null }[];
   selectedIdentityId: string | null;
   connected: boolean;
+  query: RelationshipsQuery;
   targets: TargetWithImport[];
   candidates: CandidateWithSources[];
+  candidatePage: PageInfo;
   history: BlueskyRelationshipActionRow[];
+  historyPage: PageInfo;
+  batches: BlueskyActionBatchRow[];
   counts: {
-    candidates: number;
-    following: number;
-    mutual: number;
-    followsYou: number;
+    total: number;
     unknown: number;
+    not_following: number;
+    following: number;
+    follows_you: number;
+    mutual: number;
     protectedCount: number;
     needsReconciliation: number;
   };
@@ -77,6 +105,7 @@ const EMPTY_REFRESH: RefreshActionResult = { ok: false, error: "" };
 const EMPTY_BATCH: RelationshipBatchResult = { ok: false, error: "" };
 const EMPTY_PROTECT: ProtectActionResult = { ok: false, error: "" };
 const EMPTY_REMOVE: RemoveTargetActionResult = { ok: false, error: "" };
+const EMPTY_CONTINUE: ContinueBatchResult = { ok: false, error: "" };
 
 function stateBadgeClass(state: BlueskyRelationshipState): string {
   switch (state) {
@@ -130,7 +159,7 @@ function Notice({ result }: { result: { ok: boolean; error: string | null } & Re
 }
 
 export function RelationshipUi(props: RelationshipUiProps) {
-  const [tab, setTab] = useState<TabKey>("targets");
+  const tab: RelationshipTab = props.query.tab;
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const identityId = props.selectedIdentityId ?? "";
 
@@ -153,27 +182,41 @@ export function RelationshipUi(props: RelationshipUiProps) {
     removeTargetAction,
     EMPTY_REMOVE,
   );
+  const [continueState, runContinue] = useFormState(
+    continueBatchAction,
+    EMPTY_CONTINUE,
+  );
 
-  const visible = useMemo(() => {
-    switch (tab) {
-      case "following":
-        return props.candidates.filter(
-          (c) => c.relationship_state === "following" || c.relationship_state === "mutual",
-        );
-      case "mutual":
-        return props.candidates.filter((c) => c.relationship_state === "mutual");
-      case "candidates":
-        return props.candidates;
-      default:
-        return [];
-    }
-  }, [tab, props.candidates]);
+  /**
+   * The pending confirmation, or null.
+   *
+   * Every irreversible action routes through this one piece of state.
+   * A trigger sets it; Cancel clears it. Because the only
+   * `<form action={dispatch}>` for these actions lives inside the
+   * dialog, clearing this state removes the only thing that could
+   * submit — Cancel cannot reach the server even by accident.
+   */
+  const [confirming, setConfirming] = useState<ConfirmRequest | null>(null);
+  const dispatchFor = (kind: ConfirmKind) =>
+    kind === "follow" ? runFollow : kind === "unfollow" ? runUnfollow : runRemove;
+
+  // The server already filtered and paged. Filtering again here would
+  // re-introduce exactly the defect this replaces: a client deciding
+  // what a total means from the one page it happens to hold.
+  const visible = props.candidates;
 
   const toggle = (id: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+        return next;
+      }
+      // Refuse silently rather than accepting a selection the server
+      // will reject. The row's checkbox is disabled at the cap, so this
+      // is the belt to that braces.
+      if (!canSelectMore(next.size)) return prev;
+      next.add(id);
       return next;
     });
   };
@@ -187,12 +230,17 @@ export function RelationshipUi(props: RelationshipUiProps) {
     (c) => selected.has(c.id) && c.protected,
   ).length;
 
-  const tabs: { key: TabKey; label: string; count: number | null }[] = [
+  const tabs: { key: RelationshipTab; label: string; count: number | null }[] = [
     { key: "targets", label: "Targets", count: props.targets.length },
-    { key: "candidates", label: "Candidates", count: props.counts.candidates },
-    { key: "following", label: "Following", count: props.counts.following + props.counts.mutual },
+    { key: "candidates", label: "Candidates", count: props.counts.total },
+    {
+      key: "following",
+      label: "Following",
+      count: props.counts.following + props.counts.mutual,
+    },
     { key: "mutual", label: "Mutual", count: props.counts.mutual },
-    { key: "history", label: "History", count: props.history.length },
+    { key: "batches", label: "Batches", count: props.batches.length },
+    { key: "history", label: "History", count: props.historyPage.total },
   ];
 
   if (props.identities.length === 0) {
@@ -210,8 +258,22 @@ export function RelationshipUi(props: RelationshipUiProps) {
     );
   }
 
+  const actorLabel = formatIdentityLabel(
+    props.identities.find((i) => i.id === identityId) ?? {
+      id: identityId,
+      handle: null,
+      displayName: null,
+    },
+  );
+
   return (
     <div className="space-y-4">
+      <ConfirmActionDialog
+        request={confirming}
+        dispatch={confirming ? dispatchFor(confirming.kind) : () => undefined}
+        onCancel={() => setConfirming(null)}
+      />
+
       {/* Identity picker + connection state. */}
       <section className="card card-padded">
         <h2 className="section-title">Acting as</h2>
@@ -227,7 +289,7 @@ export function RelationshipUi(props: RelationshipUiProps) {
           >
             {props.identities.map((i) => (
               <option key={i.id} value={i.id}>
-                {i.handle ? `@${i.handle}` : (i.displayName ?? i.id)}
+                {formatIdentityLabel(i)}
               </option>
             ))}
           </select>
@@ -244,31 +306,9 @@ export function RelationshipUi(props: RelationshipUiProps) {
         ) : null}
       </section>
 
-      {/* Tabs. The strip scrolls sideways inside itself; the page does not. */}
-      <nav
-        aria-label="Relationship views"
-        className="-mx-4 px-4 sm:mx-0 sm:px-0 overflow-x-auto"
-      >
-        <ul className="flex gap-2 list-none p-0 m-0 w-max min-w-full">
-          {tabs.map((t) => (
-            <li key={t.key}>
-              <button
-                type="button"
-                onClick={() => setTab(t.key)}
-                aria-current={tab === t.key ? "page" : undefined}
-                className={`btn whitespace-nowrap ${
-                  tab === t.key ? "nav-item-active border-signal-300" : ""
-                }`}
-              >
-                {t.label}
-                {t.count !== null ? (
-                  <span className="ml-1.5 text-ink-500">{t.count}</span>
-                ) : null}
-              </button>
-            </li>
-          ))}
-        </ul>
-      </nav>
+      {/* Tabs are links: the whole view is a function of the URL, so a
+          filtered page is shareable and Back works. */}
+      <TabStrip tabs={tabs} active={tab} />
 
       {props.counts.needsReconciliation > 0 ? (
         <div className="card card-padded border-amber-200 bg-amber-50">
@@ -289,16 +329,31 @@ export function RelationshipUi(props: RelationshipUiProps) {
           addState={addState}
           runImport={runImport}
           importState={importState}
-          runRemove={runRemove}
           removeState={removeState}
+          actorLabel={actorLabel}
+          onConfirm={setConfirming}
         />
       ) : null}
 
       {tab === "history" ? (
-        <HistoryView history={props.history} targetLabels={props.targetLabels} />
+        <HistoryView
+          history={props.history}
+          historyPage={props.historyPage}
+          targetLabels={props.targetLabels}
+        />
       ) : null}
 
-      {tab !== "targets" && tab !== "history" ? (
+      {tab === "batches" ? (
+        <BatchesView
+          identityId={identityId}
+          batches={props.batches}
+          connected={props.connected}
+          runContinue={runContinue}
+          continueState={continueState}
+        />
+      ) : null}
+
+      {tab !== "targets" && tab !== "history" && tab !== "batches" ? (
         <CandidateListView
           identityId={identityId}
           candidates={visible}
@@ -308,10 +363,20 @@ export function RelationshipUi(props: RelationshipUiProps) {
           selectedProtected={selectedProtected}
           onToggle={toggle}
           onSelectNone={() => setSelected(new Set())}
-          onSelectAll={() => setSelected(new Set(visible.map((c) => c.id)))}
-          runFollow={runFollow}
+          onSelectAll={() =>
+            setSelected((prev) => {
+              // "Visible" means the rows on screen — never the whole
+              // table. Fills up to the cap and stops; it does not
+              // silently select more than can be submitted.
+              const next = new Set(prev);
+              for (const c of visible) {
+                if (remainingSelectionCapacity(next.size) === 0) break;
+                next.add(c.id);
+              }
+              return next;
+            })
+          }
           followState={followState}
-          runUnfollow={runUnfollow}
           unfollowState={unfollowState}
           runRefresh={runRefresh}
           refreshState={refreshState}
@@ -319,6 +384,11 @@ export function RelationshipUi(props: RelationshipUiProps) {
           showFollowAction={tab === "candidates"}
           runProtect={runProtect}
           protectState={protectState}
+          actorLabel={actorLabel}
+          onConfirm={setConfirming}
+          page={props.candidatePage}
+          query={props.query}
+          counts={props.counts}
         />
       ) : null}
     </div>
@@ -336,8 +406,9 @@ function TargetsView(props: {
   addState: AddTargetActionResult;
   runImport: (formData: FormData) => void;
   importState: ImportActionResult;
-  runRemove: (formData: FormData) => void;
   removeState: RemoveTargetActionResult;
+  actorLabel: string;
+  onConfirm: (request: ConfirmRequest) => void;
 }) {
   return (
     <div className="space-y-4">
@@ -393,10 +464,13 @@ function TargetsView(props: {
               )}
               <div className="min-w-0 flex-1">
                 <p className="font-medium text-ink-900 break-words">
-                  {target.display_name ?? target.handle ?? "Bluesky account"}
+                  {formatAccountName({
+                    displayName: target.display_name,
+                    handle: target.handle,
+                  })}
                 </p>
                 <p className="text-sm text-ink-600 break-all">
-                  @{target.handle ?? "handle unavailable"}
+                  {formatHandle(target.handle)}
                 </p>
                 <p className="text-xs text-ink-500 break-all mt-0.5">
                   {target.subject_did}
@@ -451,15 +525,24 @@ function TargetsView(props: {
                   <SubmitButton>Re-import</SubmitButton>
                 </form>
               ) : null}
-              <form action={props.runRemove}>
-                <input
-                  type="hidden"
-                  name="operator_account_id"
-                  value={props.identityId}
-                />
-                <input type="hidden" name="target_profile_id" value={target.id} />
-                <SubmitButton className="btn-danger">Remove</SubmitButton>
-              </form>
+              <button
+                type="button"
+                className="btn-danger"
+                onClick={() =>
+                  props.onConfirm({
+                    kind: "remove_target",
+                    actorLabel: props.actorLabel,
+                    fields: [
+                      { name: "operator_account_id", value: props.identityId },
+                      { name: "target_profile_id", value: target.id },
+                    ],
+                    itemLabels: [formatHandle(target.handle, target.subject_did)],
+                    protectedExcluded: 0,
+                  })
+                }
+              >
+                Remove…
+              </button>
             </div>
           </li>
         ))}
@@ -482,9 +565,7 @@ function CandidateListView(props: {
   onToggle: (id: string) => void;
   onSelectAll: () => void;
   onSelectNone: () => void;
-  runFollow: (formData: FormData) => void;
   followState: RelationshipBatchResult;
-  runUnfollow: (formData: FormData) => void;
   unfollowState: RelationshipBatchResult;
   runRefresh: (formData: FormData) => void;
   refreshState: RefreshActionResult;
@@ -492,23 +573,92 @@ function CandidateListView(props: {
   showFollowAction: boolean;
   runProtect: (formData: FormData) => void;
   protectState: ProtectActionResult;
+  actorLabel: string;
+  onConfirm: (request: ConfirmRequest) => void;
+  page: PageInfo;
+  query: RelationshipsQuery;
+  counts: {
+    total: number;
+    unknown: number;
+    not_following: number;
+    following: number;
+    follows_you: number;
+    mutual: number;
+  };
 }) {
   const anySelected = props.selectedIds.length > 0;
+  const atCap = props.selectedIds.length >= MAX_RELATIONSHIP_BATCH_SIZE;
+
+  const label = (id: string): string => {
+    const c = props.candidates.find((x) => x.id === id);
+    return c ? formatHandle(c.handle, c.subject_did) : id;
+  };
+
+  /**
+   * Build the confirmation request for a set of candidate ids.
+   *
+   * Protected accounts are removed here so the dialog can state the
+   * exclusion honestly BEFORE the operator confirms, rather than
+   * reporting it afterwards in a result summary. The server filters
+   * them again independently — this is presentation, not enforcement.
+   */
+  const request = (kind: "follow" | "unfollow", ids: string[]): ConfirmRequest => {
+    const eligible =
+      kind === "unfollow"
+        ? ids.filter((id) => !props.candidates.find((c) => c.id === id)?.protected)
+        : ids;
+    return {
+      kind,
+      actorLabel: props.actorLabel,
+      fields: [
+        { name: "operator_account_id", value: props.identityId },
+        ...eligible.map((id) => ({ name: "candidate_id", value: id })),
+      ],
+      itemLabels: eligible.map(label),
+      protectedExcluded: ids.length - eligible.length,
+    };
+  };
 
   return (
     <div className="space-y-4">
+      <SearchAndFilter
+        search={props.query.search}
+        state={props.query.state}
+        // State chips belong on the unfiltered Candidates tab. On
+        // Following and Mutual the tab already IS the filter, and a
+        // second one would let the operator build a contradiction.
+        showStateFilter={props.query.tab === "candidates"}
+        counts={props.counts}
+        total={props.counts.total}
+      />
+
       <section className="card card-padded">
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" className="btn-secondary" onClick={props.onSelectAll}>
-            Select all
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={props.onSelectAll}
+            disabled={atCap || props.candidates.length === 0}
+          >
+            {/* Named for what it does. "Select all" implied the whole
+                database; this list is one page of it. */}
+            Select visible ({props.candidates.length})
           </button>
           <button type="button" className="btn-secondary" onClick={props.onSelectNone}>
             Clear
           </button>
           <span className="text-sm text-ink-600">
-            {props.selectedIds.length} selected
+            {props.selectedIds.length} of {MAX_RELATIONSHIP_BATCH_SIZE} selected
           </span>
         </div>
+
+        {atCap ? (
+          <p className="text-sm text-ink-600 mt-2 leading-relaxed">
+            That is the most a single batch can hold. A batch runs while you
+            wait, so it is bounded to finish inside one request. Run this one,
+            then select the next {MAX_RELATIONSHIP_BATCH_SIZE}.
+          </p>
+        ) : null}
 
         {props.selectedProtected > 0 ? (
           <p className="text-sm text-ink-600 mt-2 leading-relaxed">
@@ -518,41 +668,32 @@ function CandidateListView(props: {
         ) : null}
 
         <div className="mt-3 flex flex-wrap gap-2">
+          {/* These are plain buttons, not submits. They open the
+              confirmation; the form that actually dispatches lives
+              inside the dialog and nowhere else. */}
           {props.showFollowAction ? (
-            <form action={props.runFollow}>
-              <input
-                type="hidden"
-                name="operator_account_id"
-                value={props.identityId}
-              />
-              {props.selectedIds.map((id) => (
-                <input key={id} type="hidden" name="candidate_id" value={id} />
-              ))}
-              <SubmitButton
-                className="btn-primary"
-                disabled={!anySelected || !props.connected}
-              >
-                Follow selected
-              </SubmitButton>
-            </form>
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={!anySelected || !props.connected}
+              onClick={() => props.onConfirm(request("follow", props.selectedIds))}
+            >
+              Follow selected…
+            </button>
           ) : null}
 
-          <form action={props.runUnfollow}>
-            <input
-              type="hidden"
-              name="operator_account_id"
-              value={props.identityId}
-            />
-            {props.selectedIds.map((id) => (
-              <input key={id} type="hidden" name="candidate_id" value={id} />
-            ))}
-            <SubmitButton
-              className="btn-danger"
-              disabled={!anySelected || !props.connected}
-            >
-              Unfollow selected
-            </SubmitButton>
-          </form>
+          <button
+            type="button"
+            className="btn-danger"
+            disabled={
+              !anySelected ||
+              !props.connected ||
+              props.selectedIds.length === props.selectedProtected
+            }
+            onClick={() => props.onConfirm(request("unfollow", props.selectedIds))}
+          >
+            Unfollow selected…
+          </button>
 
           <form action={props.runRefresh}>
             <input
@@ -575,11 +716,14 @@ function CandidateListView(props: {
         <Notice result={props.protectState} />
       </section>
 
+      <Pager info={props.page} param="page" label="Candidates" />
+
       {props.candidates.length === 0 ? (
         <div className="card card-padded">
           <p className="text-sm text-ink-600 leading-relaxed">
-            Nothing here yet. Import a target profile&apos;s followers to build a
-            candidate list.
+            {props.query.search || props.query.state
+              ? "No accounts match this search or filter. Clear them to see the full list."
+              : "Nothing here yet. Import a target profile\u2019s followers to build a candidate list."}
           </p>
         </div>
       ) : null}
@@ -592,8 +736,12 @@ function CandidateListView(props: {
                 type="checkbox"
                 checked={props.selected.has(candidate.id)}
                 onChange={() => props.onToggle(candidate.id)}
-                aria-label={`Select ${candidate.handle ?? candidate.subject_did}`}
-                className="mt-1 shrink-0 w-5 h-5"
+                // At the cap, already-checked rows stay interactive so
+                // the operator can swap one out; unchecked ones go
+                // inert rather than accepting a click that does nothing.
+                disabled={atCap && !props.selected.has(candidate.id)}
+                aria-label={`Select ${bareHandle(candidate.handle) ?? candidate.subject_did}`}
+                className="mt-1 shrink-0 w-5 h-5 disabled:opacity-40"
               />
               {candidate.avatar_url ? (
                 // eslint-disable-next-line @next/next/no-img-element
@@ -608,10 +756,13 @@ function CandidateListView(props: {
 
               <div className="min-w-0 flex-1">
                 <p className="font-medium text-ink-900 break-words">
-                  {candidate.display_name ?? candidate.handle ?? "Bluesky account"}
+                  {formatAccountName({
+                    displayName: candidate.display_name,
+                    handle: candidate.handle,
+                  })}
                 </p>
                 <p className="text-sm text-ink-600 break-all">
-                  @{candidate.handle ?? "handle unavailable"}
+                  {formatHandle(candidate.handle)}
                 </p>
 
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -623,7 +774,7 @@ function CandidateListView(props: {
                   ) : null}
                   {candidate.sourceTargetProfileIds.map((id) => (
                     <span key={id} className="badge-neutral break-all">
-                      from @{props.targetLabels[id] ?? "unknown"}
+                      from {formatHandle(props.targetLabels[id], "unknown source")}
                     </span>
                   ))}
                 </div>
@@ -635,29 +786,25 @@ function CandidateListView(props: {
                 ) : null}
 
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <form action={props.runFollow}>
-                    <input
-                      type="hidden"
-                      name="operator_account_id"
-                      value={props.identityId}
-                    />
-                    <input type="hidden" name="candidate_id" value={candidate.id} />
-                    <SubmitButton disabled={!props.connected}>Follow</SubmitButton>
-                  </form>
-                  <form action={props.runUnfollow}>
-                    <input
-                      type="hidden"
-                      name="operator_account_id"
-                      value={props.identityId}
-                    />
-                    <input type="hidden" name="candidate_id" value={candidate.id} />
-                    <SubmitButton
-                      className="btn-danger"
-                      disabled={!props.connected || candidate.protected}
-                    >
-                      Unfollow
-                    </SubmitButton>
-                  </form>
+                  {/* A single-account action takes the SAME confirmation
+                      path as a batch. One row is still a public,
+                      irreversible change to someone else's feed. */}
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={!props.connected}
+                    onClick={() => props.onConfirm(request("follow", [candidate.id]))}
+                  >
+                    Follow…
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-danger"
+                    disabled={!props.connected || candidate.protected}
+                    onClick={() => props.onConfirm(request("unfollow", [candidate.id]))}
+                  >
+                    Unfollow…
+                  </button>
                   <form action={props.runProtect}>
                     <input
                       type="hidden"
@@ -680,6 +827,8 @@ function CandidateListView(props: {
           </li>
         ))}
       </ul>
+
+      <Pager info={props.page} param="page" label="Candidates" />
     </div>
   );
 }
@@ -690,6 +839,7 @@ function CandidateListView(props: {
 
 function HistoryView(props: {
   history: BlueskyRelationshipActionRow[];
+  historyPage: PageInfo;
   targetLabels: Record<string, string>;
 }) {
   if (props.history.length === 0) {
@@ -705,7 +855,9 @@ function HistoryView(props: {
   }
 
   return (
-    <ul className="list-none p-0 m-0 space-y-2">
+    <div className="space-y-4">
+      <Pager info={props.historyPage} param="hpage" label="History" />
+      <ul className="list-none p-0 m-0 space-y-2">
       {props.history.map((action) => (
         <li key={action.id} className="card p-3 sm:p-4">
           <div className="flex flex-wrap items-center gap-2">
@@ -737,12 +889,12 @@ function HistoryView(props: {
           <p className="text-sm text-ink-800 mt-2 break-all">
             {/* The handle AS IT WAS when the operator acted. A later
                 rename must not rewrite the record. */}
-            @{action.subject_handle_at_action ?? "handle unavailable"}
+            {formatHandle(action.subject_handle_at_action)}
           </p>
           <p className="text-xs text-ink-500 break-all">{action.subject_did}</p>
           {action.actor_handle_at_action ? (
             <p className="text-xs text-ink-500 break-all mt-0.5">
-              as @{action.actor_handle_at_action}
+              as {formatHandle(action.actor_handle_at_action)}
             </p>
           ) : null}
 
@@ -750,7 +902,7 @@ function HistoryView(props: {
             <div className="mt-2 flex flex-wrap gap-1.5">
               {action.source_target_profile_ids.map((id) => (
                 <span key={id} className="badge-neutral break-all">
-                  from @{props.targetLabels[id] ?? "unknown"}
+                  from {formatHandle(props.targetLabels[id], "unknown source")}
                 </span>
               ))}
             </div>
@@ -773,6 +925,140 @@ function HistoryView(props: {
           ) : null}
         </li>
       ))}
-    </ul>
+      </ul>
+      <Pager info={props.historyPage} param="hpage" label="History" />
+    </div>
+  );
+}
+
+// =====================================================================
+// Batches
+// =====================================================================
+
+const BATCH_BADGE: Record<string, string> = {
+  completed: "badge-low",
+  running: "badge-info",
+  paused: "badge-medium",
+  failed: "badge-high",
+  confirmed: "badge-neutral",
+  pending: "badge-neutral",
+};
+
+/**
+ * Recent batches and their progress.
+ *
+ * The loader always read these; nothing rendered them, so a batch that
+ * stopped halfway was invisible — the operator saw a summary once and
+ * had no way back to it. Paused batches are the reason this view
+ * exists.
+ *
+ * Continue is a submit, not a confirmation dialog: it does not choose
+ * new targets or widen anything. It resumes work the operator already
+ * reviewed and approved, on the frozen membership, and the server
+ * re-authorizes everything before sending a single request.
+ */
+function BatchesView(props: {
+  identityId: string;
+  batches: BlueskyActionBatchRow[];
+  connected: boolean;
+  runContinue: (formData: FormData) => void;
+  continueState: ContinueBatchResult;
+}) {
+  if (props.batches.length === 0) {
+    return (
+      <div className="card card-padded">
+        <p className="text-sm text-ink-600 leading-relaxed">
+          No batches yet. Selecting accounts and confirming a Follow or Unfollow
+          creates one, and it appears here with its progress.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <Notice result={props.continueState} />
+
+      <ul className="list-none p-0 m-0 space-y-2">
+        {props.batches.map((batch) => {
+          const attempted = batch.processed_count;
+          const remaining = Math.max(0, batch.requested_count - attempted);
+          const resumable = batch.status === "paused" && remaining > 0;
+
+          return (
+            <li key={batch.id} className="card p-3 sm:p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={
+                    batch.action_type === "follow" ? "badge-info" : "badge-neutral"
+                  }
+                >
+                  {batch.action_type === "follow" ? "Follow" : "Unfollow"}
+                </span>
+                <span className={BATCH_BADGE[batch.status] ?? "badge-neutral"}>
+                  {batch.status}
+                </span>
+                <span className="text-xs text-ink-500">
+                  {new Date(batch.created_at).toLocaleString()}
+                </span>
+              </div>
+
+              <p className="text-sm text-ink-800 mt-2">
+                {attempted} of {batch.requested_count} attempted
+                {batch.succeeded_count > 0
+                  ? ` \u00b7 ${batch.succeeded_count} succeeded`
+                  : ""}
+                {batch.failed_count > 0 ? ` \u00b7 ${batch.failed_count} failed` : ""}
+                {batch.reconciliation_required_count > 0
+                  ? ` \u00b7 ${batch.reconciliation_required_count} need reconciliation`
+                  : ""}
+              </p>
+
+              {remaining > 0 ? (
+                <p className="text-sm text-ink-600 mt-1 leading-relaxed">
+                  {remaining} not attempted. Membership is fixed at the{" "}
+                  {batch.requested_count} accounts you confirmed — continuing
+                  never adds newly imported ones.
+                </p>
+              ) : null}
+
+              {batch.last_error ? (
+                <p className="text-xs text-amber-700 mt-2 leading-relaxed break-words">
+                  {batch.last_error}
+                </p>
+              ) : null}
+
+              {resumable ? (
+                <form action={props.runContinue} className="mt-3">
+                  <input
+                    type="hidden"
+                    name="operator_account_id"
+                    value={props.identityId}
+                  />
+                  <input type="hidden" name="batch_id" value={batch.id} />
+                  <SubmitButton
+                    className="btn-primary"
+                    disabled={!props.connected}
+                  >
+                    Continue ({remaining})
+                  </SubmitButton>
+                </form>
+              ) : null}
+
+              {batch.status === "paused" && !props.connected ? (
+                <p className="text-sm text-amber-700 mt-2 leading-relaxed">
+                  This identity is not signed in to Bluesky, so the batch cannot
+                  continue. Reconnect it on Accounts first.
+                </p>
+              ) : null}
+
+              <p className="text-xs text-ink-400 mt-2 break-all">
+                batch {batch.id}
+              </p>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }

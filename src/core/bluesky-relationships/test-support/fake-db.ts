@@ -158,7 +158,12 @@ export class FakeDb {
   }
 }
 
-type QueryResult = { data: unknown; error: PostgresError | null };
+type QueryResult = {
+  data: unknown;
+  error: PostgresError | null;
+  /** Present when the caller asked for `count`. */
+  count?: number;
+};
 
 class FakeQuery implements PromiseLike<QueryResult> {
   private filters: Filter[] = [];
@@ -167,15 +172,33 @@ class FakeQuery implements PromiseLike<QueryResult> {
   private singleRow = false;
   private maybe = false;
   private limitValue: number | null = null;
-  private orderColumn: string | null = null;
-  private orderAscending = true;
+  private orderKeys: { column: string; ascending: boolean }[] = [];
+  private wantCount = false;
+  private headOnly = false;
+  private rangeFrom: number | null = null;
+  private rangeTo: number | null = null;
 
   constructor(
     private readonly db: FakeDb,
     private readonly table: string,
   ) {}
 
-  select(_columns?: string): this {
+  select(
+    _columns?: string,
+    options?: { count?: "exact" | "planned" | "estimated"; head?: boolean },
+  ): this {
+    // `head: true` means "count only, transfer no rows" — the shape the
+    // repository uses for exact totals. Reproduced faithfully so a test
+    // asserting a count is exercising the same code path production
+    // takes, not a convenient shortcut.
+    this.wantCount = options?.count !== undefined;
+    this.headOnly = options?.head === true;
+    return this;
+  }
+
+  range(from: number, to: number): this {
+    this.rangeFrom = from;
+    this.rangeTo = to;
     return this;
   }
   insert(values: Row | Row[]): this {
@@ -214,8 +237,9 @@ class FakeQuery implements PromiseLike<QueryResult> {
     return this;
   }
   order(column: string, options?: { ascending?: boolean }): this {
-    this.orderColumn = column;
-    this.orderAscending = options?.ascending ?? true;
+    // Multiple .order() calls compose, as in PostgREST. The second key
+    // is what makes paging stable when the first key ties.
+    this.orderKeys.push({ column, ascending: options?.ascending ?? true });
     return this;
   }
   limit(n: number): this {
@@ -331,16 +355,31 @@ class FakeQuery implements PromiseLike<QueryResult> {
     }
 
     let result = rows.filter((row) => this.matches(row));
-    if (this.orderColumn) {
-      const column = this.orderColumn;
+
+    if (this.orderKeys.length > 0) {
       result = [...result].sort((a, b) => {
-        const av = String(a[column] ?? "");
-        const bv = String(b[column] ?? "");
-        return this.orderAscending ? av.localeCompare(bv) : bv.localeCompare(av);
+        for (const key of this.orderKeys) {
+          const av = String(a[key.column] ?? "");
+          const bv = String(b[key.column] ?? "");
+          const cmp = key.ascending ? av.localeCompare(bv) : bv.localeCompare(av);
+          if (cmp !== 0) return cmp;
+        }
+        return 0;
       });
     }
+
+    // The exact total is taken BEFORE range/limit, which is the whole
+    // point of an exact count: it describes the filtered set, not the
+    // slice returned.
+    const total = result.length;
+
+    if (this.rangeFrom !== null && this.rangeTo !== null) {
+      result = result.slice(this.rangeFrom, this.rangeTo + 1);
+    }
     if (this.limitValue !== null) result = result.slice(0, this.limitValue);
-    return this.shape(result);
+
+    if (this.headOnly) return { data: null, error: null, count: total };
+    return { ...this.shape(result), ...(this.wantCount ? { count: total } : {}) };
   }
 
   private shape(rows: Row[]): QueryResult {

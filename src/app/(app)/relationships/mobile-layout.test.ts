@@ -52,6 +52,24 @@ const PAGE = readFileSync(
   path.join(process.cwd(), "src/app/(app)/relationships/page.tsx"),
   "utf8",
 );
+const NAV = code(
+  readFileSync(
+    path.join(process.cwd(), "src/app/(app)/relationships/_nav-controls.tsx"),
+    "utf8",
+  ),
+);
+const FAILURE = code(
+  readFileSync(
+    path.join(process.cwd(), "src/app/(app)/relationships/_read-failure-notice.tsx"),
+    "utf8",
+  ),
+);
+const DIALOG = code(
+  readFileSync(
+    path.join(process.cwd(), "src/app/(app)/relationships/_confirm-dialog.tsx"),
+    "utf8",
+  ),
+);
 
 describe("long identifiers cannot push the page sideways", () => {
   it("every element rendering a DID can break mid-string", () => {
@@ -61,7 +79,16 @@ describe("long identifiers cannot push the page sideways", () => {
       (line) =>
         (line.includes("subject_did") || line.includes("batch_id")) &&
         // An aria-label is announced, not laid out; it cannot overflow.
-        !line.includes("aria-label"),
+        !line.includes("aria-label") &&
+        // Object-literal construction (building the confirmation
+        // payload) is not a render site. The rendered output of those
+        // labels is covered by the dialog assertion below.
+        !/^\s*\w+:\s/.test(line) &&
+        !line.includes("value=") &&
+        // A label-building helper returns a string; where that string
+        // is RENDERED is what has to break, and that is asserted
+        // separately for the list rows and for the dialog.
+        !line.trimStart().startsWith("return "),
     );
     expect(didLines.length).toBeGreaterThan(0);
     for (const line of didLines) {
@@ -73,6 +100,17 @@ describe("long identifiers cannot push the page sideways", () => {
         /break-all|truncate/,
       );
     }
+  });
+
+  it("the confirmation dialog breaks its review labels, which may be DIDs", () => {
+    // formatHandle falls back to the subject DID when an account has no
+    // handle, so the review list can contain 32 unbreakable characters
+    // inside a max-w-md modal.
+    expect(DIALOG).toMatch(/preview\.map[\s\S]{0,200}break-all/);
+    // The actor label can also be long.
+    expect(DIALOG).toMatch(/actorLabel[\s\S]{0,200}break-all|break-all[\s\S]{0,200}actorLabel/);
+    // And the dialog itself never exceeds the viewport on a 320px screen.
+    expect(DIALOG).toContain("w-[calc(100vw-2rem)]");
   });
 
   it("handles render with break-all, not with whitespace-nowrap", () => {
@@ -112,12 +150,20 @@ describe("nothing is fixed-width or horizontally scrolling except the tab strip"
     expect(UI).not.toMatch(/<table|<thead|<tbody|<tr[\s>]/);
   });
 
-  it("overflow-x-auto appears exactly once, on the tab strip", () => {
-    const occurrences = UI.match(/overflow-x-auto/g) ?? [];
-    expect(occurrences).toHaveLength(1);
-    const index = UI.indexOf("overflow-x-auto");
-    const context = UI.slice(Math.max(0, index - 300), index + 120);
-    expect(context).toContain('aria-label="Relationship views"');
+  it("the page body never scrolls sideways — only chip rows do, inside themselves", () => {
+    // Two horizontal scrollers, both deliberate and both the same
+    // pattern: a row of chips wider than a phone, scrolling inside its
+    // own container. The list and card surfaces have none.
+    expect(UI.match(/overflow-x-auto/g) ?? []).toHaveLength(0);
+    const scrollers = NAV.match(/overflow-x-auto/g) ?? [];
+    expect(scrollers).toHaveLength(2);
+    // The first is the tab strip, and it is labelled.
+    expect(NAV).toMatch(
+      /aria-label="Relationship views"[\s\S]{0,200}overflow-x-auto/,
+    );
+    // Each scroller sizes its track to content so the chips do not
+    // squash; `w-max min-w-full` is what makes that work.
+    expect(NAV.match(/w-max min-w-full/g) ?? []).toHaveLength(2);
   });
 
   it("images are fixed-size avatars that shrink-0 rather than stretch the row", () => {
@@ -149,7 +195,11 @@ describe("touch targets and inputs", () => {
   it("every checkbox has an accessible name naming the account", () => {
     // A column of unlabelled checkboxes is unusable with a screen
     // reader, and on this page each one authorises a public action.
-    expect(UI).toMatch(/aria-label=\{`Select \$\{candidate\.handle/);
+    expect(UI).toMatch(/aria-label=\{`Select \$\{/);
+    // The name is built from the BARE handle, so a stored "@name" is
+    // not announced as "at at name", and it falls back to the DID
+    // rather than to an empty string.
+    expect(UI).toMatch(/aria-label=\{`Select \$\{bareHandle\(candidate\.handle\) \?\? candidate\.subject_did\}`\}/);
   });
 
   it("text inputs use the .input class, which is 16px on mobile", () => {
@@ -200,5 +250,50 @@ describe("the surface makes no claim it has not measured", () => {
     // "Complete" behind cursor exhaustion. The UI must not add its own.
     expect(UI).not.toMatch(/["'>]\s*Imported all/);
     expect(UI).toContain("progressLabel");
+  });
+});
+
+describe("a failed read is never dressed up as an empty one", () => {
+  it("the page renders the failure INSTEAD of the lists, not beside them", () => {
+    // An empty list next to an error reads as "nothing here yet", and
+    // an operator who believes their corpus is empty may re-import it.
+    expect(PAGE).toMatch(/view\.failure \?[\s\S]{0,400}<ReadFailureNotice/);
+    expect(PAGE).toMatch(/<ReadFailureNotice[\s\S]{0,200}\) : \(/);
+  });
+
+  it("offers Retry only for a failure a retry could fix", () => {
+    expect(FAILURE).toMatch(/failure\.retryable \?[\s\S]{0,300}Try again/);
+    // Never unconditionally.
+    expect(FAILURE).not.toMatch(/<button[^>]*>\s*Try again/);
+  });
+
+  it("says explicitly that nothing was changed and no history was lost", () => {
+    expect(FAILURE).toContain("Nothing was changed");
+    expect(FAILURE).toContain("not the same as them being gone");
+  });
+
+  it("is announced to assistive technology", () => {
+    expect(FAILURE).toContain('role="alert"');
+  });
+
+  it("wraps long provider detail rather than overflowing a phone", () => {
+    expect(FAILURE).toMatch(/leading-relaxed/);
+    expect(FAILURE).not.toMatch(/whitespace-nowrap/);
+  });
+});
+
+describe("empty states survive the pagination rewrite", () => {
+  it("an empty corpus and an empty SEARCH say different things", () => {
+    // "Import a target profile's followers" is wrong advice when the
+    // corpus is full and the search simply matched nothing.
+    expect(UI).toContain("No accounts match this search or filter");
+    expect(UI).toMatch(/Import a target profile/);
+  });
+
+  it("the no-identity and no-target empty states are still present", () => {
+    expect(UI).toContain("No Bluesky identity");
+    expect(UI).toContain("No target profiles yet");
+    expect(UI).toContain("No batches yet");
+    expect(UI).toContain("No relationship actions yet");
   });
 });

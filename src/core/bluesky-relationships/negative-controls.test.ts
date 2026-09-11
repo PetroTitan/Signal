@@ -423,7 +423,15 @@ describe("NC8 — workspace scope", () => {
       ];
       if (operations.length === 0) continue;
 
-      const filtersWorkspace = body.includes('.eq("workspace_id"');
+      // A function is scoped either by filtering inline, or by
+      // delegating to one of the shared scoping helpers. The helpers
+      // themselves are asserted below, so delegation is not a loophole
+      // — it is the reason a filter cannot be applied to the page query
+      // and forgotten on the count query.
+      const SCOPING_HELPERS = ["applyCandidateFilters(", "scope(", "attachSources("];
+      const filtersWorkspace =
+        body.includes('.eq("workspace_id"') ||
+        SCOPING_HELPERS.some((helper) => body.includes(helper));
       const scopedOps = operations.filter(([, , verb]) =>
         ["select", "update", "delete"].includes(verb),
       );
@@ -441,6 +449,45 @@ describe("NC8 — workspace scope", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  /** A function's source, from its declaration to the next top-level export. */
+  const bodyOf = (name: string): string => {
+    const start = repository.search(
+      new RegExp(`(export )?(async )?function ${name}\\(`),
+    );
+    expect(start, `${name} not found`).toBeGreaterThan(-1);
+    const next = repository.indexOf("\nexport ", start + 1);
+    return repository.slice(start, next > 0 ? next : repository.length);
+  };
+
+  it("every shared scoping helper applies the workspace filter itself", () => {
+    // The other half of the delegation allowance above. If a helper
+    // stopped scoping, every caller that relies on it would silently
+    // lose its filter — so each one is checked directly, by name.
+    const helpers: Record<string, string[]> = {
+      applyCandidateFilters: ["workspace_id", "operator_account_id"],
+      attachSources: ["workspace_id"],
+    };
+    for (const [name, columns] of Object.entries(helpers)) {
+      const body = bodyOf(name);
+      for (const column of columns) {
+        expect(body, `${name} must filter ${column}`).toContain(`.eq("${column}"`);
+      }
+    }
+
+    // listActionHistoryPage scopes through a local `scope` closure.
+    const history = bodyOf("listActionHistoryPage");
+    expect(history).toContain('.eq("workspace_id"');
+    expect(history).toContain('.eq("operator_account_id"');
+  });
+
+  it("the exact-count queries are scoped the same way as the rows they describe", () => {
+    // A count that used a different filter than its page would report a
+    // total for a set the operator never sees. Both go through
+    // applyCandidateFilters, which is what makes them agree.
+    expect(bodyOf("listCandidatesPage")).toContain("applyCandidateFilters(");
+    expect(bodyOf("countCandidatesByState")).toContain("applyCandidateFilters(");
   });
 
   it("candidate and action reads are also scoped to the operator identity", () => {
