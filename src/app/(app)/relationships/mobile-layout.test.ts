@@ -52,6 +52,12 @@ const PAGE = readFileSync(
   path.join(process.cwd(), "src/app/(app)/relationships/page.tsx"),
   "utf8",
 );
+const NAV = code(
+  readFileSync(
+    path.join(process.cwd(), "src/app/(app)/relationships/_nav-controls.tsx"),
+    "utf8",
+  ),
+);
 const DIALOG = code(
   readFileSync(
     path.join(process.cwd(), "src/app/(app)/relationships/_confirm-dialog.tsx"),
@@ -138,12 +144,20 @@ describe("nothing is fixed-width or horizontally scrolling except the tab strip"
     expect(UI).not.toMatch(/<table|<thead|<tbody|<tr[\s>]/);
   });
 
-  it("overflow-x-auto appears exactly once, on the tab strip", () => {
-    const occurrences = UI.match(/overflow-x-auto/g) ?? [];
-    expect(occurrences).toHaveLength(1);
-    const index = UI.indexOf("overflow-x-auto");
-    const context = UI.slice(Math.max(0, index - 300), index + 120);
-    expect(context).toContain('aria-label="Relationship views"');
+  it("the page body never scrolls sideways — only chip rows do, inside themselves", () => {
+    // Two horizontal scrollers, both deliberate and both the same
+    // pattern: a row of chips wider than a phone, scrolling inside its
+    // own container. The list and card surfaces have none.
+    expect(UI.match(/overflow-x-auto/g) ?? []).toHaveLength(0);
+    const scrollers = NAV.match(/overflow-x-auto/g) ?? [];
+    expect(scrollers).toHaveLength(2);
+    // The first is the tab strip, and it is labelled.
+    expect(NAV).toMatch(
+      /aria-label="Relationship views"[\s\S]{0,200}overflow-x-auto/,
+    );
+    // Each scroller sizes its track to content so the chips do not
+    // squash; `w-max min-w-full` is what makes that work.
+    expect(NAV.match(/w-max min-w-full/g) ?? []).toHaveLength(2);
   });
 
   it("images are fixed-size avatars that shrink-0 rather than stretch the row", () => {

@@ -467,12 +467,267 @@ export interface ListCandidatesFilter {
   db?: Db;
 }
 
+/** One page of candidates plus the exact size of the full result set. */
+export interface CandidatePage {
+  rows: CandidateWithSources[];
+  /**
+   * Exact row count for the filter, from Postgres.
+   *
+   * NOT `rows.length`, and not a capped estimate. Deriving a total from
+   * the current page is the defect this field exists to remove: a page
+   * of 50 out of 4,000 would have reported "50 candidates".
+   */
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
+/** Exact per-state counts, for tab badges that must not lie. */
+export interface CandidateStateCounts {
+  total: number;
+  unknown: number;
+  not_following: number;
+  following: number;
+  follows_you: number;
+  mutual: number;
+  protectedCount: number;
+}
+
+export const CANDIDATE_PAGE_SIZE = 50;
+
+/**
+ * The subset of the PostgREST builder these queries need.
+ *
+ * Structural rather than `any`: the repo's ESLint config has no
+ * typescript-eslint plugin, so a disable comment is itself a lint
+ * error, and silencing a type is worse than describing one. Threading
+ * Supabase's own generic builder type through these helpers instead
+ * makes TypeScript recurse until it gives up ("type instantiation is
+ * excessively deep"), so the builder is narrowed to this interface once
+ * at each entry point and the row shape is asserted on the way out —
+ * which is the same pattern the rest of this file already uses for
+ * `data`.
+ */
+interface FilteredQuery extends PromiseLike<QueryResponse> {
+  eq(column: string, value: unknown): FilteredQuery;
+  in(column: string, values: readonly unknown[]): FilteredQuery;
+  or(filters: string): FilteredQuery;
+  order(column: string, options?: { ascending?: boolean }): FilteredQuery;
+  range(from: number, to: number): FilteredQuery;
+}
+
+interface QueryResponse {
+  data: unknown;
+  error: { message?: unknown; code?: unknown } | null;
+  count?: number | null;
+}
+
+/** Narrow a Supabase builder to the shape these helpers use. */
+function asFiltered(builder: unknown): FilteredQuery {
+  return builder as FilteredQuery;
+}
+
+/**
+ * Apply the filters shared by the page query and every count query.
+ *
+ * Extracted so a filter can never be applied to one and forgotten on
+ * the other — which would make a count disagree with the rows beneath
+ * it. Workspace and operator scope are applied here too, so no caller
+ * can build a query that omits them.
+ */
+function applyCandidateFilters(
+  query: FilteredQuery,
+  filter: {
+    workspaceId: string;
+    operatorAccountId: string;
+    states?: BlueskyRelationshipState[];
+    protectedOnly?: boolean;
+    search?: string;
+  },
+): FilteredQuery {
+  let q = query
+    .eq("workspace_id", filter.workspaceId)
+    .eq("operator_account_id", filter.operatorAccountId);
+  if (filter.states && filter.states.length > 0) {
+    q = q.in("relationship_state", filter.states);
+  }
+  if (filter.protectedOnly) q = q.eq("protected", true);
+  const term = filter.search?.trim();
+  if (term) {
+    // Handle and display name only. A partial DID match is meaningless
+    // to a human, and the DID is not what anyone types.
+    const like = `%${term}%`;
+    q = q.or(`handle.ilike.${like},display_name.ilike.${like}`);
+  }
+  return q;
+}
+
+/**
+ * One page of candidates, with an exact total.
+ *
+ * Two queries: the page itself, and a `head: true` exact count that
+ * transfers no rows. Both go through `applyCandidateFilters`, so the
+ * count always describes the same set the rows came from.
+ */
+export async function listCandidatesPage(
+  filter: ListCandidatesFilter & { page?: number; pageSize?: number },
+): Promise<CandidatePage> {
+  const supabase = client(filter.db);
+  const pageSize = Math.min(Math.max(filter.pageSize ?? CANDIDATE_PAGE_SIZE, 1), 200);
+  const page = Math.max(filter.page ?? 1, 1);
+  const from = (page - 1) * pageSize;
+
+  const { count, error: countError } = await applyCandidateFilters(
+    asFiltered(
+      supabase
+        .from("bluesky_candidates")
+        .select("id", { count: "exact", head: true }),
+    ),
+    filter,
+  );
+  if (countError) throw fromPostgres(countError, "Could not count candidates.");
+  const total = count ?? 0;
+
+  const { data, error } = await applyCandidateFilters(
+    asFiltered(supabase.from("bluesky_candidates").select("*")),
+    filter,
+  )
+    // A stable tiebreaker after the timestamp: rows imported in the
+    // same page share last_discovered_at to the millisecond, and
+    // without a second key their order between requests is undefined —
+    // which makes a row visible on two pages and invisible on none.
+    .order("last_discovered_at", { ascending: false })
+    .order("subject_did", { ascending: true })
+    .range(from, from + pageSize - 1);
+  if (error) throw fromPostgres(error, "Could not list candidates.");
+
+  const rows = (data ?? []) as unknown as BlueskyCandidateRow[];
+  const withSources = await attachSources(
+    supabase,
+    filter.workspaceId,
+    rows,
+    filter.targetProfileId,
+  );
+
+  return {
+    rows: withSources,
+    total,
+    page,
+    pageSize,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+  };
+}
+
+/**
+ * Exact counts per relationship state.
+ *
+ * One `head: true` count per state rather than a GROUP BY, because
+ * PostgREST cannot group without a database function and this milestone
+ * adds no schema. Each is a count-only round trip that transfers no
+ * rows, and the search filter is applied to all of them so the tab
+ * badges describe what a search actually narrowed to.
+ */
+export async function countCandidatesByState(filter: {
+  workspaceId: string;
+  operatorAccountId: string;
+  search?: string;
+  db?: Db;
+}): Promise<CandidateStateCounts> {
+  const supabase = client(filter.db);
+
+  const countWhere = async (
+    extra?: { column: string; value: unknown },
+  ): Promise<number> => {
+    let q = applyCandidateFilters(
+      asFiltered(
+        supabase
+          .from("bluesky_candidates")
+          .select("id", { count: "exact", head: true }),
+      ),
+      filter,
+    );
+    if (extra) q = q.eq(extra.column, extra.value);
+    const { count, error } = await q;
+    if (error) throw fromPostgres(error, "Could not count candidates.");
+    return count ?? 0;
+  };
+
+  const [total, unknown, notFollowing, following, followsYou, mutual, prot] =
+    await Promise.all([
+      countWhere(),
+      countWhere({ column: "relationship_state", value: "unknown" }),
+      countWhere({ column: "relationship_state", value: "not_following" }),
+      countWhere({ column: "relationship_state", value: "following" }),
+      countWhere({ column: "relationship_state", value: "follows_you" }),
+      countWhere({ column: "relationship_state", value: "mutual" }),
+      countWhere({ column: "protected", value: true }),
+    ]);
+
+  return {
+    total,
+    unknown,
+    not_following: notFollowing,
+    following,
+    follows_you: followsYou,
+    mutual,
+    protectedCount: prot,
+  };
+}
+
+/**
+ * Attach source attribution to a page of candidates.
+ *
+ * The sources are a second query and grouped in memory, rather than an
+ * embedded select, so a candidate with five sources comes back once
+ * with five ids — not five times, and not once with one id.
+ */
+async function attachSources(
+  supabase: SupabaseClient,
+  workspaceId: string,
+  rows: BlueskyCandidateRow[],
+  targetProfileId?: string,
+): Promise<CandidateWithSources[]> {
+  if (rows.length === 0) return [];
+
+  const { data: sourceRows, error } = await supabase
+    .from("bluesky_candidate_sources")
+    .select("candidate_id, target_profile_id")
+    .eq("workspace_id", workspaceId)
+    .in(
+      "candidate_id",
+      rows.map((r) => r.id),
+    );
+  if (error) throw fromPostgres(error, "Could not read source attribution.");
+
+  const sources = new Map<string, string[]>();
+  for (const row of (sourceRows ?? []) as unknown as {
+    candidate_id: string;
+    target_profile_id: string;
+  }[]) {
+    const list = sources.get(row.candidate_id) ?? [];
+    // Defensive dedup: one (candidate, target) pair is unique in the
+    // schema, but a candidate discovered under several targets must
+    // still show each target exactly once.
+    if (!list.includes(row.target_profile_id)) list.push(row.target_profile_id);
+    sources.set(row.candidate_id, list);
+  }
+
+  const filtered = targetProfileId
+    ? rows.filter((r) => (sources.get(r.id) ?? []).includes(targetProfileId))
+    : rows;
+
+  return filtered.map((row) => ({
+    ...row,
+    sourceTargetProfileIds: sources.get(row.id) ?? [],
+  }));
+}
+
 /**
  * List candidates with their full source attribution.
  *
- * The sources are fetched as a second query and grouped, rather than as
- * an embedded select, so a candidate with five sources comes back once
- * with five ids — not five times, and not once with one id.
+ * Unpaginated. Retained for callers that genuinely want a bounded slice
+ * (the MCP read tools); the operator UI uses `listCandidatesPage`.
  */
 export async function listCandidates(
   filter: ListCandidatesFilter,
@@ -905,6 +1160,93 @@ export async function listBatchActions(
     .order("requested_at", { ascending: true });
   if (error) throw fromPostgres(error, "Could not read batch actions.");
   return (data ?? []) as unknown as BlueskyRelationshipActionRow[];
+}
+
+/** One page of history plus the exact number of actions recorded. */
+export interface ActionHistoryPage {
+  rows: BlueskyRelationshipActionRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
+export const HISTORY_PAGE_SIZE = 25;
+
+/**
+ * One page of the audit trail, with an exact total.
+ *
+ * History only grows — an unfollow adds a row rather than retracting a
+ * follow — so this is the list most certain to outrun any fixed limit.
+ */
+export async function listActionHistoryPage(input: {
+  workspaceId: string;
+  operatorAccountId: string;
+  subjectDid?: string;
+  page?: number;
+  pageSize?: number;
+  db?: Db;
+}): Promise<ActionHistoryPage> {
+  const supabase = client(input.db);
+  const pageSize = Math.min(Math.max(input.pageSize ?? HISTORY_PAGE_SIZE, 1), 200);
+  const page = Math.max(input.page ?? 1, 1);
+  const from = (page - 1) * pageSize;
+
+  const scope = (q: FilteredQuery): FilteredQuery => {
+    let out = q
+      .eq("workspace_id", input.workspaceId)
+      .eq("operator_account_id", input.operatorAccountId);
+    if (input.subjectDid) out = out.eq("subject_did", input.subjectDid);
+    return out;
+  };
+
+  const { count, error: countError } = await scope(
+    asFiltered(
+      supabase
+        .from("bluesky_relationship_actions")
+        .select("id", { count: "exact", head: true }),
+    ),
+  );
+  if (countError) throw fromPostgres(countError, "Could not count history.");
+
+  const { data, error } = await scope(
+    asFiltered(supabase.from("bluesky_relationship_actions").select("*")),
+  )
+    .order("requested_at", { ascending: false })
+    .order("id", { ascending: true })
+    .range(from, from + pageSize - 1);
+  if (error) throw fromPostgres(error, "Could not read relationship history.");
+
+  const total = count ?? 0;
+  return {
+    rows: (data ?? []) as unknown as BlueskyRelationshipActionRow[],
+    total,
+    page,
+    pageSize,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+  };
+}
+
+/**
+ * How many actions are sitting in `reconciliation_required`.
+ *
+ * Counted across the whole history rather than the visible page: it is
+ * a standing condition the operator must not be able to page past, so
+ * the banner that reports it has to be independent of pagination.
+ */
+export async function countActionsNeedingReconciliation(input: {
+  workspaceId: string;
+  operatorAccountId: string;
+  db?: Db;
+}): Promise<number> {
+  const { count, error } = await client(input.db)
+    .from("bluesky_relationship_actions")
+    .select("id", { count: "exact", head: true })
+    .eq("workspace_id", input.workspaceId)
+    .eq("operator_account_id", input.operatorAccountId)
+    .eq("status", "reconciliation_required");
+  if (error) throw fromPostgres(error, "Could not count reconciliations.");
+  return count ?? 0;
 }
 
 export async function listActionHistory(input: {

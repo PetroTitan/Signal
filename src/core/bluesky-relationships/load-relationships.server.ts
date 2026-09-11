@@ -2,33 +2,96 @@ import "server-only";
 /**
  * One loader for the whole Bluesky Relationships surface.
  *
- * Every view on the page (Targets, Candidates, Following, Mutual,
- * History) reads from this single projection, so the counts in the tab
- * strip cannot disagree with the rows inside the tabs.
+ * Every view reads from this single projection, so the counts in the
+ * tab strip cannot disagree with the rows inside the tabs.
+ *
+ * WHAT CHANGED AND WHY
+ * --------------------
+ * The first version read 500 candidates and derived every total from
+ * that array. Past 500 it under-reported silently — "500 candidates"
+ * and "the first 500 of them" were indistinguishable — and rows 501+
+ * were unreachable. Totals now come from `count: "exact"` queries that
+ * transfer no rows, and the list is a real page.
+ *
+ * The view is driven entirely by URL parameters rather than client
+ * state, so a filtered page is shareable, the browser's Back button
+ * works, and the page a request renders is a pure function of its URL.
  *
  * The projection is DID-keyed throughout. Handles appear only as
  * display text, and `subjectHandleAtAction` in history is deliberately
- * the handle observed AT THE TIME rather than the current one — a
- * rename must not rewrite what the operator saw when they acted.
+ * the handle observed AT THE TIME — a rename must not rewrite what the
+ * operator saw when they acted.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { listAccountsByPlatform } from "@/repositories/account-repository";
 import {
+  CANDIDATE_PAGE_SIZE,
+  countActionsNeedingReconciliation,
+  countCandidatesByState,
   getLatestImportRun,
+  HISTORY_PAGE_SIZE,
+  listActionHistoryPage,
   listBatches,
-  listActionHistory,
-  listCandidates,
+  listCandidatesPage,
   listTargetProfiles,
+  type CandidateStateCounts,
   type CandidateWithSources,
 } from "@/repositories/bluesky-relationship-repository";
 import type {
   BlueskyActionBatchRow,
   BlueskyImportRunRow,
   BlueskyRelationshipActionRow,
+  BlueskyRelationshipState,
   BlueskyTargetProfileRow,
 } from "@/lib/supabase/types";
 import { describeImportProgress } from "./import-plan";
+
+import {
+  RELATIONSHIP_STATES,
+  RELATIONSHIP_TABS,
+  type PageInfo,
+  type RelationshipsQuery,
+  type RelationshipTab,
+} from "./load-relationships.server.types";
+
+export {
+  RELATIONSHIP_STATES,
+  RELATIONSHIP_TABS,
+  type PageInfo,
+  type RelationshipsQuery,
+  type RelationshipTab,
+};
+
+export function parseTab(raw: string | undefined): RelationshipTab {
+  return (RELATIONSHIP_TABS as readonly string[]).includes(raw ?? "")
+    ? (raw as RelationshipTab)
+    : "targets";
+}
+
+/** Which relationship states a tab lists. undefined means "no filter". */
+export function statesForTab(
+  tab: RelationshipTab,
+  explicit: BlueskyRelationshipState | null,
+): BlueskyRelationshipState[] | undefined {
+  if (tab === "following") return ["following", "mutual"];
+  if (tab === "mutual") return ["mutual"];
+  if (tab === "candidates" && explicit) return [explicit];
+  return undefined;
+}
+
+export function parseState(
+  raw: string | undefined,
+): BlueskyRelationshipState | null {
+  return RELATIONSHIP_STATES.includes(raw as BlueskyRelationshipState)
+    ? (raw as BlueskyRelationshipState)
+    : null;
+}
+
+function parsePage(raw: string | undefined): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+}
 
 export interface TargetWithImport {
   target: BlueskyTargetProfileRow;
@@ -40,35 +103,53 @@ export interface TargetWithImport {
 }
 
 export interface RelationshipsView {
-  /** Bluesky identities in this workspace, for the identity picker. */
   identities: { id: string; handle: string | null; displayName: string | null }[];
   selectedIdentityId: string | null;
   selectedIdentityHandle: string | null;
-  /** Whether the selected identity has a usable Bluesky session. */
   connected: boolean;
+  query: RelationshipsQuery;
   targets: TargetWithImport[];
   candidates: CandidateWithSources[];
+  candidatePage: PageInfo;
   history: BlueskyRelationshipActionRow[];
+  historyPage: PageInfo;
   batches: BlueskyActionBatchRow[];
-  counts: {
-    candidates: number;
-    following: number;
-    mutual: number;
-    followsYou: number;
-    unknown: number;
-    protectedCount: number;
-    needsReconciliation: number;
-  };
+  /** Exact counts from Postgres, narrowed by the active search. */
+  counts: CandidateStateCounts & { needsReconciliation: number };
   /** Handle by target id, for rendering source attribution chips. */
   targetLabels: Map<string, string>;
+  /** Set when a non-fatal read failed; the rest of the page still renders. */
+  degraded: string | null;
 }
+
+const emptyPage = (pageSize: number): PageInfo => ({
+  page: 1,
+  pageSize,
+  total: 0,
+  totalPages: 1,
+});
 
 export async function loadRelationships(input: {
   workspaceId: string;
-  /** Null selects the first Bluesky identity, if any. */
   operatorAccountId: string | null;
+  searchParams?: {
+    tab?: string;
+    q?: string;
+    state?: string;
+    page?: string;
+    hpage?: string;
+  };
   db?: SupabaseClient;
 }): Promise<RelationshipsView> {
+  const sp = input.searchParams ?? {};
+  const query: RelationshipsQuery = {
+    tab: parseTab(sp.tab),
+    search: (sp.q ?? "").trim().slice(0, 100),
+    state: parseState(sp.state),
+    page: parsePage(sp.page),
+    historyPage: parsePage(sp.hpage),
+  };
+
   const accounts = await listAccountsByPlatform(input.workspaceId, "bluesky");
   const identities = accounts.map((a) => ({
     id: a.id,
@@ -82,47 +163,71 @@ export async function loadRelationships(input: {
     identities[0] ||
     null;
 
-  const empty: RelationshipsView = {
+  const base: RelationshipsView = {
     identities,
     selectedIdentityId: selected?.id ?? null,
     selectedIdentityHandle: selected?.handle ?? null,
     connected: false,
+    query,
     targets: [],
     candidates: [],
+    candidatePage: emptyPage(CANDIDATE_PAGE_SIZE),
     history: [],
+    historyPage: emptyPage(HISTORY_PAGE_SIZE),
     batches: [],
     counts: {
-      candidates: 0,
-      following: 0,
-      mutual: 0,
-      followsYou: 0,
+      total: 0,
       unknown: 0,
+      not_following: 0,
+      following: 0,
+      follows_you: 0,
+      mutual: 0,
       protectedCount: 0,
       needsReconciliation: 0,
     },
     targetLabels: new Map(),
+    degraded: null,
   };
-  if (!selected) return empty;
+  // No Bluesky identity: return before touching any relationship table.
+  // This is also what keeps the page rendering its empty state rather
+  // than erroring when the schema has not been provisioned yet.
+  if (!selected) return base;
 
   const account = accounts.find((a) => a.id === selected.id);
   const connected = account?.connectionStatus === "connected";
 
-  const [targetRows, candidates, history, batches] = await Promise.all([
-    listTargetProfiles(input.workspaceId, selected.id, input.db),
-    listCandidates({
-      workspaceId: input.workspaceId,
-      operatorAccountId: selected.id,
-      limit: 500,
-      db: input.db,
-    }),
-    listActionHistory({
-      workspaceId: input.workspaceId,
-      operatorAccountId: selected.id,
-      limit: 100,
-      db: input.db,
-    }),
-    listBatches(input.workspaceId, selected.id, 15, input.db),
-  ]);
+  const listsStates = statesForTab(query.tab, query.state);
+
+  const [targetRows, candidatePage, counts, historyPage, batches, needsReconciliation] =
+    await Promise.all([
+      listTargetProfiles(input.workspaceId, selected.id, input.db),
+      listCandidatesPage({
+        workspaceId: input.workspaceId,
+        operatorAccountId: selected.id,
+        states: listsStates,
+        search: query.search || undefined,
+        page: query.page,
+        db: input.db,
+      }),
+      countCandidatesByState({
+        workspaceId: input.workspaceId,
+        operatorAccountId: selected.id,
+        search: query.search || undefined,
+        db: input.db,
+      }),
+      listActionHistoryPage({
+        workspaceId: input.workspaceId,
+        operatorAccountId: selected.id,
+        page: query.historyPage,
+        db: input.db,
+      }),
+      listBatches(input.workspaceId, selected.id, 15, input.db),
+      countActionsNeedingReconciliation({
+        workspaceId: input.workspaceId,
+        operatorAccountId: selected.id,
+        db: input.db,
+      }),
+    ]);
 
   const targets: TargetWithImport[] = [];
   for (const target of targetRows) {
@@ -144,28 +249,31 @@ export async function loadRelationships(input: {
     });
   }
 
-  const counts = {
-    candidates: candidates.length,
-    following: candidates.filter((c) => c.relationship_state === "following").length,
-    mutual: candidates.filter((c) => c.relationship_state === "mutual").length,
-    followsYou: candidates.filter((c) => c.relationship_state === "follows_you").length,
-    unknown: candidates.filter((c) => c.relationship_state === "unknown").length,
-    protectedCount: candidates.filter((c) => c.protected).length,
-    needsReconciliation: history.filter(
-      (h) => h.status === "reconciliation_required",
-    ).length,
-  };
-
   return {
-    identities,
-    selectedIdentityId: selected.id,
-    selectedIdentityHandle: selected.handle,
+    ...base,
     connected,
     targets,
-    candidates,
-    history,
+    candidates: candidatePage.rows,
+    candidatePage: {
+      page: candidatePage.page,
+      pageSize: candidatePage.pageSize,
+      total: candidatePage.total,
+      totalPages: candidatePage.totalPages,
+    },
+    history: historyPage.rows,
+    historyPage: {
+      page: historyPage.page,
+      pageSize: historyPage.pageSize,
+      total: historyPage.total,
+      totalPages: historyPage.totalPages,
+    },
     batches,
-    counts,
+    counts: {
+      ...counts,
+      // Counted across the whole history, not the visible page: it is a
+      // standing condition the operator must not be able to page past.
+      needsReconciliation,
+    },
     targetLabels: new Map(
       targetRows.map((t) => [t.id, t.handle ?? t.subject_did]),
     ),

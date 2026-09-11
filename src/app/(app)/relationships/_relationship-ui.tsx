@@ -59,6 +59,13 @@ import {
   type ConfirmKind,
   type ConfirmRequest,
 } from "./_confirm-dialog";
+import { Pager, SearchAndFilter, TabStrip } from "./_nav-controls";
+import type {
+  PageInfo,
+  RelationshipsQuery,
+  RelationshipTab,
+} from "@/core/bluesky-relationships/load-relationships.server.types";
+import type { BlueskyActionBatchRow } from "@/lib/supabase/types";
 import type {
   BlueskyRelationshipActionRow,
   BlueskyRelationshipState,
@@ -66,21 +73,24 @@ import type {
 import type { CandidateWithSources } from "@/repositories/bluesky-relationship-repository";
 import type { TargetWithImport } from "@/core/bluesky-relationships/load-relationships.server";
 
-type TabKey = "targets" | "candidates" | "following" | "mutual" | "history";
-
 export interface RelationshipUiProps {
   identities: { id: string; handle: string | null; displayName: string | null }[];
   selectedIdentityId: string | null;
   connected: boolean;
+  query: RelationshipsQuery;
   targets: TargetWithImport[];
   candidates: CandidateWithSources[];
+  candidatePage: PageInfo;
   history: BlueskyRelationshipActionRow[];
+  historyPage: PageInfo;
+  batches: BlueskyActionBatchRow[];
   counts: {
-    candidates: number;
-    following: number;
-    mutual: number;
-    followsYou: number;
+    total: number;
     unknown: number;
+    not_following: number;
+    following: number;
+    follows_you: number;
+    mutual: number;
     protectedCount: number;
     needsReconciliation: number;
   };
@@ -146,7 +156,7 @@ function Notice({ result }: { result: { ok: boolean; error: string | null } & Re
 }
 
 export function RelationshipUi(props: RelationshipUiProps) {
-  const [tab, setTab] = useState<TabKey>("targets");
+  const tab: RelationshipTab = props.query.tab;
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const identityId = props.selectedIdentityId ?? "";
 
@@ -183,20 +193,10 @@ export function RelationshipUi(props: RelationshipUiProps) {
   const dispatchFor = (kind: ConfirmKind) =>
     kind === "follow" ? runFollow : kind === "unfollow" ? runUnfollow : runRemove;
 
-  const visible = useMemo(() => {
-    switch (tab) {
-      case "following":
-        return props.candidates.filter(
-          (c) => c.relationship_state === "following" || c.relationship_state === "mutual",
-        );
-      case "mutual":
-        return props.candidates.filter((c) => c.relationship_state === "mutual");
-      case "candidates":
-        return props.candidates;
-      default:
-        return [];
-    }
-  }, [tab, props.candidates]);
+  // The server already filtered and paged. Filtering again here would
+  // re-introduce exactly the defect this replaces: a client deciding
+  // what a total means from the one page it happens to hold.
+  const visible = props.candidates;
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -223,12 +223,16 @@ export function RelationshipUi(props: RelationshipUiProps) {
     (c) => selected.has(c.id) && c.protected,
   ).length;
 
-  const tabs: { key: TabKey; label: string; count: number | null }[] = [
+  const tabs: { key: RelationshipTab; label: string; count: number | null }[] = [
     { key: "targets", label: "Targets", count: props.targets.length },
-    { key: "candidates", label: "Candidates", count: props.counts.candidates },
-    { key: "following", label: "Following", count: props.counts.following + props.counts.mutual },
+    { key: "candidates", label: "Candidates", count: props.counts.total },
+    {
+      key: "following",
+      label: "Following",
+      count: props.counts.following + props.counts.mutual,
+    },
     { key: "mutual", label: "Mutual", count: props.counts.mutual },
-    { key: "history", label: "History", count: props.history.length },
+    { key: "history", label: "History", count: props.historyPage.total },
   ];
 
   if (props.identities.length === 0) {
@@ -294,31 +298,9 @@ export function RelationshipUi(props: RelationshipUiProps) {
         ) : null}
       </section>
 
-      {/* Tabs. The strip scrolls sideways inside itself; the page does not. */}
-      <nav
-        aria-label="Relationship views"
-        className="-mx-4 px-4 sm:mx-0 sm:px-0 overflow-x-auto"
-      >
-        <ul className="flex gap-2 list-none p-0 m-0 w-max min-w-full">
-          {tabs.map((t) => (
-            <li key={t.key}>
-              <button
-                type="button"
-                onClick={() => setTab(t.key)}
-                aria-current={tab === t.key ? "page" : undefined}
-                className={`btn whitespace-nowrap ${
-                  tab === t.key ? "nav-item-active border-signal-300" : ""
-                }`}
-              >
-                {t.label}
-                {t.count !== null ? (
-                  <span className="ml-1.5 text-ink-500">{t.count}</span>
-                ) : null}
-              </button>
-            </li>
-          ))}
-        </ul>
-      </nav>
+      {/* Tabs are links: the whole view is a function of the URL, so a
+          filtered page is shareable and Back works. */}
+      <TabStrip tabs={tabs} active={tab} />
 
       {props.counts.needsReconciliation > 0 ? (
         <div className="card card-padded border-amber-200 bg-amber-50">
@@ -346,7 +328,11 @@ export function RelationshipUi(props: RelationshipUiProps) {
       ) : null}
 
       {tab === "history" ? (
-        <HistoryView history={props.history} targetLabels={props.targetLabels} />
+        <HistoryView
+          history={props.history}
+          historyPage={props.historyPage}
+          targetLabels={props.targetLabels}
+        />
       ) : null}
 
       {tab !== "targets" && tab !== "history" ? (
@@ -382,6 +368,9 @@ export function RelationshipUi(props: RelationshipUiProps) {
           protectState={protectState}
           actorLabel={actorLabel}
           onConfirm={setConfirming}
+          page={props.candidatePage}
+          query={props.query}
+          counts={props.counts}
         />
       ) : null}
     </div>
@@ -568,6 +557,16 @@ function CandidateListView(props: {
   protectState: ProtectActionResult;
   actorLabel: string;
   onConfirm: (request: ConfirmRequest) => void;
+  page: PageInfo;
+  query: RelationshipsQuery;
+  counts: {
+    total: number;
+    unknown: number;
+    not_following: number;
+    following: number;
+    follows_you: number;
+    mutual: number;
+  };
 }) {
   const anySelected = props.selectedIds.length > 0;
   const atCap = props.selectedIds.length >= MAX_RELATIONSHIP_BATCH_SIZE;
@@ -604,6 +603,17 @@ function CandidateListView(props: {
 
   return (
     <div className="space-y-4">
+      <SearchAndFilter
+        search={props.query.search}
+        state={props.query.state}
+        // State chips belong on the unfiltered Candidates tab. On
+        // Following and Mutual the tab already IS the filter, and a
+        // second one would let the operator build a contradiction.
+        showStateFilter={props.query.tab === "candidates"}
+        counts={props.counts}
+        total={props.counts.total}
+      />
+
       <section className="card card-padded">
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -688,11 +698,14 @@ function CandidateListView(props: {
         <Notice result={props.protectState} />
       </section>
 
+      <Pager info={props.page} param="page" label="Candidates" />
+
       {props.candidates.length === 0 ? (
         <div className="card card-padded">
           <p className="text-sm text-ink-600 leading-relaxed">
-            Nothing here yet. Import a target profile&apos;s followers to build a
-            candidate list.
+            {props.query.search || props.query.state
+              ? "No accounts match this search or filter. Clear them to see the full list."
+              : "Nothing here yet. Import a target profile\u2019s followers to build a candidate list."}
           </p>
         </div>
       ) : null}
@@ -796,6 +809,8 @@ function CandidateListView(props: {
           </li>
         ))}
       </ul>
+
+      <Pager info={props.page} param="page" label="Candidates" />
     </div>
   );
 }
@@ -806,6 +821,7 @@ function CandidateListView(props: {
 
 function HistoryView(props: {
   history: BlueskyRelationshipActionRow[];
+  historyPage: PageInfo;
   targetLabels: Record<string, string>;
 }) {
   if (props.history.length === 0) {
@@ -821,7 +837,9 @@ function HistoryView(props: {
   }
 
   return (
-    <ul className="list-none p-0 m-0 space-y-2">
+    <div className="space-y-4">
+      <Pager info={props.historyPage} param="hpage" label="History" />
+      <ul className="list-none p-0 m-0 space-y-2">
       {props.history.map((action) => (
         <li key={action.id} className="card p-3 sm:p-4">
           <div className="flex flex-wrap items-center gap-2">
@@ -889,6 +907,8 @@ function HistoryView(props: {
           ) : null}
         </li>
       ))}
-    </ul>
+      </ul>
+      <Pager info={props.historyPage} param="hpage" label="History" />
+    </div>
   );
 }

@@ -32,7 +32,21 @@ export const maxDuration = RELATIONSHIP_MAX_DURATION_SECONDS;
 export default async function RelationshipsPage({
   searchParams,
 }: {
-  searchParams?: { identity?: string };
+  /**
+   * The whole surface is a pure function of the URL: which identity,
+   * which tab, the search term, the state filter and both page numbers.
+   * That makes a filtered view shareable and the Back button correct,
+   * and it keeps filtering and counting on the server where the row
+   * count actually lives.
+   */
+  searchParams?: {
+    identity?: string;
+    tab?: string;
+    q?: string;
+    state?: string;
+    page?: string;
+    hpage?: string;
+  };
 }) {
   if (!isSupabaseConfigured()) {
     return (
@@ -72,6 +86,7 @@ export default async function RelationshipsPage({
   const view = await loadRelationships({
     workspaceId: membership.workspace.id,
     operatorAccountId: searchParams?.identity ?? null,
+    searchParams,
   });
 
   return (
@@ -85,9 +100,13 @@ export default async function RelationshipsPage({
           identities={view.identities}
           selectedIdentityId={view.selectedIdentityId}
           connected={view.connected}
+          query={view.query}
           targets={view.targets}
           candidates={view.candidates}
+          candidatePage={view.candidatePage}
           history={view.history}
+          historyPage={view.historyPage}
+          batches={view.batches}
           counts={view.counts}
           // A Map cannot cross the server/client boundary; the object is
           // the same data in a serialisable shape.
