@@ -710,6 +710,43 @@ export function parseVerificationRunCheck(
   return { ok: true, value: { check_name: input.check_name } };
 }
 
+export interface BlueskyRelationshipHistoryArgs {
+  subject_did?: string;
+  limit?: number;
+}
+/**
+ * History filter.
+ *
+ * `subject_did` is validated as a DID rather than accepted as any
+ * string, so an agent that passes a handle gets a clear rejection
+ * instead of a silently empty result that reads as "no history".
+ */
+export function parseBlueskyRelationshipHistory(
+  input: unknown,
+): Parse<BlueskyRelationshipHistoryArgs> {
+  if (input === undefined || input === null) return { ok: true, value: {} };
+  if (!isObject(input)) return { ok: false, errors: ["expected_object"] };
+  const errors: string[] = [];
+  const value: BlueskyRelationshipHistoryArgs = {};
+
+  if (input.subject_did !== undefined && input.subject_did !== null) {
+    if (!str(input.subject_did) || !(input.subject_did as string).startsWith("did:")) {
+      errors.push("subject_did_must_be_a_did");
+    } else {
+      value.subject_did = input.subject_did as string;
+    }
+  }
+  if (input.limit !== undefined && input.limit !== null) {
+    if (typeof input.limit !== "number" || !Number.isFinite(input.limit)) {
+      errors.push("limit_invalid");
+    } else {
+      value.limit = Math.min(Math.max(Math.trunc(input.limit), 1), 200);
+    }
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, value };
+}
+
 export interface ExecutionDryRunArgs {
   queue_id?: string | null;
   item_id?: string | null;
