@@ -408,3 +408,115 @@ describe("folding an outcome", () => {
     expect(total).toBeLessThanOrEqual(5);
   }, 120_000);
 });
+
+// =====================================================================
+// 4. Losing the audit-row race
+// =====================================================================
+
+describe("two workers claiming the same member", () => {
+  it("the loser is DENIED — not terminal, and not reconciliation", async () => {
+    // Produced through the database, not simulated.
+    //
+    // Both sessions look for the audit row, both find nothing (neither
+    // has committed), and both insert. The unique index lets exactly
+    // one through; the other lands in the RPC's `unique_violation`
+    // handler.
+    //
+    // Every field of the verdict it gets back matters, and the
+    // combination is the point: NOT terminal (the winner is still
+    // working), NOT reconciliation (nothing has been sent on the
+    // loser's behalf and no provider intent exists for it), and NOT
+    // permitted. It means "this member is not yours".
+    const { campaignId, runId } = await freshCampaign(5, 5);
+    const res = await reserve(campaignId, runId, 5);
+    const memberId = res.rows.filter((r) => r.member_id)[0].member_id!;
+
+    const a = await h.connect();
+    const b = await h.connect();
+    await a.query("begin");
+    await b.query("begin");
+
+    // A inserts and holds the transaction open.
+    const winner = await claim(campaignId, runId, memberId, "did:plc:m1", a);
+    expect(winner.rows[0].may_mutate).toBe(true);
+
+    // B reaches the same insert and blocks on the unique index.
+    const loserWork = claim(campaignId, runId, memberId, "did:plc:m1", b);
+    await new Promise((r) => setTimeout(r, 300));
+
+    await a.query("commit");
+    const loser = await loserWork;
+
+    expect(loser.rows[0].may_mutate).toBe(false);
+    expect(loser.rows[0].needs_reconcile).toBe(false);
+    expect(loser.rows[0].terminal).toBe(false);
+    // And it points at the winner's row, not a second one.
+    expect(loser.rows[0].action_id).toBe(winner.rows[0].action_id);
+
+    await b.query("commit");
+
+    const actions = await h.admin.query<{ n: string }>(
+      `select count(*) n from public.bluesky_relationship_actions
+        where campaign_member_id=$1`,
+      [memberId],
+    );
+    expect(Number(actions.rows[0].n)).toBe(1);
+
+    await a.end();
+    await b.end();
+  }, 120_000);
+
+  it("releasing by id alone would clear the new owner's lease", async () => {
+    // The hazard the ownership-checked release exists for. A worker
+    // whose lease lapsed still believes it holds these rows.
+    const { campaignId, runId } = await freshCampaign(5, 5);
+    const first = await reserve(campaignId, runId, 5, "worker-A");
+    const memberIds = first.rows
+      .filter((r) => r.member_id)
+      .map((r) => r.member_id as string);
+    const reservationA = first.rows[0].reservation_id!;
+
+    // A's lease lapses and B reclaims everything.
+    await h.admin.query(
+      `update public.bluesky_follow_campaign_members
+          set lease_expires_at = now() - interval '1 minute'
+        where campaign_id=$1`,
+      [campaignId],
+    );
+    await h.admin.query(
+      `update public.bluesky_campaign_quota_reservations
+          set expires_at = now() - interval '1 minute'
+        where id=$1`,
+      [reservationA],
+    );
+    const second = await reserve(campaignId, runId, 5, "worker-B");
+    const reservationB = second.rows[0].reservation_id!;
+    expect(reservationB).not.toBe(reservationA);
+
+    // A now finishes its chunk and hands back what it "leased but never
+    // attempted". With ownership checked, it releases NOTHING.
+    const released = await h.admin.query<{ n: number }>(
+      `select public.release_bluesky_campaign_members_owned(
+         $1,$2,$3,$4,$5) n`,
+      [t.workspaceId, campaignId, memberIds, "worker-A", reservationA],
+    );
+    expect(Number(released.rows[0].n)).toBe(0);
+
+    // B still holds every row.
+    const held = await h.admin.query<{ n: string }>(
+      `select count(*) n from public.bluesky_follow_campaign_members
+        where campaign_id=$1 and claimed_by='worker-B'
+          and reservation_id=$2 and status='claimed'`,
+      [campaignId, reservationB],
+    );
+    expect(Number(held.rows[0].n)).toBe(memberIds.length);
+
+    // And B can still hand back its own.
+    const bReleased = await h.admin.query<{ n: number }>(
+      `select public.release_bluesky_campaign_members_owned(
+         $1,$2,$3,$4,$5) n`,
+      [t.workspaceId, campaignId, memberIds, "worker-B", reservationB],
+    );
+    expect(Number(bReleased.rows[0].n)).toBe(memberIds.length);
+  }, 120_000);
+});

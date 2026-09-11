@@ -41,11 +41,12 @@ import { resolveRelationship } from "@/core/bluesky-relationships/relationship-s
 import { INTER_REQUEST_MS } from "@/core/bluesky-relationships/execute-actions.server";
 import { MAX_RELATIONSHIP_BATCH_SIZE } from "@/core/bluesky-relationships/limits";
 import type { RelationshipSession } from "@/core/bluesky-relationships/session.server";
+import type { MutationPermit } from "@/repositories/bluesky-campaign-repository";
 import {
   claimCampaignAction,
   consumeMemberQuota,
   completeCampaignAction,
-  releaseMembers,
+  releaseOwnedMembers,
   updateMember,
   type ClaimedMember,
 } from "@/repositories/bluesky-campaign-repository";
@@ -83,6 +84,13 @@ export const LEASE_SECONDS = 300;
 export const DISPATCH_LEASE_SECONDS = 360;
 
 export interface ChunkOutcomeCounts {
+  /**
+   * Members another worker owned, which this one left alone.
+   *
+   * Not a failure and not an attempt: nothing was sent, nothing was
+   * spent, and the member is someone else's to finish.
+   */
+  denied: number;
   attempted: number;
   succeeded: number;
   alreadyFollowing: number;
@@ -105,6 +113,7 @@ export interface ChunkResult extends ChunkOutcomeCounts {
 }
 
 const emptyCounts = (): ChunkOutcomeCounts => ({
+  denied: 0,
   attempted: 0,
   succeeded: 0,
   alreadyFollowing: 0,
@@ -284,19 +293,44 @@ export async function processCampaignChunk(
       db: input.db,
     });
 
-    // A terminal claim means the audit row already reached a final
-    // state — but WHICH final state decides everything, and collapsing
-    // them all into "succeeded" was a false success: a member whose
-    // follow was never confirmed, or which structurally failed, was
-    // reported to the operator as followed.
-    if (claim.terminal && claim.existingStatus === "succeeded") {
+    // ── The verdict is a closed set, and every branch is handled. ──
+    //
+    // It used to be three independent booleans, and the worker read
+    // only two of them. The combination the RPC returns when this
+    // worker LOST the race to create the audit row — not terminal,
+    // nothing to reconcile, not ours — looked like "nothing special"
+    // and fell straight through to the mutation path. The losing worker
+    // sent a second follow for a member another worker owned, and spent
+    // a unit of quota doing it.
+    if (claim.kind === "denied") {
+      // This member is not ours. Not terminal, and NOT reconciliation:
+      // no provider intent exists for this worker and nothing has been
+      // sent on its behalf, so claiming otherwise would put a fiction
+      // in the operator's History.
+      //
+      // Nothing is persisted, nothing is counted, and the audit row —
+      // which belongs to the winner — is not touched.
+      //
+      // The member is NOT handed back either. Releasing it would put it
+      // straight back in the queue, where this same pass would reserve
+      // it again and be denied again; the first version of this fix
+      // spun on exactly that. And a member someone else is working on
+      // is not ours to return. The lease we hold lapses on its own,
+      // by which time the winner has finished it or died and left it
+      // genuinely recoverable.
+      untouched.delete(member.id);
+      counts.denied += 1;
+      continue;
+    }
+
+    if (claim.kind === "terminal" && claim.status === "succeeded") {
       // Confirmed by a previous pass. Not an attempt, no quota.
       untouched.delete(member.id);
       await persist(input, member, "succeeded", null, member.attempt_count);
       continue;
     }
 
-    if (claim.terminal && claim.existingStatus === "failed") {
+    if (claim.kind === "terminal" && claim.status === "failed") {
       // A previous pass established this cannot succeed. Terminal, but
       // terminal-failed — never reported as a follow.
       untouched.delete(member.id);
@@ -318,8 +352,7 @@ export async function processCampaignChunk(
     // the follow; until then the member stays retryable and the action
     // stays reconciliation_required, however many passes go by.
     const reconcileOnlyClaim =
-      claim.needsReconcile ||
-      (claim.terminal && claim.existingStatus === "reconciliation_required");
+      claim.kind === "reconcile_only" || claim.kind === "terminal";
 
     if (known === "following") {
       // Observed, not assumed. No record is created and no quota is
@@ -341,11 +374,31 @@ export async function processCampaignChunk(
       continue;
     }
 
-    const result = reconcileOnlyClaim
-      ? // RECONCILIATION-ONLY MODE. No mutation may be sent while a
+    // Reaching the provider requires the PERMIT, which only the
+    // `may_mutate` verdict carries. There is no boolean to forget to
+    // read: a branch that has not established permission cannot call
+    // `attemptFollow` at all, and the `never` below means a verdict
+    // added later cannot be silently ignored the way `may_mutate` was.
+    let result: AttemptResult;
+    switch (claim.kind) {
+      case "may_mutate":
+        result = await attemptFollow(input, member, claim.permit);
+        break;
+      case "reconcile_only":
+      // Only `reconciliation_required` reaches here; the other two
+      // terminal statuses returned above.
+      case "terminal":
+        // RECONCILIATION-ONLY MODE. No mutation may be sent while a
         // prior attempt's outcome is unknown.
-        await reconcileOnly(input, member, claim.actionId)
-      : await attemptFollow(input, member, claim.actionId);
+        result = await reconcileOnly(input, member, claim.actionId);
+        break;
+      default: {
+        const unreachable: never = claim;
+        throw new Error(
+          `unhandled claim verdict: ${JSON.stringify(unreachable)}`,
+        );
+      }
+    }
 
     untouched.delete(member.id);
     rateLimit = result.rateLimit ?? rateLimit;
@@ -431,12 +484,23 @@ export async function processCampaignChunk(
     if (i < claimed.length - 1 && spacing > 0) await sleep(spacing);
   }
 
-  // Return everything we leased but never attempted.
+  // Hand back what we leased and never attempted — and ONLY what we
+  // still hold.
+  //
+  // Releasing by id alone was unsafe for exactly the rows most likely
+  // to be in this set. A lease lapses while its worker is still alive,
+  // another worker reclaims the member and starts work, and this worker
+  // then "returns" it — clearing the new owner's lease while a request
+  // for it may be in flight. The same helper is what a worker reaches
+  // for after being told a member is not its to work on, which is the
+  // moment that member is most likely to belong to someone else.
   if (untouched.size > 0) {
-    await releaseMembers({
+    await releaseOwnedMembers({
       workspaceId: input.campaign.workspace_id,
       campaignId: input.campaign.id,
       memberIds: [...untouched],
+      claimedBy: input.claimedBy,
+      reservationId: input.reservationId,
       db: input.db,
     });
   }
@@ -515,8 +579,18 @@ async function reconcileOnly(
 async function attemptFollow(
   input: ProcessChunkInput,
   member: ClaimedMember,
-  actionId: string,
+  /**
+   * Proof that the audit row is this worker's to act on.
+   *
+   * A parameter rather than a checked boolean: the verdict used to be
+   * three booleans and the worker read two of them, so "this member is
+   * not yours" reached this function and a duplicate follow went out.
+   * Now only the verdict that grants permission can produce one of
+   * these, so there is nothing left to forget.
+   */
+  permit: MutationPermit,
 ): Promise<AttemptResult> {
+  const actionId = permit.actionId;
   if (input.campaign.dry_run) {
     return {
       kind: "dry_run",
