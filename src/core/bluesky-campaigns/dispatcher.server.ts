@@ -92,6 +92,16 @@ export interface DispatchInput {
   monotonicNowMs?: () => number;
 }
 
+/** The later of two optional instants, or null when neither is set. */
+function laterOf(a: string | null, b: string | null): Date | null {
+  const times = [a, b]
+    .filter((v): v is string => Boolean(v))
+    .map((v) => new Date(v))
+    .filter((d) => !Number.isNaN(d.getTime()));
+  if (times.length === 0) return null;
+  return times.reduce((x, y) => (x.getTime() >= y.getTime() ? x : y));
+}
+
 const empty = (): DispatchResult => ({
   campaignsConsidered: 0,
   campaignsRun: 0,
@@ -260,7 +270,7 @@ async function runCampaign(args: {
     db: input.db,
   });
   if (counts.remainingEligible === 0) {
-    await completeCampaign(campaign, input.db);
+    await completeCampaign(campaign, input.db, now);
     out.note = "every member is terminal — campaign completed";
     return out;
   }
@@ -316,9 +326,15 @@ async function runCampaign(args: {
     attemptedToday: run.attempted_count,
     succeededToday: run.succeeded_count,
     minSuccessRatePercent: campaign.min_success_rate_percent,
-    rateLimitedUntil: run.rate_limited_until
-      ? new Date(run.rate_limited_until)
-      : null,
+    // BOTH windows, whichever is later. The run is created fresh each
+    // local day and carries no rate-limit state, so consulting only the
+    // run would let a campaign that was rate-limited yesterday evening
+    // resume this morning as though nothing had happened — and the
+    // provider's reset can easily outlive the local date boundary.
+    rateLimitedUntil: laterOf(
+      campaign.rate_limited_until,
+      run.rate_limited_until,
+    ),
     remainingEligible: counts.remainingEligible,
     now,
   });
@@ -343,7 +359,7 @@ async function runCampaign(args: {
     run.attempted_count - run.already_following_count - run.skipped_count;
   let quotaRemaining = Math.max(0, live.effective - Math.max(0, consumedToday));
   if (quotaRemaining === 0) {
-    await finishRun(campaign, run, input.db, "daily quota reached");
+    await finishRun(campaign, run, input.db, "daily quota reached", now);
     out.note = "daily quota already reached";
     return out;
   }
@@ -443,7 +459,7 @@ async function runCampaign(args: {
       skippedCount: skipped,
       failedCount: failed,
       consecutiveFailures: consecutive,
-      lastChunkAt: new Date().toISOString(),
+      lastChunkAt: now.toISOString(),
       db: input.db,
     });
 
@@ -507,46 +523,78 @@ async function runCampaign(args: {
     db: input.db,
   });
   if (after.remainingEligible === 0) {
-    await finishRun(campaign, run, input.db, "queue exhausted");
-    await completeCampaign(campaign, input.db);
+    await finishRun(campaign, run, input.db, "queue exhausted", now);
+    await completeCampaign(campaign, input.db, now);
     out.note = "campaign completed";
     return out;
   }
   if (quotaRemaining <= 0) {
-    await finishRun(campaign, run, input.db, "daily quota reached");
+    await finishRun(campaign, run, input.db, "daily quota reached", now);
     out.note = `daily quota reached (${succeeded} follow(s) created today)`;
   }
   return out;
 }
 
+/**
+ * Close out the day's run and schedule the next.
+ *
+ * Takes `now` rather than reading the clock. The first version called
+ * `new Date()` here while the dispatcher worked from an injected
+ * instant, so the next-run hint was computed against a different time
+ * than everything else — which made a resumed campaign look "not yet
+ * due" depending on when the code happened to run.
+ */
 async function finishRun(
   campaign: BlueskyFollowCampaignRow,
   run: BlueskyFollowCampaignRunRow,
   db: SupabaseClient | undefined,
   reason: string,
+  now: Date,
 ): Promise<void> {
   await updateRun({
     workspaceId: campaign.workspace_id,
     runId: run.id,
     status: "completed",
-    completedAt: new Date().toISOString(),
+    completedAt: now.toISOString(),
     effectiveQuotaReason: reason,
     db,
   });
+  // Schedule for the NEXT local day, not the next window slot today.
+  // Today's quota is spent, so pointing at "five minutes from now"
+  // would have the dispatcher reconsider this campaign on every tick
+  // for the rest of the day — roughly 288 wake-ups to conclude each
+  // time that the day's run is already complete.
+  const tomorrow = nextLocalDate(now, campaign.timezone);
   await updateCampaign({
     workspaceId: campaign.workspace_id,
     campaignId: campaign.id,
     nextRunAt: computeNextRunAt({
-      from: new Date(),
+      from: now,
       timezone: campaign.timezone,
       window: {
         startMinute: campaign.execution_window_start_minute,
         endMinute: campaign.execution_window_end_minute,
       },
+      notBeforeLocalDate: tomorrow,
     }).toISOString(),
     expectedStatuses: ["active"],
     db,
   });
+}
+
+/**
+ * The local calendar date after the one `instant` falls on.
+ *
+ * Computed by stepping a full day forward and re-reading the local
+ * date, rather than by adding one to the date string — which would
+ * produce "2026-09-32" at a month boundary, and would also be wrong on
+ * a DST day where the local day is 23 or 25 hours long.
+ */
+function nextLocalDate(instant: Date, timezone: string): string {
+  return localClockAt(
+    new Date(instant.getTime() + 24 * 60 * 60_000),
+    timezone,
+  ).localDate;
 }
 
 /**
@@ -560,12 +608,13 @@ async function finishRun(
 async function completeCampaign(
   campaign: BlueskyFollowCampaignRow,
   db: SupabaseClient | undefined,
+  now: Date,
 ): Promise<boolean> {
   const updated = await updateCampaign({
     workspaceId: campaign.workspace_id,
     campaignId: campaign.id,
     status: "completed",
-    completedAt: new Date().toISOString(),
+    completedAt: now.toISOString(),
     nextRunAt: null,
     expectedStatuses: ["active"],
     db,

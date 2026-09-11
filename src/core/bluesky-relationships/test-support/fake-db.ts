@@ -58,6 +58,16 @@ interface Filter {
 export class FakeDb {
   readonly tables = new Map<string, Row[]>();
   private idCounter = 0;
+  /**
+   * Natural-key → row index, per table.
+   *
+   * Without it `findByNaturalKey` is a linear scan and an upsert-heavy
+   * import is O(n²): seeding 100,000 members took over three minutes,
+   * which is long enough that a scale test stops being run. Postgres
+   * has a unique INDEX behind these constraints, so a linear scan is
+   * also the wrong shape to be modelling.
+   */
+  private readonly naturalKeyIndex = new Map<string, Map<string, Row>>();
 
   constructor(seed: Record<string, Row[]> = {}) {
     for (const [table, rows] of Object.entries(seed)) {
@@ -79,7 +89,180 @@ export class FakeDb {
   client(): SupabaseClient {
     return {
       from: (table: string) => new FakeQuery(this, table),
+      rpc: (fn: string, args: Record<string, unknown>) =>
+        Promise.resolve(this.rpc(fn, args)),
     } as unknown as SupabaseClient;
+  }
+
+  /**
+   * The campaign RPCs.
+   *
+   * Reproduced rather than mocked, because these functions ARE the
+   * concurrency guarantees. A `vi.fn()` returning canned rows would
+   * prove the worker called claim(); it would prove nothing about
+   * whether two workers can claim the same member — which is the one
+   * property worth testing.
+   *
+   * JavaScript is single-threaded, so a synchronous body here has
+   * exactly the atomicity `FOR UPDATE SKIP LOCKED` gives inside one
+   * statement: an interleaved caller cannot observe a half-applied
+   * claim. Two "concurrent" workers in a test are interleaved awaits,
+   * and they must come away with disjoint sets.
+   */
+  rpc(fn: string, args: Record<string, unknown>): QueryResult {
+    switch (fn) {
+      case "claim_bluesky_campaign_members":
+        return this.claimCampaignMembers(args);
+      case "release_bluesky_campaign_members":
+        return this.releaseCampaignMembers(args);
+      case "ensure_bluesky_campaign_run":
+        return this.ensureCampaignRun(args);
+      case "record_bluesky_identity_usage":
+        return this.recordIdentityUsage(args);
+      default:
+        return {
+          data: null,
+          error: pgError("42883", `function ${fn} does not exist`),
+        };
+    }
+  }
+
+  private claimCampaignMembers(args: Record<string, unknown>): QueryResult {
+    const now = Date.now();
+    const chunk = Math.min(
+      Math.max(Number(args.p_chunk_size ?? 1), 1),
+      100,
+    );
+    const leaseSeconds = Math.min(
+      Math.max(Number(args.p_lease_seconds ?? 60), 10),
+      3600,
+    );
+
+    const eligible = this.rows("bluesky_follow_campaign_members")
+      .filter((m) => {
+        if (m.workspace_id !== args.p_workspace_id) return false;
+        if (m.campaign_id !== args.p_campaign_id) return false;
+        const status = String(m.status);
+        if (status === "queued" || status === "retryable") {
+          const next = m.next_attempt_at as string | null;
+          return !next || new Date(next).getTime() <= now;
+        }
+        // An expired lease returns to the pool. Safe for follows
+        // because the worker reads relationship truth before
+        // re-attempting.
+        if (status === "claimed" || status === "running") {
+          const expiry = m.lease_expires_at as string | null;
+          return Boolean(expiry) && new Date(expiry!).getTime() < now;
+        }
+        return false;
+      })
+      .sort(
+        (a, b) => Number(a.import_sequence) - Number(b.import_sequence),
+      )
+      .slice(0, chunk);
+
+    // Applied in the same synchronous turn as the selection — this is
+    // the SKIP LOCKED equivalent.
+    const claimedAt = new Date(now).toISOString();
+    const claimed = eligible.map((m) => {
+      m.status = "claimed";
+      m.claimed_at = claimedAt;
+      m.claimed_by = args.p_claimed_by;
+      m.lease_expires_at = new Date(now + leaseSeconds * 1000).toISOString();
+      return { ...m };
+    });
+    return { data: claimed, error: null };
+  }
+
+  private releaseCampaignMembers(args: Record<string, unknown>): QueryResult {
+    const ids = new Set((args.p_member_ids as string[]) ?? []);
+    let count = 0;
+    for (const m of this.rows("bluesky_follow_campaign_members")) {
+      if (m.workspace_id !== args.p_workspace_id) continue;
+      if (m.campaign_id !== args.p_campaign_id) continue;
+      if (!ids.has(String(m.id))) continue;
+      if (m.status !== "claimed" && m.status !== "running") continue;
+      m.status = "queued";
+      m.claimed_at = null;
+      m.claimed_by = null;
+      m.lease_expires_at = null;
+      count += 1;
+    }
+    return { data: count, error: null };
+  }
+
+  private ensureCampaignRun(args: Record<string, unknown>): QueryResult {
+    const rows = this.rows("bluesky_follow_campaign_runs");
+    // The unique (campaign_id, local_date) index. A duplicate cron
+    // delivery finds this row rather than inserting a second.
+    const existing = rows.find(
+      (r) =>
+        r.campaign_id === args.p_campaign_id &&
+        r.local_date === args.p_local_date,
+    );
+    if (existing) return { data: existing, error: null };
+
+    const requested = Number(args.p_requested_quota);
+    const effective = Math.min(Number(args.p_effective_quota), requested);
+    const row: Row = {
+      id: this.nextId("run"),
+      workspace_id: args.p_workspace_id,
+      campaign_id: args.p_campaign_id,
+      local_date: args.p_local_date,
+      status: "running",
+      requested_daily_quota: requested,
+      effective_daily_quota: effective,
+      effective_quota_reason: args.p_effective_reason ?? null,
+      attempted_count: 0,
+      succeeded_count: 0,
+      already_following_count: 0,
+      skipped_count: 0,
+      failed_count: 0,
+      consecutive_failures: 0,
+      rate_limited_until: null,
+      rate_limit_remaining: null,
+      rate_limit_reset_at: null,
+      last_error_code: null,
+      last_error_message: null,
+      started_at: new Date().toISOString(),
+      completed_at: null,
+      last_chunk_at: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    rows.push(row);
+    return { data: row, error: null };
+  }
+
+  private recordIdentityUsage(args: Record<string, unknown>): QueryResult {
+    const rows = this.rows("bluesky_identity_daily_usage");
+    const existing = rows.find(
+      (r) =>
+        r.workspace_id === args.p_workspace_id &&
+        r.operator_account_id === args.p_operator_account_id &&
+        r.usage_date === args.p_usage_date,
+    );
+    const follows = Math.max(Number(args.p_follows_created ?? 0), 0);
+    const attempts = Math.max(Number(args.p_attempts_made ?? 0), 0);
+    if (existing) {
+      // An increment, not a read-modify-write: two campaigns sharing an
+      // identity must not lose each other's consumption.
+      existing.follows_created = Number(existing.follows_created) + follows;
+      existing.attempts_made = Number(existing.attempts_made) + attempts;
+      return { data: existing, error: null };
+    }
+    const row: Row = {
+      id: this.nextId("usage"),
+      workspace_id: args.p_workspace_id,
+      operator_account_id: args.p_operator_account_id,
+      usage_date: args.p_usage_date,
+      follows_created: follows,
+      attempts_made: attempts,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    rows.push(row);
+    return { data: row, error: null };
   }
 
   /** Natural-key columns, mirroring the real unique indexes. */
@@ -90,17 +273,50 @@ export class FakeDb {
         return ["workspace_id", "operator_account_id", "subject_did"];
       case "bluesky_candidate_sources":
         return ["candidate_id", "target_profile_id"];
+      case "bluesky_follow_campaign_members":
+        return ["campaign_id", "subject_did"];
+      case "bluesky_campaign_member_sources":
+        return ["member_id", "target_profile_id", "source_label"];
+      case "bluesky_follow_campaign_runs":
+        return ["campaign_id", "local_date"];
+      case "bluesky_identity_daily_usage":
+        return ["workspace_id", "operator_account_id", "usage_date"];
       default:
         return null;
     }
   }
 
-  findByNaturalKey(table: string, row: Row): Row | undefined {
+  private naturalKeyOf(table: string, row: Row): string | null {
     const key = this.uniqueKey(table);
-    if (!key) return undefined;
-    return this.rows(table).find((existing) =>
-      key.every((column) => existing[column] === row[column]),
-    );
+    if (!key) return null;
+    return key.map((column) => String(row[column] ?? "\u0000")).join("\u0001");
+  }
+
+  private indexFor(table: string): Map<string, Row> {
+    let index = this.naturalKeyIndex.get(table);
+    if (!index) {
+      index = new Map();
+      // Build lazily from whatever the test seeded directly.
+      for (const row of this.rows(table)) {
+        const key = this.naturalKeyOf(table, row);
+        if (key !== null) index.set(key, row);
+      }
+      this.naturalKeyIndex.set(table, index);
+    }
+    return index;
+  }
+
+  findByNaturalKey(table: string, row: Row): Row | undefined {
+    const key = this.naturalKeyOf(table, row);
+    if (key === null) return undefined;
+    return this.indexFor(table).get(key);
+  }
+
+  /** Record a newly-inserted row in the natural-key index. */
+  indexRow(table: string, row: Row): void {
+    const key = this.naturalKeyOf(table, row);
+    if (key === null) return;
+    this.indexFor(table).set(key, row);
   }
 
   /**
@@ -177,6 +393,7 @@ class FakeQuery implements PromiseLike<QueryResult> {
   private headOnly = false;
   private rangeFrom: number | null = null;
   private rangeTo: number | null = null;
+  private ignoreDuplicates = false;
 
   constructor(
     private readonly db: FakeDb,
@@ -206,9 +423,16 @@ class FakeQuery implements PromiseLike<QueryResult> {
     this.payload = Array.isArray(values) ? values : [values];
     return this;
   }
-  upsert(values: Row | Row[], _options?: { onConflict?: string; ignoreDuplicates?: boolean }): this {
+  upsert(
+    values: Row | Row[],
+    options?: { onConflict?: string; ignoreDuplicates?: boolean },
+  ): this {
     this.operation = "upsert";
     this.payload = Array.isArray(values) ? values : [values];
+    // PostgREST returns only the rows it actually INSERTED when
+    // ignoreDuplicates is set, which is how the importer counts
+    // inserted-vs-duplicate without a second query.
+    this.ignoreDuplicates = options?.ignoreDuplicates === true;
     return this;
   }
   update(values: Row): this {
@@ -273,13 +497,42 @@ class FakeQuery implements PromiseLike<QueryResult> {
         case "in":
           return (filter.value as unknown[]).includes(row[filter.column]);
         case "or": {
+          // PostgREST `or=(a.op.v,b.op.v)`. Only the operators the
+          // repositories actually emit are supported — an unrecognised
+          // one throws rather than silently evaluating false, because a
+          // filter that quietly matches nothing is how a test comes to
+          // assert the wrong behaviour.
           const clauses = String(filter.value).split(",");
           return clauses.some((clause) => {
             const [column, op, ...rest] = clause.split(".");
-            if (op !== "ilike") return false;
-            const term = rest.join(".").replace(/%/g, "").toLowerCase();
+            const operand = rest.join(".");
             const value = row[column];
-            return typeof value === "string" && value.toLowerCase().includes(term);
+            switch (op) {
+              case "ilike": {
+                const term = operand.replace(/%/g, "").toLowerCase();
+                return (
+                  typeof value === "string" && value.toLowerCase().includes(term)
+                );
+              }
+              case "is":
+                return operand === "null"
+                  ? value === null || value === undefined
+                  : String(value) === operand;
+              case "eq":
+                return String(value) === operand;
+              case "lte":
+                return value !== null && value !== undefined
+                  ? String(value) <= operand
+                  : false;
+              case "gte":
+                return value !== null && value !== undefined
+                  ? String(value) >= operand
+                  : false;
+              default:
+                throw new Error(
+                  `fake-db: unsupported or() operator "${op}" in "${clause}"`,
+                );
+            }
           });
         }
       }
@@ -298,6 +551,13 @@ class FakeQuery implements PromiseLike<QueryResult> {
             : undefined;
 
         if (existing) {
+          if (this.ignoreDuplicates) {
+            // ON CONFLICT DO NOTHING: the existing row is untouched and
+            // is NOT returned. A member already in a campaign therefore
+            // keeps its import_sequence and its progress across a
+            // re-import of an overlapping audience.
+            continue;
+          }
           // Conflict-update. Columns absent from the payload are left
           // alone — which is what preserves first_discovered_at and the
           // follow-record identity across a re-import.
@@ -323,6 +583,7 @@ class FakeQuery implements PromiseLike<QueryResult> {
         const violation = this.db.checkConstraints(this.table, row, "insert");
         if (violation) return { data: null, error: violation };
         rows.push(row);
+        this.db.indexRow(this.table, row);
         written.push(row);
       }
       return this.shape(written);
@@ -359,10 +620,8 @@ class FakeQuery implements PromiseLike<QueryResult> {
     if (this.orderKeys.length > 0) {
       result = [...result].sort((a, b) => {
         for (const key of this.orderKeys) {
-          const av = String(a[key.column] ?? "");
-          const bv = String(b[key.column] ?? "");
-          const cmp = key.ascending ? av.localeCompare(bv) : bv.localeCompare(av);
-          if (cmp !== 0) return cmp;
+          const cmp = compareValues(a[key.column], b[key.column]);
+          if (cmp !== 0) return key.ascending ? cmp : -cmp;
         }
         return 0;
       });
@@ -399,6 +658,27 @@ class FakeQuery implements PromiseLike<QueryResult> {
     if (this.maybe) return { data: copies[0] ?? null, error: null };
     return { data: copies, error: null };
   }
+}
+
+/**
+ * Order two column values the way Postgres would.
+ *
+ * Type-aware, because the first version compared everything as a
+ * string: `import_sequence` is a BIGINT, so a lexicographic sort put
+ * 17,017 before 1,702 and the pagination tests were exercising an
+ * ordering the real database never produces. A fake that sorts
+ * differently from Postgres does not merely fail to catch a bug — it
+ * asserts the wrong behaviour is correct.
+ */
+function compareValues(a: unknown, b: unknown): number {
+  if (a === b) return 0;
+  if (a === null || a === undefined) return b === null || b === undefined ? 0 : -1;
+  if (b === null || b === undefined) return 1;
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  if (typeof a === "boolean" && typeof b === "boolean") {
+    return Number(a) - Number(b);
+  }
+  return String(a).localeCompare(String(b));
 }
 
 /** Column defaults the real schema applies. */
@@ -470,6 +750,51 @@ function defaultsFor(table: string): Row {
       };
     case "bluesky_candidate_sources":
       return {
+        first_seen_at: new Date().toISOString(),
+        last_seen_at: new Date().toISOString(),
+        times_seen: 1,
+      };
+    case "bluesky_follow_campaign_members":
+      return {
+        status: "queued",
+        attempt_count: 0,
+        next_attempt_at: null,
+        claimed_at: null,
+        claimed_by: null,
+        lease_expires_at: null,
+        provider_record_uri: null,
+        provider_record_rkey: null,
+        provider_record_cid: null,
+        last_error_code: null,
+        last_error_message: null,
+        last_attempted_at: null,
+        completed_at: null,
+        current_handle: null,
+        display_name: null,
+      };
+    case "bluesky_follow_campaigns":
+      return {
+        status: "draft",
+        requested_daily_quota: 100,
+        timezone: "UTC",
+        execution_window_start_minute: 540,
+        execution_window_end_minute: 1200,
+        start_date: null,
+        dry_run: false,
+        max_consecutive_failures: 5,
+        min_success_rate_percent: 50,
+        next_run_at: null,
+        activated_at: null,
+        completed_at: null,
+        paused_at: null,
+        cancelled_at: null,
+        last_error_code: null,
+        last_error_message: null,
+        rate_limited_until: null,
+      };
+    case "bluesky_campaign_member_sources":
+      return {
+        source_label: "import",
         first_seen_at: new Date().toISOString(),
         last_seen_at: new Date().toISOString(),
         times_seen: 1,
