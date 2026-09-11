@@ -421,21 +421,24 @@ function TargetsView(props: {
             ) : null}
 
             <div className="mt-3 flex flex-wrap gap-2">
-              <form action={props.runImport}>
-                <input
-                  type="hidden"
-                  name="operator_account_id"
-                  value={props.identityId}
-                />
-                <input type="hidden" name="target_profile_id" value={target.id} />
-                <SubmitButton className="btn-primary">
-                  {run === null
-                    ? "Import followers"
-                    : complete
-                      ? "Imported"
-                      : "Continue import"}
-                </SubmitButton>
-              </form>
+              {/* A completed import offers no "import" CTA: there is
+                  nothing left to fetch, and a primary button reading
+                  "Imported" invites a click that does nothing. The
+                  status badge above already says it is complete, and
+                  Re-import is the real action. */}
+              {complete ? null : (
+                <form action={props.runImport}>
+                  <input
+                    type="hidden"
+                    name="operator_account_id"
+                    value={props.identityId}
+                  />
+                  <input type="hidden" name="target_profile_id" value={target.id} />
+                  <SubmitButton className="btn-primary">
+                    {run === null ? "Import followers" : "Continue import"}
+                  </SubmitButton>
+                </form>
+              )}
               {complete ? (
                 <form action={props.runImport}>
                   <input
