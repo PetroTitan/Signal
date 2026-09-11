@@ -46,6 +46,7 @@ import type {
   BlueskyTargetProfileRow,
 } from "@/lib/supabase/types";
 import { describeImportProgress } from "./import-plan";
+import { classifyReadFailure, type ReadFailure } from "./read-failure";
 
 import {
   RELATIONSHIP_STATES,
@@ -118,8 +119,14 @@ export interface RelationshipsView {
   counts: CandidateStateCounts & { needsReconciliation: number };
   /** Handle by target id, for rendering source attribution chips. */
   targetLabels: Map<string, string>;
-  /** Set when a non-fatal read failed; the rest of the page still renders. */
-  degraded: string | null;
+  /**
+   * Set when the relationship reads failed.
+   *
+   * The page renders this INSTEAD of a list, never alongside an empty
+   * one — "no candidates yet" over a failed read reads as success and
+   * is the single worst thing this surface could say.
+   */
+  failure: ReadFailure | null;
 }
 
 const emptyPage = (pageSize: number): PageInfo => ({
@@ -186,7 +193,7 @@ export async function loadRelationships(input: {
       needsReconciliation: 0,
     },
     targetLabels: new Map(),
-    degraded: null,
+    failure: null,
   };
   // No Bluesky identity: return before touching any relationship table.
   // This is also what keeps the page rendering its empty state rather
@@ -198,8 +205,12 @@ export async function loadRelationships(input: {
 
   const listsStates = statesForTab(query.tab, query.state);
 
-  const [targetRows, candidatePage, counts, historyPage, batches, needsReconciliation] =
-    await Promise.all([
+  // Every relationship read in one place, so a failure is classified
+  // once and the page renders one honest surface rather than five
+  // half-loaded sections.
+  let reads;
+  try {
+    reads = await Promise.all([
       listTargetProfiles(input.workspaceId, selected.id, input.db),
       listCandidatesPage({
         workspaceId: input.workspaceId,
@@ -228,10 +239,26 @@ export async function loadRelationships(input: {
         db: input.db,
       }),
     ]);
+  } catch (err) {
+    // Classified, not swallowed. A missing table or a refused read is
+    // reported as itself; only a genuine transport blip offers a retry.
+    return { ...base, connected, failure: classifyReadFailure(err) };
+  }
+
+  const [targetRows, candidatePage, counts, historyPage, batches, needsReconciliation] =
+    reads;
 
   const targets: TargetWithImport[] = [];
   for (const target of targetRows) {
-    const run = await getLatestImportRun(input.workspaceId, target.id, input.db);
+    // Per-target import progress is secondary. If one read fails the
+    // target still lists, with its progress honestly unknown, rather
+    // than taking the whole page down.
+    let run: BlueskyImportRunRow | null = null;
+    try {
+      run = await getLatestImportRun(input.workspaceId, target.id, input.db);
+    } catch {
+      run = null;
+    }
     targets.push({
       target,
       run,

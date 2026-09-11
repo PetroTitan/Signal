@@ -58,6 +58,12 @@ const NAV = code(
     "utf8",
   ),
 );
+const FAILURE = code(
+  readFileSync(
+    path.join(process.cwd(), "src/app/(app)/relationships/_read-failure-notice.tsx"),
+    "utf8",
+  ),
+);
 const DIALOG = code(
   readFileSync(
     path.join(process.cwd(), "src/app/(app)/relationships/_confirm-dialog.tsx"),
@@ -244,5 +250,50 @@ describe("the surface makes no claim it has not measured", () => {
     // "Complete" behind cursor exhaustion. The UI must not add its own.
     expect(UI).not.toMatch(/["'>]\s*Imported all/);
     expect(UI).toContain("progressLabel");
+  });
+});
+
+describe("a failed read is never dressed up as an empty one", () => {
+  it("the page renders the failure INSTEAD of the lists, not beside them", () => {
+    // An empty list next to an error reads as "nothing here yet", and
+    // an operator who believes their corpus is empty may re-import it.
+    expect(PAGE).toMatch(/view\.failure \?[\s\S]{0,400}<ReadFailureNotice/);
+    expect(PAGE).toMatch(/<ReadFailureNotice[\s\S]{0,200}\) : \(/);
+  });
+
+  it("offers Retry only for a failure a retry could fix", () => {
+    expect(FAILURE).toMatch(/failure\.retryable \?[\s\S]{0,300}Try again/);
+    // Never unconditionally.
+    expect(FAILURE).not.toMatch(/<button[^>]*>\s*Try again/);
+  });
+
+  it("says explicitly that nothing was changed and no history was lost", () => {
+    expect(FAILURE).toContain("Nothing was changed");
+    expect(FAILURE).toContain("not the same as them being gone");
+  });
+
+  it("is announced to assistive technology", () => {
+    expect(FAILURE).toContain('role="alert"');
+  });
+
+  it("wraps long provider detail rather than overflowing a phone", () => {
+    expect(FAILURE).toMatch(/leading-relaxed/);
+    expect(FAILURE).not.toMatch(/whitespace-nowrap/);
+  });
+});
+
+describe("empty states survive the pagination rewrite", () => {
+  it("an empty corpus and an empty SEARCH say different things", () => {
+    // "Import a target profile's followers" is wrong advice when the
+    // corpus is full and the search simply matched nothing.
+    expect(UI).toContain("No accounts match this search or filter");
+    expect(UI).toMatch(/Import a target profile/);
+  });
+
+  it("the no-identity and no-target empty states are still present", () => {
+    expect(UI).toContain("No Bluesky identity");
+    expect(UI).toContain("No target profiles yet");
+    expect(UI).toContain("No batches yet");
+    expect(UI).toContain("No relationship actions yet");
   });
 });

@@ -3,6 +3,7 @@ import { isSupabaseConfigured } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { loadRelationships } from "@/core/bluesky-relationships/load-relationships.server";
 import { RELATIONSHIP_MAX_DURATION_SECONDS } from "@/core/bluesky-relationships/limits";
+import { ReadFailureNotice } from "./_read-failure-notice";
 import { RelationshipUi } from "./_relationship-ui";
 
 export const dynamic = "force-dynamic";
@@ -96,6 +97,12 @@ export default async function RelationshipsPage({
         description="Import a profile's followers, then follow or unfollow the accounts you pick. Nothing here runs on its own."
       />
       <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-4xl">
+        {view.failure ? (
+          // Rendered INSTEAD of the lists. An empty list beside a
+          // failed read reads as "nothing here yet", which is the one
+          // thing this page must never imply after a failure.
+          <ReadFailureNotice failure={view.failure} />
+        ) : (
         <RelationshipUi
           identities={view.identities}
           selectedIdentityId={view.selectedIdentityId}
@@ -112,6 +119,7 @@ export default async function RelationshipsPage({
           // the same data in a serialisable shape.
           targetLabels={Object.fromEntries(view.targetLabels)}
         />
+        )}
       </div>
     </>
   );
