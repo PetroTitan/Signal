@@ -171,16 +171,34 @@ async function persistReconciliation(
   });
 }
 
-function halted(
+/**
+ * A halt: the provider refused to work, and NOTHING was applied.
+ *
+ * The row is reset to `pending` rather than left `running`. It was
+ * marked running immediately before the request, and a row abandoned in
+ * `running` is doubly wrong: it reads as "in flight" forever, and the
+ * one-active-action index keeps blocking a legitimate retry of an
+ * action that is not actually in flight. `pending` is the honest state
+ * — queued, not attempted — and it is what a resume picks up.
+ */
+async function halted(
+  ctx: ExecuteContext,
   action: BlueskyRelationshipActionRow,
   outcome: Extract<MutationOutcome, { kind: "halt" }>,
-): ExecuteActionResult {
+): Promise<ExecuteActionResult> {
+  await updateAction({
+    workspaceId: ctx.workspaceId,
+    actionId: action.id,
+    status: "pending",
+    startedAt: null,
+    providerStatusCode: outcome.failure.status,
+    providerErrorCode: outcome.failure.errorCode,
+    providerErrorMessage: outcome.failure.message,
+    db: ctx.db,
+  });
   return {
     actionId: action.id,
     subjectDid: action.subject_did,
-    // The action stays `pending`: nothing was applied, and leaving it
-    // pending means a later resume picks it up rather than treating it
-    // as a failure the operator has to re-select.
     status: "pending",
     halt: { reason: outcome.failure.message, resumable: outcome.resumable },
     message: outcome.failure.message,
@@ -278,7 +296,7 @@ export async function executeFollowAction(
     };
   }
 
-  if (outcome.kind === "halt") return halted(action, outcome);
+  if (outcome.kind === "halt") return halted(ctx, action, outcome);
 
   // A PDS that enforces follow uniqueness reports "already exists". The
   // relationship is already in the desired state, so this is not a
@@ -489,7 +507,7 @@ export async function executeUnfollowAction(
     };
   }
 
-  if (outcome.kind === "halt") return halted(action, outcome);
+  if (outcome.kind === "halt") return halted(ctx, action, outcome);
 
   if (outcome.kind === "rejected") {
     await updateAction({
