@@ -166,6 +166,18 @@ export const AUTHENTICATED_ROUTES: ReadonlyArray<RouteEntry> = [
     description: "What to post next, with the evidence behind each option.",
   },
   {
+    href: "/relationships",
+    label: "Relationships",
+    tier: "secondary",
+    group: "publish",
+    description:
+      "Import a Bluesky profile's followers, then follow or unfollow accounts you pick.",
+    // Same permission that gates connecting an account: a follow acts
+    // as the operator's account in public. This hides the entry; the
+    // server actions enforce it.
+    permission: "connect_platforms",
+  },
+  {
     href: "/measurement-health",
     label: "Measurement health",
     tier: "secondary",
