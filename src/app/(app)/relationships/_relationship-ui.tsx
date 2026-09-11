@@ -54,6 +54,11 @@ import {
   MAX_RELATIONSHIP_BATCH_SIZE,
   remainingSelectionCapacity,
 } from "@/core/bluesky-relationships/limits";
+import {
+  ConfirmActionDialog,
+  type ConfirmKind,
+  type ConfirmRequest,
+} from "./_confirm-dialog";
 import type {
   BlueskyRelationshipActionRow,
   BlueskyRelationshipState,
@@ -165,6 +170,19 @@ export function RelationshipUi(props: RelationshipUiProps) {
     EMPTY_REMOVE,
   );
 
+  /**
+   * The pending confirmation, or null.
+   *
+   * Every irreversible action routes through this one piece of state.
+   * A trigger sets it; Cancel clears it. Because the only
+   * `<form action={dispatch}>` for these actions lives inside the
+   * dialog, clearing this state removes the only thing that could
+   * submit — Cancel cannot reach the server even by accident.
+   */
+  const [confirming, setConfirming] = useState<ConfirmRequest | null>(null);
+  const dispatchFor = (kind: ConfirmKind) =>
+    kind === "follow" ? runFollow : kind === "unfollow" ? runUnfollow : runRemove;
+
   const visible = useMemo(() => {
     switch (tab) {
       case "following":
@@ -228,8 +246,22 @@ export function RelationshipUi(props: RelationshipUiProps) {
     );
   }
 
+  const actorLabel = formatIdentityLabel(
+    props.identities.find((i) => i.id === identityId) ?? {
+      id: identityId,
+      handle: null,
+      displayName: null,
+    },
+  );
+
   return (
     <div className="space-y-4">
+      <ConfirmActionDialog
+        request={confirming}
+        dispatch={confirming ? dispatchFor(confirming.kind) : () => undefined}
+        onCancel={() => setConfirming(null)}
+      />
+
       {/* Identity picker + connection state. */}
       <section className="card card-padded">
         <h2 className="section-title">Acting as</h2>
@@ -307,8 +339,9 @@ export function RelationshipUi(props: RelationshipUiProps) {
           addState={addState}
           runImport={runImport}
           importState={importState}
-          runRemove={runRemove}
           removeState={removeState}
+          actorLabel={actorLabel}
+          onConfirm={setConfirming}
         />
       ) : null}
 
@@ -339,9 +372,7 @@ export function RelationshipUi(props: RelationshipUiProps) {
               return next;
             })
           }
-          runFollow={runFollow}
           followState={followState}
-          runUnfollow={runUnfollow}
           unfollowState={unfollowState}
           runRefresh={runRefresh}
           refreshState={refreshState}
@@ -349,6 +380,8 @@ export function RelationshipUi(props: RelationshipUiProps) {
           showFollowAction={tab === "candidates"}
           runProtect={runProtect}
           protectState={protectState}
+          actorLabel={actorLabel}
+          onConfirm={setConfirming}
         />
       ) : null}
     </div>
@@ -366,8 +399,9 @@ function TargetsView(props: {
   addState: AddTargetActionResult;
   runImport: (formData: FormData) => void;
   importState: ImportActionResult;
-  runRemove: (formData: FormData) => void;
   removeState: RemoveTargetActionResult;
+  actorLabel: string;
+  onConfirm: (request: ConfirmRequest) => void;
 }) {
   return (
     <div className="space-y-4">
@@ -484,15 +518,24 @@ function TargetsView(props: {
                   <SubmitButton>Re-import</SubmitButton>
                 </form>
               ) : null}
-              <form action={props.runRemove}>
-                <input
-                  type="hidden"
-                  name="operator_account_id"
-                  value={props.identityId}
-                />
-                <input type="hidden" name="target_profile_id" value={target.id} />
-                <SubmitButton className="btn-danger">Remove</SubmitButton>
-              </form>
+              <button
+                type="button"
+                className="btn-danger"
+                onClick={() =>
+                  props.onConfirm({
+                    kind: "remove_target",
+                    actorLabel: props.actorLabel,
+                    fields: [
+                      { name: "operator_account_id", value: props.identityId },
+                      { name: "target_profile_id", value: target.id },
+                    ],
+                    itemLabels: [formatHandle(target.handle, target.subject_did)],
+                    protectedExcluded: 0,
+                  })
+                }
+              >
+                Remove…
+              </button>
             </div>
           </li>
         ))}
@@ -515,9 +558,7 @@ function CandidateListView(props: {
   onToggle: (id: string) => void;
   onSelectAll: () => void;
   onSelectNone: () => void;
-  runFollow: (formData: FormData) => void;
   followState: RelationshipBatchResult;
-  runUnfollow: (formData: FormData) => void;
   unfollowState: RelationshipBatchResult;
   runRefresh: (formData: FormData) => void;
   refreshState: RefreshActionResult;
@@ -525,9 +566,41 @@ function CandidateListView(props: {
   showFollowAction: boolean;
   runProtect: (formData: FormData) => void;
   protectState: ProtectActionResult;
+  actorLabel: string;
+  onConfirm: (request: ConfirmRequest) => void;
 }) {
   const anySelected = props.selectedIds.length > 0;
   const atCap = props.selectedIds.length >= MAX_RELATIONSHIP_BATCH_SIZE;
+
+  const label = (id: string): string => {
+    const c = props.candidates.find((x) => x.id === id);
+    return c ? formatHandle(c.handle, c.subject_did) : id;
+  };
+
+  /**
+   * Build the confirmation request for a set of candidate ids.
+   *
+   * Protected accounts are removed here so the dialog can state the
+   * exclusion honestly BEFORE the operator confirms, rather than
+   * reporting it afterwards in a result summary. The server filters
+   * them again independently — this is presentation, not enforcement.
+   */
+  const request = (kind: "follow" | "unfollow", ids: string[]): ConfirmRequest => {
+    const eligible =
+      kind === "unfollow"
+        ? ids.filter((id) => !props.candidates.find((c) => c.id === id)?.protected)
+        : ids;
+    return {
+      kind,
+      actorLabel: props.actorLabel,
+      fields: [
+        { name: "operator_account_id", value: props.identityId },
+        ...eligible.map((id) => ({ name: "candidate_id", value: id })),
+      ],
+      itemLabels: eligible.map(label),
+      protectedExcluded: ids.length - eligible.length,
+    };
+  };
 
   return (
     <div className="space-y-4">
@@ -567,41 +640,32 @@ function CandidateListView(props: {
         ) : null}
 
         <div className="mt-3 flex flex-wrap gap-2">
+          {/* These are plain buttons, not submits. They open the
+              confirmation; the form that actually dispatches lives
+              inside the dialog and nowhere else. */}
           {props.showFollowAction ? (
-            <form action={props.runFollow}>
-              <input
-                type="hidden"
-                name="operator_account_id"
-                value={props.identityId}
-              />
-              {props.selectedIds.map((id) => (
-                <input key={id} type="hidden" name="candidate_id" value={id} />
-              ))}
-              <SubmitButton
-                className="btn-primary"
-                disabled={!anySelected || !props.connected}
-              >
-                Follow selected
-              </SubmitButton>
-            </form>
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={!anySelected || !props.connected}
+              onClick={() => props.onConfirm(request("follow", props.selectedIds))}
+            >
+              Follow selected…
+            </button>
           ) : null}
 
-          <form action={props.runUnfollow}>
-            <input
-              type="hidden"
-              name="operator_account_id"
-              value={props.identityId}
-            />
-            {props.selectedIds.map((id) => (
-              <input key={id} type="hidden" name="candidate_id" value={id} />
-            ))}
-            <SubmitButton
-              className="btn-danger"
-              disabled={!anySelected || !props.connected}
-            >
-              Unfollow selected
-            </SubmitButton>
-          </form>
+          <button
+            type="button"
+            className="btn-danger"
+            disabled={
+              !anySelected ||
+              !props.connected ||
+              props.selectedIds.length === props.selectedProtected
+            }
+            onClick={() => props.onConfirm(request("unfollow", props.selectedIds))}
+          >
+            Unfollow selected…
+          </button>
 
           <form action={props.runRefresh}>
             <input
@@ -691,29 +755,25 @@ function CandidateListView(props: {
                 ) : null}
 
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <form action={props.runFollow}>
-                    <input
-                      type="hidden"
-                      name="operator_account_id"
-                      value={props.identityId}
-                    />
-                    <input type="hidden" name="candidate_id" value={candidate.id} />
-                    <SubmitButton disabled={!props.connected}>Follow</SubmitButton>
-                  </form>
-                  <form action={props.runUnfollow}>
-                    <input
-                      type="hidden"
-                      name="operator_account_id"
-                      value={props.identityId}
-                    />
-                    <input type="hidden" name="candidate_id" value={candidate.id} />
-                    <SubmitButton
-                      className="btn-danger"
-                      disabled={!props.connected || candidate.protected}
-                    >
-                      Unfollow
-                    </SubmitButton>
-                  </form>
+                  {/* A single-account action takes the SAME confirmation
+                      path as a batch. One row is still a public,
+                      irreversible change to someone else's feed. */}
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={!props.connected}
+                    onClick={() => props.onConfirm(request("follow", [candidate.id]))}
+                  >
+                    Follow…
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-danger"
+                    disabled={!props.connected || candidate.protected}
+                    onClick={() => props.onConfirm(request("unfollow", [candidate.id]))}
+                  >
+                    Unfollow…
+                  </button>
                   <form action={props.runProtect}>
                     <input
                       type="hidden"

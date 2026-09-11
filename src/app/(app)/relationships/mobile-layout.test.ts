@@ -52,6 +52,12 @@ const PAGE = readFileSync(
   path.join(process.cwd(), "src/app/(app)/relationships/page.tsx"),
   "utf8",
 );
+const DIALOG = code(
+  readFileSync(
+    path.join(process.cwd(), "src/app/(app)/relationships/_confirm-dialog.tsx"),
+    "utf8",
+  ),
+);
 
 describe("long identifiers cannot push the page sideways", () => {
   it("every element rendering a DID can break mid-string", () => {
@@ -61,7 +67,16 @@ describe("long identifiers cannot push the page sideways", () => {
       (line) =>
         (line.includes("subject_did") || line.includes("batch_id")) &&
         // An aria-label is announced, not laid out; it cannot overflow.
-        !line.includes("aria-label"),
+        !line.includes("aria-label") &&
+        // Object-literal construction (building the confirmation
+        // payload) is not a render site. The rendered output of those
+        // labels is covered by the dialog assertion below.
+        !/^\s*\w+:\s/.test(line) &&
+        !line.includes("value=") &&
+        // A label-building helper returns a string; where that string
+        // is RENDERED is what has to break, and that is asserted
+        // separately for the list rows and for the dialog.
+        !line.trimStart().startsWith("return "),
     );
     expect(didLines.length).toBeGreaterThan(0);
     for (const line of didLines) {
@@ -73,6 +88,17 @@ describe("long identifiers cannot push the page sideways", () => {
         /break-all|truncate/,
       );
     }
+  });
+
+  it("the confirmation dialog breaks its review labels, which may be DIDs", () => {
+    // formatHandle falls back to the subject DID when an account has no
+    // handle, so the review list can contain 32 unbreakable characters
+    // inside a max-w-md modal.
+    expect(DIALOG).toMatch(/preview\.map[\s\S]{0,200}break-all/);
+    // The actor label can also be long.
+    expect(DIALOG).toMatch(/actorLabel[\s\S]{0,200}break-all|break-all[\s\S]{0,200}actorLabel/);
+    // And the dialog itself never exceeds the viewport on a 320px screen.
+    expect(DIALOG).toContain("w-[calc(100vw-2rem)]");
   });
 
   it("handles render with break-all, not with whitespace-nowrap", () => {
