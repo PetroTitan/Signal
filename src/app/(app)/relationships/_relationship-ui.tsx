@@ -49,6 +49,11 @@ import {
   formatHandle,
   formatIdentityLabel,
 } from "@/core/bluesky-relationships/handle-display";
+import {
+  canSelectMore,
+  MAX_RELATIONSHIP_BATCH_SIZE,
+  remainingSelectionCapacity,
+} from "@/core/bluesky-relationships/limits";
 import type {
   BlueskyRelationshipActionRow,
   BlueskyRelationshipState,
@@ -178,8 +183,15 @@ export function RelationshipUi(props: RelationshipUiProps) {
   const toggle = (id: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+        return next;
+      }
+      // Refuse silently rather than accepting a selection the server
+      // will reject. The row's checkbox is disabled at the cap, so this
+      // is the belt to that braces.
+      if (!canSelectMore(next.size)) return prev;
+      next.add(id);
       return next;
     });
   };
@@ -314,7 +326,19 @@ export function RelationshipUi(props: RelationshipUiProps) {
           selectedProtected={selectedProtected}
           onToggle={toggle}
           onSelectNone={() => setSelected(new Set())}
-          onSelectAll={() => setSelected(new Set(visible.map((c) => c.id)))}
+          onSelectAll={() =>
+            setSelected((prev) => {
+              // "Visible" means the rows on screen — never the whole
+              // table. Fills up to the cap and stops; it does not
+              // silently select more than can be submitted.
+              const next = new Set(prev);
+              for (const c of visible) {
+                if (remainingSelectionCapacity(next.size) === 0) break;
+                next.add(c.id);
+              }
+              return next;
+            })
+          }
           runFollow={runFollow}
           followState={followState}
           runUnfollow={runUnfollow}
@@ -503,21 +527,37 @@ function CandidateListView(props: {
   protectState: ProtectActionResult;
 }) {
   const anySelected = props.selectedIds.length > 0;
+  const atCap = props.selectedIds.length >= MAX_RELATIONSHIP_BATCH_SIZE;
 
   return (
     <div className="space-y-4">
       <section className="card card-padded">
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" className="btn-secondary" onClick={props.onSelectAll}>
-            Select all
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={props.onSelectAll}
+            disabled={atCap || props.candidates.length === 0}
+          >
+            {/* Named for what it does. "Select all" implied the whole
+                database; this list is one page of it. */}
+            Select visible ({props.candidates.length})
           </button>
           <button type="button" className="btn-secondary" onClick={props.onSelectNone}>
             Clear
           </button>
           <span className="text-sm text-ink-600">
-            {props.selectedIds.length} selected
+            {props.selectedIds.length} of {MAX_RELATIONSHIP_BATCH_SIZE} selected
           </span>
         </div>
+
+        {atCap ? (
+          <p className="text-sm text-ink-600 mt-2 leading-relaxed">
+            That is the most a single batch can hold. A batch runs while you
+            wait, so it is bounded to finish inside one request. Run this one,
+            then select the next {MAX_RELATIONSHIP_BATCH_SIZE}.
+          </p>
+        ) : null}
 
         {props.selectedProtected > 0 ? (
           <p className="text-sm text-ink-600 mt-2 leading-relaxed">
@@ -601,8 +641,12 @@ function CandidateListView(props: {
                 type="checkbox"
                 checked={props.selected.has(candidate.id)}
                 onChange={() => props.onToggle(candidate.id)}
+                // At the cap, already-checked rows stay interactive so
+                // the operator can swap one out; unchecked ones go
+                // inert rather than accepting a click that does nothing.
+                disabled={atCap && !props.selected.has(candidate.id)}
                 aria-label={`Select ${bareHandle(candidate.handle) ?? candidate.subject_did}`}
-                className="mt-1 shrink-0 w-5 h-5"
+                className="mt-1 shrink-0 w-5 h-5 disabled:opacity-40"
               />
               {candidate.avatar_url ? (
                 // eslint-disable-next-line @next/next/no-img-element

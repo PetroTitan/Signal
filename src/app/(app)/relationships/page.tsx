@@ -2,9 +2,20 @@ import { Topbar } from "@/components/topbar";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { loadRelationships } from "@/core/bluesky-relationships/load-relationships.server";
+import { RELATIONSHIP_MAX_DURATION_SECONDS } from "@/core/bluesky-relationships/limits";
 import { RelationshipUi } from "./_relationship-ui";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * Relationship batches run synchronously inside the operator's request
+ * — there is no queue and no background worker, by design. The default
+ * serverless budget is far below the worst case for a full batch, so it
+ * is declared explicitly and kept in step with the batch cap by
+ * `RELATIONSHIP_MAX_DURATION_SECONDS`. See `limits.ts` for the
+ * arithmetic tying the two together.
+ */
+export const maxDuration = RELATIONSHIP_MAX_DURATION_SECONDS;
 
 /**
  * Bluesky Relationships.

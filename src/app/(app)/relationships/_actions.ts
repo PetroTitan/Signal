@@ -48,6 +48,7 @@ import { getAccountById } from "@/repositories/account-repository";
 import { recordActivity } from "@/repositories/activity-repository";
 import { can, type Permission } from "@/core/teams/permissions";
 import { formatHandle } from "@/core/bluesky-relationships/handle-display";
+import { checkBatchSize } from "@/core/bluesky-relationships/limits";
 import type { WorkspaceRole } from "@/lib/supabase/types";
 import {
   actionFail,
@@ -421,9 +422,17 @@ async function runRelationshipBatch(
     "connect_platforms",
   );
   if (ctx.kind !== "ok") return actionFail(ctx.message);
-  if (candidateIds.length === 0) {
-    return actionFail("Select at least one account.");
-  }
+
+  // Size gate, server-side and before anything else costly.
+  //
+  // The UI caps selection at the same constant, but that is a
+  // convenience, not a control: a FormData is trivially forged and
+  // arrives here with however many candidate_id fields the caller
+  // chose. This rejects an oversized submission before a session is
+  // resolved, before a row is written, and before a single provider
+  // call — the count is checked, not the client's claim about it.
+  const size = checkBatchSize(candidateIds.length);
+  if (!size.ok) return actionFail(size.reason);
 
   const session = await resolveRelationshipSession({
     workspaceId: ctx.workspaceId,
