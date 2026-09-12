@@ -416,6 +416,14 @@ describe("command authorization", () => {
     }
   });
 
+  it("activation uses the shared recovery policy, including failed campaigns", () => {
+    const start = actions.indexOf("export async function activateCampaignAction(");
+    const next = actions.indexOf("\nexport ", start + 1);
+    const body = actions.slice(start, next > 0 ? next : actions.length);
+    expect(body).toContain("isResumableCampaignStatus(campaign.status)");
+    expect(body).toContain("expectedStatuses: [...RESUMABLE_CAMPAIGN_STATUSES]");
+  });
+
   it("no command can dispatch an unfollow", () => {
     // Checked as CODE, not as prose: the cancel action's copy says "this
     // does not unfollow anyone", which is exactly the sentence an
