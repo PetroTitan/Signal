@@ -31,7 +31,9 @@
  */
 
 /** The only quotas an operator may select. */
-export const DAILY_QUOTA_OPTIONS = [100, 200, 400, 600, 800, 1000] as const;
+export const DAILY_QUOTA_OPTIONS = [
+  100, 200, 300, 400, 500, 600, 700, 800, 900, 1000,
+] as const;
 export type DailyQuota = (typeof DAILY_QUOTA_OPTIONS)[number];
 
 export function isDailyQuota(value: unknown): value is DailyQuota {

@@ -4,6 +4,9 @@ import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { loadRelationships } from "@/core/bluesky-relationships/load-relationships.server";
 import { ReadFailureNotice } from "./_read-failure-notice";
 import { RelationshipUi } from "./_relationship-ui";
+import { AutomationPanel, StartAutomationCta } from "./_automation-panel";
+import { loadCampaignSummary } from "@/core/bluesky-campaigns/load-campaign-summary.server";
+import { can } from "@/core/teams/permissions";
 
 export const dynamic = "force-dynamic";
 
@@ -89,19 +92,53 @@ export default async function RelationshipsPage({
     );
   }
 
-  const view = await loadRelationships({
-    workspaceId: membership.workspace.id,
-    operatorAccountId: searchParams?.identity ?? null,
-    searchParams,
-  });
+  const [view, automation] = await Promise.all([
+    loadRelationships({
+      workspaceId: membership.workspace.id,
+      operatorAccountId: searchParams?.identity ?? null,
+      searchParams,
+    }),
+    // A summary, not the campaign. The queue behind it may hold 100,000
+    // members and none of them are read to draw the panel.
+    loadCampaignSummary({ workspaceId: membership.workspace.id }),
+  ]);
+
+  // Starting automatic following is a write, so the button is not shown
+  // to a member who could not complete it.
+  const canManage = can(membership.role, "connect_platforms");
 
   return (
     <>
       <Topbar
         title="Bluesky relationships"
-        description="Import a profile's followers, then follow or unfollow the accounts you pick. Nothing here runs on its own."
+        description="Follow or unfollow accounts one at a time, or let Signal work through a whole list for you."
+        actions={
+          // In the header, so it is on screen on a 320px phone without
+          // opening any secondary navigation.
+          <StartAutomationCta canManage={canManage} compact />
+        }
       />
-      <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-4xl">
+      <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-4xl space-y-6">
+        {automation ? (
+          <AutomationPanel summary={automation} />
+        ) : canManage ? (
+          <section className="card card-padded" data-testid="automation-empty">
+            <h2 className="section-title">Let Signal do the following</h2>
+            <p className="mt-1 text-sm text-ink-600 leading-relaxed">
+              Pick a list you have already imported and a number of profiles per
+              day. Signal follows that many each day, on the schedule you set,
+              until the whole list is done — you do not need to keep this page
+              open.
+            </p>
+            <p className="mt-2 text-sm text-ink-500 leading-relaxed">
+              The buttons below stay manual: they follow only the profiles you
+              select, right away.
+            </p>
+            <div className="mt-4">
+              <StartAutomationCta canManage={canManage} />
+            </div>
+          </section>
+        ) : null}
         {view.failure ? (
           // Rendered INSTEAD of the lists. An empty list beside a
           // failed read reads as "nothing here yet", which is the one

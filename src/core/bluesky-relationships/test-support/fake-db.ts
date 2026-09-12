@@ -152,6 +152,14 @@ export class FakeDb {
         return this.recordIdentityUsage(args);
       case "reserve_bluesky_campaign_quota":
         return this.reserveCampaignQuota(args);
+      case "list_bluesky_candidates_keyset":
+        return this.listCandidatesKeyset(args);
+      case "count_bluesky_candidates_eligible":
+        return this.countEligibleCandidates(args);
+      case "begin_bluesky_campaign_import":
+        return this.beginImportJob(args);
+      case "advance_bluesky_campaign_import":
+        return this.advanceImportJob(args);
       case "consume_bluesky_member_quota":
         return this.consumeMemberQuota(args);
       case "fold_bluesky_ledger_outcomes":
@@ -945,6 +953,228 @@ export class FakeDb {
     }
 
     return answer(true, false, null);
+  }
+
+  /**
+   * Mirrors list_bluesky_candidates_keyset.
+   *
+   * The total order is (last_discovered_at desc, subject_did asc). The
+   * DID is the tie-breaker and is unique within (workspace, identity),
+   * so no two rows share a position — which is what makes a keyset walk
+   * unable to skip or repeat a row, unlike the OFFSET paging this
+   * replaced.
+   */
+  private listCandidatesKeyset(args: Record<string, unknown>): QueryResult {
+    const states = (args.p_states as string[] | null) ?? null;
+    const targetId = args.p_target_profile_id ?? null;
+    const afterAt = args.p_after_last_discovered_at as string | null;
+    const afterDid = args.p_after_subject_did as string | null;
+    const limit = Math.min(Math.max(num(args.p_limit) || 500, 1), 1000);
+
+    const sources = this.rows("bluesky_candidate_sources");
+    const rows = this.rows("bluesky_candidates")
+      .filter((c) => {
+        if (c.workspace_id !== args.p_workspace_id) return false;
+        if (c.operator_account_id !== args.p_operator_account_id) return false;
+        if (states && !states.includes(String(c.relationship_state))) return false;
+        if (targetId) {
+          const linked = sources.some(
+            (s) => s.candidate_id === c.id && s.target_profile_id === targetId,
+          );
+          if (!linked) return false;
+        }
+        if (afterAt) {
+          const at = String(c.last_discovered_at);
+          if (at > afterAt) return false;
+          if (at === afterAt && String(c.subject_did) <= String(afterDid)) {
+            return false;
+          }
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const t = String(b.last_discovered_at).localeCompare(
+          String(a.last_discovered_at),
+        );
+        if (t !== 0) return t;
+        return String(a.subject_did).localeCompare(String(b.subject_did));
+      })
+      .slice(0, limit)
+      .map((c) => ({
+        subject_did: c.subject_did,
+        handle: c.handle ?? null,
+        display_name: c.display_name ?? null,
+        last_discovered_at: c.last_discovered_at,
+        protected: c.protected === true,
+      }));
+
+    return { data: rows, error: null };
+  }
+
+  /** Mirrors count_bluesky_candidates_eligible. */
+  private countEligibleCandidates(args: Record<string, unknown>): QueryResult {
+    const states = (args.p_states as string[] | null) ?? null;
+    const targetId = args.p_target_profile_id ?? null;
+    const sources = this.rows("bluesky_candidate_sources");
+    let eligible = 0;
+    let protectedExcluded = 0;
+    for (const c of this.rows("bluesky_candidates")) {
+      if (c.workspace_id !== args.p_workspace_id) continue;
+      if (c.operator_account_id !== args.p_operator_account_id) continue;
+      if (states && !states.includes(String(c.relationship_state))) continue;
+      if (targetId) {
+        const linked = sources.some(
+          (s) => s.candidate_id === c.id && s.target_profile_id === targetId,
+        );
+        if (!linked) continue;
+      }
+      if (c.protected === true) protectedExcluded += 1;
+      else eligible += 1;
+    }
+    return {
+      data: [{ eligible, protected_excluded: protectedExcluded }],
+      error: null,
+    };
+  }
+
+  /**
+   * Mirrors begin_bluesky_campaign_import.
+   *
+   * One job per campaign, and it refuses to change source: a queue half
+   * built from one list and half from another is not something an
+   * operator can reason about.
+   */
+  private beginImportJob(args: Record<string, unknown>): QueryResult {
+    const jobs = this.rows("bluesky_campaign_import_jobs");
+    let job = jobs.find((j) => j.campaign_id === args.p_campaign_id);
+
+    if (!job) {
+      job = {
+        id: this.nextId("import-job"),
+        workspace_id: args.p_workspace_id,
+        campaign_id: args.p_campaign_id,
+        source_kind: args.p_source_kind,
+        target_profile_id: args.p_target_profile_id ?? null,
+        status: "running",
+        cursor_last_discovered_at: null,
+        cursor_subject_did: null,
+        provider_cursor: null,
+        source_exhausted: false,
+        imported_count: 0,
+        duplicate_count: 0,
+        excluded_count: 0,
+        pages_read: 0,
+        last_error: null,
+      };
+      jobs.push(job);
+    } else if (job.workspace_id !== args.p_workspace_id) {
+      return {
+        data: [{ out_refused_reason: "workspace_mismatch" }],
+        error: null,
+      };
+    } else if (
+      job.source_kind !== args.p_source_kind ||
+      (job.target_profile_id ?? null) !== (args.p_target_profile_id ?? null)
+    ) {
+      return {
+        data: [
+          {
+            out_job_id: job.id,
+            out_source_kind: job.source_kind,
+            out_target_profile_id: job.target_profile_id,
+            out_refused_reason: "source_mismatch",
+          },
+        ],
+        error: null,
+      };
+    } else if (job.status === "failed") {
+      // A retry resumes from the checkpoint rather than starting over.
+      job.status = "running";
+      job.last_error = null;
+    }
+
+    return {
+      data: [
+        {
+          out_job_id: job.id,
+          out_status: job.status,
+          out_source_kind: job.source_kind,
+          out_target_profile_id: job.target_profile_id,
+          out_cursor_at: job.cursor_last_discovered_at,
+          out_cursor_did: job.cursor_subject_did,
+          out_provider_cursor: job.provider_cursor,
+          out_source_exhausted: job.source_exhausted,
+          out_imported: job.imported_count,
+          out_duplicates: job.duplicate_count,
+          out_excluded: job.excluded_count,
+          out_refused_reason: null,
+        },
+      ],
+      error: null,
+    };
+  }
+
+  /**
+   * Mirrors advance_bluesky_campaign_import.
+   *
+   * The checkpoint only ever moves FORWARD in the scan order, so two
+   * callers that read the same position do the same work — harmless,
+   * because the unique index deduplicates — and the slower one cannot
+   * rewind the walk.
+   */
+  private advanceImportJob(args: Record<string, unknown>): QueryResult {
+    const job = this.rows("bluesky_campaign_import_jobs").find(
+      (j) => j.id === args.p_job_id && j.workspace_id === args.p_workspace_id,
+    );
+    if (!job) return { data: [], error: null };
+
+    const newAt = args.p_cursor_last_discovered_at as string | null;
+    const newDid = args.p_cursor_subject_did as string | null;
+    const oldAt = job.cursor_last_discovered_at as string | null;
+    const oldDid = job.cursor_subject_did as string | null;
+    const advance =
+      newAt !== null &&
+      newAt !== undefined &&
+      (!oldAt ||
+        newAt < oldAt ||
+        (newAt === oldAt && String(newDid) > String(oldDid)));
+
+    if (advance) {
+      job.cursor_last_discovered_at = newAt;
+      job.cursor_subject_did = newDid;
+    }
+    if (args.p_provider_cursor !== null && args.p_provider_cursor !== undefined) {
+      job.provider_cursor = args.p_provider_cursor;
+    }
+    job.imported_count = num(job.imported_count) + Math.max(num(args.p_inserted), 0);
+    job.duplicate_count =
+      num(job.duplicate_count) + Math.max(num(args.p_duplicates), 0);
+    job.excluded_count = num(job.excluded_count) + Math.max(num(args.p_excluded), 0);
+    job.pages_read = num(job.pages_read) + Math.max(num(args.p_pages), 0);
+    job.source_exhausted =
+      job.source_exhausted === true || args.p_source_exhausted === true;
+    job.last_error = args.p_error ?? null;
+    job.status = args.p_error
+      ? "failed"
+      : job.source_exhausted
+        ? "ready"
+        : "running";
+
+    return {
+      data: [
+        {
+          out_status: job.status,
+          out_cursor_at: job.cursor_last_discovered_at,
+          out_cursor_did: job.cursor_subject_did,
+          out_provider_cursor: job.provider_cursor,
+          out_source_exhausted: job.source_exhausted,
+          out_imported: job.imported_count,
+          out_duplicates: job.duplicate_count,
+          out_excluded: job.excluded_count,
+        },
+      ],
+      error: null,
+    };
   }
 
   /** Mirrors acquire_bluesky_run_dispatch_lease. */
