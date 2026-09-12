@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { OG_IMAGE } from "@/content/brand-metadata";
 import Link from "next/link";
 
 export const metadata: Metadata = {
@@ -7,6 +8,7 @@ export const metadata: Metadata = {
     "Signal turns founder insights into platform-native opportunities, batches them into one weekly approval, and distributes them across the week with calm cadence.",
   alternates: { canonical: "/how-it-works" },
   openGraph: {
+    images: OG_IMAGE,
     title: "How Signal works",
     description:
       "The operating loop: source insights → platform-native opportunities → weekly approval → staggered schedule → discoverability loop.",

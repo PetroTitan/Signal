@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { OG_IMAGE } from "@/content/brand-metadata";
 import Link from "next/link";
 import { SITE_URL } from "@/content/academy/seo";
 
@@ -8,6 +9,7 @@ export const metadata: Metadata = {
     "Signal is operator-controlled publishing infrastructure for teams that need approval, scheduling, reliability, and verified results. Nothing publishes without human approval.",
   alternates: { canonical: "/" },
   openGraph: {
+    images: OG_IMAGE,
     title: "Signal — Operator-controlled publishing infrastructure",
     description:
       "Plan, approve, schedule, publish, and measure — with an approval gate, publishing reliability, and verified-only metrics.",
@@ -16,6 +18,7 @@ export const metadata: Metadata = {
     siteName: "Signal",
   },
   twitter: {
+    images: OG_IMAGE,
     card: "summary_large_image",
     title: "Signal — Operator-controlled publishing infrastructure",
     description:

@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { signOutAction } from "@/app/(auth)/_actions";
 import { useMaybeWorkspaceSession } from "@/core/workspace-session";
 import { can } from "@/core/teams/permissions";
+import { SignalLogo } from "./brand/signal-logo";
 import {
   SECONDARY_ROUTES,
   visibleTo,
@@ -100,8 +101,15 @@ export function MobileMoreSheet({
         className="relative w-full max-h-[85vh] flex flex-col bg-white rounded-t-2xl shadow-2xl overflow-hidden"
         style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
       >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-ink-100 shrink-0">
-          <div className="min-w-0">
+        <div className="flex items-center gap-2.5 px-4 py-3 border-b border-ink-100 shrink-0">
+          {/* The only place the mark appears in the mobile app shell.
+              The bottom bar is four tap targets and a safe-area inset —
+              a logo there would cost height and win nothing — and the
+              Topbar belongs to the page, not the product. Here it sits
+              in a sheet the operator opened deliberately, and costs no
+              layout. */}
+          <SignalLogo variant="mark" size={22} className="shrink-0" />
+          <div className="min-w-0 flex-1">
             <div className="text-sm font-semibold text-ink-900">More</div>
             {session ? (
               <div className="text-[11px] text-ink-500 truncate">

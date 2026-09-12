@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { OG_IMAGE } from "@/content/brand-metadata";
 import Link from "next/link";
 
 export const metadata: Metadata = {
@@ -7,6 +8,7 @@ export const metadata: Metadata = {
     "Signal's philosophy: sustainable organic presence over posting volume. Weekly approval. Comments-first. OAuth-first.",
   alternates: { canonical: "/philosophy" },
   openGraph: {
+    images: OG_IMAGE,
     title: "Signal philosophy",
     description:
       "Why Signal optimizes for sustainable presence instead of posting volume — and the operational decisions that follow.",

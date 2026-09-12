@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { OG_IMAGE } from "@/content/brand-metadata";
 import Link from "next/link";
 import { sectionsWithContent, articlesInSection } from "@/content/academy/registry";
 import { SECTION_GROUPS } from "@/content/academy/sections";
@@ -10,6 +11,7 @@ export const metadata: Metadata = {
     "Documentation, guides, and help for Signal — weekly planning, reliable publishing, verified metrics, teams, and MCP. Honest, operator-first docs.",
   alternates: { canonical: "/academy" },
   openGraph: {
+    images: OG_IMAGE,
     title: "Signal Academy",
     description: "Guides and help for Signal: planning, publishing, metrics, teams, and MCP.",
     type: "website",

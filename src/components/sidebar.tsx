@@ -19,7 +19,7 @@ import {
   AnalyticsIcon,
   RiskIcon,
 } from "./icons";
-import { BrandMark } from "./brand-mark";
+import { SignalLogo } from "./brand/signal-logo";
 
 type NavItem = {
   href: string;
@@ -103,7 +103,12 @@ export function Sidebar() {
           className="inline-flex items-center gap-2 text-ink-900"
           aria-label="Signal home"
         >
-          <BrandMark size={20} />
+          {/* The mark plus a real text label, not the packaged lockup:
+              the sidebar is 240px wide and the workspace name sits
+              directly beneath, so the label has to share the type scale
+              of the rest of the rail rather than the lockup's own. The
+              icon is decorative here — the link is already named. */}
+          <SignalLogo variant="mark" size={22} />
           <span className="text-sm font-semibold tracking-tight">Signal</span>
         </Link>
         {session ? (
