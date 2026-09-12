@@ -40,7 +40,6 @@ import {
   setKillSwitch,
   updateCampaign,
 } from "@/repositories/bluesky-campaign-repository";
-import { importFromTargetFollowers } from "@/core/bluesky-campaigns/import-members.server";
 import { resumeCampaignImport } from "@/core/bluesky-campaigns/resume-import.server";
 import { isDailyQuota } from "@/core/bluesky-campaigns/quota";
 import { getImportJob } from "@/repositories/bluesky-campaign-import-repository";
@@ -49,6 +48,7 @@ import {
   isValidTimezone,
   parseMinutes,
 } from "@/core/bluesky-campaigns/campaign-day";
+import { requireCampaignServiceDb } from "@/core/bluesky-campaigns/service-db.server";
 
 const CAMPAIGNS_PATH = "/relationships/campaigns";
 
@@ -151,6 +151,9 @@ export async function createCampaignAction(
   }
 
   try {
+    // Refuse before creating another empty draft when the privileged
+    // campaign worker is not configured on this deployment.
+    requireCampaignServiceDb();
     const campaign = await createCampaign({
       workspaceId: ctx.workspaceId,
       operatorAccountId,
@@ -202,7 +205,6 @@ export async function importCampaignMembersAction(
   const campaignId = String(formData.get("campaign_id") ?? "");
   const source = String(formData.get("source") ?? "candidates");
   const targetProfileId = String(formData.get("target_profile_id") ?? "");
-  const cursor = String(formData.get("cursor") ?? "") || null;
 
   const campaign = await requireCampaign(ctx, campaignId);
   if (!campaign) return actionFail("That campaign is not in your workspace.");
@@ -216,24 +218,18 @@ export async function importCampaignMembersAction(
   }
 
   try {
-    if (source === "target") {
-      if (!targetProfileId) return actionFail("Pick a target profile.");
-      const result = await importFromTargetFollowers({
-        workspaceId: ctx.workspaceId,
-        campaignId,
-        targetProfileId,
-        cursor,
-      });
-      if (result.error) return actionFail(result.error);
-      revalidatePath(CAMPAIGNS_PATH);
-      return actionOk({
-        inserted: result.inserted,
-        duplicates: result.duplicates,
-        complete: result.complete,
-        summary: result.complete
-          ? `Added ${result.inserted.toLocaleString()} profile(s). This target's follower list is fully imported.`
-          : `Added ${result.inserted.toLocaleString()} profile(s) so far. More remain — run Continue import again.`,
-      });
+    const db = requireCampaignServiceDb();
+    const existingJob = await getImportJob({
+      workspaceId: ctx.workspaceId,
+      campaignId,
+      db,
+    });
+    const sourceKind = existingJob?.sourceKind ??
+      (source === "target" ? "target_followers" : "candidates");
+    const effectiveTargetId =
+      existingJob?.targetProfileId ?? (targetProfileId || null);
+    if (sourceKind === "target_followers" && !effectiveTargetId) {
+      return actionFail("Pick a target profile.");
     }
 
     // Resumed from the DATABASE's checkpoint, never from a page number
@@ -244,8 +240,9 @@ export async function importCampaignMembersAction(
       workspaceId: ctx.workspaceId,
       operatorAccountId: campaign.operator_account_id,
       campaignId,
-      sourceKind: "candidates",
-      targetProfileId: null,
+      sourceKind,
+      targetProfileId: effectiveTargetId,
+      db,
     });
     if (result.error) return actionFail(result.error);
     revalidatePath(CAMPAIGNS_PATH);
@@ -254,7 +251,7 @@ export async function importCampaignMembersAction(
       duplicates: result.duplicates,
       complete: result.complete,
       summary: result.complete
-        ? `Added ${result.totalImported.toLocaleString()} profile(s) from your candidate list (${result.totalDuplicates.toLocaleString()} already queued).`
+        ? `Ready: ${result.totalImported.toLocaleString()} profile(s) queued (${result.totalDuplicates.toLocaleString()} already present).`
         : `${result.totalImported.toLocaleString()} queued so far. More remain — run it again to continue.`,
     });
   } catch (err) {

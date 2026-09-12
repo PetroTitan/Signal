@@ -32,6 +32,30 @@ repeated delivery safe is a database constraint**, not application logic:
 | A bug → attempting more than approved | `CHECK (effective_daily_quota <= requested_daily_quota)` |
 | A dead worker → stranded rows | `lease_expires_at`, reclaimed by the same RPC |
 
+## Production rollout after the import hotfix
+
+`20260912000002_campaign_import_production_hotfix.sql` must be present in
+the database before deploying the code that calls its RPCs.
+
+1. Set `BLUESKY_CAMPAIGNS_DISABLED=1` and redeploy the environment-only
+   change. Confirm the tick reports `disabled:true`.
+2. Inspect migration history. If `20260912000001` is absent, apply
+   `20260912000001` and `20260912000002` in order. If it is present,
+   apply only `20260912000002`.
+3. Deploy the matching application commit while the kill switch stays
+   engaged.
+4. Open `/relationships/campaigns/setup`. It must render source counts,
+   not a Server Components digest.
+5. Build a dry-run queue and confirm the campaign detail shows a
+   non-zero queue. Call the authenticated tick and confirm zero provider
+   mutations.
+6. Clear `BLUESKY_CAMPAIGNS_DISABLED` only after the dry-run evidence is
+   recorded.
+
+The hotfix deliberately re-walks candidate import jobs under the new
+immutable snapshot cursor. Existing campaign members are retained and
+deduplicated; do not delete or recreate them during rollout.
+
 ## Environment variables
 
 | Variable | Required | Purpose |
@@ -78,7 +102,7 @@ Work through these in order; each rules out the one below.
 
 1. **Is the tick being called?**
    `curl -s -H "Authorization: Bearer $CRON_SECRET" https://<host>/api/campaigns/bluesky/tick`
-   - `503` → no secret configured.
+   - `503` → `CRON_SECRET` or `SUPABASE_SERVICE_ROLE_KEY` is missing.
    - `401` → wrong secret.
    - `{"ok":true,"disabled":true}` → the deploy kill switch is set.
    - `{"ok":true,"campaignsConsidered":0}` → no campaign is *due*.

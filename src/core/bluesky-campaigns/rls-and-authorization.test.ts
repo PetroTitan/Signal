@@ -460,6 +460,13 @@ describe("the cron endpoint is protected and bounded", () => {
     expect(killAt).toBeLessThan(dispatchAt);
   });
 
+  it("creates the service-role client and passes it into the dispatcher", () => {
+    expect(route).toContain("createSupabaseServiceRoleClient()");
+    expect(route).toContain("dispatchCampaigns({ db })");
+    expect(route).toMatch(/if \(!db\)[\s\S]{0,300}status: 503/);
+    expect(route).not.toContain("dispatchCampaigns({})");
+  });
+
   it("accepts no client input at all", () => {
     // No body, no query parameters: nothing a caller sends can change
     // which workspace, campaign or quota is processed.

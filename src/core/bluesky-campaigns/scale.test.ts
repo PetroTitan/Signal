@@ -35,8 +35,15 @@ const TOTAL = 100_000;
 /** Built once — 100k rows through the import path is the slow part. */
 let db: FakeDb;
 
+function seedLocalCampaign(local: FakeDb): void {
+  local.tables.set("bluesky_follow_campaigns", [
+    { id: CAMPAIGN, workspace_id: WS, status: "draft" },
+  ]);
+}
+
 async function seedViaImport(): Promise<void> {
   db = new FakeDb();
+  seedLocalCampaign(db);
   let sequence = await nextImportSequence(WS, CAMPAIGN, db.client());
   for (let offset = 0; offset < TOTAL; offset += IMPORT_CHUNK_SIZE) {
     const members = [];
@@ -190,6 +197,7 @@ describe("paginating 100,000 members", () => {
 describe("re-importing an overlapping audience", () => {
   it("creates no duplicates and does not reshuffle the queue", async () => {
     const local = new FakeDb();
+    seedLocalCampaign(local);
     const members = Array.from({ length: 1000 }, (_, i) => ({
       subjectDid: `did:plc:x${i}`,
       currentHandle: `x${i}.bsky.social`,
@@ -242,6 +250,7 @@ describe("re-importing an overlapping audience", () => {
 
   it("collapses duplicates WITHIN one chunk without burning sequences", async () => {
     const local = new FakeDb();
+    seedLocalCampaign(local);
     const result = await importMemberChunk({
       workspaceId: WS,
       campaignId: CAMPAIGN,
@@ -263,6 +272,7 @@ describe("re-importing an overlapping audience", () => {
 
   it("rejects anything that is not a DID", async () => {
     const local = new FakeDb();
+    seedLocalCampaign(local);
     const result = await importMemberChunk({
       workspaceId: WS,
       campaignId: CAMPAIGN,
@@ -283,6 +293,7 @@ describe("re-importing an overlapping audience", () => {
 describe("the same DID from multiple sources", () => {
   it("is one member with attribution from each source", async () => {
     const local = new FakeDb();
+    seedLocalCampaign(local);
     await importMemberChunk({
       workspaceId: WS,
       campaignId: CAMPAIGN,
@@ -324,6 +335,7 @@ describe("the same DID from multiple sources", () => {
 
   it("a changed handle updates nothing that matters and loses no history", async () => {
     const local = new FakeDb();
+    seedLocalCampaign(local);
     await importMemberChunk({
       workspaceId: WS,
       campaignId: CAMPAIGN,

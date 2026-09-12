@@ -301,6 +301,16 @@ describe("import progress is never supplied by the client", () => {
   it("tells the operator they may leave and come back", () => {
     expect(WIZARD).toMatch(/leave this page and come\s+back/);
   });
+
+  it("persists the created campaign id in the URL for reload recovery", () => {
+    expect(WIZARD).toContain("window.history.replaceState");
+    expect(WIZARD).toContain("?campaign=");
+    const page = code(
+      read("src/app/(app)/relationships/campaigns/setup/page.tsx"),
+    );
+    expect(page).toContain("searchParams?.campaign");
+    expect(page).toContain("/relationships/campaigns?campaign=");
+  });
 });
 
 // =====================================================================
@@ -330,6 +340,26 @@ describe("who may set up automatic following", () => {
       );
       expect(body, `${name} must call requireCtx`).toContain("await requireCtx()");
       expect(body, `${name} must bail on failure`).toContain('ctx.kind !== "ok"');
+    }
+  });
+
+  it("uses service-role only after the user/workspace permission gate", () => {
+    for (const name of [
+      "previewSourceAction",
+      "startCampaignSetupAction",
+      "continueImportAction",
+      "activateFromSetupAction",
+    ]) {
+      const start = SETUP_ACTIONS.indexOf(`export async function ${name}(`);
+      const next = SETUP_ACTIONS.indexOf("\nexport ", start + 1);
+      const body = SETUP_ACTIONS.slice(
+        start,
+        next > 0 ? next : SETUP_ACTIONS.length,
+      );
+      expect(body, name).toContain("await requireCtx()");
+      const gateAt = body.indexOf('ctx.kind !== "ok"');
+      const serviceAt = body.indexOf("requireCampaignServiceDb()");
+      expect(serviceAt, name).toBeGreaterThan(gateAt);
     }
   });
 

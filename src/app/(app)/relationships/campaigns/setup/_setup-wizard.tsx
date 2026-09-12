@@ -113,6 +113,13 @@ export function SetupWizard(props: {
     if (started.ok) {
       setCampaignId(started.campaignId);
       setStep(3);
+      // The campaign id is durable state. Put it in the URL immediately
+      // so reload/back/return can recover through the campaign page.
+      window.history.replaceState(
+        null,
+        "",
+        `/relationships/campaigns/setup?campaign=${encodeURIComponent(started.campaignId)}`,
+      );
     }
   }, [started]);
 

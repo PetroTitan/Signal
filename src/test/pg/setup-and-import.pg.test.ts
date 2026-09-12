@@ -182,6 +182,104 @@ describe("the keyset candidate walk", () => {
     // Only list A. Not 700, and not 400.
     expect(Number(counts.rows[0].eligible)).toBe(300);
   }, 180_000);
+
+  it("does not skip an unseen row when rediscovery changes last_discovered_at", async () => {
+    const scoped = await seedCandidates(3);
+    const c = await newCampaign(300, "immutable-cursor");
+    const campaignId = c.rows[0].id;
+    const begin = await h.admin.query<{ out_job_id: string }>(
+      `select * from public.begin_bluesky_campaign_import($1,$2,'candidates',null)`,
+      [t.workspaceId, campaignId],
+    );
+    const job = await h.admin.query<{ snapshot_at: string }>(
+      `select snapshot_at from public.bluesky_campaign_import_jobs where id=$1`,
+      [begin.rows[0].out_job_id],
+    );
+    const first = await h.admin.query<{
+      subject_did: string;
+      first_discovered_at: string;
+    }>(
+      `select * from public.list_bluesky_candidates_snapshot_keyset(
+         $1,$2,$3,null,$4,null,null,1)`,
+      [t.workspaceId, scoped, ["not_following"], job.rows[0].snapshot_at],
+    );
+    expect(first.rows).toHaveLength(1);
+
+    // Re-sight an unseen candidate after the first page. The old cursor
+    // moved it ahead of the checkpoint and lost it forever.
+    await h.admin.query(
+      `update public.bluesky_candidates
+          set last_discovered_at = now() + interval '1 day'
+        where operator_account_id=$1 and subject_did='did:plc:0000002'`,
+      [scoped],
+    );
+
+    const rest = await h.admin.query<{ subject_did: string }>(
+      `select * from public.list_bluesky_candidates_snapshot_keyset(
+         $1,$2,$3,null,$4,$5,$6,10)`,
+      [
+        t.workspaceId,
+        scoped,
+        ["not_following"],
+        job.rows[0].snapshot_at,
+        first.rows[0].first_discovered_at,
+        first.rows[0].subject_did,
+      ],
+    );
+    expect(rest.rows.map((r) => r.subject_did).sort()).toEqual([
+      "did:plc:0000001",
+      "did:plc:0000002",
+    ]);
+  }, 120_000);
+});
+
+describe("atomic campaign member import", () => {
+  it("serializes two real sessions and allocates unique sequence ranges", async () => {
+    const c = await newCampaign(300, "atomic-sequences");
+    const campaignId = c.rows[0].id;
+    const a = await h.connect();
+    const b = await h.connect();
+    const payload = (prefix: string) =>
+      JSON.stringify(
+        Array.from({ length: 500 }, (_, i) => ({
+          subject_did: `did:plc:${prefix}${String(i).padStart(5, "0")}`,
+          current_handle: `${prefix}${i}.test`,
+          source_label: "candidates",
+        })),
+      );
+
+    const [ra, rb] = await Promise.all([
+      a.query(
+        `select * from public.import_bluesky_campaign_member_chunk($1,$2,$3::jsonb)`,
+        [t.workspaceId, campaignId, payload("a")],
+      ),
+      b.query(
+        `select * from public.import_bluesky_campaign_member_chunk($1,$2,$3::jsonb)`,
+        [t.workspaceId, campaignId, payload("b")],
+      ),
+    ]);
+    expect(Number(ra.rows[0].out_inserted)).toBe(500);
+    expect(Number(rb.rows[0].out_inserted)).toBe(500);
+
+    const proof = await h.admin.query<{
+      total: string;
+      unique_sequences: string;
+      min_sequence: string;
+      max_sequence: string;
+    }>(
+      `select count(*) total,
+              count(distinct import_sequence) unique_sequences,
+              min(import_sequence) min_sequence,
+              max(import_sequence) max_sequence
+         from public.bluesky_follow_campaign_members
+        where campaign_id=$1`,
+      [campaignId],
+    );
+    expect(Number(proof.rows[0].total)).toBe(1_000);
+    expect(Number(proof.rows[0].unique_sequences)).toBe(1_000);
+    expect(Number(proof.rows[0].min_sequence)).toBe(1);
+    expect(Number(proof.rows[0].max_sequence)).toBe(1_000);
+  }, 120_000);
 });
 
 describe("import job checkpoints", () => {
@@ -236,6 +334,9 @@ describe("import job checkpoints", () => {
       "count_bluesky_candidates_eligible",
       "begin_bluesky_campaign_import",
       "advance_bluesky_campaign_import",
+      "list_bluesky_candidates_snapshot_keyset",
+      "advance_bluesky_campaign_import_v2",
+      "import_bluesky_campaign_member_chunk",
     ]) {
       const r = await h.admin.query<{
         svc: boolean;
@@ -291,5 +392,18 @@ describe("import job checkpoints", () => {
     );
     expect(Number(t2.rows[0].n)).toBe(1);
     expect(TODAY).toBeTruthy();
+  }, 120_000);
+
+  it("replays the forward hotfix cleanly", async () => {
+    const { readFileSync } = await import("node:fs");
+    const path = await import("node:path");
+    const sql = readFileSync(
+      path.join(
+        process.cwd(),
+        "supabase/migrations/20260912000002_campaign_import_production_hotfix.sql",
+      ),
+      "utf8",
+    );
+    await expect(h.admin.query(sql)).resolves.toBeDefined();
   }, 120_000);
 });

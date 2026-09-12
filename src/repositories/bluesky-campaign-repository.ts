@@ -256,11 +256,12 @@ export async function importMemberChunk(input: {
   workspaceId: string;
   campaignId: string;
   members: ImportMemberInput[];
-  startSequence: number;
+  /** Retained for source compatibility; allocation is database-owned. */
+  startSequence?: number;
   db?: Db;
 }): Promise<ImportResult> {
   if (input.members.length === 0) {
-    return { inserted: 0, duplicates: 0, lastSequence: input.startSequence - 1 };
+    return { inserted: 0, duplicates: 0, lastSequence: 0 };
   }
   const supabase = client(input.db);
 
@@ -274,46 +275,39 @@ export async function importMemberChunk(input: {
     unique.set(m.subjectDid, m);
   }
 
-  let sequence = input.startSequence;
   const payload = [...unique.values()].map((m) => ({
-    workspace_id: input.workspaceId,
-    campaign_id: input.campaignId,
     subject_did: m.subjectDid,
     current_handle: m.currentHandle,
     display_name: m.displayName,
-    import_sequence: sequence++,
-    status: "queued" as const,
+    target_profile_id: m.targetProfileId ?? null,
+    source_label: m.sourceLabel ?? "import",
   }));
 
-  const { data, error } = await supabase
-    .from("bluesky_follow_campaign_members")
-    .upsert(payload as never, {
-      onConflict: "campaign_id,subject_did",
-      // A DID already queued keeps its sequence and its progress.
-      ignoreDuplicates: true,
-    })
-    .select("id, subject_did");
+  // The RPC locks the campaign, allocates the next range and inserts in
+  // one transaction. Reading max(import_sequence) in JavaScript and
+  // inserting later allowed two importers to allocate the same range.
+  const { data, error } = await supabase.rpc(
+    "import_bluesky_campaign_member_chunk",
+    {
+      p_workspace_id: input.workspaceId,
+      p_campaign_id: input.campaignId,
+      p_members: payload,
+    },
+  );
   if (error) throw fromPostgres(error, "Could not import campaign members.");
-
-  const insertedRows = (data ?? []) as unknown as {
-    id: string;
-    subject_did: string;
-  }[];
-
-  // Attribution for every DID in the chunk — including ones that were
-  // already members. A DID discovered under a second target GAINS a
-  // source row; it never replaces the first.
-  await recordMemberSources({
-    workspaceId: input.workspaceId,
-    campaignId: input.campaignId,
-    members: [...unique.values()],
-    db: input.db,
-  });
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | {
+        out_inserted?: number;
+        out_duplicates?: number;
+        out_last_sequence?: number;
+      }
+    | undefined;
+  if (!row) throw fromPostgres(null, "Could not import campaign members.");
 
   return {
-    inserted: insertedRows.length,
-    duplicates: unique.size - insertedRows.length,
-    lastSequence: sequence - 1,
+    inserted: Number(row.out_inserted ?? 0),
+    duplicates: Number(row.out_duplicates ?? 0),
+    lastSequence: Number(row.out_last_sequence ?? 0),
   };
 }
 

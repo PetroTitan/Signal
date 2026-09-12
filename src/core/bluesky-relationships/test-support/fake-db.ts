@@ -154,12 +154,18 @@ export class FakeDb {
         return this.reserveCampaignQuota(args);
       case "list_bluesky_candidates_keyset":
         return this.listCandidatesKeyset(args);
+      case "list_bluesky_candidates_snapshot_keyset":
+        return this.listCandidateSnapshot(args);
       case "count_bluesky_candidates_eligible":
         return this.countEligibleCandidates(args);
       case "begin_bluesky_campaign_import":
         return this.beginImportJob(args);
       case "advance_bluesky_campaign_import":
         return this.advanceImportJob(args);
+      case "advance_bluesky_campaign_import_v2":
+        return this.advanceImportJobV2(args);
+      case "import_bluesky_campaign_member_chunk":
+        return this.importCampaignMemberChunk(args);
       case "consume_bluesky_member_quota":
         return this.consumeMemberQuota(args);
       case "fold_bluesky_ledger_outcomes":
@@ -1011,6 +1017,59 @@ export class FakeDb {
     return { data: rows, error: null };
   }
 
+  /** Mirrors the immutable, finite candidate snapshot walk. */
+  private listCandidateSnapshot(args: Record<string, unknown>): QueryResult {
+    const states = (args.p_states as string[] | null) ?? null;
+    const targetId = args.p_target_profile_id ?? null;
+    const snapshotAt = String(args.p_snapshot_at);
+    const afterAt = args.p_after_first_discovered_at as string | null;
+    const afterDid = args.p_after_subject_did as string | null;
+    const limit = Math.min(Math.max(num(args.p_limit) || 500, 1), 1000);
+    const sources = this.rows("bluesky_candidate_sources");
+
+    const rows = this.rows("bluesky_candidates")
+      .filter((c) => {
+        if (c.workspace_id !== args.p_workspace_id) return false;
+        if (c.operator_account_id !== args.p_operator_account_id) return false;
+        if (states && !states.includes(String(c.relationship_state))) return false;
+        const at = String(c.first_discovered_at ?? c.last_discovered_at);
+        if (at > snapshotAt) return false;
+        if (targetId) {
+          const linked = sources.some(
+            (s) =>
+              s.candidate_id === c.id &&
+              s.target_profile_id === targetId &&
+              String(s.first_seen_at ?? at) <= snapshotAt,
+          );
+          if (!linked) return false;
+        }
+        if (afterAt) {
+          if (at < afterAt) return false;
+          if (at === afterAt && String(c.subject_did) <= String(afterDid)) {
+            return false;
+          }
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const aAt = String(a.first_discovered_at ?? a.last_discovered_at);
+        const bAt = String(b.first_discovered_at ?? b.last_discovered_at);
+        const t = aAt.localeCompare(bAt);
+        if (t !== 0) return t;
+        return String(a.subject_did).localeCompare(String(b.subject_did));
+      })
+      .slice(0, limit)
+      .map((c) => ({
+        subject_did: c.subject_did,
+        handle: c.handle ?? null,
+        display_name: c.display_name ?? null,
+        first_discovered_at: c.first_discovered_at ?? c.last_discovered_at,
+        protected: c.protected === true,
+      }));
+
+    return { data: rows, error: null };
+  }
+
   /** Mirrors count_bluesky_candidates_eligible. */
   private countEligibleCandidates(args: Record<string, unknown>): QueryResult {
     const states = (args.p_states as string[] | null) ?? null;
@@ -1057,7 +1116,9 @@ export class FakeDb {
         target_profile_id: args.p_target_profile_id ?? null,
         status: "running",
         cursor_last_discovered_at: null,
+        cursor_first_discovered_at: null,
         cursor_subject_did: null,
+        snapshot_at: new Date(this.nowMs()).toISOString(),
         provider_cursor: null,
         source_exhausted: false,
         imported_count: 0,
@@ -1171,6 +1232,137 @@ export class FakeDb {
           out_imported: job.imported_count,
           out_duplicates: job.duplicate_count,
           out_excluded: job.excluded_count,
+        },
+      ],
+      error: null,
+    };
+  }
+
+  /** Mirrors advance_bluesky_campaign_import_v2. */
+  private advanceImportJobV2(args: Record<string, unknown>): QueryResult {
+    const job = this.rows("bluesky_campaign_import_jobs").find(
+      (j) => j.id === args.p_job_id && j.workspace_id === args.p_workspace_id,
+    );
+    if (!job) return { data: [], error: null };
+
+    const newAt = args.p_cursor_first_discovered_at as string | null;
+    const newDid = args.p_cursor_subject_did as string | null;
+    const oldAt = job.cursor_first_discovered_at as string | null;
+    const oldDid = job.cursor_subject_did as string | null;
+    const advance =
+      Boolean(newAt) &&
+      (!oldAt ||
+        String(newAt) > oldAt ||
+        (String(newAt) === oldAt && String(newDid) > String(oldDid)));
+
+    if (advance) {
+      job.cursor_first_discovered_at = newAt;
+      job.cursor_subject_did = newDid;
+    }
+    if (args.p_source_exhausted === true) job.provider_cursor = null;
+    else if (args.p_provider_cursor !== null && args.p_provider_cursor !== undefined) {
+      job.provider_cursor = args.p_provider_cursor;
+    }
+    job.imported_count = num(job.imported_count) + Math.max(num(args.p_inserted), 0);
+    job.duplicate_count =
+      num(job.duplicate_count) + Math.max(num(args.p_duplicates), 0);
+    job.excluded_count = num(job.excluded_count) + Math.max(num(args.p_excluded), 0);
+    job.pages_read = num(job.pages_read) + Math.max(num(args.p_pages), 0);
+    job.source_exhausted =
+      job.source_exhausted === true || args.p_source_exhausted === true;
+    job.last_error = args.p_error ?? null;
+    job.status = args.p_error
+      ? "failed"
+      : job.source_exhausted
+        ? "ready"
+        : "running";
+
+    return {
+      data: [
+        {
+          out_status: job.status,
+          out_cursor_at: job.cursor_first_discovered_at,
+          out_cursor_did: job.cursor_subject_did,
+          out_provider_cursor: job.provider_cursor,
+          out_source_exhausted: job.source_exhausted,
+          out_imported: job.imported_count,
+          out_duplicates: job.duplicate_count,
+          out_excluded: job.excluded_count,
+        },
+      ],
+      error: null,
+    };
+  }
+
+  /** Mirrors the campaign-locked sequence allocator and chunk insert. */
+  private importCampaignMemberChunk(args: Record<string, unknown>): QueryResult {
+    const campaign = this.rows("bluesky_follow_campaigns").find(
+      (c) => c.id === args.p_campaign_id && c.workspace_id === args.p_workspace_id,
+    );
+    if (!campaign) return { data: [], error: null };
+
+    const supplied = Array.isArray(args.p_members)
+      ? (args.p_members as Record<string, unknown>[])
+      : [];
+    const unique = new Map<string, Record<string, unknown>>();
+    for (const member of supplied) {
+      const did = String(member.subject_did ?? "");
+      if (did.startsWith("did:") && !unique.has(did)) unique.set(did, member);
+    }
+
+    const members = this.rows("bluesky_follow_campaign_members");
+    let sequence = members
+      .filter((m) => m.campaign_id === args.p_campaign_id)
+      .reduce((max, m) => Math.max(max, num(m.import_sequence)), 0);
+    let inserted = 0;
+    for (const [did, member] of [...unique].sort(([a], [b]) => a.localeCompare(b))) {
+      let row = members.find(
+        (m) => m.campaign_id === args.p_campaign_id && m.subject_did === did,
+      );
+      if (!row) {
+        sequence += 1;
+        row = {
+          id: this.nextId("campaign-member"),
+          workspace_id: args.p_workspace_id,
+          campaign_id: args.p_campaign_id,
+          subject_did: did,
+          current_handle: member.current_handle ?? null,
+          display_name: member.display_name ?? null,
+          import_sequence: sequence,
+          status: "queued",
+          attempt_count: 0,
+        };
+        members.push(row);
+        inserted += 1;
+      }
+
+      const sourceRows = this.rows("bluesky_campaign_member_sources");
+      const targetId = member.target_profile_id ?? null;
+      const label = member.source_label ?? "import";
+      if (
+        !sourceRows.some(
+          (s) =>
+            s.member_id === row!.id &&
+            (s.target_profile_id ?? null) === targetId &&
+            s.source_label === label,
+        )
+      ) {
+        sourceRows.push({
+          id: this.nextId("campaign-source"),
+          workspace_id: args.p_workspace_id,
+          member_id: row.id,
+          target_profile_id: targetId,
+          source_label: label,
+        });
+      }
+    }
+
+    return {
+      data: [
+        {
+          out_inserted: inserted,
+          out_duplicates: unique.size - inserted,
+          out_last_sequence: sequence,
         },
       ],
       error: null,
