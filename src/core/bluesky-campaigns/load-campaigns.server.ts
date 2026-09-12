@@ -34,6 +34,7 @@ import {
 import { localClockAt, isWithinWindow, computeNextRunAt } from "./campaign-day";
 import { classifyReadFailure } from "@/core/bluesky-relationships/read-failure";
 import type { ReadFailure } from "@/core/bluesky-relationships/read-failure";
+import { describeFailedCampaign } from "./campaign-recovery";
 
 export interface CampaignDetail {
   campaign: BlueskyFollowCampaignRow;
@@ -250,9 +251,10 @@ function describeNextAction(
     case "reauthorization_required":
       return "Reconnect this Bluesky identity on Accounts, then resume the campaign.";
     case "failed":
-      return `Bluesky returned a failure Signal does not recognise as temporary${
-        campaign.last_error_message ? `: ${campaign.last_error_message}` : "."
-      } Review and resume, or cancel.`;
+      return describeFailedCampaign({
+        errorCode: campaign.last_error_code,
+        errorMessage: campaign.last_error_message,
+      });
     case "rate_limited":
       return campaign.rate_limited_until
         ? `Bluesky rate-limited this account. Nothing will be attempted before ${campaign.rate_limited_until}. No action needed.`

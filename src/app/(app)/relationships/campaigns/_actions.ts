@@ -41,6 +41,10 @@ import {
   setKillSwitch,
   updateCampaign,
 } from "@/repositories/bluesky-campaign-repository";
+import {
+  isResumableCampaignStatus,
+  RESUMABLE_CAMPAIGN_STATUSES,
+} from "@/core/bluesky-campaigns/campaign-recovery";
 import { resumeCampaignImport } from "@/core/bluesky-campaigns/resume-import.server";
 import { isDailyQuota } from "@/core/bluesky-campaigns/quota";
 import { getImportJob } from "@/repositories/bluesky-campaign-import-repository";
@@ -292,7 +296,7 @@ export async function activateCampaignAction(
   const campaign = await requireCampaign(ctx, campaignId);
   if (!campaign) return actionFail("That campaign is not in your workspace.");
 
-  if (campaign.status !== "draft" && campaign.status !== "paused") {
+  if (!isResumableCampaignStatus(campaign.status)) {
     return actionFail(
       `This campaign is ${campaign.status} and cannot be activated from here.`,
     );
@@ -371,7 +375,7 @@ export async function activateCampaignAction(
     lastErrorMessage: null,
     // Compare-and-set: if something moved it since we read it, do
     // nothing rather than overwriting that transition.
-    expectedStatuses: ["draft", "paused"],
+    expectedStatuses: [...RESUMABLE_CAMPAIGN_STATUSES],
   });
   if (!updated) {
     return actionFail("The campaign changed while you were confirming. Reload and try again.");

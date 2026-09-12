@@ -27,6 +27,7 @@ import {
   type QuotaChangeResult,
 } from "./_actions";
 import { DAILY_QUOTA_OPTIONS } from "@/core/bluesky-campaigns/quota";
+import { isResumableCampaignStatus } from "@/core/bluesky-campaigns/campaign-recovery";
 import { formatMinutes } from "@/core/bluesky-campaigns/campaign-day";
 import { formatHandle } from "@/core/bluesky-relationships/handle-display";
 import type {
@@ -405,9 +406,7 @@ function CampaignDetailView(props: {
       <section className="card card-padded">
         <h3 className="section-title">Controls</h3>
         <div className="mt-3 flex flex-wrap gap-2">
-          {c.status === "draft" ||
-          c.status === "paused" ||
-          c.status === "reauthorization_required" ? (
+          {isResumableCampaignStatus(c.status) ? (
             <form action={props.runActivate}>
               <input type="hidden" name="campaign_id" value={c.id} />
               <SubmitButton className="btn-primary" disabled={d.counts.total === 0}>

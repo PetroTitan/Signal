@@ -76,19 +76,12 @@ describe("the migration chain applies for real", () => {
   it("is idempotent — re-applying the latest hotfix migration changes nothing", async () => {
     const { readFileSync } = await import("node:fs");
     const path = await import("node:path");
-    // 20260911000004, the LATEST migration, replayed.
-    //
-    // Deliberately not 20260911000003 as well. 004 changes the return
-    // type of two functions that 003 defines, and Postgres rejects
-    // replaying the older definition over the newer one — correctly.
-    // That is not a defect: a migration runner applies each file once,
-    // in order, and never rewinds. What has to hold is that the file at
-    // the head of the chain can be re-run without damage, which is the
-    // state a partial or retried deploy leaves behind.
+    // Replay only the head migration. A migration runner applies each
+    // older file once, in order, and a partial deploy retries its head.
     const sql = readFileSync(
       path.join(
         process.cwd(),
-        "supabase/migrations/20260911000004_campaign_reservation_ownership.sql",
+        "supabase/migrations/20260912000003_campaign_safeupdate_hotfix.sql",
       ),
       "utf8",
     );
@@ -102,6 +95,17 @@ describe("the migration chain applies for real", () => {
     );
     expect(t.rows[0].n).toBe(1);
   }, 60_000);
+
+  it("qualifies both temporary-table DELETEs for production pg-safeupdate", async () => {
+    const r = await h.db.query<{ definition: string }>(
+      `select pg_get_functiondef(
+         'public.reserve_bluesky_campaign_quota(uuid,uuid,uuid,uuid,date,integer,integer,integer,integer,text)'::regprocedure
+       ) as definition`,
+    );
+    const definition = r.rows[0].definition;
+    expect(definition.match(/delete\s+from\s+_claimed_members\s+where\s+true\s*;/gi)).toHaveLength(2);
+    expect(definition).not.toMatch(/delete\s+from\s+_claimed_members\s*;/i);
+  });
 });
 
 describe("RPC EXECUTE — the defect that made the feature inert", () => {
