@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { OG_IMAGE } from "@/content/brand-metadata";
 import Link from "next/link";
 
 export const metadata: Metadata = {
@@ -7,6 +8,7 @@ export const metadata: Metadata = {
     "Signal is OAuth-first by design. We never ask for platform passwords, cookies, session tokens, 2FA codes, or recovery codes.",
   alternates: { canonical: "/security" },
   openGraph: {
+    images: OG_IMAGE,
     title: "Signal security",
     description:
       "OAuth-first. No passwords. No anti-detect tooling. No proxy systems. No fingerprint manipulation.",

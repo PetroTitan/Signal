@@ -1,3 +1,4 @@
+import { OG_IMAGE } from "@/content/brand-metadata";
 import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { SITE_URL } from "@/content/academy/seo";
@@ -24,6 +25,7 @@ export const metadata: Metadata = {
     "Signal is an AI-assisted growth operations platform for founders and SaaS teams. Weekly planning, single approval gate, calm cadence.",
   metadataBase: new URL(SITE_URL),
   openGraph: {
+    images: OG_IMAGE,
     title: "Signal — Sustainable growth operations",
     description:
       "Plan once per week. Approve once per week. Distribute organically.",

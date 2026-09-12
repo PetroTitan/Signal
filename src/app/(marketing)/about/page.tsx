@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { OG_IMAGE } from "@/content/brand-metadata";
 import Link from "next/link";
 
 export const metadata: Metadata = {
@@ -7,6 +8,7 @@ export const metadata: Metadata = {
     "Signal is an AI-assisted growth operations platform for founders and SaaS teams — built around sustainable presence, not posting volume.",
   alternates: { canonical: "/about" },
   openGraph: {
+    images: OG_IMAGE,
     title: "About Signal",
     description:
       "Founder growth infrastructure. Calm, operational, OAuth-first. Built around weekly approval and platform-native participation.",

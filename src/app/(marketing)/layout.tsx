@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { BrandMark } from "@/components/brand-mark";
+import { SignalLogo } from "@/components/brand/signal-logo";
 
 const marketingLinks = [
   { href: "/academy", label: "Academy" },
@@ -21,8 +21,10 @@ export default function MarketingLayout({
             className="inline-flex items-center gap-2 text-ink-900"
             aria-label="Signal home"
           >
-            <BrandMark size={20} />
-            <span className="text-sm font-semibold tracking-tight">Signal</span>
+            {/* Marketing gets the full lockup. The link carries the
+                accessible name, so the lockup's own text is the only
+                thing announced. */}
+            <SignalLogo variant="lockup" size={24} />
           </Link>
           <nav
             aria-label="Marketing"
@@ -54,7 +56,14 @@ export default function MarketingLayout({
       </main>
       <footer className="border-t border-ink-100 bg-white">
         <div className="max-w-5xl mx-auto px-6 py-6 text-xs text-ink-500 flex flex-wrap items-center justify-between gap-3">
-          <div>Signal — sustainable growth operations.</div>
+          {/* Monochrome in the footer: the surrounding text is muted
+              ink, and a full-colour mark at 16px would out-shout it.
+              The mark is decorative — the sentence beside it already
+              says Signal. */}
+          <div className="flex items-center gap-2">
+            <SignalLogo variant="monochrome" size={16} className="text-ink-400" />
+            <span>Signal — sustainable growth operations.</span>
+          </div>
           <div className="flex items-center gap-3">
             <Link href="/academy" className="hover:text-ink-700">
               Docs
