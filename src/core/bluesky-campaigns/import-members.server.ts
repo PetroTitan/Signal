@@ -25,7 +25,6 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   IMPORT_CHUNK_SIZE,
   importMemberChunk,
-  nextImportSequence,
   type ImportMemberInput,
 } from "@/repositories/bluesky-campaign-repository";
 import { listCandidatesPage } from "@/repositories/bluesky-relationship-repository";
@@ -76,11 +75,6 @@ export async function importFromCandidates(input: {
   const states = input.states ?? ["unknown", "not_following", "follows_you"];
   const maxPages = Math.max(1, Math.min(input.maxPages ?? 20, 200));
   let page = Math.max(1, input.startPage ?? 1);
-  let sequence = await nextImportSequence(
-    input.workspaceId,
-    input.campaignId,
-    input.db,
-  );
 
   for (let i = 0; i < maxPages; i += 1) {
     const candidates = await listCandidatesPage({
@@ -109,12 +103,10 @@ export async function importFromCandidates(input: {
         workspaceId: input.workspaceId,
         campaignId: input.campaignId,
         members,
-        startSequence: sequence,
         db: input.db,
       });
       summary.inserted += result.inserted;
       summary.duplicates += result.duplicates;
-      sequence = result.lastSequence + 1;
     }
 
     if (page >= candidates.totalPages) {
@@ -167,11 +159,6 @@ export async function importFromTargetFollowers(input: {
   }
 
   const maxPages = Math.max(1, Math.min(input.maxPages ?? 20, 200));
-  let sequence = await nextImportSequence(
-    input.workspaceId,
-    input.campaignId,
-    input.db,
-  );
   let cursor = input.cursor ?? null;
 
   for (let i = 0; i < maxPages; i += 1) {
@@ -202,12 +189,10 @@ export async function importFromTargetFollowers(input: {
         workspaceId: input.workspaceId,
         campaignId: input.campaignId,
         members,
-        startSequence: sequence,
         db: input.db,
       });
       summary.inserted += result.inserted;
       summary.duplicates += result.duplicates;
-      sequence = result.lastSequence + 1;
     }
 
     cursor = page.page.cursor;

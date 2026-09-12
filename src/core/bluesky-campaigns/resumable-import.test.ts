@@ -83,6 +83,7 @@ function seedCandidates(
       relationship_state: "not_following",
       protected:
         opts.protectedEvery !== undefined && i % opts.protectedEvery === 0,
+      first_discovered_at: new Date(base + bucket * 1000).toISOString(),
       last_discovered_at: new Date(base + bucket * 1000).toISOString(),
     });
     if (opts.targetId) {
@@ -237,6 +238,55 @@ describe("a corpus larger than one invocation", () => {
     const seqs = members.map((m) => Number(m.import_sequence));
     expect(new Set(seqs).size).toBe(seqs.length);
   }, 300_000);
+
+  it("rediscovery cannot move an unseen candidate behind the checkpoint", async () => {
+    const db = new FakeDb();
+    seedCampaign(db);
+    seedCandidates(db, 800);
+
+    const first = await importOnce(db, { maxWindows: 1 });
+    expect(first.imported).toBe(500);
+
+    const unseen = db
+      .rows("bluesky_candidates")
+      .find((c) => c.subject_did === "did:plc:0000700");
+    expect(unseen).toBeTruthy();
+    // This column is deliberately mutable on every re-import. It must
+    // not be the campaign checkpoint.
+    unseen!.last_discovered_at = "2099-01-01T00:00:00.000Z";
+
+    let result = await importOnce(db);
+    while (!result.complete) result = await importOnce(db);
+
+    expect(queued(db)).toHaveLength(800);
+    expect(
+      queued(db).some((m) => m.subject_did === "did:plc:0000700"),
+    ).toBe(true);
+  });
+
+  it("freezes a finite source when the import job begins", async () => {
+    const db = new FakeDb();
+    seedCampaign(db);
+    seedCandidates(db, 600);
+
+    await importOnce(db, { maxWindows: 1 });
+    db.rows("bluesky_candidates").push({
+      id: "late",
+      workspace_id: WS,
+      operator_account_id: IDENTITY,
+      subject_did: "did:plc:late",
+      relationship_state: "not_following",
+      protected: false,
+      first_discovered_at: "2099-01-01T00:00:00.000Z",
+      last_discovered_at: "2099-01-01T00:00:00.000Z",
+    });
+
+    let result = await importOnce(db);
+    while (!result.complete) result = await importOnce(db);
+
+    expect(queued(db)).toHaveLength(600);
+    expect(queued(db).some((m) => m.subject_did === "did:plc:late")).toBe(false);
+  });
 
   it("repeating an invocation after completion changes nothing", async () => {
     const db = new FakeDb();

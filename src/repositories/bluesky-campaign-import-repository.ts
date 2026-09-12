@@ -13,13 +13,10 @@ import "server-only";
  * checkpoint on a job row. The browser supplies nothing. A refresh
  * loses nothing. A crash resumes from the last committed window.
  *
- * OFFSET would be wrong even with the page number fixed: it is
- * O(offset) per page, and it is unstable while rows are being written,
- * so a candidate discovered mid-import shifts every later page and rows
- * are skipped and re-read at random. The keyset order —
- * `(last_discovered_at desc, subject_did asc)` — is total, because the
- * DID is unique within (workspace, identity), and it is stable under
- * concurrent writes.
+ * OFFSET would be wrong even with the page number fixed. The repaired
+ * walk freezes a database-time snapshot and orders it by immutable
+ * `(first_discovered_at asc, subject_did asc)`. PostgreSQL allocates
+ * queue positions while holding the campaign row lock.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -43,6 +40,9 @@ export interface ImportJob {
   status: "running" | "ready" | "failed";
   sourceKind: ImportSourceKind;
   targetProfileId: string | null;
+  /** Finite database-time boundary captured when the job was created. */
+  snapshotAt: string | null;
+  /** Legacy API name; v2 maps cursor_first_discovered_at into it. */
   cursorLastDiscoveredAt: string | null;
   cursorSubjectDid: string | null;
   providerCursor: string | null;
@@ -69,8 +69,11 @@ function toJob(row: Record<string, unknown>): ImportJob {
     targetProfileId:
       ((row.out_target_profile_id ?? row.target_profile_id) as string | null) ??
       null,
+    snapshotAt: ((row.out_snapshot_at ?? row.snapshot_at) as string | null) ?? null,
     cursorLastDiscoveredAt:
-      ((row.out_cursor_at ?? row.cursor_last_discovered_at) as string | null) ??
+      ((row.out_cursor_at ??
+        row.cursor_first_discovered_at ??
+        row.cursor_last_discovered_at) as string | null) ??
       null,
     cursorSubjectDid:
       ((row.out_cursor_did ?? row.cursor_subject_did) as string | null) ?? null,
@@ -114,12 +117,9 @@ export async function beginImportJob(input: {
 /**
  * Commit one window of progress.
  *
- * The checkpoint only ever moves forward. Two callers that read the
- * same checkpoint do the same work — harmless, because the unique index
- * on (campaign_id, subject_did) is what actually deduplicates — and the
- * slower one's attempt to rewind is ignored. A repeated, retried or
- * concurrent import can duplicate effort but never a member, and can
- * never skip one.
+ * The immutable checkpoint only ever moves forward. Two callers can
+ * repeat a window, but the campaign/DID key deduplicates it and the
+ * database-owned allocator serializes their queue positions.
  */
 export async function advanceImportJob(input: {
   workspaceId: string;
@@ -136,11 +136,11 @@ export async function advanceImportJob(input: {
   db?: Db;
 }): Promise<ImportJob | null> {
   const { data, error } = await client(input.db).rpc(
-    "advance_bluesky_campaign_import",
+    "advance_bluesky_campaign_import_v2",
     {
       p_workspace_id: input.workspaceId,
       p_job_id: input.jobId,
-      p_cursor_last_discovered_at: input.cursorLastDiscoveredAt,
+      p_cursor_first_discovered_at: input.cursorLastDiscoveredAt,
       p_cursor_subject_did: input.cursorSubjectDid,
       p_provider_cursor: input.providerCursor,
       p_inserted: input.inserted,
@@ -188,7 +188,7 @@ export interface KeysetCandidate {
   subject_did: string;
   handle: string | null;
   display_name: string | null;
-  last_discovered_at: string;
+  first_discovered_at: string;
   protected: boolean;
 }
 
@@ -204,19 +204,21 @@ export async function listCandidatesKeyset(input: {
   operatorAccountId: string;
   states?: readonly string[];
   targetProfileId?: string | null;
+  snapshotAt: string;
   afterLastDiscoveredAt?: string | null;
   afterSubjectDid?: string | null;
   limit: number;
   db?: Db;
 }): Promise<KeysetCandidate[]> {
   const { data, error } = await client(input.db).rpc(
-    "list_bluesky_candidates_keyset",
+    "list_bluesky_candidates_snapshot_keyset",
     {
       p_workspace_id: input.workspaceId,
       p_operator_account_id: input.operatorAccountId,
       p_states: (input.states ?? IMPORTABLE_STATES) as string[],
       p_target_profile_id: input.targetProfileId ?? null,
-      p_after_last_discovered_at: input.afterLastDiscoveredAt ?? null,
+      p_snapshot_at: input.snapshotAt,
+      p_after_first_discovered_at: input.afterLastDiscoveredAt ?? null,
       p_after_subject_did: input.afterSubjectDid ?? null,
       p_limit: input.limit,
     },

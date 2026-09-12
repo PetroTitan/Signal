@@ -42,6 +42,7 @@ import {
   isValidTimezone,
   parseMinutes,
 } from "@/core/bluesky-campaigns/campaign-day";
+import { requireCampaignServiceDb } from "@/core/bluesky-campaigns/service-db.server";
 
 const SETUP_PATH = "/relationships/campaigns/setup";
 const CAMPAIGNS_PATH = "/relationships/campaigns";
@@ -110,10 +111,12 @@ export async function previewSourceAction(
   if (!operatorAccountId) return actionFail("Choose which account will follow.");
 
   try {
+    const db = requireCampaignServiceDb();
     const counts = await countEligibleCandidates({
       workspaceId: ctx.workspaceId,
       operatorAccountId,
       targetProfileId,
+      db,
     });
     return actionOk(counts);
   } catch (err) {
@@ -192,6 +195,8 @@ export async function startCampaignSetupAction(
   }
 
   try {
+    // Do not create a draft which this deployment cannot populate.
+    const db = requireCampaignServiceDb();
     // DRAFT. Nothing runs until the operator confirms at the last step.
     const campaign = await createCampaign({
       workspaceId: ctx.workspaceId,
@@ -214,6 +219,7 @@ export async function startCampaignSetupAction(
       campaignId: campaign.id,
       sourceKind,
       targetProfileId,
+      db,
     });
 
     await recordActivity({
@@ -279,19 +285,22 @@ export async function continueImportAction(
     );
   }
 
-  const job = await getImportJob({
-    workspaceId: ctx.workspaceId,
-    campaignId,
-  });
-  if (!job) return actionFail("This campaign has no list to build yet.");
-
   try {
+    const db = requireCampaignServiceDb();
+    const job = await getImportJob({
+      workspaceId: ctx.workspaceId,
+      campaignId,
+      db,
+    });
+    if (!job) return actionFail("This campaign has no list to build yet.");
+
     const result = await resumeCampaignImport({
       workspaceId: ctx.workspaceId,
       operatorAccountId: campaign.operator_account_id,
       campaignId,
       sourceKind: job.sourceKind,
       targetProfileId: job.targetProfileId,
+      db,
     });
     if (result.status === "failed" && result.error) {
       return actionFail(result.error);
@@ -346,7 +355,17 @@ export async function activateFromSetupAction(
   // A campaign activated mid-import follows whatever happened to be
   // written so far and reports itself complete when it runs out — the
   // operator would see "done" for a list that was never fully queued.
-  const job = await getImportJob({ workspaceId: ctx.workspaceId, campaignId });
+  let db;
+  try {
+    db = requireCampaignServiceDb();
+  } catch (err) {
+    return actionFail(err instanceof Error ? err.message : "Campaign worker unavailable.");
+  }
+  const job = await getImportJob({
+    workspaceId: ctx.workspaceId,
+    campaignId,
+    db,
+  });
   if (!job) {
     return actionFail("Build the list of profiles before starting.");
   }

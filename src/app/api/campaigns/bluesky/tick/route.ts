@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { authorizeCronRequest } from "@/lib/cron-auth";
 import { dispatchCampaigns } from "@/core/bluesky-campaigns/dispatcher.server";
 import { isGloballyDisabledByEnv } from "@/core/bluesky-campaigns/kill-switch.server";
+import { createSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
 
 /**
  * Bluesky follow-campaign dispatcher endpoint.
@@ -78,8 +79,20 @@ export async function GET(request: Request) {
     });
   }
 
+  const db = createSupabaseServiceRoleClient();
+  if (!db) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "Automatic following is not configured: SUPABASE_SERVICE_ROLE_KEY is missing.",
+      },
+      { status: 503 },
+    );
+  }
+
   try {
-    const result = await dispatchCampaigns({});
+    const result = await dispatchCampaigns({ db });
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {
     // Deliberately a 200 with ok:false rather than a 500. A cron

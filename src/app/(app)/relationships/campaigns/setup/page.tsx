@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { Topbar } from "@/components/topbar";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
@@ -6,7 +7,12 @@ import { can } from "@/core/teams/permissions";
 import { listAccountsByPlatform } from "@/repositories/account-repository";
 import { listTargetProfiles } from "@/repositories/bluesky-relationship-repository";
 import { countEligibleCandidates } from "@/repositories/bluesky-campaign-import-repository";
+import { getCampaign } from "@/repositories/bluesky-campaign-repository";
 import { SetupWizard, type SetupTarget } from "./_setup-wizard";
+import {
+  CAMPAIGN_SERVICE_DB_CONFIG_ERROR,
+  requireCampaignServiceDb,
+} from "@/core/bluesky-campaigns/service-db.server";
 
 export const dynamic = "force-dynamic";
 
@@ -34,7 +40,11 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
-export default async function CampaignSetupPage() {
+export default async function CampaignSetupPage({
+  searchParams,
+}: {
+  searchParams?: { campaign?: string };
+}) {
   if (!isSupabaseConfigured()) {
     return (
       <Shell>
@@ -78,6 +88,19 @@ export default async function CampaignSetupPage() {
     );
   }
 
+  const resumeCampaignId = searchParams?.campaign?.trim();
+  if (resumeCampaignId) {
+    const campaign = await getCampaign(
+      membership.workspace.id,
+      resumeCampaignId,
+    );
+    if (campaign) {
+      redirect(
+        `/relationships/campaigns?campaign=${encodeURIComponent(campaign.id)}`,
+      );
+    }
+  }
+
   const identities = (
     await listAccountsByPlatform(membership.workspace.id, "bluesky")
   ).map((a: { id: string; handle: string | null; displayName: string | null }) => ({
@@ -103,16 +126,53 @@ export default async function CampaignSetupPage() {
     );
   }
 
+  let campaignDb;
+  try {
+    // Authorization is complete above. The import/count RPCs are
+    // service-role-only by design and still receive the authorized
+    // workspace id on every call.
+    campaignDb = requireCampaignServiceDb();
+  } catch {
+    return (
+      <Shell>
+        <div className="card card-padded" data-testid="setup-not-configured">
+          <h2 className="section-title">Automatic following is not configured</h2>
+          <p className="mt-1 text-sm text-ink-600">
+            {CAMPAIGN_SERVICE_DB_CONFIG_ERROR}
+          </p>
+        </div>
+      </Shell>
+    );
+  }
+
   const identityId = identities[0].id;
 
-  const [targetRows, totals] = await Promise.all([
-    listTargetProfiles(membership.workspace.id, identityId),
-    countEligibleCandidates({
-      workspaceId: membership.workspace.id,
-      operatorAccountId: identityId,
-      targetProfileId: null,
-    }),
-  ]);
+  let targetRows;
+  let totals;
+  try {
+    [targetRows, totals] = await Promise.all([
+      listTargetProfiles(membership.workspace.id, identityId),
+      countEligibleCandidates({
+        workspaceId: membership.workspace.id,
+        operatorAccountId: identityId,
+        targetProfileId: null,
+        db: campaignDb,
+      }),
+    ]);
+  } catch (err) {
+    return (
+      <Shell>
+        <div className="card card-padded" data-testid="setup-schema-error">
+          <h2 className="section-title">Campaign setup is not ready</h2>
+          <p className="mt-1 text-sm text-ink-600">
+            {err instanceof Error
+              ? err.message
+              : "The campaign database migration has not finished."}
+          </p>
+        </div>
+      </Shell>
+    );
+  }
 
   // Exact per-list counts, so the operator chooses knowing the size.
   const targets: SetupTarget[] = await Promise.all(
@@ -121,6 +181,7 @@ export default async function CampaignSetupPage() {
         workspaceId: membership.workspace.id,
         operatorAccountId: identityId,
         targetProfileId: t.id,
+        db: campaignDb,
       });
       return {
         id: t.id,

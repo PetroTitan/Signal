@@ -14,7 +14,7 @@ configured.
 Nothing here sends a write to Bluesky.
 
 ### Configuration
-- [ ] Create a campaign: name, identity, each of the six quotas,
+- [ ] Create a campaign: name, identity, each of the ten quotas,
       timezone, window, start date all persist.
 - [ ] A quota outside the six options is rejected.
 - [ ] An unknown timezone is rejected.

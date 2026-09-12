@@ -22,10 +22,10 @@ import "server-only";
  *     to. It is O(offset) per page, and a row inserted mid-walk shifts
  *     every later page, so rows are skipped and re-read at random.
  *
- * Now: a keyset checkpoint on a job row, in the total order
- * `(last_discovered_at desc, subject_did asc)`. The DID is the
- * tie-breaker and is unique within (workspace, identity), so no two
- * rows share a position and the walk cannot skip or repeat.
+ * Now: a finite snapshot and a keyset checkpoint on a job row, in the
+ * total order `(first_discovered_at asc, subject_did asc)`. That
+ * timestamp does not change on rediscovery; the DID is the unique
+ * tie-breaker.
  *
  * DEDUPLICATION REMAINS THE DATABASE'S JOB
  * ----------------------------------------
@@ -39,12 +39,12 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   IMPORT_CHUNK_SIZE,
   importMemberChunk,
-  nextImportSequence,
   type ImportMemberInput,
 } from "@/repositories/bluesky-campaign-repository";
 import {
   advanceImportJob,
   beginImportJob,
+  getImportJob,
   listCandidatesKeyset,
   type ImportJob,
   type ImportSourceKind,
@@ -120,7 +120,7 @@ export async function resumeCampaignImport(input: {
 }): Promise<ResumableImportResult> {
   const out = empty();
 
-  const job = await beginImportJob({
+  let job = await beginImportJob({
     workspaceId: input.workspaceId,
     campaignId: input.campaignId,
     sourceKind: input.sourceKind,
@@ -137,6 +137,23 @@ export async function resumeCampaignImport(input: {
         : "That campaign is not in this workspace.";
     out.status = "failed";
     return out;
+  }
+
+  // begin_bluesky_campaign_import predates the snapshot column. Read
+  // the persisted row back so the repaired candidate walk receives the
+  // database-captured boundary, never a browser or application clock.
+  if (job.sourceKind === "candidates") {
+    const persisted = await getImportJob({
+      workspaceId: input.workspaceId,
+      campaignId: input.campaignId,
+      db: input.db,
+    });
+    if (!persisted?.snapshotAt) {
+      out.status = "failed";
+      out.error = "This campaign import needs the latest database migration.";
+      return out;
+    }
+    job = persisted;
   }
 
   out.totalImported = job.importedCount;
@@ -164,17 +181,13 @@ async function walkCandidates(
   const maxWindows = Math.max(1, Math.min(input.maxWindows ?? DEFAULT_MAX_WINDOWS, 200));
   let afterAt = job.cursorLastDiscoveredAt;
   let afterDid = job.cursorSubjectDid;
-  let sequence = await nextImportSequence(
-    input.workspaceId,
-    input.campaignId,
-    input.db,
-  );
 
   for (let window = 0; window < maxWindows; window += 1) {
     const rows = await listCandidatesKeyset({
       workspaceId: input.workspaceId,
       operatorAccountId: input.operatorAccountId,
       targetProfileId: input.targetProfileId,
+      snapshotAt: job.snapshotAt!,
       afterLastDiscoveredAt: afterAt,
       afterSubjectDid: afterDid,
       limit: IMPORT_CHUNK_SIZE,
@@ -224,19 +237,17 @@ async function walkCandidates(
         workspaceId: input.workspaceId,
         campaignId: input.campaignId,
         members,
-        startSequence: sequence,
         db: input.db,
       });
       inserted = result.inserted;
       duplicates = result.duplicates;
-      sequence = result.lastSequence + 1;
     }
 
     // The checkpoint is the LAST row of the window, in the same total
-    // order the read used. Committed with the counters, so a crash
-    // between them is impossible.
+    // order the read used. If the process dies before the checkpoint,
+    // the unique member key makes re-reading this window harmless.
     const last = rows[rows.length - 1];
-    afterAt = last.last_discovered_at;
+    afterAt = last.first_discovered_at;
     afterDid = last.subject_did;
 
     const advanced = await advanceImportJob({
@@ -299,11 +310,6 @@ async function walkTargetFollowers(
 
   const maxWindows = Math.max(1, Math.min(input.maxWindows ?? DEFAULT_MAX_WINDOWS, 200));
   let cursor = job.providerCursor;
-  let sequence = await nextImportSequence(
-    input.workspaceId,
-    input.campaignId,
-    input.db,
-  );
 
   for (let window = 0; window < maxWindows; window += 1) {
     const page = await getFollowers({
@@ -353,12 +359,10 @@ async function walkTargetFollowers(
         workspaceId: input.workspaceId,
         campaignId: input.campaignId,
         members,
-        startSequence: sequence,
         db: input.db,
       });
       inserted = result.inserted;
       duplicates = result.duplicates;
-      sequence = result.lastSequence + 1;
     }
 
     cursor = page.page.cursor ?? null;
