@@ -22,16 +22,37 @@ const base = {
   now: new Date("2026-09-11T12:00:00Z"),
 };
 
-describe("the six selectable quotas", () => {
-  it("offers exactly 100/200/400/600/800/1000", () => {
-    expect([...DAILY_QUOTA_OPTIONS]).toEqual([100, 200, 400, 600, 800, 1000]);
+describe("the selectable quotas", () => {
+  it("offers every 100 from 100 to 1,000", () => {
+    // The set used to skip 300, 500, 700 and 900, so an operator who
+    // wanted 300 a day had to choose 200 or 400. The CEILING is
+    // unchanged at 1,000 — only the gaps are gone.
+    expect([...DAILY_QUOTA_OPTIONS]).toEqual([
+      100, 200, 300, 400, 500, 600, 700, 800, 900, 1000,
+    ]);
+  });
+
+  it("accepts 300 specifically", () => {
+    // Named on its own because it is the value the gap was reported
+    // for, and a set assertion can be satisfied while the validator
+    // disagrees.
+    expect(isDailyQuota(300)).toBe(true);
+    expect(DAILY_QUOTA_OPTIONS).toContain(300);
   });
 
   it("accepts each one and rejects anything else", () => {
     for (const q of DAILY_QUOTA_OPTIONS) expect(isDailyQuota(q)).toBe(true);
-    for (const q of [0, 50, 99, 101, 999, 1001, 5000, -100, NaN]) {
+    // Including values INSIDE the range that are not on the 100 step,
+    // and the one just past the ceiling.
+    for (const q of [
+      0, 50, 99, 101, 150, 250, 350, 999, 1001, 1100, 2000, 5000, -100, NaN,
+    ]) {
       expect(isDailyQuota(q), String(q)).toBe(false);
     }
+  });
+
+  it("does not raise the ceiling", () => {
+    expect(Math.max(...DAILY_QUOTA_OPTIONS)).toBe(1000);
   });
 
   it("every option is achievable when nothing constrains it", () => {

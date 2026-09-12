@@ -40,11 +40,10 @@ import {
   setKillSwitch,
   updateCampaign,
 } from "@/repositories/bluesky-campaign-repository";
-import {
-  importFromCandidates,
-  importFromTargetFollowers,
-} from "@/core/bluesky-campaigns/import-members.server";
+import { importFromTargetFollowers } from "@/core/bluesky-campaigns/import-members.server";
+import { resumeCampaignImport } from "@/core/bluesky-campaigns/resume-import.server";
 import { isDailyQuota } from "@/core/bluesky-campaigns/quota";
+import { getImportJob } from "@/repositories/bluesky-campaign-import-repository";
 import {
   computeNextRunAt,
   isValidTimezone,
@@ -204,7 +203,6 @@ export async function importCampaignMembersAction(
   const source = String(formData.get("source") ?? "candidates");
   const targetProfileId = String(formData.get("target_profile_id") ?? "");
   const cursor = String(formData.get("cursor") ?? "") || null;
-  const startPage = Number(formData.get("start_page") ?? 1);
 
   const campaign = await requireCampaign(ctx, campaignId);
   if (!campaign) return actionFail("That campaign is not in your workspace.");
@@ -238,20 +236,26 @@ export async function importCampaignMembersAction(
       });
     }
 
-    const result = await importFromCandidates({
+    // Resumed from the DATABASE's checkpoint, never from a page number
+    // supplied by the browser. The old call took `start_page` from the
+    // form, the form never sent it, and so every invocation restarted
+    // at page 1 — a list past ~10,000 could never finish.
+    const result = await resumeCampaignImport({
       workspaceId: ctx.workspaceId,
       operatorAccountId: campaign.operator_account_id,
       campaignId,
-      startPage: Number.isFinite(startPage) ? startPage : 1,
+      sourceKind: "candidates",
+      targetProfileId: null,
     });
+    if (result.error) return actionFail(result.error);
     revalidatePath(CAMPAIGNS_PATH);
     return actionOk({
-      inserted: result.inserted,
+      inserted: result.imported,
       duplicates: result.duplicates,
       complete: result.complete,
       summary: result.complete
-        ? `Added ${result.inserted.toLocaleString()} profile(s) from your candidate list (${result.duplicates.toLocaleString()} already queued).`
-        : `Added ${result.inserted.toLocaleString()} profile(s). More candidates remain — run it again to continue.`,
+        ? `Added ${result.totalImported.toLocaleString()} profile(s) from your candidate list (${result.totalDuplicates.toLocaleString()} already queued).`
+        : `${result.totalImported.toLocaleString()} queued so far. More remain — run it again to continue.`,
     });
   } catch (err) {
     return actionFail(
@@ -310,6 +314,29 @@ export async function activateCampaignAction(
     }
   } catch {
     return actionFail("The campaign's identity is no longer in this workspace.");
+  }
+
+  // THE QUEUE MUST BE FINISHED before anything starts.
+  //
+  // A campaign activated mid-import follows whatever happened to be
+  // written so far and then reports itself complete — the operator sees
+  // "done" for a list that was never fully queued. Campaigns created
+  // before import jobs existed have no job row and are unaffected.
+  const importJob = await getImportJob({
+    workspaceId: ctx.workspaceId,
+    campaignId,
+  });
+  if (importJob && importJob.status === "failed") {
+    return actionFail(
+      importJob.lastError
+        ? `The list could not be finished: ${importJob.lastError}`
+        : "The list could not be finished. Build it again before activating.",
+    );
+  }
+  if (importJob && !importJob.sourceExhausted) {
+    return actionFail(
+      "The list of profiles is still being built. Wait until it is ready, then activate.",
+    );
   }
 
   const nextRunAt = computeNextRunAt({

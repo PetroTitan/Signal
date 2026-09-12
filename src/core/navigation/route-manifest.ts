@@ -190,6 +190,20 @@ export const AUTHENTICATED_ROUTES: ReadonlyArray<RouteEntry> = [
     permission: "connect_platforms",
   },
   {
+    href: "/relationships/campaigns/setup",
+    label: "Start automatic following",
+    // Reached from the primary call to action on /relationships rather
+    // than from navigation: it is a task you begin from the page you
+    // are already on, not a place you go.
+    tier: "contextual",
+    group: "publish",
+    description:
+      "Choose an imported list and a daily amount, then let Signal follow them for you.",
+    reachableFrom:
+      "The primary 'Start automatic following' call to action on /relationships — in the page header at every width, and in the panel shown when no campaign is running.",
+    permission: "connect_platforms",
+  },
+  {
     href: "/measurement-health",
     label: "Measurement health",
     tier: "secondary",

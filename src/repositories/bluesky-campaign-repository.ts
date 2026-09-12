@@ -1279,6 +1279,31 @@ export async function ensureRun(input: {
   return row;
 }
 
+/**
+ * The run for one local date, by the unique key.
+ *
+ * A single-row lookup rather than a page of runs, because the summary
+ * panel on the Relationships page wants exactly this row and nothing
+ * else. `(campaign_id, local_date)` is unique, so there is never a
+ * second.
+ */
+export async function getRunForLocalDate(input: {
+  workspaceId: string;
+  campaignId: string;
+  localDate: string;
+  db?: Db;
+}): Promise<BlueskyFollowCampaignRunRow | null> {
+  const { data, error } = await client(input.db)
+    .from("bluesky_follow_campaign_runs")
+    .select("*")
+    .eq("workspace_id", input.workspaceId)
+    .eq("campaign_id", input.campaignId)
+    .eq("local_date", input.localDate)
+    .maybeSingle();
+  if (error) throw fromPostgres(error, "Could not read today's run.");
+  return (data as unknown as BlueskyFollowCampaignRunRow) ?? null;
+}
+
 export async function getRun(
   workspaceId: string,
   runId: string,
