@@ -4,6 +4,11 @@ import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { getAccountById } from "@/repositories/account-repository";
 import type { FounderPlatform } from "@/core/publishing/platform-guidance";
 import { resolveBlueskyHandle } from "@/core/identity-verifiers";
+import { resolveRelationshipSession } from "@/core/bluesky-relationships/session.server";
+import {
+  getSessionInfo,
+  isRefreshableAuthFailure,
+} from "@/core/bluesky-relationships/atproto-graph";
 
 /**
  * POST /api/identity/:identityId/verify
@@ -79,10 +84,112 @@ export async function POST(
       );
     }
 
-    // Bluesky public handle resolution. Does NOT authenticate Signal
-    // and does NOT write a connection row. Ownership-proving sign-in
-    // is the responsibility of POST /api/identity/:id/bluesky/connect
-    // which takes a Bluesky App Password and runs createSession.
+    // ── ACCESS, not existence. ─────────────────────────────────────
+    //
+    // This used to resolve the public handle and stop there, which
+    // answers "does this account exist?" — a question nobody was
+    // asking. It reported success against an identity whose access
+    // token had expired hours earlier, which is why Accounts kept
+    // showing "Signed in" while every follow was being refused.
+    //
+    // So: exercise the session. If the token has aged out, spend the
+    // stored refresh token once — the same one-refresh rule the
+    // mutations use — and report honestly if that fails.
+    const session = await resolveRelationshipSession({
+      workspaceId: membership.workspace.id,
+      accountId: identityId,
+    });
+
+    if (!session.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "reauthorization_required",
+          platform: "bluesky",
+          identity_id: identityId,
+          declared_handle: identity.handle,
+          message: session.message,
+        },
+        { status: 409 },
+      );
+    }
+
+    let probe = await getSessionInfo({
+      accessJwt: session.accessJwt,
+      pds: session.service,
+    });
+
+    if (!probe.ok && isRefreshableAuthFailure(probe)) {
+      const renewed = await session.refreshOnce();
+      if (!renewed.ok) {
+        // `refreshOnce` has already marked the connection expired, so
+        // the Accounts panel will offer "Sign in again" on reload.
+        return NextResponse.json(
+          {
+            ok: false,
+            code: "reauthorization_required",
+            platform: "bluesky",
+            identity_id: identityId,
+            declared_handle: identity.handle,
+            message: renewed.message,
+          },
+          { status: 409 },
+        );
+      }
+      probe = await getSessionInfo({
+        accessJwt: renewed.accessJwt,
+        pds: renewed.service,
+      });
+    }
+
+    if (probe.ok) {
+      return NextResponse.json({
+        ok: true,
+        code: probe.active ? "session_valid" : "account_inactive",
+        platform: "bluesky",
+        identity_id: identityId,
+        declared_handle: identity.handle,
+        authenticated_handle: probe.handle,
+        provider_account_id: probe.did,
+        message: probe.active
+          ? `Signed in as ${probe.handle ? `@${probe.handle}` : "this account"}. Signal can act as this account.`
+          : "Bluesky reports this account as inactive. Signal cannot act as it.",
+      });
+    }
+
+    if (probe.kind === "auth") {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "reauthorization_required",
+          platform: "bluesky",
+          identity_id: identityId,
+          declared_handle: identity.handle,
+          message: probe.message,
+        },
+        { status: 409 },
+      );
+    }
+
+    // Not an access problem — the provider is unreachable or unwell.
+    // Reported separately so a transient outage is not mistaken for a
+    // signed-out account.
+    if (probe.kind === "network" || probe.status >= 500) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "provider_unavailable",
+          platform: "bluesky",
+          identity_id: identityId,
+          message:
+            "Bluesky could not be reached, so account access could not be checked. Your sign-in has not changed.",
+        },
+        { status: 503 },
+      );
+    }
+
+    // Anything else falls through to the public handle check below,
+    // which still distinguishes "handle now points elsewhere".
     const resolveResult = await resolveBlueskyHandle({
       identityId,
       workspaceId: membership.workspace.id,

@@ -33,6 +33,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   createFollowRecord,
   deleteFollowRecord,
+  isRefreshableAuthFailure,
+  type GraphFailure,
   getRelationships,
   type RateLimitSnapshot,
 } from "./atproto-graph";
@@ -92,6 +94,76 @@ interface ExecuteContext {
   appView?: string;
   fetchImpl?: typeof fetch;
   db?: SupabaseClient;
+}
+
+
+// =====================================================================
+// One refresh, one retry — and never more
+// =====================================================================
+
+/**
+ * Send a mutation; if the session is refused in a way a refresh can
+ * clear, renew it once and send the same mutation again.
+ *
+ * `refreshOnce()` has existed since the session layer was written and
+ * had no production caller: every expired token arrived as
+ * `HTTP 400 {"error":"ExpiredToken"}`, which the status-keyed
+ * classifier called a provider error, so the refresh path was never
+ * reached. The stored refresh token was never spent and the operator
+ * was told the follow had failed.
+ *
+ * Bounded by construction, not by counting:
+ *
+ *   - the provider is called at most twice, because there is one
+ *     conditional retry and no loop;
+ *   - the session is refreshed at most once, because the session a
+ *     refresh returns has `refreshAllowed: false` and its own
+ *     `refreshOnce()` refuses. Nothing here tracks a counter.
+ *
+ * The refreshed session is handed back so the caller can adopt it for
+ * the rest of the batch — otherwise every remaining member would repeat
+ * the same expired-token round trip.
+ */
+interface RefreshedAttempt<T> {
+  result: T;
+  /** The renewed session, when one was obtained. */
+  refreshedSession: RelationshipSession | null;
+  /** Set when the refresh itself failed; the batch must stop. */
+  reauthorization: string | null;
+}
+
+async function mutateWithOneRefresh<T extends { ok: boolean }>(
+  ctx: ExecuteContext,
+  run: (session: RelationshipSession) => Promise<T>,
+): Promise<RefreshedAttempt<T>> {
+  const session = ctx.session;
+  const first = await run(session);
+  if (first.ok || !isRefreshableAuthFailure(first as unknown as GraphFailure)) {
+    return { result: first, refreshedSession: null, reauthorization: null };
+  }
+
+  const renewed = await session.refreshOnce();
+  if (!renewed.ok) {
+    // The connection has already been marked expired by the refresh
+    // itself. Returning the ORIGINAL failure keeps the outcome
+    // classification honest: the mutation was refused, and it is an
+    // auth refusal, which halts the batch non-resumably.
+    return {
+      result: first,
+      refreshedSession: null,
+      reauthorization: renewed.message,
+    };
+  }
+
+  // Adopted for the rest of the batch by assignment, not by threading
+  // it back through every return path — the context object belongs to
+  // the batch loop, so later members pick it up with nothing to forget.
+  ctx.session = renewed;
+  return {
+    result: await run(renewed),
+    refreshedSession: renewed,
+    reauthorization: null,
+  };
 }
 
 /**
@@ -250,14 +322,35 @@ export async function executeFollowAction(
     db: ctx.db,
   });
 
-  const result = await createFollowRecord({
-    accessJwt: ctx.session.accessJwt,
-    actorDid: ctx.session.actorDid,
-    subjectDid: action.subject_did,
-    pds: ctx.session.service,
-    fetchImpl: ctx.fetchImpl,
-  });
+  const attempt = await mutateWithOneRefresh(ctx, (session) =>
+    createFollowRecord({
+      accessJwt: session.accessJwt,
+      actorDid: session.actorDid,
+      subjectDid: action.subject_did,
+      pds: session.service,
+      fetchImpl: ctx.fetchImpl,
+    }),
+  );
+  const result = attempt.result;
   const outcome = classifyFollowOutcome(result);
+
+  // The refresh was attempted and refused. The connection is already
+  // marked expired by `refreshOnce`; stop the batch here rather than
+  // spending a provider call per remaining member to be told the same
+  // thing. `resumable: false` — resuming needs a person to sign in.
+  if (attempt.reauthorization) {
+    return {
+      ...(await halted(ctx, action, {
+        kind: "halt",
+        failure: result.ok
+          ? ({ ok: false, kind: "auth", status: 0, errorCode: null,
+                message: attempt.reauthorization, rateLimit: null } as GraphFailure)
+          : result,
+        resumable: false,
+      })),
+      halt: { reason: attempt.reauthorization, resumable: false },
+    };
+  }
 
   if (outcome.kind === "applied") {
     const now = new Date().toISOString();
@@ -461,15 +554,36 @@ export async function executeUnfollowAction(
     db: ctx.db,
   });
 
-  const result = await deleteFollowRecord({
-    accessJwt: ctx.session.accessJwt,
-    actorDid: ctx.session.actorDid,
-    rkey: rkey!,
-    swapCid: cid,
-    pds: ctx.session.service,
-    fetchImpl: ctx.fetchImpl,
-  });
+  const attempt = await mutateWithOneRefresh(ctx, (session) =>
+    deleteFollowRecord({
+      accessJwt: session.accessJwt,
+      actorDid: session.actorDid,
+      rkey: rkey!,
+      swapCid: cid,
+      pds: session.service,
+      fetchImpl: ctx.fetchImpl,
+    }),
+  );
+  const result = attempt.result;
   const outcome = classifyUnfollowOutcome(result);
+
+  // The refresh was attempted and refused. The connection is already
+  // marked expired by `refreshOnce`; stop the batch here rather than
+  // spending a provider call per remaining member to be told the same
+  // thing. `resumable: false` — resuming needs a person to sign in.
+  if (attempt.reauthorization) {
+    return {
+      ...(await halted(ctx, action, {
+        kind: "halt",
+        failure: result.ok
+          ? ({ ok: false, kind: "auth", status: 0, errorCode: null,
+                message: attempt.reauthorization, rateLimit: null } as GraphFailure)
+          : result,
+        resumable: false,
+      })),
+      halt: { reason: attempt.reauthorization, resumable: false },
+    };
+  }
 
   if (outcome.kind === "applied") {
     const now = new Date().toISOString();

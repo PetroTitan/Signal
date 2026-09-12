@@ -34,6 +34,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   createFollowRecord,
+  isRefreshableAuthFailure,
   getRelationships,
   type RateLimitSnapshot,
 } from "@/core/bluesky-relationships/atproto-graph";
@@ -633,13 +634,49 @@ async function attemptFollow(
     };
   }
 
-  const result = await createFollowRecord({
-    accessJwt: input.session.accessJwt,
-    actorDid: input.session.actorDid,
-    subjectDid: member.subject_did,
-    pds: input.session.service,
-    fetchImpl: input.fetchImpl,
-  });
+  // THE PROVIDER CALL, WITH AT MOST ONE REFRESH.
+  //
+  // Everything that must happen once has already happened: the unit is
+  // spent, the attempt counted, the ledger's provider intent stamped
+  // and the audit row marked in flight. The refresh and the single
+  // retry therefore sit BELOW that line, inside one attempt — a second
+  // HTTP request here consumes no second unit, creates no second action
+  // row and stamps no second intent, because none of that code runs
+  // again.
+  //
+  // Bounded without counting: one conditional retry and no loop caps
+  // the provider at two calls, and the session a refresh returns
+  // refuses to refresh again, which caps renewals at one.
+  const send = (session: RelationshipSession) =>
+    createFollowRecord({
+      accessJwt: session.accessJwt,
+      actorDid: session.actorDid,
+      subjectDid: member.subject_did,
+      pds: session.service,
+      fetchImpl: input.fetchImpl,
+    });
+
+  let result = await send(input.session);
+
+  if (!result.ok && isRefreshableAuthFailure(result)) {
+    const renewed = await input.session.refreshOnce();
+    if (!renewed.ok) {
+      // `refreshOnce` has already marked the connection expired. Stop
+      // the campaign rather than spend a provider call per remaining
+      // member to be told the same thing.
+      return {
+        kind: "authentication_expired",
+        errorCode: "session_expired",
+        errorMessage: renewed.message,
+        rateLimit: result.rateLimit,
+      };
+    }
+    // Adopted for every remaining member in this tick. `input.session`
+    // is the chunk's own object, so the rest of the loop picks it up
+    // with nothing to thread through.
+    input.session = renewed;
+    result = await send(renewed);
+  }
 
   if (result.ok) {
     return {

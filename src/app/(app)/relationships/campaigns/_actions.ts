@@ -26,6 +26,7 @@ import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { getAccountById } from "@/repositories/account-repository";
+import { resolveRelationshipSession } from "@/core/bluesky-relationships/session.server";
 import { recordActivity } from "@/repositories/activity-repository";
 import { can } from "@/core/teams/permissions";
 import type { WorkspaceRole } from "@/lib/supabase/types";
@@ -307,6 +308,19 @@ export async function activateCampaignAction(
     if (identity.connectionStatus !== "connected") {
       return actionFail(
         "That Bluesky identity is not signed in. Connect it on Accounts before activating.",
+      );
+    }
+    // The status column says what we last wrote, not whether the
+    // session still works. Resolve it for real: a missing, expired or
+    // undecryptable session must not start a campaign that would fail
+    // on its first request tomorrow morning.
+    const session = await resolveRelationshipSession({
+      workspaceId: ctx.workspaceId,
+      accountId: campaign.operator_account_id,
+    });
+    if (!session.ok) {
+      return actionFail(
+        `${session.message} Reconnect the identity on Accounts, then activate.`,
       );
     }
   } catch {
