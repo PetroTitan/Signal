@@ -45,6 +45,8 @@
  *   - The PDS returns ratelimit-limit / -remaining / -reset headers.
  */
 
+import { mapBlueskyAtprotoErrorToReasonCode } from "@/core/publishing/atproto-error-body";
+
 /** Public AppView. Reads only. */
 export const BLUESKY_APPVIEW_DEFAULT = "https://public.api.bsky.app";
 /** Operator PDS. Writes only. */
@@ -66,7 +68,14 @@ export type GraphFailureKind =
   | "network"
   /** HTTP 429, or a PDS response whose rate-limit headers are exhausted. */
   | "rate_limited"
-  /** HTTP 401/403 — the session is no longer usable. */
+  /**
+   * The session was rejected.
+   *
+   * Deliberately no longer described as "401/403". AT Proto returns an
+   * expired access token as HTTP 400 with `{"error":"ExpiredToken"}`,
+   * so keying on status alone classified a refreshable session as a
+   * generic provider error. See `refreshableAuth`.
+   */
   | "auth"
   /** The subject could not be resolved (400 InvalidRequest). */
   | "not_found"
@@ -84,6 +93,28 @@ export interface GraphFailure {
   message: string;
   /** Present when the provider told us when it is safe to resume. */
   rateLimit: RateLimitSnapshot | null;
+  /**
+   * Only meaningful when `kind === "auth"`.
+   *
+   * True when exchanging the refresh token could plausibly clear the
+   * failure: an expired or invalid access token, or a bare 401 carrying
+   * no more specific AT Proto error.
+   *
+   * False when a refresh cannot help and retrying would be wrong — 403,
+   * a taken-down account, or a second factor only the operator can
+   * supply. Absent on every non-auth failure.
+   */
+  refreshableAuth?: boolean;
+}
+
+/**
+ * Whether one session refresh could plausibly clear this failure.
+ *
+ * The single place callers should ask. Checking `kind === "auth"` alone
+ * would retry an account takedown for ever.
+ */
+export function isRefreshableAuthFailure(failure: GraphFailure): boolean {
+  return failure.kind === "auth" && failure.refreshableAuth === true;
 }
 
 /**
@@ -160,6 +191,21 @@ async function request(
   return { ok: true, response: { status: res.status, headers: res.headers, body } };
 }
 
+/**
+ * The classifier, addressable from a test without a live socket.
+ *
+ * Exported so a regression can pin the property that matters — that the
+ * verdict comes from the response BODY, not its HTTP status — by asking
+ * the same question at two different statuses.
+ */
+export function classifyForTest(
+  status: number,
+  body: Record<string, unknown> | null,
+  headers: Headers = new Headers(),
+): GraphFailure {
+  return classify({ status, headers, body }, "createRecord");
+}
+
 function classify(response: RawResponse, endpoint: string): GraphFailure {
   const rateLimit = parseRateLimit(response.headers);
   const errorCode =
@@ -186,15 +232,48 @@ function classify(response: RawResponse, endpoint: string): GraphFailure {
       rateLimit,
     };
   }
-  if (response.status === 401 || response.status === 403) {
+  // AUTH, DECIDED BY THE BODY FIRST.
+  //
+  // Reuses the publishing subsystem's classifier rather than repeating
+  // a status or message match here. That module already carries the
+  // production evidence for this exact failure: bsky.social returns an
+  // expired access token as
+  //
+  //     HTTP 400 {"error":"ExpiredToken","message":"Token has expired"}
+  //
+  // so a switch keyed on HTTP status routed it to `provider_error`, no
+  // refresh was attempted, and the encrypted refresh token sitting in
+  // `platform_connections` was never spent. The publisher hit this and
+  // fixed it; relationships and campaigns carried the same bug.
+  //
+  // `default401: "session_expired"` is correct for every caller here —
+  // these are all identity-scoped calls carrying a session JWT, so a
+  // bare 401 means that JWT aged out. It is reached only when the body
+  // carried no more specific AT Proto error.
+  const reason = mapBlueskyAtprotoErrorToReasonCode(
+    {
+      atproto_error: errorCode,
+      atproto_message: providerMessage,
+      atproto_response_body_truncated: null,
+      atproto_response_body_was_truncated: false,
+    },
+    response.status,
+    "session_expired",
+  );
+  if (reason === "session_expired" || reason === "platform_unauthorized") {
+    const refreshable = reason === "session_expired";
     return {
       ok: false,
       kind: "auth",
       status: response.status,
       errorCode,
       message:
-        providerMessage ?? "Bluesky rejected the session for this identity.",
+        providerMessage ??
+        (refreshable
+          ? "Bluesky rejected the session for this identity."
+          : "Bluesky refused this account. Signing in again will not clear it."),
       rateLimit,
+      refreshableAuth: refreshable,
     };
   }
   // Both "no such handle" and "no such profile" arrive as 400
@@ -592,6 +671,61 @@ export function rkeyFromAtUri(uri: string): string | null {
  * retry a call whose outcome they could not read — see
  * `reconcile.ts`, which reads relationship truth instead.
  */
+/**
+ * Ask the PDS who this access token belongs to.
+ *
+ * `com.atproto.server.getSession` is the cheapest call that actually
+ * EXERCISES the session: it needs the bearer token and fails the same
+ * way a write does when that token has aged out. Resolving the public
+ * handle proves only that the account exists — it says nothing about
+ * whether Signal can still act as it, which is the question "Check
+ * account access" is asking.
+ *
+ * Cheap on purpose: a read, no write, and no createSession, so
+ * repeatedly checking access cannot eat into the account's 300
+ * createSession-per-day budget.
+ */
+export async function getSessionInfo(input: {
+  accessJwt: string;
+  pds?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<
+  | { ok: true; did: string; handle: string | null; active: boolean }
+  | GraphFailure
+> {
+  const base = input.pds ?? BLUESKY_PDS_DEFAULT;
+  const raw = await request(
+    `${base}/xrpc/com.atproto.server.getSession`,
+    { headers: { authorization: `Bearer ${input.accessJwt}` } },
+    input.fetchImpl ?? fetch,
+  );
+  if (!raw.ok) return raw;
+  const { response } = raw;
+  if (response.status < 200 || response.status >= 300) {
+    return classify(response, "getSession");
+  }
+  const body = response.body ?? {};
+  const did = typeof body.did === "string" ? body.did : null;
+  if (!did) {
+    return {
+      ok: false,
+      kind: "provider_error",
+      status: response.status,
+      errorCode: null,
+      message: "Bluesky returned a session without a DID.",
+      rateLimit: parseRateLimit(response.headers),
+    };
+  }
+  return {
+    ok: true,
+    did,
+    handle: typeof body.handle === "string" ? body.handle : null,
+    // `active: false` means deactivated/taken down. Absent on older
+    // PDS builds, where a 2xx is itself the answer.
+    active: body.active === undefined ? true : body.active === true,
+  };
+}
+
 export async function createFollowRecord(input: {
   accessJwt: string;
   /** The operator's DID. This is the repo the record is written to. */
