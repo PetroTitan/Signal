@@ -25,7 +25,7 @@
  * that implies Signal has an opinion about who is worth following.
  */
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useFormState, useFormStatus } from "react-dom";
 import {
   addTargetAction,
@@ -97,6 +97,11 @@ export interface RelationshipUiProps {
     protectedCount: number;
     needsReconciliation: number;
   };
+  automation: {
+    hasCampaign: boolean;
+    canManage: boolean;
+    href: string;
+  };
   targetLabels: Record<string, string>;
 }
 
@@ -162,6 +167,10 @@ function Notice({ result }: { result: { ok: boolean; error: string | null } & Re
 export function RelationshipUi(props: RelationshipUiProps) {
   const tab: RelationshipTab = props.query.tab;
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // The imported list is primarily the source for an automatic
+  // campaign. Manual mutation tools remain available for exceptions,
+  // but do not dominate the default 10,000+ profile workflow.
+  const [manualCandidateMode, setManualCandidateMode] = useState(false);
   const identityId = props.selectedIdentityId ?? "";
 
   const [addState, addTarget] = useFormState(addTargetAction, EMPTY_ADD);
@@ -259,9 +268,14 @@ export function RelationshipUi(props: RelationshipUiProps) {
     (c) => selected.has(c.id) && c.protected,
   ).length;
 
+  const toggleManualCandidateMode = () => {
+    if (manualCandidateMode) setSelected(new Set());
+    setManualCandidateMode(!manualCandidateMode);
+  };
+
   const tabs: { key: RelationshipTab; label: string; count: number | null }[] = [
     { key: "targets", label: "Targets", count: props.targets.length },
-    { key: "candidates", label: "Candidates", count: props.counts.total },
+    { key: "candidates", label: "Imported list", count: props.counts.total },
     {
       key: "following",
       label: "Following",
@@ -419,6 +433,9 @@ export function RelationshipUi(props: RelationshipUiProps) {
           page={props.candidatePage}
           query={props.query}
           counts={props.counts}
+          automation={props.automation}
+          manualCandidateMode={manualCandidateMode}
+          onToggleManualCandidateMode={toggleManualCandidateMode}
         />
       ) : null}
     </div>
@@ -539,7 +556,9 @@ function TargetsView(props: {
                   />
                   <input type="hidden" name="target_profile_id" value={target.id} />
                   <SubmitButton className="btn-primary">
-                    {run === null ? "Import followers" : "Continue import"}
+                    {run === null
+                      ? "Import up to 10,000 followers"
+                      : "Import next 10,000"}
                   </SubmitButton>
                 </form>
               )}
@@ -552,7 +571,7 @@ function TargetsView(props: {
                   />
                   <input type="hidden" name="target_profile_id" value={target.id} />
                   <input type="hidden" name="restart" value="1" />
-                  <SubmitButton>Re-import</SubmitButton>
+                  <SubmitButton>Re-import up to 10,000</SubmitButton>
                 </form>
               ) : null}
               <button
@@ -615,9 +634,14 @@ function CandidateListView(props: {
     follows_you: number;
     mutual: number;
   };
+  automation: RelationshipUiProps["automation"];
+  manualCandidateMode: boolean;
+  onToggleManualCandidateMode: () => void;
 }) {
   const anySelected = props.selectedIds.length > 0;
   const atCap = props.selectedIds.length >= MAX_RELATIONSHIP_BATCH_SIZE;
+  const isImportedList = props.query.tab === "candidates";
+  const showManualControls = !isImportedList || props.manualCandidateMode;
 
   const label = (id: string): string => {
     const c = props.candidates.find((x) => x.id === id);
@@ -651,10 +675,52 @@ function CandidateListView(props: {
 
   return (
     <div className="space-y-4">
+      {isImportedList ? (
+        <section className="card card-padded" data-testid="imported-list-workflow">
+          <h2 className="section-title">Your imported list</h2>
+          <p className="mt-2 text-sm text-ink-700 leading-relaxed">
+            <strong>{props.counts.total.toLocaleString()}</strong> profiles are
+            available. An automatic campaign can work through this whole list on
+            your daily schedule — you do not need to select people in groups of 20.
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {props.automation.hasCampaign || props.automation.canManage ? (
+              <a href={props.automation.href} className="btn-primary">
+                {props.automation.hasCampaign
+                  ? "Open automatic campaign"
+                  : "Start automatic campaign"}
+              </a>
+            ) : null}
+            <button
+              type="button"
+              className="btn-secondary"
+              aria-expanded={props.manualCandidateMode}
+              aria-controls="manual-relationship-tools"
+              onClick={props.onToggleManualCandidateMode}
+            >
+              {props.manualCandidateMode
+                ? "Hide manual tools"
+                : "Use manual tools"}
+            </button>
+          </div>
+          {!props.automation.hasCampaign && !props.automation.canManage ? (
+            <p className="mt-3 text-sm text-ink-500 leading-relaxed">
+              Ask a workspace owner or admin to start automatic following.
+            </p>
+          ) : null}
+          {props.manualCandidateMode ? (
+            <p className="mt-3 text-sm text-ink-500 leading-relaxed">
+              Manual tools act immediately and are limited to 20 profiles per
+              confirmed batch. Use them only for one-off corrections or checks.
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+
       <SearchAndFilter
         search={props.query.search}
         state={props.query.state}
-        // State chips belong on the unfiltered Candidates tab. On
+        // State chips belong on the unfiltered Imported list tab. On
         // Following and Mutual the tab already IS the filter, and a
         // second one would let the operator build a contradiction.
         showStateFilter={props.query.tab === "candidates"}
@@ -662,98 +728,113 @@ function CandidateListView(props: {
         total={props.counts.total}
       />
 
-      <section className="card card-padded">
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={props.onSelectAll}
-            disabled={atCap || props.candidates.length === 0}
-          >
-            {/* Named for what it does. "Select all" implied the whole
-                database; this list is one page of it. */}
-            Select visible ({props.candidates.length})
-          </button>
-          <button type="button" className="btn-secondary" onClick={props.onSelectNone}>
-            Clear
-          </button>
-          <span className="text-sm text-ink-600">
-            {props.selectedIds.length} of {MAX_RELATIONSHIP_BATCH_SIZE} selected
-          </span>
-        </div>
-
-        {atCap ? (
-          <p className="text-sm text-ink-600 mt-2 leading-relaxed">
-            That is the most a single batch can hold. A batch runs while you
-            wait, so it is bounded to finish inside one request. Run this one,
-            then select the next {MAX_RELATIONSHIP_BATCH_SIZE}.
-          </p>
-        ) : null}
-
-        {props.selectedProtected > 0 ? (
-          <p className="text-sm text-ink-600 mt-2 leading-relaxed">
-            {props.selectedProtected} of these are protected and will be excluded
-            from Unfollow.
-          </p>
-        ) : null}
-
-        <div className="mt-3 flex flex-wrap gap-2">
-          {/* These are plain buttons, not submits. They open the
-              confirmation; the form that actually dispatches lives
-              inside the dialog and nowhere else. */}
-          {props.showFollowAction ? (
+      {showManualControls ? (
+        <section
+          id="manual-relationship-tools"
+          className="card card-padded"
+          data-testid="manual-relationship-tools"
+        >
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              className="btn-primary"
-              disabled={!anySelected || !props.connected}
-              onClick={() => props.onConfirm(request("follow", props.selectedIds))}
+              className="btn-secondary"
+              onClick={props.onSelectAll}
+              disabled={atCap || props.candidates.length === 0}
             >
-              Follow selected…
+              {/* Named for what it does. "Select all" implied the whole
+                  database; this list is one page of it. */}
+              Select visible ({props.candidates.length})
             </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={props.onSelectNone}
+            >
+              Clear
+            </button>
+            <span className="text-sm text-ink-600">
+              {props.selectedIds.length} of {MAX_RELATIONSHIP_BATCH_SIZE}{" "}
+              selected
+            </span>
+          </div>
+
+          {atCap ? (
+            <p className="text-sm text-ink-600 mt-2 leading-relaxed">
+              That is the most a single batch can hold. A batch runs while you
+              wait, so it is bounded to finish inside one request. Run this one,
+              then select the next {MAX_RELATIONSHIP_BATCH_SIZE}.
+            </p>
           ) : null}
 
-          <button
-            type="button"
-            className="btn-danger"
-            disabled={
-              !anySelected ||
-              !props.connected ||
-              props.selectedIds.length === props.selectedProtected
-            }
-            onClick={() => props.onConfirm(request("unfollow", props.selectedIds))}
-          >
-            Unfollow selected…
-          </button>
+          {props.selectedProtected > 0 ? (
+            <p className="text-sm text-ink-600 mt-2 leading-relaxed">
+              {props.selectedProtected} of these are protected and will be
+              excluded from Unfollow.
+            </p>
+          ) : null}
 
-          <form action={props.runRefresh}>
-            <input
-              type="hidden"
-              name="operator_account_id"
-              value={props.identityId}
-            />
-            {props.selectedIds.map((id) => (
-              <input key={id} type="hidden" name="candidate_id" value={id} />
-            ))}
-            <SubmitButton disabled={!anySelected || !props.connected}>
-              Check relationship
-            </SubmitButton>
-          </form>
-        </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {/* These are plain buttons, not submits. They open the
+                confirmation; the form that actually dispatches lives
+                inside the dialog and nowhere else. */}
+            {props.showFollowAction ? (
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={!anySelected || !props.connected}
+                onClick={() =>
+                  props.onConfirm(request("follow", props.selectedIds))
+                }
+              >
+                Follow selected…
+              </button>
+            ) : null}
 
-        <Notice result={props.followState} />
-        <Notice result={props.unfollowState} />
-        <Notice result={props.refreshState} />
-        <Notice result={props.protectState} />
-      </section>
+            <button
+              type="button"
+              className="btn-danger"
+              disabled={
+                !anySelected ||
+                !props.connected ||
+                props.selectedIds.length === props.selectedProtected
+              }
+              onClick={() =>
+                props.onConfirm(request("unfollow", props.selectedIds))
+              }
+            >
+              Unfollow selected…
+            </button>
 
-      <Pager info={props.page} param="page" label="Candidates" />
+            <form action={props.runRefresh}>
+              <input
+                type="hidden"
+                name="operator_account_id"
+                value={props.identityId}
+              />
+              {props.selectedIds.map((id) => (
+                <input key={id} type="hidden" name="candidate_id" value={id} />
+              ))}
+              <SubmitButton disabled={!anySelected || !props.connected}>
+                Check relationship
+              </SubmitButton>
+            </form>
+          </div>
+
+          <Notice result={props.followState} />
+          <Notice result={props.unfollowState} />
+          <Notice result={props.refreshState} />
+          <Notice result={props.protectState} />
+        </section>
+      ) : null}
+
+      <Pager info={props.page} param="page" label="Imported profiles" />
 
       {props.candidates.length === 0 ? (
         <div className="card card-padded">
           <p className="text-sm text-ink-600 leading-relaxed">
             {props.query.search || props.query.state
               ? "No accounts match this search or filter. Clear them to see the full list."
-              : "Nothing here yet. Import a target profile\u2019s followers to build a candidate list."}
+              : "Nothing here yet. Import a target profile\u2019s followers to build your list."}
           </p>
         </div>
       ) : null}
@@ -762,17 +843,19 @@ function CandidateListView(props: {
         {props.candidates.map((candidate) => (
           <li key={candidate.id} className="card p-3 sm:p-4">
             <div className="flex items-start gap-3 min-w-0">
-              <input
-                type="checkbox"
-                checked={props.selected.has(candidate.id)}
-                onChange={() => props.onToggle(candidate.id)}
-                // At the cap, already-checked rows stay interactive so
-                // the operator can swap one out; unchecked ones go
-                // inert rather than accepting a click that does nothing.
-                disabled={atCap && !props.selected.has(candidate.id)}
-                aria-label={`Select ${bareHandle(candidate.handle) ?? candidate.subject_did}`}
-                className="mt-1 shrink-0 w-5 h-5 disabled:opacity-40"
-              />
+              {showManualControls ? (
+                <input
+                  type="checkbox"
+                  checked={props.selected.has(candidate.id)}
+                  onChange={() => props.onToggle(candidate.id)}
+                  // At the cap, already-checked rows stay interactive so
+                  // the operator can swap one out; unchecked ones go
+                  // inert rather than accepting a click that does nothing.
+                  disabled={atCap && !props.selected.has(candidate.id)}
+                  aria-label={`Select ${bareHandle(candidate.handle) ?? candidate.subject_did}`}
+                  className="mt-1 shrink-0 w-5 h-5 disabled:opacity-40"
+                />
+              ) : null}
               {candidate.avatar_url ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
@@ -815,7 +898,8 @@ function CandidateListView(props: {
                   </p>
                 ) : null}
 
-                <div className="mt-3 flex flex-wrap gap-2">
+                {showManualControls ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
                   {/* A single-account action takes the SAME confirmation
                       path as a batch. One row is still a public,
                       irreversible change to someone else's feed. */}
@@ -851,14 +935,15 @@ function CandidateListView(props: {
                       {candidate.protected ? "Unprotect" : "Protect"}
                     </SubmitButton>
                   </form>
-                </div>
+                  </div>
+                ) : null}
               </div>
             </div>
           </li>
         ))}
       </ul>
 
-      <Pager info={props.page} param="page" label="Candidates" />
+      <Pager info={props.page} param="page" label="Imported profiles" />
     </div>
   );
 }

@@ -26,8 +26,21 @@
 import type { BlueskyImportRunStatus } from "@/lib/supabase/types";
 import type { FollowerPage, GraphFailure } from "./atproto-graph";
 
-/** How many pages one invocation may fetch before yielding. */
-export const DEFAULT_PAGE_BUDGET = 10;
+/**
+ * How many provider pages one invocation may fetch before yielding.
+ *
+ * This is a secondary safety ceiling, not the operator-facing amount.
+ * Bluesky may return short pages even while a cursor remains, so the
+ * primary boundary is `DEFAULT_FOLLOWER_BUDGET` below. 250 pages is
+ * enough to reach 10,000 even at the 40-followers/page low end observed
+ * in production, while still bounding pathological empty/short-page
+ * responses.
+ */
+export const DEFAULT_PAGE_BUDGET = 250;
+/** Followers one click may import before yielding with its cursor saved. */
+export const DEFAULT_FOLLOWER_BUDGET = 10_000;
+/** Runtime available to the import server action on Vercel Pro. */
+export const RELATIONSHIP_IMPORT_MAX_DURATION_SECONDS = 300;
 /** Followers per page. The provider's maximum. */
 export const DEFAULT_PAGE_SIZE = 100;
 
@@ -49,6 +62,7 @@ export interface ImportRunState {
 
 export type ImportStopReason =
   | "page_budget"
+  | "follower_budget"
   | "rate_limited"
   | "provider_error"
   | "operator";
@@ -82,6 +96,8 @@ export function applyPage(input: {
   page: FollowerPage;
   newFollowerCount: number;
   pageBudget?: number;
+  /** Absolute run total at which this invocation must yield. */
+  followerCeiling?: number;
   /** Rate-limit remaining, when the provider reported one. */
   rateLimitRemaining?: number | null;
 }): ImportProgress {
@@ -124,6 +140,19 @@ export function applyPage(input: {
       status: "paused",
       stopReason: "rate_limited",
       lastError: `Paused with ${remaining} requests left in the provider's window. Progress is saved; continue when the window resets.`,
+      continueNow: false,
+    };
+  }
+
+  if (
+    typeof input.followerCeiling === "number" &&
+    followersSeen >= input.followerCeiling
+  ) {
+    return {
+      ...base,
+      status: "paused",
+      stopReason: "follower_budget",
+      lastError: null,
       continueNow: false,
     };
   }
@@ -200,6 +229,8 @@ export function describeImportProgress(state: {
     case "paused":
       return state.stopReason === "rate_limited"
         ? `Paused at ${seen} followers (Bluesky rate limit). Progress is saved.`
+        : state.stopReason === "follower_budget"
+          ? `Paused at ${seen} followers after this 10,000-profile import. Run again to import the next 10,000.`
         : `Paused at ${seen} followers. Continue to import the rest.`;
     case "failed":
       return `Stopped at ${seen} followers. Progress is saved; continue to retry.`;

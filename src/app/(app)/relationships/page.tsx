@@ -11,10 +11,10 @@ import { can } from "@/core/teams/permissions";
 export const dynamic = "force-dynamic";
 
 /**
- * Relationship batches run synchronously inside the operator's request
- * — there is no queue and no background worker, by design. The platform
- * default is far below the worst case for a full batch, so the budget
- * is declared explicitly.
+ * Relationship batches and follower imports run synchronously inside
+ * the operator's request. A manual Follow/Unfollow batch remains
+ * structurally capped at 20; the longer budget lets one resumable,
+ * read-only follower import fetch up to 10,000 profiles in one click.
  *
  * This MUST be a literal. Next.js reads segment config statically, and
  * an imported constant here is not resolved: the build warns "Unknown
@@ -24,18 +24,18 @@ export const dynamic = "force-dynamic";
  * arithmetic that chose this number, and a test parses this literal and
  * fails if the two drift apart.
  */
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 /**
  * Bluesky Relationships.
  *
- * Import a profile's followers, work through one deduplicated
- * candidate list, and follow or unfollow accounts the operator has
- * explicitly selected.
+ * Import a profile's followers into one deduplicated list. Automatic
+ * campaigns work through that list over time; manual Follow/Unfollow
+ * remains available for explicitly selected exceptions.
  *
  * There is no scoring on this page, no recommendation, no growth
- * projection and no automation. Every mutation starts with a person
- * pressing a button.
+ * projection and no hidden selection logic. Campaign activation and
+ * every immediate manual mutation still require an operator decision.
  */
 
 export default async function RelationshipsPage({
@@ -157,6 +157,13 @@ export default async function RelationshipsPage({
           historyPage={view.historyPage}
           batches={view.batches}
           counts={view.counts}
+          automation={{
+            hasCampaign: automation !== null,
+            canManage,
+            href: automation
+              ? `/relationships/campaigns?campaign=${encodeURIComponent(automation.id)}`
+              : "/relationships/campaigns/setup",
+          }}
           // A Map cannot cross the server/client boundary; the object is
           // the same data in a serialisable shape.
           targetLabels={Object.fromEntries(view.targetLabels)}
