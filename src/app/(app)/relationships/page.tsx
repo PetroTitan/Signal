@@ -29,13 +29,13 @@ export const maxDuration = 300;
 /**
  * Bluesky Relationships.
  *
- * Import a profile's followers, work through one deduplicated
- * candidate list, and follow or unfollow accounts the operator has
- * explicitly selected.
+ * Import a profile's followers into one deduplicated list. Automatic
+ * campaigns work through that list over time; manual Follow/Unfollow
+ * remains available for explicitly selected exceptions.
  *
  * There is no scoring on this page, no recommendation, no growth
- * projection and no automation. Every mutation starts with a person
- * pressing a button.
+ * projection and no hidden selection logic. Campaign activation and
+ * every immediate manual mutation still require an operator decision.
  */
 
 export default async function RelationshipsPage({
@@ -157,6 +157,13 @@ export default async function RelationshipsPage({
           historyPage={view.historyPage}
           batches={view.batches}
           counts={view.counts}
+          automation={{
+            hasCampaign: automation !== null,
+            canManage,
+            href: automation
+              ? `/relationships/campaigns?campaign=${encodeURIComponent(automation.id)}`
+              : "/relationships/campaigns/setup",
+          }}
           // A Map cannot cross the server/client boundary; the object is
           // the same data in a serialisable shape.
           targetLabels={Object.fromEntries(view.targetLabels)}
