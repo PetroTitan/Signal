@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   applyFailure,
   applyPage,
+  DEFAULT_FOLLOWER_BUDGET,
+  DEFAULT_PAGE_BUDGET,
   describeImportProgress,
   RATE_LIMIT_FLOOR,
   type ImportRunState,
@@ -75,6 +77,26 @@ describe("applyPage — completion is cursor exhaustion and nothing else", () =>
 });
 
 describe("applyPage — bounded and resumable", () => {
+  it("offers 10,000 followers per click with a short-page safety ceiling", () => {
+    expect(DEFAULT_FOLLOWER_BUDGET).toBe(10_000);
+    expect(DEFAULT_PAGE_BUDGET).toBe(250);
+  });
+
+  it("pauses at the follower budget with the cursor kept", () => {
+    const progress = applyPage({
+      state: { ...fresh, followersSeen: 9_900 },
+      page: { followers: [], cursor: "next-10k" },
+      newFollowerCount: 100,
+      pageBudget: 250,
+      followerCeiling: 10_000,
+    });
+    expect(progress.status).toBe("paused");
+    expect(progress.stopReason).toBe("follower_budget");
+    expect(progress.followersSeen).toBe(10_000);
+    expect(progress.cursor).toBe("next-10k");
+    expect(progress.continueNow).toBe(false);
+  });
+
   it("pauses at the page budget with the cursor kept", () => {
     const progress = applyPage({
       state: { ...fresh, pagesFetched: 9 },

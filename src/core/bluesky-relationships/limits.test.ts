@@ -9,6 +9,7 @@ import {
   remainingSelectionCapacity,
 } from "./limits";
 import { INTER_REQUEST_MS, MUTATION_RATE_LIMIT_FLOOR } from "./execute-actions.server";
+import { RELATIONSHIP_IMPORT_MAX_DURATION_SECONDS } from "./import-plan";
 
 const code = (t: string) =>
   t.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/[^\n]*/g, "$1 ");
@@ -106,7 +107,10 @@ describe("the cap actually fits the declared execution budget", () => {
     );
     const match = /export const maxDuration = (\d+);/.exec(page);
     expect(match, "page must declare `export const maxDuration = <number>;`").not.toBeNull();
-    expect(Number(match![1])).toBe(RELATIONSHIP_MAX_DURATION_SECONDS);
+    expect(Number(match![1])).toBe(RELATIONSHIP_IMPORT_MAX_DURATION_SECONDS);
+    expect(Number(match![1])).toBeGreaterThanOrEqual(
+      RELATIONSHIP_MAX_DURATION_SECONDS,
+    );
     // And it must not be an identifier, however tempting the DRY is.
     expect(page).not.toMatch(/export const maxDuration = [A-Za-z_]/);
   });

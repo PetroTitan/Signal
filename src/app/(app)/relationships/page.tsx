@@ -11,10 +11,10 @@ import { can } from "@/core/teams/permissions";
 export const dynamic = "force-dynamic";
 
 /**
- * Relationship batches run synchronously inside the operator's request
- * — there is no queue and no background worker, by design. The platform
- * default is far below the worst case for a full batch, so the budget
- * is declared explicitly.
+ * Relationship batches and follower imports run synchronously inside
+ * the operator's request. A manual Follow/Unfollow batch remains
+ * structurally capped at 20; the longer budget lets one resumable,
+ * read-only follower import fetch up to 10,000 profiles in one click.
  *
  * This MUST be a literal. Next.js reads segment config statically, and
  * an imported constant here is not resolved: the build warns "Unknown
@@ -24,7 +24,7 @@ export const dynamic = "force-dynamic";
  * arithmetic that chose this number, and a test parses this literal and
  * fails if the two drift apart.
  */
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 /**
  * Bluesky Relationships.

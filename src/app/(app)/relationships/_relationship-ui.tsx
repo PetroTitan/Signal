@@ -539,7 +539,9 @@ function TargetsView(props: {
                   />
                   <input type="hidden" name="target_profile_id" value={target.id} />
                   <SubmitButton className="btn-primary">
-                    {run === null ? "Import followers" : "Continue import"}
+                    {run === null
+                      ? "Import up to 10,000 followers"
+                      : "Import next 10,000"}
                   </SubmitButton>
                 </form>
               )}
@@ -552,7 +554,7 @@ function TargetsView(props: {
                   />
                   <input type="hidden" name="target_profile_id" value={target.id} />
                   <input type="hidden" name="restart" value="1" />
-                  <SubmitButton>Re-import</SubmitButton>
+                  <SubmitButton>Re-import up to 10,000</SubmitButton>
                 </form>
               ) : null}
               <button

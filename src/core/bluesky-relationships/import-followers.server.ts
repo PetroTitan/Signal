@@ -38,6 +38,7 @@ import {
 import {
   applyFailure,
   applyPage,
+  DEFAULT_FOLLOWER_BUDGET,
   DEFAULT_PAGE_BUDGET,
   DEFAULT_PAGE_SIZE,
   type ImportRunState,
@@ -144,6 +145,8 @@ export async function importFollowers(input: {
   targetProfileId: string;
   startedBy: string | null;
   pageBudget?: number;
+  /** Maximum followers to read in this invocation. Capped at 10,000. */
+  followerBudget?: number;
   pageSize?: number;
   /** Force a new pass even if a completed run exists. */
   restart?: boolean;
@@ -219,8 +222,12 @@ export async function importFollowers(input: {
     };
   }
 
-  const budget = input.pageBudget ?? DEFAULT_PAGE_BUDGET;
-  const pageSize = input.pageSize ?? DEFAULT_PAGE_SIZE;
+  const budget = Math.max(1, Math.min(input.pageBudget ?? DEFAULT_PAGE_BUDGET, DEFAULT_PAGE_BUDGET));
+  const pageSize = Math.max(1, Math.min(input.pageSize ?? DEFAULT_PAGE_SIZE, DEFAULT_PAGE_SIZE));
+  const followerBudget = Math.max(
+    1,
+    Math.min(input.followerBudget ?? DEFAULT_FOLLOWER_BUDGET, DEFAULT_FOLLOWER_BUDGET),
+  );
 
   // Counters start from the run's persisted values so a resumed import
   // reports cumulative totals rather than this invocation's slice.
@@ -236,6 +243,10 @@ export async function importFollowers(input: {
   // The page budget applies to THIS invocation, so a run resumed for the
   // fifth time is not immediately over budget.
   const budgetCeiling = state.pagesFetched + budget;
+  // A click means "up to 10,000 MORE", even when it resumes a run that
+  // already imported earlier slices. The provider cursor remains the
+  // source of truth; the count is only the bounded yield point.
+  const followerCeiling = state.followersSeen + followerBudget;
   let lastError: string | null = null;
   let stopReason: string | null = null;
   let complete = false;
@@ -243,11 +254,15 @@ export async function importFollowers(input: {
   const startedAt = run.started_at ?? new Date().toISOString();
 
   for (;;) {
+    // Do not overshoot the requested follower count on the final page.
+    // Bluesky accepts a smaller `limit`, and completion still depends
+    // solely on cursor exhaustion rather than on the returned length.
+    const remainingThisInvocation = followerCeiling - state.followersSeen;
     const page = await getFollowers({
       // Query by DID. The target's handle may have changed since it was
       // added, and the DID cannot.
       actor: target.subject_did,
-      limit: pageSize,
+      limit: Math.min(pageSize, remainingThisInvocation),
       cursor: state.cursor,
       appView: input.appView,
       fetchImpl: input.fetchImpl,
@@ -318,6 +333,7 @@ export async function importFollowers(input: {
       // Translate the per-invocation budget into the absolute page count
       // applyPage compares against.
       pageBudget: budgetCeiling,
+      followerCeiling,
       rateLimitRemaining: page.rateLimit?.remaining ?? null,
     });
 

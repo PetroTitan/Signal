@@ -252,7 +252,9 @@ export async function importFollowersAction(
     }
     const summary = result.complete
       ? `Imported ${result.followersSeen.toLocaleString()} followers (complete).`
-      : `${result.followersSeen.toLocaleString()} followers so far. More remain — continue when ready.`;
+      : result.stopReason === "follower_budget"
+        ? `${result.followersSeen.toLocaleString()} followers imported so far. Import the next 10,000 whenever you are ready.`
+        : `${result.followersSeen.toLocaleString()} followers so far. More remain — continue when ready.`;
     return actionOk({
       complete: result.complete,
       followersSeen: result.followersSeen,

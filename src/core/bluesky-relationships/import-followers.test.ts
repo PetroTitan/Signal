@@ -169,6 +169,88 @@ describe("importFollowers — pagination and completion", () => {
     expect(run.cursor_exhausted).toBe(true);
   });
 
+  it("imports exactly the requested follower slice and shrinks the final page", async () => {
+    const record = { urls: [] as string[] };
+    let nextDid = 0;
+    const fetchImpl = (async (url: string) => {
+      record.urls.push(url);
+      const requestUrl = new URL(url);
+      const limit = Number(requestUrl.searchParams.get("limit"));
+      return new Response(
+        JSON.stringify({
+          followers: Array.from({ length: limit }, () => {
+            nextDid += 1;
+            return {
+              did: `did:plc:slice-${nextDid}`,
+              handle: `slice-${nextDid}.bsky.social`,
+              displayName: `Slice ${nextDid}`,
+            };
+          }),
+          cursor: `cursor-${nextDid}`,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+
+    const result = await importFollowers({
+      workspaceId: WORKSPACE,
+      operatorAccountId: IDENTITY,
+      targetProfileId: targetId,
+      startedBy: "user-1",
+      followerBudget: 250,
+      pageBudget: 10,
+      fetchImpl,
+      db: db.client(),
+    });
+
+    expect(result.complete).toBe(false);
+    expect(result.followersSeen).toBe(250);
+    expect(result.stopReason).toBe("follower_budget");
+    expect(db.rows("bluesky_candidates")).toHaveLength(250);
+    expect(
+      record.urls.map((url) => new URL(url).searchParams.get("limit")),
+    ).toEqual(["100", "100", "50"]);
+  });
+
+  it("imports 10,000 followers by default in one resumable invocation", async () => {
+    let requestCount = 0;
+    let nextDid = 0;
+    const fetchImpl = (async (url: string) => {
+      requestCount += 1;
+      const limit = Number(new URL(url).searchParams.get("limit"));
+      return new Response(
+        JSON.stringify({
+          followers: Array.from({ length: limit }, () => {
+            nextDid += 1;
+            return {
+              did: `did:plc:ten-thousand-${nextDid}`,
+              handle: `ten-thousand-${nextDid}.bsky.social`,
+              displayName: `Follower ${nextDid}`,
+            };
+          }),
+          cursor: `cursor-${nextDid}`,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+
+    const result = await importFollowers({
+      workspaceId: WORKSPACE,
+      operatorAccountId: IDENTITY,
+      targetProfileId: targetId,
+      startedBy: "user-1",
+      fetchImpl,
+      db: db.client(),
+    });
+
+    expect(result.complete).toBe(false);
+    expect(result.followersSeen).toBe(10_000);
+    expect(result.stopReason).toBe("follower_budget");
+    expect(requestCount).toBe(100);
+    expect(db.rows("bluesky_candidates")).toHaveLength(10_000);
+    expect(db.rows("bluesky_import_runs")[0].cursor).toBe("cursor-10000");
+  });
+
   it("does NOT complete on short pages — the verified 5/3/4 shape", async () => {
     // Every page here is shorter than the requested limit, and more
     // data remains. A length-based completion rule would stop at page
