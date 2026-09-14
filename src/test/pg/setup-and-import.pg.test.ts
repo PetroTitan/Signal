@@ -191,8 +191,17 @@ describe("the keyset candidate walk", () => {
       `select * from public.begin_bluesky_campaign_import($1,$2,'candidates',null)`,
       [t.workspaceId, campaignId],
     );
+    // As TEXT, at the database's microsecond precision. `pg` parses a
+    // timestamptz into a JS Date, which keeps milliseconds only; handed
+    // back to the RPC (whose `p_snapshot_at` is text cast to
+    // timestamptz) the truncated instant fell BEFORE candidates first
+    // discovered in the same millisecond, and the first page came back
+    // empty whenever seeding and begin landed within 1 ms — reliably in
+    // isolation, rarely under a loaded full run. The app passes the
+    // PostgREST string, which carries the full precision.
     const job = await h.admin.query<{ snapshot_at: string }>(
-      `select snapshot_at from public.bluesky_campaign_import_jobs where id=$1`,
+      `select snapshot_at::text as snapshot_at
+         from public.bluesky_campaign_import_jobs where id=$1`,
       [begin.rows[0].out_job_id],
     );
     const first = await h.admin.query<{

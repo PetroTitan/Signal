@@ -130,9 +130,11 @@ for a definite rejection code (closed set, enforced by the RPC).
 
 ## 4. Evidence
 
-Real PostgreSQL (shipped migrations) throughout; real session resolver,
+Real PostgreSQL (shipped migrations) throughout — PGlite for the
+scenario suites, embedded PostgreSQL (real backends) for the 100,000-
+member regression and every two-session claim; real session resolver,
 real refresh path, real connection persistence; only the network is a
-double, and it counts every request.
+double, and it counts every request and records what it answered.
 
 | Scenario | Provider calls | Refresh | Attempts | Intents | Units | Actions | Result |
 | --- | --- | --- | --- | --- | --- | --- | --- |
