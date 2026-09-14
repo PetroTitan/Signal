@@ -460,11 +460,19 @@ export async function processCampaignChunk(
     if (decision.memberStatus === "skipped" || decision.memberStatus === "protected") {
       counts.skipped += 1;
     }
-    if (decision.countsAsFailure) {
-      counts.failed += 1;
-      consecutiveFailures += 1;
-    } else if (decision.countsAsSuccess) {
-      consecutiveFailures = 0;
+    // Reconciliation is a read-only observation of an attempt whose
+    // outcome is still unknown. It is neither a new failure nor a new
+    // success, so it must leave the provider-failure breaker untouched.
+    // Counting it here let one old ambiguous action eventually pause a
+    // healthy 20,000-member campaign even though this worker had sent
+    // zero requests and consumed zero quota.
+    if (!reconcileOnlyClaim) {
+      if (decision.countsAsFailure) {
+        counts.failed += 1;
+        consecutiveFailures += 1;
+      } else if (decision.countsAsSuccess) {
+        consecutiveFailures = 0;
+      }
     }
 
     if (decision.next.kind !== "continue") {

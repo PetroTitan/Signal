@@ -129,8 +129,13 @@ function seed(
   db.tables.set("bluesky_follow_campaign_runs", []);
 }
 
-const run = (db: FakeDb, impl: typeof fetch, over: Record<string, unknown> = {}) =>
-  dispatchCampaigns({
+const run = (db: FakeDb, impl: typeof fetch, over: Record<string, unknown> = {}) => {
+  // The RPC fake models Postgres `now()`. Keep it on the same instant
+  // as the dispatcher; otherwise a retry scheduled from the injected
+  // 2026 clock is already overdue against the machine's wall clock and
+  // this pass reclaims it in a tight loop.
+  db.setNow(NOW);
+  return dispatchCampaigns({
     nowIso: NOW,
     db: db.client(),
     fetchImpl: impl,
@@ -138,6 +143,7 @@ const run = (db: FakeDb, impl: typeof fetch, over: Record<string, unknown> = {})
     interRequestMs: 0,
     ...over,
   });
+};
 
 const members = (db: FakeDb) => db.rows("bluesky_follow_campaign_members");
 const campaign = (db: FakeDb) => db.rows("bluesky_follow_campaigns")[0];
