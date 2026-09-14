@@ -69,6 +69,15 @@ export async function createCampaign(input: {
   startDate: string | null;
   dryRun: boolean;
   createdBy: string | null;
+  /**
+   * follow | unfollow. Defaults to `follow`, so every existing call
+   * site keeps exactly the behaviour it had.
+   *
+   * Immutable once written — a trigger refuses a change — because a
+   * campaign that switched kind mid-queue would act on its members with
+   * the opposite of the operator's intent.
+   */
+  kind?: "follow" | "unfollow";
   db?: Db;
 }): Promise<BlueskyFollowCampaignRow> {
   const { data, error } = await client(input.db)
@@ -77,6 +86,7 @@ export async function createCampaign(input: {
       workspace_id: input.workspaceId,
       operator_account_id: input.operatorAccountId,
       name: input.name,
+      kind: input.kind ?? "follow",
       status: "draft",
       requested_daily_quota: input.requestedDailyQuota,
       timezone: input.timezone,
@@ -180,15 +190,43 @@ export async function updateCampaign(
 }
 
 /** Campaigns the dispatcher should look at. Workspace-wide by design. */
+/**
+ * Campaigns that are due right now, OF ONE KIND.
+ *
+ * `kind` defaults to `"follow"` and is applied as a query filter rather
+ * than left to the caller, because the failure it prevents is the worst
+ * one available in this subsystem: the follow dispatcher picking up an
+ * unfollow campaign and FOLLOWING a queue of people the operator asked
+ * to unfollow.
+ *
+ * This filter is the first of three guards, not the only one. The
+ * database refuses the same mistake independently —
+ * `claim_bluesky_campaign_action` raises on a campaign whose kind is
+ * not `follow`, and `claim_bluesky_unfollow_action` raises on one whose
+ * kind is not `unfollow` — so a bug here cannot become a public act.
+ */
 export async function listDueCampaigns(input: {
   nowIso: string;
   limit?: number;
+  kind?: "follow" | "unfollow";
+  /**
+   * Which campaign statuses are eligible. Defaults to `active` only,
+   * so the FOLLOW dispatcher's behaviour is byte-for-byte unchanged.
+   *
+   * The unfollow dispatcher additionally accepts `rate_limited`,
+   * because it surfaces that as a campaign state an operator can see —
+   * and a temporary, automatic condition must not remove a campaign
+   * from the scheduler's view. A status the dispatcher cannot list is a
+   * status the dispatcher cannot leave.
+   */
+  statuses?: string[];
   db?: Db;
 }): Promise<BlueskyFollowCampaignRow[]> {
   const { data, error } = await client(input.db)
     .from("bluesky_follow_campaigns")
     .select("*")
-    .eq("status", "active")
+    .eq("kind", input.kind ?? "follow")
+    .in("status", input.statuses ?? ["active"])
     // `next_run_at` is a hint, not a promise: a null means "look now".
     .or(`next_run_at.is.null,next_run_at.lte.${input.nowIso}`)
     .order("next_run_at", { ascending: true })

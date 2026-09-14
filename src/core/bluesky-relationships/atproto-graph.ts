@@ -863,3 +863,141 @@ export async function deleteFollowRecord(input: {
   }
   return { ok: true, rateLimit: parseRateLimit(response.headers) };
 }
+
+// =====================================================================
+// Enumerating the acting repository's OWN follow records
+// =====================================================================
+
+export interface OwnFollowRecord {
+  /** at://<actor did>/app.bsky.graph.follow/<rkey> — the provider's own. */
+  uri: string;
+  rkey: string;
+  cid: string | null;
+  /** The DID this follow points at, read from the record VALUE. */
+  subjectDid: string;
+  createdAt: string | null;
+}
+
+export interface OwnFollowRecordPage {
+  records: OwnFollowRecord[];
+  cursor: string | null;
+  /**
+   * True only when the provider returned no cursor. A short page is NOT
+   * the end of a repository listing — the same rule the follower import
+   * already applies, and the reason `source_exhausted` is a separate
+   * flag rather than an inference from page size.
+   */
+  exhausted: boolean;
+}
+
+export type ListFollowRecordsResult =
+  | { ok: true; page: OwnFollowRecordPage; rateLimit: RateLimitSnapshot | null }
+  | GraphFailure;
+
+/** `com.atproto.repo.listRecords` maximum, from the lexicon. */
+export const LIST_RECORDS_MAX_LIMIT = 100;
+
+/**
+ * List the `app.bsky.graph.follow` records in the acting repository.
+ *
+ * WHY THIS AND NOT `app.bsky.graph.getFollows`
+ * --------------------------------------------
+ * `getFollows` answers "who does this account follow" with a list of
+ * PROFILES. It is the AppView's index of the graph, and it does not
+ * hand back the thing an unfollow actually needs: the identity of the
+ * record in the operator's own repository.
+ *
+ * `listRecords` reads the repository itself. Every row it returns is a
+ * record the acting account owns, with the provider's own `uri` and
+ * `cid`, and the subject DID inside the record's `value`. So the delete
+ * target is not derived, not matched by handle, and not looked up in a
+ * second call that could disagree with the first — it is the row.
+ *
+ * It is also the only source that can be complete. The AppView's index
+ * lags writes, so a follow created a moment ago may be missing from
+ * `getFollows` while its record plainly exists in the repo.
+ *
+ * WHAT THIS FUNCTION REFUSES
+ * --------------------------
+ * A record whose `uri` does not name THIS repository and the follow
+ * collection is dropped, not returned. `listRecords` is asked for one
+ * repo and one collection, so such a row should be impossible; if one
+ * ever appears it is a provider or proxy fault, and passing it to a
+ * delete path would mean deleting something nobody asked about.
+ *
+ * A record with no parseable subject DID is dropped for the same
+ * reason: it cannot be attributed to a person, so it cannot be shown to
+ * an operator for approval.
+ */
+export async function listFollowRecords(input: {
+  accessJwt: string;
+  actorDid: string;
+  limit?: number;
+  cursor?: string | null;
+  pds?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<ListFollowRecordsResult> {
+  const base = input.pds ?? BLUESKY_PDS_DEFAULT;
+  const limit = Math.min(
+    Math.max(input.limit ?? LIST_RECORDS_MAX_LIMIT, 1),
+    LIST_RECORDS_MAX_LIMIT,
+  );
+  const url = new URL(`${base}/xrpc/com.atproto.repo.listRecords`);
+  url.searchParams.set("repo", input.actorDid);
+  url.searchParams.set("collection", FOLLOW_COLLECTION);
+  url.searchParams.set("limit", String(limit));
+  if (input.cursor) url.searchParams.set("cursor", input.cursor);
+
+  const raw = await request(
+    url.toString(),
+    { headers: { authorization: `Bearer ${input.accessJwt}` } },
+    input.fetchImpl ?? fetch,
+  );
+  if (!raw.ok) return raw;
+  const { response } = raw;
+  if (response.status < 200 || response.status >= 300) {
+    return classify(response, "listRecords");
+  }
+
+  const body = response.body ?? {};
+  const rows = Array.isArray(body.records) ? body.records : [];
+  const expectedPrefix = `at://${input.actorDid}/${FOLLOW_COLLECTION}/`;
+
+  const records: OwnFollowRecord[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const entry = row as Record<string, unknown>;
+    const uri = typeof entry.uri === "string" ? entry.uri : null;
+    if (!uri || !uri.startsWith(expectedPrefix)) continue;
+
+    const rkey = rkeyFromAtUri(uri);
+    if (!rkey) continue;
+
+    const value =
+      entry.value && typeof entry.value === "object"
+        ? (entry.value as Record<string, unknown>)
+        : null;
+    const subjectDid =
+      value && typeof value.subject === "string" ? value.subject : null;
+    if (!subjectDid || !subjectDid.startsWith("did:")) continue;
+
+    records.push({
+      uri,
+      rkey,
+      cid: typeof entry.cid === "string" ? entry.cid : null,
+      subjectDid,
+      createdAt:
+        value && typeof value.createdAt === "string" ? value.createdAt : null,
+    });
+  }
+
+  const cursor = typeof body.cursor === "string" && body.cursor.length > 0
+    ? body.cursor
+    : null;
+
+  return {
+    ok: true,
+    page: { records, cursor, exhausted: cursor === null },
+    rateLimit: parseRateLimit(response.headers),
+  };
+}

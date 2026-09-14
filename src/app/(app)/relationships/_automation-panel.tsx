@@ -210,3 +210,37 @@ export function StartAutomationCta({
     </Link>
   );
 }
+
+/**
+ * The primary route into bulk unfollowing.
+ *
+ * Sits in the page HEADER beside "Start automatic following", so it is
+ * on screen on a 320px phone without opening any secondary navigation.
+ * The follow flow had to learn this the hard way: it lived behind a nav
+ * entry inside the mobile More sheet, and an operator working on a
+ * phone had no way to discover it existed.
+ *
+ * `btn-secondary`, not `btn-primary`. Both are primary ACTIONS on this
+ * page, but only one of them is irreversible, and the visual weight
+ * should not invite it.
+ */
+export function StartUnfollowCta({
+  canManage,
+  compact = false,
+}: {
+  canManage: boolean;
+  compact?: boolean;
+}) {
+  if (!canManage) return null;
+  return (
+    <Link
+      href="/relationships/unfollow"
+      className={`btn-secondary inline-flex items-center justify-center min-h-11 ${
+        compact ? "" : "w-full sm:w-auto"
+      }`}
+      data-testid="start-automatic-unfollowing"
+    >
+      Unfollow people…
+    </Link>
+  );
+}

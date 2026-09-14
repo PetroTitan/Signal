@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 import { authorizeCronRequest } from "@/lib/cron-auth";
 import { dispatchCampaigns } from "@/core/bluesky-campaigns/dispatcher.server";
+import { dispatchUnfollowCampaigns } from "@/core/bluesky-unfollow/dispatcher.server";
 import { isGloballyDisabledByEnv } from "@/core/bluesky-campaigns/kill-switch.server";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
 
 /**
- * Bluesky follow-campaign dispatcher endpoint.
+ * Bluesky campaign dispatcher endpoint — follow AND unfollow.
  *
  * Called by Vercel Cron. Authenticated by the SAME shared-secret helper
  * the existing scheduler, digest and metrics crons use — `CRON_SECRET`
@@ -17,6 +18,26 @@ import { createSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
  * following must not share a duration budget or a failure mode. A slow
  * publish must not eat the follow window, and a campaign fault must not
  * stop the publisher.
+ *
+ * WHY UNFOLLOW SHARES THIS CRON AND NOT A NEW ONE
+ * -----------------------------------------------
+ * The two dispatchers compete for the SAME per-identity daily budget
+ * and, on a shared serverless egress, the same per-IP request limit.
+ * Two independent crons would run them concurrently and make both facts
+ * invisible to each other — the reservation RPC would still keep them
+ * correct, but they would spend the whole day discovering contention
+ * they could simply have taken turns over.
+ *
+ * Running in sequence inside one invocation also fixes the ORDER, and
+ * the order is a decision: FOLLOW GOES FIRST. If the identity's budget
+ * runs out, the work that does not happen is the irreversible, publicly
+ * visible deletion, not the creation. The reverse ordering would make
+ * an unfollow campaign able to starve a follow campaign of a resource
+ * they both approved — and it would do so by spending it on the act
+ * that cannot be undone.
+ *
+ * Each dispatcher is given its own wall-clock budget from what REMAINS,
+ * so the second is not handed a deadline the first has already passed.
  *
  * REPLAY PROTECTION
  * -----------------
@@ -91,9 +112,31 @@ export async function GET(request: Request) {
     );
   }
 
+  const startedAt = Date.now();
   try {
-    const result = await dispatchCampaigns({ db });
-    return NextResponse.json({ ok: true, ...result });
+    // FOLLOW FIRST — see the ordering note above. Its own budget is
+    // unchanged; nothing about the follow pass is altered by the
+    // unfollow pass existing.
+    const follow = await dispatchCampaigns({ db });
+
+    // Whatever is left of the request, minus a margin to persist state
+    // and respond. A negative or tiny remainder means the follow pass
+    // used the invocation; the unfollow pass simply waits for the next
+    // cron delivery rather than being started with no time to finish a
+    // chunk it has already claimed.
+    const remainingMs = 240_000 - (Date.now() - startedAt);
+    const unfollow =
+      remainingMs > 20_000
+        ? await dispatchUnfollowCampaigns({ db, budgetMs: remainingMs })
+        : null;
+
+    return NextResponse.json({
+      ok: true,
+      ...follow,
+      unfollow: unfollow ?? {
+        skipped: "no time left in this invocation; the next delivery continues",
+      },
+    });
   } catch (err) {
     // Deliberately a 200 with ok:false rather than a 500. A cron
     // endpoint that 500s invites platform-level retries on top of the

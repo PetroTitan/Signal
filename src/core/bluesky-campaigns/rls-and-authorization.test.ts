@@ -280,9 +280,25 @@ describe("every repository function is workspace-scoped", () => {
     const start = repository.indexOf("export async function listDueCampaigns");
     const next = repository.indexOf("\nexport ", start + 1);
     const body = repository.slice(start, next);
-    // It must filter to ACTIVE campaigns — a dispatcher that swept
-    // paused or cancelled ones would resume work an operator stopped.
-    expect(body).toContain('.eq("status", "active")');
+    // It must filter by STATUS — a dispatcher that swept paused or
+    // cancelled campaigns would resume work an operator stopped.
+    //
+    // The filter is now `in`, not `eq`: the unfollow dispatcher passes
+    // ["active", "rate_limited"], because it surfaces a rate limit as a
+    // campaign state and a status the dispatcher cannot list is a
+    // status it cannot leave. The assertion below is on the property
+    // that matters rather than on the operator that happens to express
+    // it — and it still pins the DEFAULT, which is what keeps the
+    // follow dispatcher's behaviour unchanged.
+    expect(body).toContain('.in("status", input.statuses ?? ["active"])');
+    // Whatever a caller passes, an operator-stopped campaign is never
+    // among the statuses this function is allowed to see.
+    for (const stopped of ["paused", "cancelled", "completed", "draft"]) {
+      expect(body, stopped).not.toContain(`"${stopped}"`);
+    }
+    // And it must filter by KIND, so the follow dispatcher can never be
+    // handed an unfollow campaign.
+    expect(body).toContain('.eq("kind", input.kind ?? "follow")');
     // And it must return the workspace id, so the scope travels.
     expect(body).toContain('.select("*")');
   });

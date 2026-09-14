@@ -204,6 +204,35 @@ export const AUTHENTICATED_ROUTES: ReadonlyArray<RouteEntry> = [
     permission: "connect_platforms",
   },
   {
+    href: "/relationships/unfollow",
+    label: "Unfollow people",
+    // Reached from the primary call to action on /relationships rather
+    // than from navigation, for the same reason as the follow setup: it
+    // is a task you begin from the page you are already on.
+    tier: "contextual",
+    group: "publish",
+    description:
+      "Choose who to stop following and a daily amount, then let Signal work through the list.",
+    reachableFrom:
+      "The 'Unfollow people…' call to action on /relationships — in the page header at every width, beside 'Start automatic following', and in the imported-list panel.",
+    // The same permission as manual Follow/Unfollow and automatic
+    // following. This one deletes public relationships unattended, so
+    // it gets the strictest gate the matrix has, never a weaker one.
+    permission: "connect_platforms",
+  },
+  {
+    href: "/relationships/unfollow/[id]",
+    label: "Unfollow campaign",
+    dynamic: true,
+    tier: "contextual",
+    group: "publish",
+    description:
+      "What one unfollow campaign has done, and the controls to pause, resume, cancel or stop the account.",
+    reachableFrom:
+      "The campaign list on /relationships/unfollow, and the link shown after a campaign is started.",
+    permission: "connect_platforms",
+  },
+  {
     href: "/measurement-health",
     label: "Measurement health",
     tier: "secondary",
