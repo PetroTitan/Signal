@@ -123,13 +123,21 @@ describe("transport failures retry within a bounded policy", () => {
   });
 });
 
-describe("structural failures stop rather than retry", () => {
-  it("stops the whole campaign", () => {
+describe("structural failures stop the MEMBER, never the campaign", () => {
+  it("is terminal for the member, counts toward the breaker, and continues", () => {
+    // Changed 2026-09-14. A structural 4xx is Bluesky's verdict on ONE
+    // request — a malformed record, a subject it will not accept. The
+    // deployed policy stopped the whole campaign on the first such
+    // member, which stranded every queued member behind it until an
+    // operator noticed. A systemic problem shows up as MANY structural
+    // failures in a row, and `max_consecutive_failures` is what stops
+    // the run for that.
     const d = classifyOutcome({ kind: "structural_provider_failure", attemptCount: 1 });
     expect(d.retryable).toBe(false);
-    expect(d.next.kind).toBe("stop_campaign");
-    if (d.next.kind !== "stop_campaign") return;
-    expect(d.next.campaignStatus).toBe("failed");
+    expect(d.memberStatus).toBe("failed_structural");
+    expect(d.countsAsFailure).toBe(true);
+    expect(d.consumesQuota).toBe(true);
+    expect(d.next.kind).toBe("continue");
   });
 
   it("an unrecognised provider error is structural, not retryable", () => {

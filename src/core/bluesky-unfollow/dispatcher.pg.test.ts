@@ -446,11 +446,16 @@ describe("quota exhausted, work outstanding", () => {
     // that reconsidered itself every five minutes for the rest of the
     // day would be the defect. So the test follows the schedule rather
     // than asserting against an instant the system has moved past.
-    const scheduled = String((await campaignRow(c)).next_run_at);
+    // The run's budget is no longer capped to the queue size, so the
+    // previous pass ended with `queue_empty` rather than `quota
+    // exhausted` and left `next_run_at` where it was. Dispatch at the
+    // scheduled time if there is one, or a minute on if there is not.
+    const scheduledRaw = (await campaignRow(c)).next_run_at;
+    const base = scheduledRaw ? new Date(String(scheduledRaw)).getTime() : Date.parse(NOW);
     const provider2 = providerDouble({ relationships: following(dids) });
     await dispatch(provider2, {
       campaignId: c,
-      nowIso: new Date(new Date(scheduled).getTime() + 60_000).toISOString(),
+      nowIso: new Date(base + 60_000).toISOString(),
     });
 
     // Reads happened; no delete did.

@@ -242,21 +242,23 @@ export function classifyOutcome(input: ClassifyInput): OutcomeDecision {
       };
 
     case "structural_provider_failure":
-      // Includes anything unrecognised. Deliberately terminal: an
-      // unknown error retried indefinitely is how a bug becomes a
-      // sustained burst of requests against someone else's service.
+      // A 4xx the provider raised about THIS request — a malformed
+      // record, a subject it will not accept. Terminal for the MEMBER,
+      // with the provider's reason kept on it, and it counts toward the
+      // consecutive-failure breaker.
+      //
+      // It does NOT stop the campaign. It used to: one member's
+      // "InvalidRequest" marked the whole campaign `failed` and left
+      // every queued member behind it stranded until an operator
+      // noticed. A systemic problem shows up as MANY structural
+      // failures in a row, and that is what the breaker is for.
       return {
         kind,
         memberStatus: "failed_structural",
         consumesQuota: true,
         countsAsSuccess: false,
         countsAsFailure: true,
-        next: {
-          kind: "stop_campaign",
-          campaignStatus: "failed",
-          reason:
-            "Bluesky returned a failure Signal does not recognise as temporary. The campaign is stopped rather than retried.",
-        },
+        next: { kind: "continue" },
         retryable: false,
       };
 
@@ -300,4 +302,95 @@ export function outcomeFromGraphFailure(failure: {
         ? "retryable_transport_failure"
         : "structural_provider_failure";
   }
+}
+
+// =====================================================================
+// Rejected BEFORE writing, versus ambiguous
+// =====================================================================
+//
+// PRODUCTION, 2026-09-14. After provider intent, every non-success was
+// filed as `reconciliation_required`. That is right for a request whose
+// response was LOST — a network error, a 5xx, a 2xx we could not parse:
+// the record may exist, and only a read can say. It is wrong for a
+// request the provider REFUSED before touching the repository: HTTP 400
+// {"error":"ExpiredToken"}, a 429, a structural 4xx. Nothing was
+// written, so relationship truth is `not_following` forever, and a
+// member in reconciliation for such a request cycles every backoff as
+// "may have reached Bluesky — not re-sent" and never gets the real
+// retry it is owed.
+//
+// The manual path already draws this line (`mutation-outcome.ts`,
+// `isAmbiguousFailure`). This is the same line, for the worker.
+
+/**
+ * Provider error codes that PROVE the request was refused before any
+ * write. An action carrying one of these may be re-opened for a real
+ * retry; an action carrying anything else stays in reconciliation.
+ *
+ * Closed set, mirrored in `reopen_bluesky_campaign_action`, which
+ * refuses any code not in it — so a code added here without the
+ * migration cannot re-open anything.
+ */
+export const DEFINITE_REJECTION_CODES: ReadonlySet<string> = new Set([
+  "ExpiredToken",
+  "InvalidToken",
+  "AuthMissing",
+  "AuthenticationRequired",
+  "session_expired",
+  "RateLimitExceeded",
+  "rate_limited",
+  "provider_rejected_before_write",
+]);
+
+/**
+ * Did this failure prove the provider wrote nothing?
+ *
+ * Conservative in the direction that avoids duplicates: only shapes
+ * where the PDS rejects at the door are rejections. A network error is
+ * NOT — the request may have been received and the response lost. A
+ * 5xx is NOT — the write may have committed before the failure. An
+ * unparseable 2xx is NOT — it almost certainly landed.
+ */
+export function rejectedBeforeWrite(failure: {
+  kind: string;
+  status: number;
+}): boolean {
+  if (failure.kind === "auth") return true;
+  if (failure.kind === "rate_limited") return true;
+  if (failure.kind === "network") return false;
+  if (failure.status >= 500) return false;
+  if (failure.status >= 200 && failure.status < 300) return false;
+  // A 4xx that is neither auth nor rate limiting describes the REQUEST
+  // and was refused. (`not_found` and `ineligible` are terminal for the
+  // member and never reach reconciliation anyway.)
+  return failure.status >= 400 && failure.status < 500;
+}
+
+/**
+ * Which stored provider error code means "re-open for a real retry"
+ * when reconciliation finds the follow absent. Applied to actions that
+ * were filed as reconciliation_required BEFORE this distinction existed
+ * — production holds three such rows.
+ */
+export function isDefiniteRejectionCode(code: string | null | undefined): boolean {
+  return Boolean(code) && DEFINITE_REJECTION_CODES.has(String(code));
+}
+
+/**
+ * Reconciliation backoff: the slow lane.
+ *
+ * Ten minutes for the first twelve reads (two hours), then six hours.
+ * Never terminal, never a tight loop, always visible. An ambiguity that
+ * has not resolved in two hours is not going to resolve in the next ten
+ * minutes either — but it might tomorrow, and the member must not be
+ * forgotten while it waits.
+ */
+export const RECONCILIATION_FAST_BACKOFF_MS = 10 * 60_000;
+export const RECONCILIATION_SLOW_BACKOFF_MS = 6 * 60 * 60_000;
+export const RECONCILIATION_FAST_READS = 12;
+
+export function reconciliationBackoffMs(reconcileCount: number): number {
+  return reconcileCount >= RECONCILIATION_FAST_READS
+    ? RECONCILIATION_SLOW_BACKOFF_MS
+    : RECONCILIATION_FAST_BACKOFF_MS;
 }

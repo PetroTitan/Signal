@@ -1579,3 +1579,288 @@ interface QueryResponse {
 function asFiltered(builder: unknown): FilteredQuery {
   return builder as FilteredQuery;
 }
+
+// =====================================================================
+// Run recovery, re-opening, and conservation (20260915000001)
+// =====================================================================
+
+/**
+ * Return a rejected-before-write action to `pending` for a real retry.
+ *
+ * Refused by the database for any error code that does not PROVE the
+ * provider wrote nothing — a network error or a 5xx is ambiguous and
+ * must stay in reconciliation. The unit the refused request spent stays
+ * spent; the ledger row keeps its intent. Only the action's status and
+ * in-flight marker move, which is what lets the ordinary claim path see
+ * "owed a first attempt" and the reconciliation takeover see nothing.
+ */
+export async function reopenCampaignAction(input: {
+  workspaceId: string;
+  actionId: string;
+  memberId: string;
+  errorCode: string;
+  errorMessage: string | null;
+  db?: Db;
+}): Promise<{ reopened: boolean; refusedReason: string | null }> {
+  const { data, error } = await client(input.db).rpc(
+    "reopen_bluesky_campaign_action",
+    {
+      p_workspace_id: input.workspaceId,
+      p_action_id: input.actionId,
+      p_member_id: input.memberId,
+      p_error_code: input.errorCode,
+      p_error_message: input.errorMessage,
+    },
+  );
+  if (error) throw fromPostgres(error, "Could not re-open the audit row.");
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | { reopened: boolean; refused_reason: string | null }
+    | undefined;
+  return {
+    reopened: row?.reopened === true,
+    refusedReason: row?.refused_reason ?? null,
+  };
+}
+
+/**
+ * The provider error an action last recorded.
+ *
+ * Read by the reconciliation path to decide whether an action filed as
+ * `reconciliation_required` BEFORE the rejected-vs-ambiguous distinction
+ * existed can be re-opened: a stored ExpiredToken proves the request was
+ * refused before writing, however it was filed at the time.
+ */
+export async function getCampaignActionRejection(input: {
+  workspaceId: string;
+  actionId: string;
+  db?: Db;
+}): Promise<{ errorCode: string | null; statusCode: number | null } | null> {
+  const { data, error } = await client(input.db)
+    .from("bluesky_relationship_actions")
+    .select("provider_error_code, provider_status_code")
+    .eq("workspace_id", input.workspaceId)
+    .eq("id", input.actionId)
+    .maybeSingle();
+  if (error) throw fromPostgres(error, "Could not read the audit row.");
+  if (!data) return null;
+  const row = data as unknown as {
+    provider_error_code: string | null;
+    provider_status_code: number | null;
+  };
+  return { errorCode: row.provider_error_code, statusCode: row.provider_status_code };
+}
+
+/**
+ * Return today's run to `running` after a RECOVERABLE stop.
+ *
+ * Guarded in the database: only `paused`, `failed` or an elapsed
+ * `rate_limited` run moves, and never one for a campaign an operator
+ * paused — that state is on the campaign, which is not listed while
+ * paused. Same run, same counters, same local day: a second run for
+ * the day would double the day's budget.
+ */
+export async function resumeRunAfterRecovery(input: {
+  workspaceId: string;
+  campaignId: string;
+  localDate: string;
+  db?: Db;
+}): Promise<{ resumed: boolean; runId: string | null; runStatus: string | null }> {
+  const { data, error } = await client(input.db).rpc(
+    "resume_bluesky_campaign_run_after_recovery",
+    {
+      p_workspace_id: input.workspaceId,
+      p_campaign_id: input.campaignId,
+      p_local_date: input.localDate,
+    },
+  );
+  if (error) throw fromPostgres(error, "Could not resume today's run.");
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | { resumed: boolean; run_id: string | null; run_status: string | null }
+    | undefined;
+  return {
+    resumed: row?.resumed === true,
+    runId: row?.run_id ?? null,
+    runStatus: row?.run_status ?? null,
+  };
+}
+
+export interface CampaignConservation {
+  queuedTotal: number;
+  pending: number;
+  running: number;
+  retryable: number;
+  reconciliationRequired: number;
+  succeeded: number;
+  alreadyFollowing: number;
+  protected: number;
+  actorNotFound: number;
+  blocked: number;
+  invalid: number;
+  failedStructural: number;
+  cancelled: number;
+  actionableRemaining: number;
+  openLeases: number;
+  openReservations: number;
+  outstandingIntents: number;
+  unresolvedActions: number;
+  categorisedTotal: number;
+}
+
+/**
+ * The conservation equation, computed by the database.
+ *
+ * Every member appears in exactly one category, and
+ * `categorisedTotal === queuedTotal` is the assertion. The categories
+ * are the operator-facing ones — "impossible with reason" is split by
+ * the closed reason code a `skipped` member must carry.
+ */
+export async function getCampaignConservation(input: {
+  workspaceId: string;
+  campaignId: string;
+  db?: Db;
+}): Promise<CampaignConservation> {
+  const { data, error } = await client(input.db).rpc(
+    "bluesky_campaign_conservation",
+    { p_workspace_id: input.workspaceId, p_campaign_id: input.campaignId },
+  );
+  if (error) throw fromPostgres(error, "Could not compute campaign totals.");
+  const r = (Array.isArray(data) ? data[0] : data) as
+    | Record<string, number | string | null>
+    | undefined;
+  const n = (k: string) => Number(r?.[k] ?? 0);
+  return {
+    queuedTotal: n("queued_total"),
+    pending: n("pending"),
+    running: n("running"),
+    retryable: n("retryable"),
+    reconciliationRequired: n("reconciliation_required"),
+    succeeded: n("succeeded"),
+    alreadyFollowing: n("already_following"),
+    protected: n("protected"),
+    actorNotFound: n("actor_not_found"),
+    blocked: n("blocked"),
+    invalid: n("invalid"),
+    failedStructural: n("failed_structural"),
+    cancelled: n("cancelled"),
+    actionableRemaining: n("actionable_remaining"),
+    openLeases: n("open_leases"),
+    openReservations: n("open_reservations"),
+    outstandingIntents: n("outstanding_intents"),
+    unresolvedActions: n("unresolved_actions"),
+    categorisedTotal: n("categorised_total"),
+  };
+}
+
+/**
+ * May this campaign be marked completed?
+ *
+ * Asked of the database rather than derived from a status count in
+ * process: completion requires nothing actionable AND no outstanding
+ * lease, reservation, provider intent or unresolved action, and only
+ * the database can see all five at once.
+ */
+export async function campaignMayComplete(input: {
+  workspaceId: string;
+  campaignId: string;
+  db?: Db;
+}): Promise<boolean> {
+  const { data, error } = await client(input.db).rpc(
+    "bluesky_campaign_may_complete",
+    { p_workspace_id: input.workspaceId, p_campaign_id: input.campaignId },
+  );
+  if (error) throw fromPostgres(error, "Could not check campaign completion.");
+  return data === true;
+}
+
+/** Record one reconciliation read against a member. */
+export async function bumpReconcileCount(input: {
+  workspaceId: string;
+  memberId: string;
+  db?: Db;
+}): Promise<number> {
+  const { data, error } = await client(input.db)
+    .from("bluesky_follow_campaign_members")
+    .select("reconcile_count")
+    .eq("workspace_id", input.workspaceId)
+    .eq("id", input.memberId)
+    .maybeSingle();
+  if (error) throw fromPostgres(error, "Could not read the member.");
+  const current = Number((data as { reconcile_count?: number } | null)?.reconcile_count ?? 0);
+  const next = current + 1;
+  const { error: updateError } = await client(input.db)
+    .from("bluesky_follow_campaign_members")
+    .update({ reconcile_count: next } as never)
+    .eq("workspace_id", input.workspaceId)
+    .eq("id", input.memberId);
+  if (updateError) throw fromPostgres(updateError, "Could not record the reconciliation.");
+  return next;
+}
+
+/**
+ * Push a waiting member's next attempt out by a DURATION.
+ *
+ * The instant is computed by PostgreSQL, because `next_attempt_at` is
+ * one side of a comparison PostgreSQL performs against its own `now()`.
+ * Writing it from the application's clock makes eligibility depend on
+ * two clocks agreeing — and when they do not, a backoff lands in the
+ * past and stops being a backoff at all.
+ */
+export async function deferMember(input: {
+  workspaceId: string;
+  memberId: string;
+  delaySeconds: number;
+  db?: Db;
+}): Promise<void> {
+  const { error } = await client(input.db).rpc("defer_bluesky_campaign_member", {
+    p_workspace_id: input.workspaceId,
+    p_member_id: input.memberId,
+    p_delay_seconds: Math.max(1, Math.round(input.delaySeconds)),
+  });
+  if (error) throw fromPostgres(error, "Could not schedule the next attempt.");
+}
+
+/**
+ * Terminal skips by their CLOSED reason code.
+ *
+ * Through the caller's own client, so RLS applies — this feeds the
+ * campaign page, which must never reach for the service role. The
+ * worker writes one of `TERMINAL_SKIP_REASONS` on every skipped or
+ * protected member, which is what makes "impossible, with reason" a
+ * breakdown rather than a lump.
+ */
+export async function countSkipReasons(input: {
+  workspaceId: string;
+  campaignId: string;
+  db?: Db;
+}): Promise<Record<string, number>> {
+  const { data, error } = await client(input.db)
+    .from("bluesky_follow_campaign_members")
+    .select("last_error_code")
+    .eq("workspace_id", input.workspaceId)
+    .eq("campaign_id", input.campaignId)
+    .in("status", ["skipped", "protected"])
+    .limit(10_000);
+  if (error) throw fromPostgres(error, "Could not count skip reasons.");
+  const out: Record<string, number> = {};
+  for (const row of (data ?? []) as unknown as { last_error_code: string | null }[]) {
+    const key = row.last_error_code ?? "unspecified";
+    out[key] = (out[key] ?? 0) + 1;
+  }
+  return out;
+}
+
+/** Members whose action is in reconciliation — read-only until truth answers. */
+export async function countReconcilingActions(input: {
+  workspaceId: string;
+  campaignId: string;
+  db?: Db;
+}): Promise<number> {
+  const { count, error } = await client(input.db)
+    .from("bluesky_relationship_actions")
+    .select("id", { count: "exact", head: true })
+    .eq("workspace_id", input.workspaceId)
+    .eq("campaign_id", input.campaignId)
+    .eq("status", "reconciliation_required");
+  if (error) throw fromPostgres(error, "Could not count reconciling actions.");
+  return count ?? 0;
+}

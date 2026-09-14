@@ -23,6 +23,7 @@ import { Client } from "pg";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { threadId } from "node:worker_threads";
 import { POSTGREST_GRANTS, SUPABASE_PRELUDE } from "./supabase-prelude";
 
 const MIGRATIONS_DIR = path.join(process.cwd(), "supabase", "migrations");
@@ -30,6 +31,8 @@ const MIGRATIONS_DIR = path.join(process.cwd(), "supabase", "migrations");
 
 
 export interface PgServerHarness {
+  /** Loopback port the server listens on, for callers that pool. */
+  port: number;
   /** Open an additional REAL connection. Each is its own backend. */
   connect: () => Promise<Client>;
   /** A connection already open, for setup. */
@@ -37,21 +40,53 @@ export interface PgServerHarness {
   close: () => Promise<void>;
 }
 
-let port = 55400 + Math.floor(Math.random() * 120);
+// Each test file runs in its own worker and boots its own server. The
+// first version picked a random base in a 120-port window per worker,
+// which with seven such files collided on roughly one full run in six
+// — the loser's start() failed and the whole file reported "Unknown
+// Error". The block is now derived from the worker itself (pid, and
+// thread id for a threads pool), so workers cannot overlap, and a port
+// that is busy anyway (a server another process has not released yet)
+// is skipped rather than fatal.
+const PORT_BLOCK = 5;
+let port =
+  50000 + ((process.pid % 400) * (PORT_BLOCK * 5)) + ((threadId % 5) * PORT_BLOCK);
+
+async function startServer(): Promise<{ server: EmbeddedPostgres; dir: string }> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < PORT_BLOCK; attempt += 1) {
+    const dir = mkdtempSync(path.join(tmpdir(), "signal-pg-"));
+    port += 1;
+    const server = new EmbeddedPostgres({
+      databaseDir: dir,
+      user: "postgres",
+      password: "postgres",
+      port,
+      persistent: false,
+    });
+    try {
+      await server.initialise();
+      await server.start();
+      return { server, dir };
+    } catch (err) {
+      lastError = err;
+      try {
+        await server.stop();
+      } catch {
+        // It never started.
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  throw new Error(
+    `embedded PostgreSQL could not start on ${PORT_BLOCK} consecutive ports ending at ${port}: ${
+      lastError instanceof Error ? lastError.message : String(lastError)
+    }`,
+  );
+}
 
 export async function createPgServerHarness(): Promise<PgServerHarness> {
-  const dir = mkdtempSync(path.join(tmpdir(), "signal-pg-"));
-  port += 1;
-  const server = new EmbeddedPostgres({
-    databaseDir: dir,
-    user: "postgres",
-    password: "postgres",
-    port,
-    persistent: false,
-  });
-
-  await server.initialise();
-  await server.start();
+  const { server, dir } = await startServer();
 
   const clients: Client[] = [];
   const connect = async (): Promise<Client> => {
@@ -85,6 +120,7 @@ export async function createPgServerHarness(): Promise<PgServerHarness> {
   await admin.query(POSTGREST_GRANTS);
 
   return {
+    port,
     connect,
     admin,
     close: async () => {

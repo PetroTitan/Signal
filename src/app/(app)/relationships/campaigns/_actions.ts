@@ -41,6 +41,8 @@ import {
   setKillSwitch,
   updateCampaign,
 } from "@/repositories/bluesky-campaign-repository";
+import { resumeRunAfterRecovery } from "@/repositories/bluesky-campaign-repository";
+import { localClockAt } from "@/core/bluesky-campaigns/campaign-day";
 import {
   isResumableCampaignStatus,
   RESUMABLE_CAMPAIGN_STATUSES,
@@ -379,6 +381,31 @@ export async function activateCampaignAction(
   });
   if (!updated) {
     return actionFail("The campaign changed while you were confirming. Reload and try again.");
+  }
+
+  // TODAY'S RUN COMES BACK WITH THE CAMPAIGN.
+  //
+  // PRODUCTION, 2026-09-14: the campaign was resumed after a
+  // reauthorization stop, but the day's run stayed `failed`, nothing
+  // resumes a failed run, and the dispatcher did nothing until
+  // tomorrow. The RPC is guarded — it moves only a run the system
+  // stopped for a recoverable reason, never one an operator paused
+  // (that state is on the campaign) — and it keeps the run's counters,
+  // so the day's quota is neither reset nor doubled.
+  //
+  // Through the service client, because the RPC is service_role-only.
+  // If this deployment has no service client the dispatcher performs
+  // the same resume on its next tick; nothing is lost, only delayed.
+  try {
+    const serviceDb = requireCampaignServiceDb();
+    await resumeRunAfterRecovery({
+      workspaceId: ctx.workspaceId,
+      campaignId,
+      localDate: localClockAt(new Date(), campaign.timezone).localDate,
+      db: serviceDb,
+    });
+  } catch {
+    // Reported by the dispatcher's own note on its next pass.
   }
 
   await recordActivity({

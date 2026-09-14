@@ -190,6 +190,14 @@ export class FakeDb {
         return this.claimCampaignAction(args);
       case "resume_bluesky_campaign_run":
         return this.resumeRun(args);
+      case "resume_bluesky_campaign_run_after_recovery":
+        return this.resumeRunAfterRecovery(args);
+      case "reopen_bluesky_campaign_action":
+        return this.reopenAction(args);
+      case "bluesky_campaign_may_complete":
+        return this.mayComplete(args);
+      case "defer_bluesky_campaign_member":
+        return this.deferMember(args);
       default:
         return {
           data: null,
@@ -1481,6 +1489,119 @@ export class FakeDb {
           existing_status: null,
         },
       ],
+      error: null,
+    };
+  }
+
+  /**
+   * Mirrors 20260915000001's `resume_bluesky_campaign_run_after_recovery`.
+   * Only a paused/failed/elapsed-rate-limited run moves. The unfollow
+   * and incident regression suites exercise the REAL function against
+   * PGlite; this exists so the FakeDb-based follow suites keep running.
+   */
+  private resumeRunAfterRecovery(args: Record<string, unknown>): QueryResult {
+    const run = this.rows("bluesky_follow_campaign_runs").find(
+      (r) =>
+        r.campaign_id === args.p_campaign_id &&
+        r.workspace_id === args.p_workspace_id &&
+        r.local_date === args.p_local_date,
+    );
+    if (!run) {
+      return { data: [{ resumed: false, run_id: null, run_status: null }], error: null };
+    }
+    const until = run.rate_limited_until as string | null;
+    let resumed = false;
+    if (
+      ["paused", "failed", "rate_limited"].includes(String(run.status)) &&
+      (!until || new Date(until).getTime() <= this.nowMs())
+    ) {
+      run.status = "running";
+      run.rate_limited_until = null;
+      run.last_error_code = null;
+      run.last_error_message = null;
+      resumed = true;
+    }
+    return {
+      data: [{ resumed, run_id: run.id, run_status: run.status }],
+      error: null,
+    };
+  }
+
+  /** Mirrors `reopen_bluesky_campaign_action`, including its closed code set. */
+  private reopenAction(args: Record<string, unknown>): QueryResult {
+    const DEFINITE = new Set([
+      "ExpiredToken", "InvalidToken", "AuthMissing", "AuthenticationRequired",
+      "session_expired", "RateLimitExceeded", "rate_limited",
+      "provider_rejected_before_write",
+    ]);
+    const action = this.rows("bluesky_relationship_actions").find(
+      (a) => a.id === args.p_action_id && a.workspace_id === args.p_workspace_id,
+    );
+    const refuse = (reason: string) => ({
+      data: [{ reopened: false, refused_reason: reason }],
+      error: null,
+    });
+    if (!action) return refuse("unknown_action");
+    if (action.campaign_member_id !== args.p_member_id) return refuse("member_mismatch");
+    if (["succeeded", "failed", "skipped"].includes(String(action.status))) {
+      return refuse("action_terminal");
+    }
+    const code = args.p_error_code as string | null;
+    if (!code || !DEFINITE.has(code)) return refuse("not_a_definite_rejection");
+    action.status = "pending";
+    action.provider_in_flight_at = null;
+    action.finished_at = null;
+    action.provider_error_code = code;
+    action.provider_error_message = (args.p_error_message as string | null) ?? null;
+    return { data: [{ reopened: true, refused_reason: null }], error: null };
+  }
+
+  /** Mirrors `defer_bluesky_campaign_member`: a duration, applied in the DB's clock. */
+  private deferMember(args: Record<string, unknown>): QueryResult {
+    const m = this.rows("bluesky_follow_campaign_members").find(
+      (r) => r.id === args.p_member_id && r.workspace_id === args.p_workspace_id,
+    );
+    if (!m || m.status !== "retryable") return { data: null, error: null };
+    const secs = Math.max(1, Number(args.p_delay_seconds ?? 60));
+    m.next_attempt_at = new Date(this.nowMs() + secs * 1000).toISOString();
+    return { data: m.next_attempt_at, error: null };
+  }
+
+  /** Mirrors `bluesky_campaign_may_complete`. */
+  private mayComplete(args: Record<string, unknown>): QueryResult {
+    const members = this.rows("bluesky_follow_campaign_members").filter(
+      (m) => m.campaign_id === args.p_campaign_id && m.workspace_id === args.p_workspace_id,
+    );
+    const actionable = members.filter((m) =>
+      ["queued", "claimed", "running", "provider_in_flight", "retryable"].includes(
+        String(m.status),
+      ),
+    ).length;
+    const openLeases = members.filter(
+      (m) =>
+        m.lease_expires_at &&
+        new Date(String(m.lease_expires_at)).getTime() >= this.nowMs() &&
+        ["claimed", "running", "provider_in_flight"].includes(String(m.status)),
+    ).length;
+    const openReservations = this.rows("bluesky_campaign_quota_reservations").filter(
+      (r) =>
+        r.campaign_id === args.p_campaign_id &&
+        ["open", "held"].includes(String(r.status)),
+    ).length;
+    const actions = this.rows("bluesky_relationship_actions").filter(
+      (a) => a.campaign_id === args.p_campaign_id,
+    );
+    const intents = actions.filter((a) => a.provider_in_flight_at).length;
+    const unresolved = actions.filter((a) =>
+      ["pending", "running", "reconciliation_required"].includes(String(a.status)),
+    ).length;
+    return {
+      data:
+        actionable === 0 &&
+        openLeases === 0 &&
+        openReservations === 0 &&
+        intents === 0 &&
+        unresolved === 0,
       error: null,
     };
   }

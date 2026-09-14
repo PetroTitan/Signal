@@ -155,6 +155,8 @@ export interface EffectiveQuotaInput {
   minSuccessRatePercent: number;
   rateLimitedUntil: Date | null;
   remainingEligible: number;
+  /** False for the run's stored budget — units, not people. See the follow quota module. */
+  boundByQueue?: boolean;
   now: Date;
 }
 
@@ -223,7 +225,10 @@ export function computeEffectiveUnfollowQuota(
     0,
     ceiling - Math.max(0, input.identityMutationsToday),
   );
-  const eligible = Math.max(0, input.remainingEligible);
+  const eligible =
+    input.boundByQueue === false
+      ? Number.MAX_SAFE_INTEGER
+      : Math.max(0, input.remainingEligible);
 
   const effective = Math.min(requested, identityRemaining, eligible);
 

@@ -158,3 +158,88 @@ actually achieved; it never promises a number.
 
 See [`campaigns-observability.md`](./campaigns-observability.md) for the
 health queries.
+
+---
+
+## Run recovery after an authentication stop (added 2026-09-14)
+
+See `incident-2026-09-14-expired-token.md` for the incident this
+section exists for.
+
+**What you will see when the session dies mid-day.** Campaign
+`reauthorization_required`; today's run **`paused`** with
+`last_error_code = reauthorization_required` (never `failed`); Accounts
+"Sign in again"; zero further provider calls; the member that received
+the rejection is `retryable` with its action **re-opened** (`pending`,
+no in-flight marker) — not in reconciliation.
+
+**What to do.** Sign the identity in again on Accounts. That is all.
+On its next tick the dispatcher sees the connection is `connected`,
+probes the session with one `getSession` read, returns the campaign to
+`active` and today's run to `running` — same run, same counters — and
+continues. Pressing Resume on the campaign does the same thing sooner.
+
+**What will NOT happen.** A second run for the day; a reset of the
+day's counters; a duplicate follow for the member that was refused (its
+unit was spent; the retry spends a new one under a new reservation, and
+the old intent folds as `superseded`); automatic resumption of a
+campaign an operator paused.
+
+**Verify.**
+```sql
+select status, last_error_code, attempted_count, succeeded_count
+  from public.bluesky_follow_campaign_runs
+ where campaign_id = :campaign and local_date = current_date;
+-- running, null, N, M after recovery; paused/reauthorization_required before
+```
+
+## Rejected versus ambiguous (added 2026-09-14)
+
+A member whose action is `reconciliation_required` is waiting on a
+READ: the response to a request was lost (network, 5xx, unparseable
+2xx) and the follow may exist. Nothing is re-sent; ten-minute reads for
+two hours, then six-hourly. `reconcile_count` on the member says how
+many.
+
+A member whose action is `pending` with `provider_in_flight_at` null
+and a `provider_error_code` such as `ExpiredToken` or
+`RateLimitExceeded` was REFUSED before any write and is owed a real
+retry through the ordinary quota path. The reconciliation takeover does
+not claim it; `reopen_bluesky_campaign_action` refuses any code that
+does not prove a refusal.
+
+To find members stranded the old way (filed as reconciliation with a
+definite rejection recorded) — they heal on the next pass, but to see
+them:
+```sql
+select a.subject_did, a.provider_error_code, a.status
+  from public.bluesky_relationship_actions a
+ where a.campaign_id = :campaign
+   and a.status = 'reconciliation_required'
+   and a.provider_error_code in ('ExpiredToken','InvalidToken','RateLimitExceeded','session_expired');
+```
+
+## The 100,000-member regression (added 2026-09-14)
+
+`src/core/bluesky-campaigns/incident-scale.pg.test.ts` runs the whole
+follow path — dispatcher, worker, RPCs, session refresh — over a
+100,000-member queue at 1,000 a day with every fault the incident
+brief names injected deterministically by member. It runs on
+**embedded PostgreSQL** (`createFollowFixture(label, { backend:
+"server" })`), not PGlite: through the full worker path PGlite managed
+about two members a second, which is fourteen hours for the queue;
+the native server does it in about three minutes, and the overlapping
+ticks it exercises really run on separate backends. Statements over
+two seconds are logged by that server to the test's stdout. It is part
+of `npm test`.
+
+## The conservation equation (added 2026-09-14)
+
+```sql
+select * from public.bluesky_campaign_conservation(:workspace, :campaign);
+-- categorised_total = queued_total, always.
+-- actionable_remaining = pending + running + retryable + reconciliation_required.
+select public.bluesky_campaign_may_complete(:workspace, :campaign);
+-- true only when actionable_remaining = 0 AND no open lease, reservation,
+-- outstanding intent or unresolved action.
+```
