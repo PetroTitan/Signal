@@ -45,11 +45,21 @@ const STRUCTURAL = 1013;    // ~98 members
 let f: FollowFixture;
 
 beforeAll(async () => {
-  f = await createFollowFixture("scale");
+  // Embedded PostgreSQL: real backends, native speed. See FixtureOptions.
+  f = await createFollowFixture("scale", { backend: "server" });
 }, 300_000);
 afterAll(async () => { await f?.close(); });
 
 const idx = (did: string) => Number(did.replace("did:plc:s", ""));
+
+/**
+ * A 400 or a 429 is Bluesky's refusal BEFORE any write — the overnight
+ * ExpiredToken, or the day-3 rate limit. A member may legitimately be
+ * asked again after one of those. Anything else (200, 5xx, a dropped
+ * connection) may have landed and must never be followed by a second
+ * request for the same member.
+ */
+const refusedBeforeWrite = (status: number) => status === 400 || status === 429;
 
 describe("100,000 members across many days", () => {
   it("accounts for every member exactly once, with no duplicate provider write", async () => {
@@ -154,7 +164,9 @@ describe("100,000 members across many days", () => {
     let overlapped = false;
     let succeededAfterDay1 = 0;
 
+    const startedAt = Date.now();
     for (day = 1; day <= 160; day += 1) {
+      const dayStartedAt = Date.now();
       // Overnight: the access token has expired. Every day.
       await reconnectAccount(f, "jwt-OLD", `refresh-day${day}`);
       tickInDay = 0;
@@ -190,14 +202,43 @@ describe("100,000 members across many days", () => {
         const runs = await runsFor(f, c);
         const today = runs.find((x) => new Date(String(x.local_date)).toISOString().slice(0, 10) === nowIso().slice(0, 10));
         if (today?.status === "rate_limited" && rateLimitReset) {
-          // Come back after the reset — same run.
-          tickInDay += 2; // 40 minutes
+          // Before the reset: nothing runs. (App clock 20 min on; the
+          // stored reset is still ahead of both clocks.)
+          tickInDay += 1;
+          const before = provider.calls.createRecord;
+          await tick();
+          expect(provider.calls.createRecord).toBe(before);
+          expect((await runsFor(f, c)).find((x) => x.id === today.id)?.status).toBe("rate_limited");
+          // The provider's reset passes. The RPC compares the stored
+          // reset with the DATABASE clock, the quota with the app's;
+          // the virtual day is two real days ahead, so the stored value
+          // must be moved into the real past — which is also before the
+          // virtual now. Then the SAME run resumes on the next tick.
+          await f.db.query(
+            `update public.bluesky_follow_campaign_runs
+                set rate_limited_until = now() - interval '1 second'
+              where id = $1`, [today.id]);
+          tickInDay += 1; // next tick lands 60 min after the 429, past the reset and its buffer
           continue;
         }
         if (r.notes.some((n) => /daily quota reached|campaign completed/.test(n))) break;
         if (today?.status === "completed") break;
       }
 
+      if (day === 3) {
+        // The 429 day finished on the SAME run, after the reset — not
+        // on a second run, and not tomorrow.
+        const runs = await runsFor(f, c);
+        const day3 = runs.filter((x) => new Date(String(x.local_date)).toISOString().slice(0, 10) === nowIso().slice(0, 10));
+        expect(day3).toHaveLength(1);
+        // `running`, not `completed`, is normal here: the day's quota
+        // was spent while an ambiguous member still awaited a read, and
+        // the dispatcher leaves such a run open on purpose so the read
+        // can happen without quota.
+        expect(day3[0].status, JSON.stringify(day3[0])).toMatch(/^(running|completed)$/);
+        expect(Number(day3[0].succeeded_count), JSON.stringify(day3[0])).toBeGreaterThan(950);
+        expect(Number(day3[0].attempted_count)).toBeLessThanOrEqual(QUOTA);
+      }
       if (day === 1) {
         const counts = await memberCounts(f, c);
         succeededAfterDay1 = counts.succeeded ?? 0;
@@ -210,11 +251,17 @@ describe("100,000 members across many days", () => {
         // After the crash and resume: nothing was lost or re-followed.
         const counts = await memberCounts(f, c);
         expect(counts.succeeded).toBeGreaterThanOrEqual(succeededAfterDay1);
-        const dup = provider.createRecords.reduce((m, r) => m.set(r.subjectDid, (m.get(r.subjectDid) ?? 0) + 1), new Map<string, number>());
-        for (const [did, n] of dup) {
-          if (n > 1) {
-            const tokens = provider.createRecords.filter((r) => r.subjectDid === did).map((r) => r.token);
-            expect(tokens[0], did).toBe("jwt-OLD");
+        // A member asked more than once had every earlier request
+        // refused before any write. (The first draft of this check only
+        // excused the overnight ExpiredToken and tripped on the day-3
+        // 429 member — correctly retried, wrongly flagged.)
+        const byMember = new Map<string, number[]>();
+        for (const r of provider.createRecords) {
+          byMember.set(r.subjectDid, [...(byMember.get(r.subjectDid) ?? []), r.status]);
+        }
+        for (const [did, statuses] of byMember) {
+          if (statuses.length > 1) {
+            expect(statuses.slice(0, -1).every(refusedBeforeWrite), `${did}: ${statuses.join(",")}`).toBe(true);
           }
         }
       }
@@ -223,6 +270,14 @@ describe("100,000 members across many days", () => {
         const may = await f.db.query<{ ok: boolean }>(
           `select public.bluesky_campaign_may_complete($1,$2) as ok`, [f.tenant.workspaceId, c]);
         expect(may.rows[0].ok).toBe(false);
+      }
+      {
+        const counts = await memberCounts(f, c);
+        console.log(
+          `scale day ${day}: ${Date.now() - dayStartedAt}ms (total ${Math.round((Date.now() - startedAt) / 1000)}s) ` +
+          `succeeded=${counts.succeeded ?? 0} queued=${counts.queued ?? 0} retryable=${counts.retryable ?? 0} ` +
+          `reconciliation=${counts.reconciliation_required ?? 0} createRecord=${provider.calls.createRecord} refresh=${provider.calls.refreshSession}`,
+        );
       }
       if ((await campaignRow(f, c)).status === "completed") break;
     }
@@ -249,29 +304,44 @@ describe("100,000 members across many days", () => {
 
     const expectedNotFound = Math.floor(N / NOT_FOUND);
     const expectedStructural = Math.floor(N / STRUCTURAL) - Math.floor(N / (NOT_FOUND * STRUCTURAL));
+    // Every ambiguous member (a 502 or a dropped connection on a write
+    // that DID land) was settled by a later read. The worker records an
+    // observed follow as `already_following` — the desired state holds,
+    // but it will not claim to have created a record it never saw a
+    // response for — so those members are achieved, not `succeeded`.
+    const expectedAmbiguous = followingSince.size;
+    expect(expectedAmbiguous).toBe(Math.floor(N / AMBIG_502) + Math.floor(N / AMBIG_DROP));
     expect(n("actor_not_found")).toBe(expectedNotFound);
     expect(n("failed_structural")).toBe(expectedStructural);
-    expect(n("succeeded")).toBe(N - expectedNotFound - expectedStructural);
+    expect(n("already_following")).toBe(expectedAmbiguous);
+    expect(n("succeeded")).toBe(N - expectedNotFound - expectedStructural - expectedAmbiguous);
+    // Desired state achieved, by write or by observation.
+    expect(n("succeeded") + n("already_following")).toBe(N - expectedNotFound - expectedStructural);
 
     // NO MEMBER WRITTEN TWICE. A second createRecord for a member is
-    // legitimate in exactly one case: the first carried the overnight-
-    // expired token and was refused before any write.
-    const perMember = new Map<string, string[]>();
+    // legitimate only after a refusal BEFORE any write: the overnight-
+    // expired token, or the day-3 429.
+    const perMember = new Map<string, { token: string; status: number }[]>();
     for (const r of provider.createRecords) {
-      perMember.set(r.subjectDid, [...(perMember.get(r.subjectDid) ?? []), r.token]);
+      perMember.set(r.subjectDid, [...(perMember.get(r.subjectDid) ?? []), r]);
     }
-    let refusedThenRetried = 0;
-    for (const [did, tokens] of perMember) {
-      const real = tokens.filter((t) => t !== "jwt-OLD").length;
-      expect(real, `${did} written ${real} times`).toBeLessThanOrEqual(1);
-      if (tokens.length > 1) refusedThenRetried += 1;
+    let expiredThenRetried = 0;
+    let rateLimitedThenRetried = 0;
+    for (const [did, calls] of perMember) {
+      const mayHaveLanded = calls.filter((x) => !refusedBeforeWrite(x.status)).length;
+      expect(mayHaveLanded, `${did} written ${mayHaveLanded} times`).toBeLessThanOrEqual(1);
+      if (calls.some((x) => x.token === "jwt-OLD")) expiredThenRetried += 1;
+      if (calls.some((x) => x.status === 429)) rateLimitedThenRetried += 1;
     }
     // Ambiguous members were written ONCE and settled by a read.
     for (const did of followingSince.keys()) {
-      expect(perMember.get(did)?.filter((t) => t !== "jwt-OLD").length, did).toBe(1);
+      expect(perMember.get(did)?.filter((x) => !refusedBeforeWrite(x.status)).length, did).toBe(1);
     }
-    // One overnight refusal per day, at most.
-    expect(refusedThenRetried).toBeLessThanOrEqual(day);
+    // One overnight refusal per day, at most — and the single 429 member
+    // was retried and written exactly once (negative control: had the
+    // 429 been filed as reconciliation, it would have no landed write).
+    expect(expiredThenRetried).toBeLessThanOrEqual(day);
+    expect(rateLimitedThenRetried).toBe(1);
     // Every day refreshed, and only once.
     expect(provider.calls.refreshSession).toBeLessThanOrEqual(day + 2);
 

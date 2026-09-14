@@ -86,10 +86,35 @@ describe("429", () => {
     expect(refused.status).toBe("pending");
     expect(refused.provider_in_flight_at).toBeNull();
 
-    // Before the reset: a tick does nothing.
+    // Before the reset, on the APP clock: a tick does nothing.
     const early = providerDouble({});
     await dispatch(early, { campaignId: c, nowIso: "2026-09-14T09:10:00Z" });
     expect(early.calls.createRecord).toBe(0);
+
+    // Before the reset, on the DATABASE clock. `resume_bluesky_campaign_
+    // run` compares the stored reset with now() — the database's clock,
+    // not the app's — so this control puts the stored reset ahead of
+    // the real clock while the app's clock is past it. The RPC must
+    // refuse and the run must stay rate_limited. (Without this control
+    // the resume below would prove nothing about the guard: the fixed
+    // reset epoch is in the real past, so now() passes it on any day
+    // this test is run.)
+    await f.db.query(
+      `update public.bluesky_follow_campaign_runs
+          set rate_limited_until = now() + interval '1 hour'
+        where id = $1`, [runs[0].id]);
+    const dbEarly = providerDouble({});
+    await dispatch(dbEarly, {
+      campaignId: c,
+      nowIso: new Date(resetAt * 1000 + 5 * 60_000).toISOString(),
+    });
+    expect(dbEarly.calls.createRecord).toBe(0);
+    expect((await runsFor(f, c))[0].status).toBe("rate_limited");
+    // Restore the provider's reset — past on both clocks from here on.
+    await f.db.query(
+      `update public.bluesky_follow_campaign_runs
+          set rate_limited_until = to_timestamp($2)
+        where id = $1`, [runs[0].id, resetAt]);
 
     // At the reset: the SAME run resumes and finishes, rl5 included,
     // with exactly one more request for it.

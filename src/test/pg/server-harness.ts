@@ -30,6 +30,8 @@ const MIGRATIONS_DIR = path.join(process.cwd(), "supabase", "migrations");
 
 
 export interface PgServerHarness {
+  /** Loopback port the server listens on, for callers that pool. */
+  port: number;
   /** Open an additional REAL connection. Each is its own backend. */
   connect: () => Promise<Client>;
   /** A connection already open, for setup. */
@@ -85,6 +87,7 @@ export async function createPgServerHarness(): Promise<PgServerHarness> {
   await admin.query(POSTGREST_GRANTS);
 
   return {
+    port,
     connect,
     admin,
     close: async () => {

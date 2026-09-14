@@ -37,7 +37,18 @@
  * rows it should never have seen.
  */
 
-import type { PGlite } from "@electric-sql/pglite";
+/**
+ * The one thing the adapter needs from a database: `query`. PGlite and
+ * `pg` (Client or Pool) both answer with the same `{ rows }` shape, so
+ * the same adapter serves the single-backend WASM suites and the
+ * embedded-server scale regression.
+ */
+export interface Queryable {
+  query<T = Record<string, unknown>>(
+    sql: string,
+    params?: unknown[],
+  ): Promise<{ rows: T[] }>;
+}
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 type Filter =
@@ -151,7 +162,7 @@ class Builder<T = Record<string, unknown>[]> implements PromiseLike<Result<T>> {
   private returning = false;
 
   constructor(
-    private db: PGlite,
+    private db: Queryable,
     private table: string,
   ) {}
 
@@ -405,7 +416,7 @@ class Builder<T = Record<string, unknown>[]> implements PromiseLike<Result<T>> {
  * allow and which is exactly the kind of mistake that ends with a
  * delete aimed at the wrong argument.
  */
-export function pgliteSupabase(db: PGlite): SupabaseClient {
+export function pgliteSupabase(db: Queryable): SupabaseClient {
   const api = {
     from: (table: string) => new Builder(db, table),
     rpc: async (fn: string, args: Record<string, unknown> = {}) => {

@@ -24,27 +24,96 @@ if (!process.env.TOKEN_ENCRYPTION_KEY) {
   process.env.TOKEN_ENCRYPTION_KEY = randomBytes(32).toString("base64url");
 }
 
-import type { PGlite } from "@electric-sql/pglite";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { createPgHarness, seedTenant, type PgHarness, type Tenant } from "@/test/pg/harness";
-import { pgliteSupabase } from "@/test/pg/supabase-adapter";
+import { Pool } from "pg";
+import { createPgHarness, seedTenant, type Tenant } from "@/test/pg/harness";
+import { createPgServerHarness, seedServerTenant } from "@/test/pg/server-harness";
+import { pgliteSupabase, type Queryable } from "@/test/pg/supabase-adapter";
 import { getTokenCipher } from "@/core/platform-oauth";
 
 export const ACTOR_DID = "did:plc:incidentoperator";
 export const ACTOR_HANDLE = "webmasterid.bsky.social";
 
+/** What the suites read from a tenant. The server backend seeds one user. */
+export type FixtureTenant = Pick<Tenant, "workspaceId" | "identityId" | "ownerId"> &
+  Partial<Tenant>;
+
 export interface FollowFixture {
-  h: PgHarness;
-  db: PGlite;
+  db: Queryable;
   client: SupabaseClient;
-  tenant: Tenant;
+  tenant: FixtureTenant;
   connectionId: string;
   close: () => Promise<void>;
 }
 
-export async function createFollowFixture(label: string): Promise<FollowFixture> {
+export interface FixtureOptions {
+  /**
+   * `pglite` (default) — one WASM backend in-process; boots in a second
+   * and is right for every scenario suite.
+   *
+   * `server` — embedded PostgreSQL, real backends behind a small pool.
+   * The 100,000-member regression needs it: through the full worker
+   * path PGlite managed about two members a second, which is fourteen
+   * hours for the queue; a native server does the same work in minutes,
+   * and overlapping ticks really do run on separate backends.
+   */
+  backend?: "pglite" | "server";
+}
+
+export async function createFollowFixture(
+  label: string,
+  opts: FixtureOptions = {},
+): Promise<FollowFixture> {
+  if (opts.backend === "server") {
+    const h = await createPgServerHarness();
+    // Any statement over two seconds is logged by the server (its log
+    // is the test's stdout). A 100,000-row queue is exactly where a
+    // query that scans instead of seeks shows itself.
+    await h.admin.query("alter system set log_min_duration_statement = 2000");
+    await h.admin.query("select pg_reload_conf()");
+    const seeded = await seedServerTenant(h.admin, label);
+    const pool = new Pool({
+      host: "localhost",
+      port: h.port,
+      user: "postgres",
+      password: "postgres",
+      database: "postgres",
+      max: 4,
+    });
+    const db = pool as unknown as Queryable;
+    const tenant: FixtureTenant = {
+      workspaceId: seeded.workspaceId,
+      identityId: seeded.identityId,
+      ownerId: seeded.userId,
+    };
+    const connectionId = await seedConnection(db, tenant);
+    return {
+      db,
+      client: pgliteSupabase(db),
+      tenant,
+      connectionId,
+      close: async () => {
+        await pool.end();
+        await h.close();
+      },
+    };
+  }
+
   const h = await createPgHarness();
   const tenant = await seedTenant(h.db, label);
+  const db = h.db as unknown as Queryable;
+  const connectionId = await seedConnection(db, tenant);
+  return {
+    db,
+    client: pgliteSupabase(db),
+    tenant,
+    connectionId,
+    close: () => h.close(),
+  };
+}
+
+/** The operator's connected Bluesky identity, with encrypted tokens. */
+async function seedConnection(db: Queryable, tenant: FixtureTenant): Promise<string> {
   const cipher = getTokenCipher();
   if (!cipher.isAvailable()) throw new Error("token cipher unavailable in test");
 
@@ -52,13 +121,13 @@ export async function createFollowFixture(label: string): Promise<FollowFixture>
   // from refreshSession, or the real drift check refuses the refreshed
   // session — correctly. The first draft of this fixture left the seed
   // handle in place and every refresh was refused as a handle mismatch.
-  await h.db.query(
+  await db.query(
     `update public.growth_accounts
         set connection_status = 'connected', handle = $2
       where id = $1`,
     [tenant.identityId, ACTOR_HANDLE],
   );
-  const conn = await h.db.query<{ id: string }>(
+  const conn = await db.query<{ id: string }>(
     `insert into public.platform_connections
        (workspace_id, account_id, platform, provider_account_id, handle,
         display_name, connection_status, health_status,
@@ -70,15 +139,7 @@ export async function createFollowFixture(label: string): Promise<FollowFixture>
       cipher.encrypt("jwt-OLD"), cipher.encrypt("refresh-1"),
     ],
   );
-
-  return {
-    h,
-    db: h.db,
-    client: pgliteSupabase(h.db),
-    tenant,
-    connectionId: conn.rows[0].id,
-    close: () => h.close(),
-  };
+  return conn.rows[0].id;
 }
 
 /** Which plaintext tokens the connection row currently holds. */
@@ -209,7 +270,13 @@ export interface ProviderDouble {
     getRelationships: number;
   };
   /** Every createRecord, in order: the bearer token and the subject. */
-  createRecords: { token: string; subjectDid: string }[];
+  /**
+   * Every createRecord, in order, with what the double answered:
+   * the HTTP status, or -1 when the scripted call threw (a dropped
+   * connection). A 400 or 429 was refused before any write; anything
+   * else may have landed.
+   */
+  createRecords: { token: string; subjectDid: string; status: number }[];
   refreshTokensUsed: string[];
 }
 
@@ -283,12 +350,20 @@ export function providerDouble(script: ProviderScript = {}): ProviderDouble {
         record?: { subject?: string };
       };
       const subjectDid = body.record?.subject ?? "";
-      state.createRecords.push({ token, subjectDid });
-      const verdict = script.createRecord
-        ? script.createRecord({ index: state.calls.createRecord, token, subjectDid })
-        : token === "jwt-OLD"
-          ? { status: 400, body: { error: "ExpiredToken", message: "Token has expired" } }
-          : { status: 200 };
+      const entry = { token, subjectDid, status: 0 };
+      state.createRecords.push(entry);
+      let verdict: ReturnType<NonNullable<ProviderScript["createRecord"]>>;
+      try {
+        verdict = script.createRecord
+          ? script.createRecord({ index: state.calls.createRecord, token, subjectDid })
+          : token === "jwt-OLD"
+            ? { status: 400, body: { error: "ExpiredToken", message: "Token has expired" } }
+            : { status: 200 };
+      } catch (err) {
+        entry.status = -1;
+        throw err;
+      }
+      entry.status = verdict.status;
       if (verdict.status === 200 && verdict.body === undefined) {
         recordSeq += 1;
         return json({

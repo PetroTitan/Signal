@@ -219,6 +219,20 @@ select a.subject_did, a.provider_error_code, a.status
    and a.provider_error_code in ('ExpiredToken','InvalidToken','RateLimitExceeded','session_expired');
 ```
 
+## The 100,000-member regression (added 2026-09-14)
+
+`src/core/bluesky-campaigns/incident-scale.pg.test.ts` runs the whole
+follow path — dispatcher, worker, RPCs, session refresh — over a
+100,000-member queue at 1,000 a day with every fault the incident
+brief names injected deterministically by member. It runs on
+**embedded PostgreSQL** (`createFollowFixture(label, { backend:
+"server" })`), not PGlite: through the full worker path PGlite managed
+about two members a second, which is fourteen hours for the queue;
+the native server does it in about three minutes, and the overlapping
+ticks it exercises really run on separate backends. Statements over
+two seconds are logged by that server to the test's stdout. It is part
+of `npm test`.
+
 ## The conservation equation (added 2026-09-14)
 
 ```sql

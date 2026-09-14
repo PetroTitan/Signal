@@ -139,13 +139,13 @@ double, and it counts every request.
 | Today's sequence (223 + 77) | 78 createRecord | **1** | 77 | 77 | 77 | 77 | run not failed; campaign completed; tokens rotated once and persisted |
 | Refresh fails | 1 | 1 | 1 | 1 | 1 | 1 (pending) | run `paused`/reauth; campaign reauth; Accounts `expired`; 29 untouched |
 | …then operator reconnects | +30 | 0 | +30 | +30 | +30 | still 1 for rf1 | **same run resumed**, all 30 done, rf1 written once |
-| Ambiguous 502 at head | 1 for it | 0 | 1 | 1 | 1 | 1 | 149 later members done same pass; settles `succeeded` on read; 0 re-sends |
+| Ambiguous 502 at head | 1 for it | 0 | 1 | 1 | 1 | 1 | 149 later members done same pass; the ORIGINAL action settles `succeeded` on a later read and the member is recorded `already_following` (observed, not claimed as created); 0 re-sends |
 | Stranded ExpiredToken row | 1 | 0 | +1 | 2 | 2 | **1** | re-opened, retried once, counted once |
 | 429 | 5 then 26 | — | — | — | — | — | same run resumed at reset; refused member written once |
 | Crash before intent | 1 | — | 1 | 1 | 1 | 1 | one first createRecord |
 | Crash after intent | 0 | — | 0 | 1 | 1 | 1 | reconciliation, marker cleared |
 | Structural 4xx on one member | — | — | — | — | — | — | member terminal with reason; **campaign continues** |
-| 100,000 members, 1,000/day, all faults | see `incident-scale.pg.test.ts` | ≤1/day | — | — | — | — | every member in one category; no member written twice; completed only at zero actionable |
+| 100,000 members, 1,000/day, every fault (embedded PostgreSQL, 183 s) | 100,102 = 100,000 + 101 overnight refusals + 1 rate-limited retry | **101** (one per day) | — | — | — | — | 101 local days; 99,605 `succeeded` + 198 `already_following` (ambiguous, settled by read) + 99 `actor_not_found` + 98 `failed_structural` = 100,000; 0 retryable / reconciling / leases / reservations / intents outstanding; no member with two landed writes; 0 failed runs; completed only at zero actionable |
 
 Two-session (embedded PostgreSQL, one backend per connection): the
 re-opened action is not taken over; re-open refuses ambiguous codes,
@@ -159,7 +159,7 @@ reverted in isolation (source or migration text patched back to the
 deployed behaviour, the target suite run, the file restored) and the
 suite had to fail **for that reason**. A revert whose pattern no longer
 matched would be reported as SKIPPED, not as a pass. Run against the
-code in this PR: **10 of 10 caught.**
+code in this PR: **11 of 11 caught.**
 
 | Reverted fix | Where | Test that caught it |
 | --- | --- | --- |
@@ -173,11 +173,36 @@ code in this PR: **10 of 10 caught.**
 | RC5 — run budget bounded by queue size | dispatcher `boundByQueue: false` | 30-of-30 after reconnect (was 29 of 30) |
 | Completion guard removed | dispatcher `bluesky_campaign_may_complete` gate | completion refused while an action is unresolved |
 | Superseded-intent fold removed | migration `fold_bluesky_ledger_outcomes` | a refused-then-retried follow is counted ONCE |
+| Database-clock reset guard removed from `resume_bluesky_campaign_run` (shipped `20260911000003`, patched on disk for the control only) | migration | 429: a tick whose app clock is past the reset but whose stored reset is still ahead of the database clock made 25 writes instead of 0 |
 
 The first pass caught 7 of 10. The three that survived — in-dispatcher
 resume, the completion guard, the superseded fold — each named a
 scenario no test exercised; those tests were added, and the controls
 re-run until every revert failed.
+
+### Observations outside the incident (not changed here)
+
+- **First tick after a bulk import.** On the 100,000-member queue the
+  first day took 59 s where every later day took under 2 s: the server
+  logged `reserve_bluesky_campaign_quota` at 2.0 → 5.9 s per call until
+  autovacuum's first ANALYZE of the freshly loaded members table, after
+  which the same calls were sub-millisecond. That is planner statistics,
+  not a scan the schema cannot avoid; production imports are smaller
+  and the cron cadence gives autovacuum a minute. Worth an explicit
+  `analyze` at the end of queue building if imports grow.
+- **A previous day's open run is never closed.** When the quota is spent
+  while an action still awaits reconciliation the dispatcher leaves the
+  run `running` on purpose (the read needs no quota). Nothing closes
+  that run when the local date rolls, so a run from an earlier day can
+  stay `running` in the history. Cosmetic — `finishRun` only ever
+  touches today's run and budgets are per identity per day — but a
+  small tidy-up for a later change.
+- **Slow-lane parking reads as `retryable`.** An ambiguous member whose
+  read has not yet confirmed the follow waits with member status
+  `retryable` and its action still `reconciliation_required`; the
+  conservation view counts it as actionable, which is what blocks
+  completion. The breakdown's "Still pending" group already subtracts
+  these from "retrying".
 
 ## 5. Migration
 
