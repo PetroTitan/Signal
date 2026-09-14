@@ -221,6 +221,7 @@ const dispatch = (
   impl: typeof fetch,
   client?: ReturnType<FakeDb["client"]>,
   nowIso: string = NOW,
+  currentTime?: () => Date,
 ) => {
   db.setNow(nowIso);
   return dispatchCampaigns({
@@ -229,6 +230,7 @@ const dispatch = (
     fetchImpl: impl,
     sleep: async () => undefined,
     interRequestMs: 0,
+    currentTime,
   });
 };
 
@@ -331,6 +333,55 @@ describe("three passes over an unconfirmable follow", () => {
     const run = db.rows("bluesky_follow_campaign_runs")[0];
     expect(Number(run.consecutive_failures)).toBe(0);
     expect(run.status).toBe("running");
+  });
+
+  it("does not reclaim slow reconciliation in the same tick", async () => {
+    const db = new FakeDb();
+    seed(db, 2);
+
+    const first = crashAfterProviderSuccess(db);
+    await dispatch(db, first.impl, first.client);
+    simulateProcessDeath(db);
+
+    let reconciliationReads = 0;
+    let createRecord = 0;
+    const provider = (async (url: string) => {
+      if (url.includes("createRecord")) {
+        createRecord += 1;
+        return json({
+          uri: `at://${ACTOR}/app.bsky.graph.follow/new`,
+          cid: "cid",
+        });
+      }
+
+      const others = new URL(url).searchParams.getAll("others");
+      if (others.includes("did:plc:s1")) {
+        reconciliationReads += 1;
+        // One preflight read and one reconciliation read belong to the
+        // same processing pass. A third means the dispatcher reclaimed
+        // this member instead of moving on to the queued profile.
+        if (reconciliationReads > 2) {
+          throw new Error("same reconciliation was reclaimed in one tick");
+        }
+        // This read took longer than the base backoff. If the delay is
+        // measured from tick start, it is overdue before it is written
+        // and this member starves the untouched queue forever.
+        db.setNow("2026-09-11T12:02:00Z");
+      }
+      return json({
+        actor: ACTOR,
+        relationships: others.map((did) => ({ did })),
+      });
+    }) as unknown as typeof fetch;
+
+    await dispatch(db, provider, undefined, NOW, () => new Date(db.nowMs()));
+
+    expect(reconciliationReads).toBe(2);
+    expect(createRecord).toBe(1);
+    expect(member(db).status).toBe("retryable");
+    expect(db.rows("bluesky_follow_campaign_members")[1].status).toBe(
+      "succeeded",
+    );
   });
 
   it("a terminal FAILED action never becomes a succeeded member", async () => {
