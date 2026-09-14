@@ -18,9 +18,29 @@ describe("the imported-list workflow", () => {
   it("makes automation the primary action for the full list", () => {
     expect(UI).toContain("Open automatic campaign");
     expect(UI).toContain("Start automatic campaign");
-    expect(UI).toContain('href={props.automation.href} className="btn-primary"');
+    // The follow CTA keeps `btn-primary`; the class list now also
+    // carries `min-h-11 inline-flex items-center` so an anchor meets
+    // the 44px target size the buttons beside it already did. Asserted
+    // on the PROPERTY that matters — which dispatcher it links to, and
+    // that it is the primary weight — rather than on an exact class
+    // string, which would fail on any responsive fix.
+    expect(UI).toMatch(
+      /href=\{props\.automation\.href\} className="btn-primary[^"]*"/,
+    );
     expect(PAGE).toContain("hasCampaign: automation !== null");
     expect(PAGE).toContain("/relationships/campaigns?campaign=");
+  });
+
+  it("offers unfollowing beside it, at SECONDARY weight", () => {
+    // Both are primary actions on this page, but only one of them is
+    // irreversible — the visual weight should not invite it.
+    expect(UI).toContain("Unfollow people…");
+    expect(UI).toMatch(
+      /href="\/relationships\/unfollow"\s+className="btn-secondary[^"]*"/,
+    );
+    expect(UI).not.toMatch(
+      /href="\/relationships\/unfollow"\s+className="btn-primary/,
+    );
   });
 
   it("keeps manual actions available but collapsed by default", () => {

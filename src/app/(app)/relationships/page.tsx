@@ -4,7 +4,11 @@ import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { loadRelationships } from "@/core/bluesky-relationships/load-relationships.server";
 import { ReadFailureNotice } from "./_read-failure-notice";
 import { RelationshipUi } from "./_relationship-ui";
-import { AutomationPanel, StartAutomationCta } from "./_automation-panel";
+import {
+  AutomationPanel,
+  StartAutomationCta,
+  StartUnfollowCta,
+} from "./_automation-panel";
 import { loadCampaignSummary } from "@/core/bluesky-campaigns/load-campaign-summary.server";
 import { can } from "@/core/teams/permissions";
 
@@ -113,9 +117,15 @@ export default async function RelationshipsPage({
         title="Bluesky relationships"
         description="Follow or unfollow accounts one at a time, or let Signal work through a whole list for you."
         actions={
-          // In the header, so it is on screen on a 320px phone without
-          // opening any secondary navigation.
-          <StartAutomationCta canManage={canManage} compact />
+          // In the header, so both are on screen on a 320px phone
+          // without opening any secondary navigation. They wrap rather
+          // than overflow: two 44px targets do not fit side by side at
+          // 320px, and a control pushed off the edge is a control that
+          // does not exist.
+          <div className="flex flex-wrap gap-2">
+            <StartAutomationCta canManage={canManage} compact />
+            <StartUnfollowCta canManage={canManage} compact />
+          </div>
         }
       />
       <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-4xl space-y-6">

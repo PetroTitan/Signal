@@ -2151,8 +2151,14 @@ export interface BlueskyRelationshipActionInsert {
 // JavaScript integers are exact to 2^53, far beyond any realistic
 // queue, and a string would make ordering comparisons error-prone.
 
+export type BlueskyCampaignKind = "follow" | "unfollow";
+
 export type BlueskyCampaignStatus =
   | "draft"
+  /** The durable queue build is running. Unfollow campaigns only. */
+  | "building_queue"
+  /** Frozen and complete, awaiting the operator's single activation. */
+  | "ready"
   | "active"
   | "paused"
   | "completed"
@@ -2165,8 +2171,11 @@ export type BlueskyCampaignMemberStatus =
   | "queued"
   | "claimed"
   | "running"
+  | "provider_in_flight"
   | "succeeded"
   | "already_following"
+  /** Unfollow: the record was already absent. Neutral, consumes no quota. */
+  | "already_not_following"
   | "protected"
   | "skipped"
   | "retryable"
@@ -2186,6 +2195,8 @@ export interface BlueskyFollowCampaignRow {
   workspace_id: string;
   operator_account_id: string;
   name: string;
+  /** follow | unfollow. Decided at creation and immutable thereafter. */
+  kind: BlueskyCampaignKind;
   status: BlueskyCampaignStatus;
   /** Operator intent. NEVER an attempt budget — see the run's effective quota. */
   requested_daily_quota: number;

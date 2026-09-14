@@ -685,10 +685,24 @@ function CandidateListView(props: {
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             {props.automation.hasCampaign || props.automation.canManage ? (
-              <a href={props.automation.href} className="btn-primary">
+              <a href={props.automation.href} className="btn-primary min-h-11 inline-flex items-center">
                 {props.automation.hasCampaign
                   ? "Open automatic campaign"
                   : "Start automatic campaign"}
+              </a>
+            ) : null}
+            {props.automation.canManage ? (
+              // The primary route into bulk unfollowing, alongside the
+              // follow campaign rather than hidden behind it. A
+              // capability reachable only through a nav entry inside a
+              // mobile More sheet is one an operator on a phone cannot
+              // find — which is how the follow flow was discovered to
+              // be effectively invisible.
+              <a
+                href="/relationships/unfollow"
+                className="btn-secondary min-h-11 inline-flex items-center"
+              >
+                Unfollow people…
               </a>
             ) : null}
             <button

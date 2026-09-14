@@ -269,5 +269,14 @@ function describeNextAction(
         return "Every profile has been processed. The campaign will close on its next run.";
       }
       return quota.halted ? quota.reason : null;
+    // Build states. Reachable only for unfollow campaigns, which have
+    // their own view — this loader serves the follow list and simply
+    // has nothing to instruct here. The cases are listed rather than
+    // defaulted so a status added later is a compile error, not a
+    // silent null.
+    case "building_queue":
+      return "The list of profiles is still being built.";
+    case "ready":
+      return "The list is complete. Start it when you are ready.";
   }
 }

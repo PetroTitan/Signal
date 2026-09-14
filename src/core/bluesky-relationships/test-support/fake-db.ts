@@ -1765,17 +1765,40 @@ class FakeQuery implements PromiseLike<QueryResult> {
     return Promise.resolve(this.run()).then(onfulfilled, onrejected);
   }
 
+  /**
+   * Read a column the way PostgreSQL would.
+   *
+   * A NOT NULL column with a DEFAULT is never absent from a real row:
+   * an INSERT that omits it stores the default. Tests here seed rows as
+   * object literals and omit whatever a migration added most recently,
+   * so a filter on that column matched nothing and every affected test
+   * failed at once — with a message about the campaign not being found
+   * rather than about the missing field.
+   *
+   * Falling back to the declared default makes the fake behave the way
+   * the database does, once, instead of requiring every seed in the
+   * repository to be revisited each time a column is added.
+   */
+  private column(row: Row, name: string): unknown {
+    const value = row[name];
+    if (value !== undefined) return value;
+    const fallback = defaultsFor(this.table)[name];
+    return fallback === undefined ? undefined : fallback;
+  }
+
   private matches(row: Row): boolean {
     return this.filters.every((filter) => {
       switch (filter.kind) {
         case "eq":
-          return row[filter.column] === filter.value;
+          return this.column(row, filter.column) === filter.value;
         case "is":
           return filter.value === null
             ? row[filter.column] === null || row[filter.column] === undefined
             : row[filter.column] === filter.value;
         case "in":
-          return (filter.value as unknown[]).includes(row[filter.column]);
+          return (filter.value as unknown[]).includes(
+            this.column(row, filter.column),
+          );
         case "or": {
           // PostgREST `or=(a.op.v,b.op.v)`. Only the operators the
           // repositories actually emit are supported — an unrecognised
@@ -2068,6 +2091,13 @@ function defaultsFor(table: string): Row {
       };
     case "bluesky_follow_campaigns":
       return {
+        // Mirrors the column default added by
+        // 20260914000001_bluesky_unfollow_campaigns. The dispatcher
+        // filters on it, so a row without one is invisible to the
+        // dispatcher that is meant to run it — which is exactly the
+        // drift this fake is prone to, and the reason the unfollow
+        // suites run against the real migration instead.
+        kind: "follow",
         status: "draft",
         requested_daily_quota: 100,
         timezone: "UTC",
