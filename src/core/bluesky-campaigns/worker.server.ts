@@ -84,6 +84,13 @@ export const LEASE_SECONDS = 300;
  */
 export const DISPATCH_LEASE_SECONDS = 360;
 
+/**
+ * An unresolved provider intent is read-only work, but it is deliberately
+ * kept out of the same dispatcher pass for long enough that slow settlement
+ * cannot make it eligible again before untouched queue members are claimed.
+ */
+export const RECONCILIATION_BACKOFF_MS = 10 * 60_000;
+
 export interface ChunkOutcomeCounts {
   /**
    * Members another worker owned, which this one left alone.
@@ -452,7 +459,14 @@ export async function processCampaignChunk(
       db: input.db,
     });
 
-    await persist(input, member, decision.memberStatus, result, attemptsAfter);
+    await persist(
+      input,
+      member,
+      decision.memberStatus,
+      result,
+      attemptsAfter,
+      reconcileOnlyClaim ? RECONCILIATION_BACKOFF_MS : 0,
+    );
 
     if (!reconcileOnlyClaim) {
       counts.attempted += 1;
@@ -743,6 +757,7 @@ async function persist(
   status: string,
   result: AttemptResult | null,
   attemptCount: number,
+  minimumBackoffMs = 0,
 ): Promise<void> {
   const now = input.now.toISOString();
   const retryBase = input.currentTime?.() ?? input.now;
@@ -756,7 +771,11 @@ async function persist(
     nextAttemptAt:
       status === "retryable"
         ? new Date(
-            retryBase.getTime() + backoffDelayMs(Math.max(1, attemptCount)),
+            retryBase.getTime() +
+              Math.max(
+                backoffDelayMs(Math.max(1, attemptCount)),
+                minimumBackoffMs,
+              ),
           ).toISOString()
         : null,
     providerRecordUri: result?.uri ?? undefined,

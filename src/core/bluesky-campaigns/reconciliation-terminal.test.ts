@@ -374,11 +374,23 @@ describe("three passes over an unconfirmable follow", () => {
       });
     }) as unknown as typeof fetch;
 
-    await dispatch(db, provider, undefined, NOW, () => new Date(db.nowMs()));
+    let clockReads = 0;
+    await dispatch(db, provider, undefined, NOW, () => {
+      const observed = new Date(db.nowMs());
+      // Settlement itself can outlast the ordinary one-minute retry
+      // delay. Advance the database after the worker captures its
+      // completion instant to reproduce that production interleaving.
+      if (clockReads === 0) db.setNow("2026-09-11T12:05:00Z");
+      clockReads += 1;
+      return observed;
+    });
 
     expect(reconciliationReads).toBe(2);
     expect(createRecord).toBe(1);
     expect(member(db).status).toBe("retryable");
+    expect(Date.parse(String(member(db).next_attempt_at))).toBeGreaterThanOrEqual(
+      Date.parse("2026-09-11T12:12:00Z"),
+    );
     expect(db.rows("bluesky_follow_campaign_members")[1].status).toBe(
       "succeeded",
     );
