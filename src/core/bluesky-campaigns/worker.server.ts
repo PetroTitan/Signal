@@ -162,6 +162,11 @@ export interface ProcessChunkInput {
    * measure the hour it was run at.
    */
   now: Date;
+  /**
+   * Wall clock after provider I/O. A retry delay starts when the
+   * observation finishes, not when the enclosing tick began.
+   */
+  currentTime?: () => Date;
   appView?: string;
   fetchImpl?: typeof fetch;
   db?: SupabaseClient;
@@ -740,6 +745,7 @@ async function persist(
   attemptCount: number,
 ): Promise<void> {
   const now = input.now.toISOString();
+  const retryBase = input.currentTime?.() ?? input.now;
   const terminal = status !== "retryable";
 
   await updateMember({
@@ -750,7 +756,7 @@ async function persist(
     nextAttemptAt:
       status === "retryable"
         ? new Date(
-            input.now.getTime() + backoffDelayMs(Math.max(1, attemptCount)),
+            retryBase.getTime() + backoffDelayMs(Math.max(1, attemptCount)),
           ).toISOString()
         : null,
     providerRecordUri: result?.uri ?? undefined,

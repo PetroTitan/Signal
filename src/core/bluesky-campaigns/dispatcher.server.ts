@@ -89,6 +89,8 @@ export interface DispatchResult {
 
 export interface DispatchInput {
   nowIso?: string;
+  /** Current wall clock after slow provider I/O. Injectable in tests. */
+  currentTime?: () => Date;
   /** Restrict to one campaign. Used by the manual "run now" control. */
   campaignId?: string;
   workspaceId?: string;
@@ -137,6 +139,8 @@ export async function dispatchCampaigns(
 ): Promise<DispatchResult> {
   const result = empty();
   const now = input.nowIso ? new Date(input.nowIso) : new Date();
+  const currentTime =
+    input.currentTime ?? (input.nowIso ? () => now : () => new Date());
   const monotonic = input.monotonicNowMs ?? (() => Date.now());
   const startedAt = monotonic();
   const budget = input.budgetMs ?? TICK_BUDGET_MS;
@@ -174,6 +178,7 @@ export async function dispatchCampaigns(
       const ran = await runCampaign({
         campaign,
         now,
+        currentTime,
         input,
         remainingBudgetMs: () => budget - (monotonic() - startedAt),
       });
@@ -218,6 +223,7 @@ interface RunCampaignResult {
 async function runCampaign(args: {
   campaign: BlueskyFollowCampaignRow;
   now: Date;
+  currentTime: () => Date;
   input: DispatchInput;
   remainingBudgetMs: () => number;
 }): Promise<RunCampaignResult> {
@@ -474,7 +480,17 @@ async function runCampaign(args: {
 
   try {
     return await runChunks({
-      args, input, campaign, run, session, live, usageDate, claimedBy, now, out,
+      args,
+      input,
+      campaign,
+      run,
+      session,
+      live,
+      usageDate,
+      claimedBy,
+      now,
+      currentTime: args.currentTime,
+      out,
     });
   } finally {
     await releaseDispatchLease({
@@ -503,6 +519,7 @@ async function runChunks(ctx: {
   usageDate: string;
   claimedBy: string;
   now: Date;
+  currentTime: () => Date;
   out: RunCampaignResult;
 }): Promise<RunCampaignResult> {
   const { args, input, campaign, session, live, usageDate, claimedBy, now, out } = ctx;
@@ -548,6 +565,7 @@ async function runChunks(ctx: {
       claimedBy,
       initiatedBy: campaign.created_by,
       now,
+      currentTime: ctx.currentTime,
       appView: input.appView,
       fetchImpl: input.fetchImpl,
       db: input.db,
