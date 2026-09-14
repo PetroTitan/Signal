@@ -121,8 +121,16 @@ export async function resolveRelationshipSession(input: {
   workspaceId: string;
   accountId: string;
   db?: SupabaseClient;
+  /**
+   * The transport a refresh uses. Threaded from the caller so the
+   * refresh goes through the SAME transport as the provider calls it
+   * repairs — and so a test can drive the real refresh path against a
+   * double instead of mocking this module away, which is how the
+   * cross-chunk session defect stayed invisible.
+   */
+  fetchImpl?: typeof fetch;
 }): Promise<ResolveRelationshipSessionResult> {
-  const { workspaceId, accountId, db } = input;
+  const { workspaceId, accountId, db, fetchImpl } = input;
 
   let identity;
   try {
@@ -202,6 +210,7 @@ export async function resolveRelationshipSession(input: {
     service,
     declaredHandle,
     db,
+    fetchImpl,
     refreshAllowed: true,
   });
 }
@@ -216,6 +225,7 @@ function buildSession(ctx: {
   service: string;
   declaredHandle: string | null;
   db?: SupabaseClient;
+  fetchImpl?: typeof fetch;
   /**
    * False on a session produced BY a refresh. That session's
    * `refreshOnce` refuses, which is what enforces "at most one refresh
@@ -252,6 +262,7 @@ async function performRefresh(ctx: {
   service: string;
   declaredHandle: string | null;
   db?: SupabaseClient;
+  fetchImpl?: typeof fetch;
 }): Promise<RelationshipSession | RelationshipSessionError> {
   const enc = await readEncryptedTokens(
     ctx.workspaceId,
@@ -274,6 +285,7 @@ async function performRefresh(ctx: {
   const refreshed = await refreshBlueskySession({
     refreshJwt,
     service: ctx.service,
+    fetchImpl: ctx.fetchImpl,
   });
   if (refreshed.outcome !== "refreshed") {
     await markExpired(ctx, `Refresh failed: ${refreshed.message}`);

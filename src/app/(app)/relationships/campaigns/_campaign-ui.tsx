@@ -367,6 +367,12 @@ function CampaignDetailView(props: {
       {/* Overall progress */}
       <section className="card card-padded">
         <h3 className="section-title">Progress</h3>
+        <p className="text-sm text-ink-800 bg-ink-50 border border-ink-200 rounded-md p-3 mt-3 leading-relaxed">
+          Signal will continue processing all{" "}
+          <strong>{d.counts.total.toLocaleString()}</strong> profiles
+          automatically across future days until every profile has a confirmed
+          outcome. The daily quota limits daily work, not the campaign size.
+        </p>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-3">
           <Stat label="Queued total" value={d.counts.total.toLocaleString()} />
           <Stat label="Succeeded" value={d.counts.succeeded.toLocaleString()} />
@@ -394,12 +400,63 @@ function CampaignDetailView(props: {
             ? `At the rate observed so far, about ${d.estimatedCompletion.daysRemaining} more day(s) — around ${d.estimatedCompletion.date}.`
             : "No completion estimate yet: an estimate needs at least one finished run to measure against."}
         </p>
-        <p className="text-xs text-ink-500 mt-2 leading-relaxed">
-          Already following {d.counts.already_following.toLocaleString()} ·
-          skipped {d.counts.skipped.toLocaleString()} · protected{" "}
-          {d.counts.protected.toLocaleString()} · failed{" "}
-          {d.counts.failed_structural.toLocaleString()}
-        </p>
+        {/* The three groups an operator actually asks about. They sum
+            to the frozen total, which never shrinks — a profile that
+            fails, waits or changes handle stays in the denominator. */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-4">
+          <div className="min-w-0">
+            <h4 className="stat-label">Desired state achieved</h4>
+            <p className="text-sm text-ink-800 mt-1 leading-relaxed">
+              Followed {d.outcomes.achieved.succeeded.toLocaleString()} · already
+              following {d.outcomes.achieved.alreadyFollowing.toLocaleString()}
+            </p>
+          </div>
+          <div className="min-w-0">
+            <h4 className="stat-label">Impossible, with reason</h4>
+            <p className="text-sm text-ink-800 mt-1 leading-relaxed">
+              Account not found {d.outcomes.impossible.actorNotFound.toLocaleString()} ·
+              protected or not followable{" "}
+              {d.outcomes.impossible.protected.toLocaleString()} · rejected by
+              Bluesky {d.outcomes.impossible.failedStructural.toLocaleString()} ·
+              cancelled {d.outcomes.impossible.cancelled.toLocaleString()}
+              {Object.entries(d.outcomes.impossible.otherByReason).map(([k, v]) => (
+                <span key={k}>
+                  {" "}· {k.replace(/_/g, " ")} {v.toLocaleString()}
+                </span>
+              ))}
+            </p>
+          </div>
+          <div className="min-w-0">
+            <h4 className="stat-label">Still pending</h4>
+            <p className="text-sm text-ink-800 mt-1 leading-relaxed">
+              Waiting {d.outcomes.pending.queued.toLocaleString()} · in progress{" "}
+              {d.outcomes.pending.leased.toLocaleString()} · retrying{" "}
+              {d.outcomes.pending.retrying.toLocaleString()} · checking with
+              Bluesky {d.outcomes.pending.reconciling.toLocaleString()}
+            </p>
+          </div>
+        </div>
+        {d.outcomes.impossible.actorNotFound +
+          d.outcomes.impossible.failedStructural +
+          d.outcomes.pending.reconciling >
+        0 ? (
+          <p className="text-xs text-ink-600 mt-3 leading-relaxed">
+            Profiles that could not reach a final Follow state are listed in
+            the queue below with the exact reason — filter by{" "}
+            <a href={`?campaign=${c.id}&status=skipped`} className="underline">
+              skipped
+            </a>
+            ,{" "}
+            <a href={`?campaign=${c.id}&status=failed_structural`} className="underline">
+              failed
+            </a>{" "}
+            or{" "}
+            <a href={`?campaign=${c.id}&status=retryable`} className="underline">
+              retrying
+            </a>
+            .
+          </p>
+        ) : null}
       </section>
 
       {/* Controls */}
@@ -541,7 +598,13 @@ function CampaignDetailView(props: {
                           : "badge-info"
                   }
                 >
-                  {r.status.replace(/_/g, " ")}
+                  {r.status === "paused" && r.last_error_code === "reauthorization_required"
+                    ? "waiting for sign-in"
+                    : r.status === "paused"
+                      ? "paused by the system"
+                      : r.status === "failed"
+                        ? "stopped — needs review"
+                        : r.status.replace(/_/g, " ")}
                 </span>
               </div>
               <p className="text-sm text-ink-700 mt-1 leading-relaxed break-words">

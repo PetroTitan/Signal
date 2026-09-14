@@ -47,12 +47,20 @@ import { INTER_REQUEST_MS } from "@/core/bluesky-relationships/execute-actions.s
 import { MAX_RELATIONSHIP_BATCH_SIZE } from "@/core/bluesky-relationships/limits";
 import type { RelationshipSession } from "@/core/bluesky-relationships/session.server";
 import {
+  bumpReconcileCount,
   completeCampaignAction,
   consumeMemberQuota,
+  getCampaignActionRejection,
   releaseOwnedMembers,
+  reopenCampaignAction,
   updateMember,
   type ClaimedMember,
 } from "@/repositories/bluesky-campaign-repository";
+import {
+  isDefiniteRejectionCode,
+  reconciliationBackoffMs,
+  rejectedBeforeWrite,
+} from "@/core/bluesky-campaigns/outcomes";
 import {
   claimUnfollowAction,
   getMemberRecordIdentities,
@@ -115,6 +123,12 @@ export interface ChunkOutcomeCounts {
 }
 
 export interface ChunkResult extends ChunkOutcomeCounts {
+  /**
+   * The session the NEXT chunk must use — possibly renewed by this one.
+   * Not carrying it is how the follow dispatcher came to refresh once
+   * per chunk from an expired session (incident, 2026-09-14).
+   */
+  session: RelationshipSession;
   claimed: number;
   consecutiveFailures: number;
   next: NextAction;
@@ -295,7 +309,14 @@ export async function processUnfollowChunk(
 
   const claimed = input.members;
   if (claimed.length === 0) {
-    return { ...counts, claimed: 0, consecutiveFailures, next, rateLimit };
+    return {
+      ...counts,
+      session: input.session,
+      claimed: 0,
+      consecutiveFailures,
+      next,
+      rateLimit,
+    };
   }
 
   // Everything leased but not yet resolved. Anything still here at the
@@ -563,9 +584,18 @@ export async function processUnfollowChunk(
       case "reconcile_only":
       // Only `reconciliation_required` reaches here; the other two
       // terminal statuses returned above.
-      case "terminal":
-        result = reconcileFromObservation(observed);
+      case "terminal": {
+        // The rejection the action already recorded decides whether
+        // there is anything to reconcile at all — see the follow
+        // worker's `reconcileOnly` for the incident this prevents.
+        const recorded = await getCampaignActionRejection({
+          workspaceId: input.campaign.workspace_id,
+          actionId: claim.actionId,
+          db: input.db,
+        });
+        result = reconcileFromObservation(observed, recorded?.errorCode ?? null);
         break;
+      }
       default: {
         // A verdict added later cannot be silently ignored — which is
         // exactly how the follow subsystem sent a duplicate follow.
@@ -593,7 +623,23 @@ export async function processUnfollowChunk(
       resumeAfter: result.resumeAfter,
     });
 
-    await completeCampaignAction({
+    // Refused before writing → re-open for a real retry rather than
+    // file as reconciliation (the database refuses any code that does
+    // not prove the refusal, in which case the filing below stands).
+    let reopened = false;
+    if (result.rejectedBeforeWrite && decision.memberStatus === "retryable") {
+      const outcome = await reopenCampaignAction({
+        workspaceId: input.campaign.workspace_id,
+        actionId: claim.actionId,
+        memberId: member.id,
+        errorCode: result.reopenCode ?? "provider_rejected_before_write",
+        errorMessage: result.errorMessage ?? null,
+        db: input.db,
+      });
+      reopened = outcome.reopened;
+    }
+
+    if (!reopened) await completeCampaignAction({
       workspaceId: input.campaign.workspace_id,
       actionId: claim.actionId,
       status:
@@ -627,6 +673,20 @@ export async function processUnfollowChunk(
       db: input.db,
     });
 
+    // The slow lane for a reconciliation that learned nothing; the
+    // ordinary retry backoff for a re-opened member, which is owed a
+    // real attempt rather than another read.
+    const reconcileBackoffMs =
+      reconcileOnly && !reopened && decision.memberStatus === "retryable"
+        ? reconciliationBackoffMs(
+            await bumpReconcileCount({
+              workspaceId: input.campaign.workspace_id,
+              memberId: member.id,
+              db: input.db,
+            }),
+          )
+        : null;
+
     await persist(
       input,
       member,
@@ -634,7 +694,7 @@ export async function processUnfollowChunk(
       result,
       attemptsAfter,
       clock(),
-      reconcileOnly,
+      reconcileBackoffMs,
     );
 
     if (!reconcileOnly) {
@@ -698,6 +758,7 @@ export async function processUnfollowChunk(
 
   return {
     ...counts,
+    session: input.session,
     claimed: claimed.length,
     consecutiveFailures,
     next,
@@ -707,6 +768,9 @@ export async function processUnfollowChunk(
 
 interface AttemptResult {
   kind: UnfollowOutcomeKind;
+  /** The provider refused before writing, or nothing was sent. See outcomes. */
+  rejectedBeforeWrite?: boolean;
+  reopenCode?: string | null;
   uri?: string | null;
   rkey?: string | null;
   cid?: string | null;
@@ -739,13 +803,31 @@ interface AttemptResult {
  *                   deliberately re-created. Recorded, not re-sent.
  *   unknown       → we still cannot tell. Nothing sent.
  */
-function reconcileFromObservation(observed: LiveRelationship): AttemptResult {
+function reconcileFromObservation(
+  observed: LiveRelationship,
+  recordedErrorCode: string | null,
+): AttemptResult {
   if (observed.state === "not_following") {
     return {
       kind: "already_not_following",
       reconciledState: "not_following",
       reconciliationNote:
         "A previous attempt may have been sent before this worker took over. Bluesky reports this account is not followed, so nothing was re-sent.",
+    };
+  }
+  // A recorded DEFINITE rejection (ExpiredToken, RateLimitExceeded)
+  // proves the earlier delete was refused before any write. The record
+  // is still there because nothing touched it — not because the read
+  // index lags. Re-open for a real attempt instead of reading forever.
+  if (isDefiniteRejectionCode(recordedErrorCode)) {
+    const code = String(recordedErrorCode);
+    return {
+      kind: "retryable_transport_failure",
+      errorCode: code,
+      errorMessage: `Bluesky refused the earlier request before writing anything (${code}). Nothing to reconcile — this profile is owed a real retry.`,
+      rejectedBeforeWrite: true,
+      reopenCode: code,
+      reconciliationNote: `The recorded provider error (${code}) proves the earlier request was refused before any write. Re-opened for a real attempt.`,
     };
   }
   if (observed.state === "following") {
@@ -820,12 +902,15 @@ async function attemptUnfollow(
 
   if (!unit.mayMutate) {
     // The database declined to fund this attempt, so nothing is sent.
-    // Retryable rather than terminal: the member did nothing wrong.
+    // Retryable rather than terminal: the member did nothing wrong —
+    // and nothing to reconcile, so the action is re-opened.
     return {
       kind: "retryable_transport_failure",
       errorCode: unit.refusedReason ?? "quota_unavailable",
       errorMessage:
         "The daily allowance for this account could not be reserved for this profile, so nothing was sent.",
+      rejectedBeforeWrite: true,
+      reopenCode: "provider_rejected_before_write",
     };
   }
 
@@ -870,6 +955,9 @@ async function attemptUnfollow(
         errorCode: "session_expired",
         errorMessage: renewed.message,
         rateLimit: result.rateLimit,
+        // Refused at the door: nothing was deleted, a real retry is owed.
+        rejectedBeforeWrite: true,
+        reopenCode: "session_expired",
       };
     }
     // Adopted for every remaining member in this tick.
@@ -896,6 +984,7 @@ async function attemptUnfollow(
           )
         : null;
 
+  const refused = rejectedBeforeWrite({ kind: result.kind, status: result.status });
   return {
     kind: outcomeFromGraphFailure({ kind: result.kind, status: result.status }),
     uri: permit.uri,
@@ -904,6 +993,16 @@ async function attemptUnfollow(
     errorMessage: result.message,
     resumeAfter,
     rateLimit: result.rateLimit,
+    rejectedBeforeWrite: refused,
+    reopenCode: refused
+      ? isDefiniteRejectionCode(result.errorCode)
+        ? result.errorCode
+        : result.kind === "rate_limited"
+          ? "rate_limited"
+          : result.kind === "auth"
+            ? "session_expired"
+            : "provider_rejected_before_write"
+      : null,
   };
 }
 
@@ -915,7 +1014,8 @@ async function persist(
   result: AttemptResult | null,
   attemptCount: number,
   at: Date,
-  reconcileOnly = false,
+  /** Null → the ordinary retry backoff. A number → the reconciliation lane. */
+  reconcileBackoffMs: number | null = null,
 ): Promise<void> {
   const nowIso = at.toISOString();
   const terminal = status !== "retryable";
@@ -925,9 +1025,8 @@ async function persist(
   // out the reconciliation backoff, so one ambiguous member cannot be
   // re-claimed over and over inside a single dispatcher pass while
   // healthy queued members wait behind it.
-  const delayMs = reconcileOnly
-    ? RECONCILIATION_BACKOFF_MS
-    : backoffDelayMs(Math.max(1, attemptCount));
+  const delayMs =
+    reconcileBackoffMs ?? backoffDelayMs(Math.max(1, attemptCount));
 
   await updateMember({
     workspaceId: input.campaign.workspace_id,
@@ -942,7 +1041,14 @@ async function persist(
     providerRecordUri: result?.uri ?? undefined,
     providerRecordRkey: result?.rkey ?? undefined,
     providerRecordCid: result?.cid ?? undefined,
-    lastErrorCode: result?.errorCode ?? null,
+    // A CLOSED reason on every terminal skip. The provider's own error
+    // string ("InvalidRequest") says nothing an operator or the
+    // conservation view can act on; the OUTCOME KIND ("actor_not_found")
+    // is the reason. The provider's text is kept in the message.
+    lastErrorCode:
+      result && (status === "skipped" || status === "protected")
+        ? terminalReasonCode(result.kind, result.errorCode)
+        : result?.errorCode ?? null,
     lastErrorMessage: result?.errorMessage ?? null,
     lastAttemptedAt: attemptCount > 0 ? nowIso : undefined,
     completedAt: terminal ? nowIso : null,
@@ -960,3 +1066,30 @@ async function persist(
 }
 
 export { MAX_MEMBER_ATTEMPTS };
+
+/**
+ * The closed set of reasons a member can be terminally skipped for.
+ *
+ * "No generic skipped status without a validated reason" — every
+ * skipped or protected member carries one of these in `last_error_code`,
+ * and `bluesky_campaign_conservation` categorises by it. A kind not in
+ * the set falls back to the outcome kind itself, which is still a
+ * closed vocabulary, never free text.
+ */
+export const TERMINAL_SKIP_REASONS = new Set([
+  "actor_not_found",
+  "ineligible",
+  "protected",
+  "conflict",
+  "no_record_target",
+  "dry_run",
+  "blocked",
+  "self",
+  "invalid",
+]);
+
+function terminalReasonCode(kind: string, providerCode: string | null | undefined): string {
+  if (TERMINAL_SKIP_REASONS.has(kind)) return kind;
+  if (providerCode && TERMINAL_SKIP_REASONS.has(providerCode)) return providerCode;
+  return kind;
+}

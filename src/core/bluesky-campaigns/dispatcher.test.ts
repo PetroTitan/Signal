@@ -353,17 +353,32 @@ describe("transport failures and structural failures", () => {
     }
   });
 
-  it("an unrecognised 4xx stops the campaign rather than retrying", async () => {
+  it("an unrecognised 4xx is terminal for THAT member; the breaker, not the first error, stops the run", async () => {
+    // Changed 2026-09-14. The deployed policy marked the whole campaign
+    // `failed` on the first structural 4xx and stranded every queued
+    // member behind it. A structural 4xx is Bluesky's verdict on one
+    // request; a SYSTEMIC problem shows up as many in a row, and
+    // `max_consecutive_failures` is what stops the run for that.
     const db = new FakeDb();
-    seed(db, 50, { requested_daily_quota: 50 });
+    seed(db, 50, { requested_daily_quota: 50, max_consecutive_failures: 5 });
     const p = provider({
       createRecord: () => json({ error: "SomethingNew", message: "?" }, 422),
     });
 
     await run(db, p.impl);
 
-    expect(campaign(db).status).toBe("failed");
-    expect(p.calls.createRecord).toBe(1);
+    // Five members tried — not one, not fifty — each terminal with the
+    // provider's reason; then the breaker pauses the RUN. The campaign
+    // is not failed, and the 45 members behind them are still queued.
+    expect(p.calls.createRecord).toBe(5);
+    expect(campaign(db).status).toBe("active");
+    expect(runRow(db).status).toBe("paused");
+    const members = db.rows("bluesky_follow_campaign_members");
+    expect(members.filter((m) => m.status === "failed_structural")).toHaveLength(5);
+    expect(members.filter((m) => m.status === "queued")).toHaveLength(45);
+    for (const m of members.filter((x) => x.status === "failed_structural")) {
+      expect(m.last_error_code).toBe("SomethingNew");
+    }
   });
 
   it("consecutive failures trip the circuit breaker", async () => {

@@ -11,6 +11,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { listAccountsByPlatform } from "@/repositories/account-repository";
 import {
   countMembersByStatus,
+  countReconcilingActions,
+  countSkipReasons,
   getIdentityUsage,
   listCampaigns,
   listKillSwitches,
@@ -57,6 +59,32 @@ export interface CampaignDetail {
   /** The single most useful sentence: what the operator must do next. */
   nextUserAction: string | null;
   lastSuccessAt: string | null;
+  /**
+   * The frozen queue, in the three groups an operator actually asks
+   * about. Sums to `counts.total`, which never shrinks.
+   */
+  outcomes: CampaignOutcomeBreakdown;
+}
+
+export interface CampaignOutcomeBreakdown {
+  /** The desired relationship state holds. */
+  achieved: { succeeded: number; alreadyFollowing: number };
+  /** Following is impossible, and here is exactly why. */
+  impossible: {
+    actorNotFound: number;
+    protected: number;
+    failedStructural: number;
+    cancelled: number;
+    /** Every other closed reason, by code. */
+    otherByReason: Record<string, number>;
+  };
+  /** Still actionable — Signal will keep coming back for these. */
+  pending: {
+    queued: number;
+    leased: number;
+    retrying: number;
+    reconciling: number;
+  };
 }
 
 export interface CampaignsView {
@@ -147,6 +175,36 @@ export async function loadCampaigns(input: {
   const today =
     runPage.rows.find((r) => r.local_date === clock.localDate) ?? null;
 
+  const [skipReasons, reconciling] = await Promise.all([
+    countSkipReasons({ workspaceId: input.workspaceId, campaignId: campaign.id, db: input.db }),
+    countReconcilingActions({ workspaceId: input.workspaceId, campaignId: campaign.id, db: input.db }),
+  ]);
+  const reason = (k: string) => skipReasons[k] ?? 0;
+  const otherByReason: Record<string, number> = { ...skipReasons };
+  for (const k of ["actor_not_found", "ineligible", "protected"]) delete otherByReason[k];
+  const outcomes: CampaignOutcomeBreakdown = {
+    achieved: {
+      succeeded: counts.succeeded,
+      alreadyFollowing: counts.already_following,
+    },
+    impossible: {
+      actorNotFound: reason("actor_not_found"),
+      protected: counts.protected + reason("ineligible"),
+      failedStructural: counts.failed_structural,
+      cancelled: counts.cancelled,
+      otherByReason,
+    },
+    pending: {
+      queued: counts.queued,
+      leased: counts.claimed + counts.running,
+      // A retryable member with a reconciling action is waiting on a
+      // READ, not on a retry. Shown apart because the operator should
+      // know nothing more will be sent for it until Bluesky answers.
+      retrying: Math.max(0, counts.retryable - reconciling),
+      reconciling: Math.min(counts.retryable, reconciling),
+    },
+  };
+
   const effectiveQuota = computeEffectiveQuota({
     requested: campaign.requested_daily_quota,
     identityFollowsToday: usage?.follows_created ?? 0,
@@ -224,9 +282,10 @@ export async function loadCampaigns(input: {
           }).toISOString(),
       identityFollowsToday: usage?.follows_created ?? 0,
       identityCeiling: IDENTITY_DAILY_FOLLOW_CEILING,
-      nextUserAction: describeNextAction(campaign, counts, effectiveQuota),
+      nextUserAction: describeNextAction(campaign, counts, effectiveQuota, today),
       lastSuccessAt:
         runPage.rows.find((r) => r.succeeded_count > 0)?.last_chunk_at ?? null,
+      outcomes,
     },
   };
 }
@@ -242,14 +301,26 @@ function describeNextAction(
   campaign: BlueskyFollowCampaignRow,
   counts: MemberStatusCounts,
   quota: { effective: number; reason: string | null; halted: boolean },
+  today: BlueskyFollowCampaignRunRow | null = null,
 ): string | null {
+  // An ACTIVE campaign whose run for today is paused for a recoverable
+  // reason is waiting on the operator, and must say so — the deployed
+  // page said "active" over a day in which nothing would happen.
+  if (
+    campaign.status === "active" &&
+    today &&
+    (today.status === "paused" || today.status === "failed") &&
+    today.last_error_code === "reauthorization_required"
+  ) {
+    return "Sign in to this Bluesky identity again on Accounts. Signal resumes today's run automatically once the session works — no need to press Resume.";
+  }
   switch (campaign.status) {
     case "draft":
       return counts.total === 0
         ? "Import profiles into the queue, then activate."
         : "Review the configuration and activate when you are ready.";
     case "reauthorization_required":
-      return "Reconnect this Bluesky identity on Accounts, then resume the campaign.";
+      return "Sign in to this Bluesky identity again on Accounts. Signal checks on its next tick and resumes the campaign — and today's run — automatically.";
     case "failed":
       return describeFailedCampaign({
         errorCode: campaign.last_error_code,

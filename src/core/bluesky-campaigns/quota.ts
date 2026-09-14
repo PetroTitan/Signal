@@ -131,6 +131,22 @@ export interface EffectiveQuotaInput {
   now?: Date;
   /** Members left that could still be attempted. */
   remainingEligible: number;
+  /**
+   * Whether the QUEUE SIZE bounds the number. True for a figure shown to
+   * the operator ("only 12 profiles remain"). FALSE for the budget
+   * stored on the day's run.
+   *
+   * PRODUCTION, 2026-09-14: the run's stored budget was capped to the
+   * eligible count at creation. A unit spent on a request the provider
+   * REFUSED (ExpiredToken) reduced the budget but not the queue, so a
+   * campaign whose queue was smaller than its quota ended the day one
+   * member short — "daily quota reached" over a day that had made one
+   * fewer real follow than it had members. Invisible at 22,000; fatal
+   * to a one-profile canary. The reservation RPC already stops at
+   * `queue_empty`, so the cap was never a safety limit — only the
+   * requested quota and the identity ceiling are.
+   */
+  boundByQueue?: boolean;
 }
 
 export interface EffectiveQuota {
@@ -197,11 +213,13 @@ export function computeEffectiveQuota(input: EffectiveQuotaInput): EffectiveQuot
       value: identityRemaining,
       reason: `This Bluesky account has ${identityRemaining} follow(s) left of Signal's ${ceiling}/day ceiling, shared across every campaign using it.`,
     },
-    {
+  ];
+  if (input.boundByQueue !== false) {
+    candidates.push({
       value: input.remainingEligible,
       reason: `Only ${input.remainingEligible} profile(s) remain in the queue.`,
-    },
-  ];
+    });
+  }
 
   let best = candidates[0];
   for (const candidate of candidates) {

@@ -44,10 +44,14 @@ import { MAX_RELATIONSHIP_BATCH_SIZE } from "@/core/bluesky-relationships/limits
 import type { RelationshipSession } from "@/core/bluesky-relationships/session.server";
 import type { MutationPermit } from "@/repositories/bluesky-campaign-repository";
 import {
+  bumpReconcileCount,
   claimCampaignAction,
+  deferMember,
   consumeMemberQuota,
   completeCampaignAction,
+  getCampaignActionRejection,
   releaseOwnedMembers,
+  reopenCampaignAction,
   updateMember,
   type ClaimedMember,
 } from "@/repositories/bluesky-campaign-repository";
@@ -55,8 +59,11 @@ import type { BlueskyFollowCampaignRow } from "@/lib/supabase/types";
 import {
   backoffDelayMs,
   classifyOutcome,
+  isDefiniteRejectionCode,
   MAX_MEMBER_ATTEMPTS,
   outcomeFromGraphFailure,
+  reconciliationBackoffMs,
+  rejectedBeforeWrite,
   type CampaignOutcomeKind,
   type NextAction,
 } from "./outcomes";
@@ -111,6 +118,19 @@ export interface ChunkOutcomeCounts {
 }
 
 export interface ChunkResult extends ChunkOutcomeCounts {
+  /**
+   * The session the NEXT chunk must use.
+   *
+   * PRODUCTION, 2026-09-14. A refreshed session was adopted into this
+   * chunk's own input object and went no further. The dispatcher handed
+   * every later chunk the ORIGINAL, expired session, so every chunk of
+   * the pass began with a refresh — each one rotating Bluesky's
+   * single-use refresh token. Any concurrent rotation, or one failed
+   * persist, left the next chunk holding a dead refresh token, and the
+   * campaign stopped for "reauthorization" while Accounts still said
+   * signed in. Returning it is what lets the dispatcher carry it.
+   */
+  session: RelationshipSession;
   /** Members leased this chunk. */
   claimed: number;
   /** Consecutive failures at the end of the chunk. */
@@ -253,7 +273,14 @@ export async function processCampaignChunk(
 
   const claimed = input.members;
   if (claimed.length === 0) {
-    return { ...counts, claimed: 0, consecutiveFailures, next, rateLimit };
+    return {
+      ...counts,
+      session: input.session,
+      claimed: 0,
+      consecutiveFailures,
+      next,
+      rateLimit,
+    };
   }
 
   // Everything leased but not yet resolved. Anything left here at the
@@ -434,30 +461,67 @@ export async function processCampaignChunk(
       resumeAfter: result.resumeAfter,
     });
 
-    await completeCampaignAction({
-      workspaceId: input.campaign.workspace_id,
-      actionId: claim.actionId,
-      status:
-        decision.kind === "succeeded"
-          ? "succeeded"
-          : decision.kind === "already_following"
+    // A retryable member whose request was REFUSED before writing (or
+    // never sent) is owed a real retry: re-open the action so the
+    // ordinary claim path sees "owed a first attempt" and the
+    // reconciliation takeover sees nothing to read. The database refuses
+    // to re-open for any code that does not prove the refusal, in which
+    // case the conservative filing below stands.
+    let reopened = false;
+    if (result.rejectedBeforeWrite && decision.memberStatus === "retryable") {
+      const outcome = await reopenCampaignAction({
+        workspaceId: input.campaign.workspace_id,
+        actionId: claim.actionId,
+        memberId: member.id,
+        errorCode: result.reopenCode ?? "provider_rejected_before_write",
+        errorMessage: result.errorMessage ?? null,
+        db: input.db,
+      });
+      reopened = outcome.reopened;
+    }
+
+    if (!reopened) {
+      await completeCampaignAction({
+        workspaceId: input.campaign.workspace_id,
+        actionId: claim.actionId,
+        status:
+          decision.kind === "succeeded"
             ? "succeeded"
-            : decision.memberStatus === "retryable"
-              ? "reconciliation_required"
-              : decision.memberStatus === "skipped" ||
-                  decision.memberStatus === "protected"
-                ? "skipped"
-                : "failed",
-      followUri: result.uri ?? null,
-      followRkey: result.rkey ?? null,
-      followCid: result.cid ?? null,
-      providerErrorCode: result.errorCode ?? null,
-      providerErrorMessage: result.errorMessage ?? null,
-      ...(result.reconciliationNote
-        ? { reconciliationNote: result.reconciliationNote }
-        : {}),
-      db: input.db,
-    });
+            : decision.kind === "already_following"
+              ? "succeeded"
+              : decision.memberStatus === "retryable"
+                ? "reconciliation_required"
+                : decision.memberStatus === "skipped" ||
+                    decision.memberStatus === "protected"
+                  ? "skipped"
+                  : "failed",
+        followUri: result.uri ?? null,
+        followRkey: result.rkey ?? null,
+        followCid: result.cid ?? null,
+        providerErrorCode: result.errorCode ?? null,
+        providerErrorMessage: result.errorMessage ?? null,
+        ...(result.reconciliationNote
+          ? { reconciliationNote: result.reconciliationNote }
+          : {}),
+        db: input.db,
+      });
+    }
+
+    // THE SLOW LANE. A reconciliation that learned nothing is deferred
+    // by ten minutes for its first twelve reads and six hours after
+    // that — bounded, visible, never terminal, never tight. A re-opened
+    // member takes the ordinary retry backoff instead: it is owed a
+    // real attempt, not another read.
+    const minimumBackoffMs =
+      reconcileOnlyClaim && !reopened && decision.memberStatus === "retryable"
+        ? reconciliationBackoffMs(
+            await bumpReconcileCount({
+              workspaceId: input.campaign.workspace_id,
+              memberId: member.id,
+              db: input.db,
+            }),
+          )
+        : 0;
 
     await persist(
       input,
@@ -465,7 +529,7 @@ export async function processCampaignChunk(
       decision.memberStatus,
       result,
       attemptsAfter,
-      reconcileOnlyClaim ? RECONCILIATION_BACKOFF_MS : 0,
+      minimumBackoffMs,
     );
 
     if (!reconcileOnlyClaim) {
@@ -535,6 +599,9 @@ export async function processCampaignChunk(
 
   return {
     ...counts,
+    // Possibly renewed during this chunk. The dispatcher MUST carry it
+    // into the next one.
+    session: input.session,
     claimed: claimed.length,
     consecutiveFailures,
     next,
@@ -552,6 +619,15 @@ interface AttemptResult {
   resumeAfter?: Date | null;
   rateLimit?: RateLimitSnapshot | null;
   reconciliationNote?: string | null;
+  /**
+   * The provider REFUSED this request before writing anything — or no
+   * request was made at all. Nothing exists to reconcile; the member is
+   * owed a real retry, and the action is RE-OPENED rather than filed as
+   * reconciliation_required. See `rejectedBeforeWrite` in outcomes.ts.
+   */
+  rejectedBeforeWrite?: boolean;
+  /** The closed-set code that proves it, for the re-open RPC. */
+  reopenCode?: string | null;
 }
 
 /**
@@ -574,7 +650,7 @@ interface AttemptResult {
 async function reconcileOnly(
   input: ProcessChunkInput,
   member: ClaimedMember,
-  _actionId: string,
+  actionId: string,
 ): Promise<AttemptResult> {
   const truth = await readRelationships(input, [member.subject_did]);
   const state = truth.get(member.subject_did) ?? "unknown";
@@ -586,6 +662,41 @@ async function reconcileOnly(
         "A previous attempt may have been sent before this worker took over. Bluesky reports the follow exists, so nothing was re-sent.",
     };
   }
+
+  // THE REJECTION THE ACTION ALREADY RECORDED DECIDES.
+  //
+  // An action filed as reconciliation_required whose stored provider
+  // error is a DEFINITE rejection — ExpiredToken, RateLimitExceeded —
+  // describes a request Bluesky refused before writing anything.
+  // There is nothing to reconcile: truth will read `not_following`
+  // every ten minutes forever, and the member will never receive the
+  // retry it is owed. Production held three such rows. The action is
+  // re-opened for a real attempt through the ordinary quota path; the
+  // unit the refused request spent stays spent.
+  //
+  // A stored code that does NOT prove a rejection (a network error, a
+  // 5xx, an unparseable 2xx, or none at all) keeps the conservative
+  // reading below: nothing is re-sent while the outcome is unknown.
+  const recorded = await getCampaignActionRejection({
+    workspaceId: input.campaign.workspace_id,
+    actionId,
+    db: input.db,
+  });
+  if (isDefiniteRejectionCode(recorded?.errorCode)) {
+    const code = String(recorded?.errorCode);
+    return {
+      kind: "retryable_transport_failure",
+      errorCode: code,
+      errorMessage: `Bluesky refused the earlier request before writing anything (${code}). Nothing to reconcile — this profile is owed a real retry.`,
+      rejectedBeforeWrite: true,
+      reopenCode: code,
+      reconciliationNote:
+        state === "unknown"
+          ? `The relationship could not be read, but the recorded provider error (${code}) proves the earlier request was refused before any write. Re-opened for a real attempt.`
+          : `Bluesky does not report this follow, and the recorded provider error (${code}) proves the earlier request was refused before any write. Re-opened for a real attempt.`,
+    };
+  }
+
   return {
     kind: "retryable_transport_failure",
     errorCode: "reconciliation_pending",
@@ -650,14 +761,21 @@ async function attemptFollow(
   });
 
   if (!unit.mayMutate) {
-    // The database declined to fund this attempt, so no request is
+    // The database declined to fund this attempt, so NO request is
     // sent. Retryable rather than terminal: the member did nothing
     // wrong and the next tick will reserve for it properly.
+    //
+    // And nothing to reconcile — filing this as reconciliation_required
+    // (as every retryable outcome once was) put a member that had never
+    // reached the provider into a lane that only a provider read can
+    // leave. The action is re-opened instead.
     return {
       kind: "retryable_transport_failure",
       errorCode: unit.refusedReason ?? "quota_unavailable",
       errorMessage:
         "The daily allowance for this identity could not be reserved for this profile, so no follow was sent.",
+      rejectedBeforeWrite: true,
+      reopenCode: "provider_rejected_before_write",
     };
   }
 
@@ -691,11 +809,18 @@ async function attemptFollow(
       // `refreshOnce` has already marked the connection expired. Stop
       // the campaign rather than spend a provider call per remaining
       // member to be told the same thing.
+      //
+      // The request itself was REFUSED at the door (HTTP 400
+      // ExpiredToken): nothing was written, so this member is owed a
+      // real retry once the operator reconnects — not a reconciliation
+      // that can never conclude.
       return {
         kind: "authentication_expired",
         errorCode: "session_expired",
         errorMessage: renewed.message,
         rateLimit: result.rateLimit,
+        rejectedBeforeWrite: true,
+        reopenCode: "session_expired",
       };
     }
     // Adopted for every remaining member in this tick. `input.session`
@@ -739,6 +864,12 @@ async function attemptFollow(
         ? new Date(input.now.getTime() + result.rateLimit.retryAfterSeconds * 1000)
         : null;
 
+  // Was this refused before any write, or is the outcome genuinely
+  // unknown? The two need different lanes: a refusal is retried, an
+  // unknown is reconciled. Filing both as reconciliation is how a
+  // member came to cycle for days as "may have reached Bluesky" for a
+  // request Bluesky had said it refused.
+  const refused = rejectedBeforeWrite({ kind: result.kind, status: result.status });
   return {
     kind: outcomeFromGraphFailure({ kind: result.kind, status: result.status }),
     errorCode: result.errorCode,
@@ -747,6 +878,16 @@ async function attemptFollow(
     errorMessage: result.message,
     resumeAfter,
     rateLimit: result.rateLimit,
+    rejectedBeforeWrite: refused,
+    reopenCode: refused
+      ? isDefiniteRejectionCode(result.errorCode)
+        ? result.errorCode
+        : result.kind === "rate_limited"
+          ? "rate_limited"
+          : result.kind === "auth"
+            ? "session_expired"
+            : "provider_rejected_before_write"
+      : null,
   };
 }
 
@@ -760,33 +901,81 @@ async function persist(
   minimumBackoffMs = 0,
 ): Promise<void> {
   const now = input.now.toISOString();
-  const retryBase = input.currentTime?.() ?? input.now;
   const terminal = status !== "retryable";
+
+  // `next_attempt_at` is one side of a comparison PostgreSQL performs
+  // against its own `now()` in the reservation RPC. It is therefore
+  // written by PostgreSQL (`deferMember`, below), from a DURATION, and
+  // never from this process's clock. Writing an instant here made
+  // eligibility depend on two clocks agreeing — and a backoff landing
+  // in the past is no backoff at all: the member was re-claimed for
+  // reconciliation the moment its lease cleared, every iteration, for
+  // the whole tick, while the healthy queue behind it never moved. The
+  // unfollow worker learned this first; the follow worker now does the
+  // same.
+  const delayMs = Math.max(
+    backoffDelayMs(Math.max(1, attemptCount)),
+    minimumBackoffMs,
+  );
 
   await updateMember({
     workspaceId: input.campaign.workspace_id,
     memberId: member.id,
     status: status as never,
     attemptCount: Math.max(attemptCount, member.attempt_count),
-    nextAttemptAt:
-      status === "retryable"
-        ? new Date(
-            retryBase.getTime() +
-              Math.max(
-                backoffDelayMs(Math.max(1, attemptCount)),
-                minimumBackoffMs,
-              ),
-          ).toISOString()
-        : null,
+    nextAttemptAt: null,
     providerRecordUri: result?.uri ?? undefined,
     providerRecordRkey: result?.rkey ?? undefined,
     providerRecordCid: result?.cid ?? undefined,
-    lastErrorCode: result?.errorCode ?? null,
+    // A CLOSED reason on every terminal skip. The provider's own error
+    // string ("InvalidRequest") says nothing an operator or the
+    // conservation view can act on; the OUTCOME KIND ("actor_not_found")
+    // is the reason. The provider's text is kept in the message.
+    lastErrorCode:
+      result && (status === "skipped" || status === "protected")
+        ? terminalReasonCode(result.kind, result.errorCode)
+        : result?.errorCode ?? null,
     lastErrorMessage: result?.errorMessage ?? null,
     lastAttemptedAt: attemptCount > 0 ? now : undefined,
     completedAt: terminal ? now : null,
     db: input.db,
   });
+
+  if (status === "retryable") {
+    await deferMember({
+      workspaceId: input.campaign.workspace_id,
+      memberId: member.id,
+      delaySeconds: Math.ceil(delayMs / 1000),
+      db: input.db,
+    });
+  }
 }
 
 export { MAX_MEMBER_ATTEMPTS };
+
+/**
+ * The closed set of reasons a member can be terminally skipped for.
+ *
+ * "No generic skipped status without a validated reason" — every
+ * skipped or protected member carries one of these in `last_error_code`,
+ * and `bluesky_campaign_conservation` categorises by it. A kind not in
+ * the set falls back to the outcome kind itself, which is still a
+ * closed vocabulary, never free text.
+ */
+export const TERMINAL_SKIP_REASONS = new Set([
+  "actor_not_found",
+  "ineligible",
+  "protected",
+  "conflict",
+  "no_record_target",
+  "dry_run",
+  "blocked",
+  "self",
+  "invalid",
+]);
+
+function terminalReasonCode(kind: string, providerCode: string | null | undefined): string {
+  if (TERMINAL_SKIP_REASONS.has(kind)) return kind;
+  if (providerCode && TERMINAL_SKIP_REASONS.has(providerCode)) return providerCode;
+  return kind;
+}

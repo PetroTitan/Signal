@@ -138,6 +138,13 @@ export default async function UnfollowCampaignPage({
           </p>
         ) : null}
 
+        <p className="text-sm text-ink-800 bg-ink-50 border border-ink-200 rounded-md p-3 leading-relaxed">
+          Signal will continue processing all{" "}
+          <strong>{detail.queueSize.toLocaleString()}</strong> profiles
+          automatically across future days until every profile has a confirmed
+          outcome. The daily quota limits daily work, not the campaign size.
+        </p>
+
         {/* ── What this campaign IS ─────────────────────────────── */}
         <section className="card card-padded space-y-4">
           <div className="flex flex-wrap gap-2 items-baseline">

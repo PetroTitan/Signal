@@ -687,25 +687,4 @@ export async function recordAlreadyAbsent(input: {
   return { kind: "refused", reason: row?.refused_reason ?? "unknown" };
 }
 
-/**
- * Push a waiting member's next attempt out by a DURATION.
- *
- * The instant is computed by PostgreSQL, because `next_attempt_at` is
- * one side of a comparison PostgreSQL performs against its own `now()`.
- * Writing it from the application's clock makes eligibility depend on
- * two clocks agreeing — and when they do not, a backoff lands in the
- * past and stops being a backoff at all.
- */
-export async function deferMember(input: {
-  workspaceId: string;
-  memberId: string;
-  delaySeconds: number;
-  db?: Db;
-}): Promise<void> {
-  const { error } = await client(input.db).rpc("defer_bluesky_campaign_member", {
-    p_workspace_id: input.workspaceId,
-    p_member_id: input.memberId,
-    p_delay_seconds: Math.max(1, Math.round(input.delaySeconds)),
-  });
-  if (error) throw fromPostgres(error, "Could not schedule the next attempt.");
-}
+export { deferMember } from "./bluesky-campaign-repository";
