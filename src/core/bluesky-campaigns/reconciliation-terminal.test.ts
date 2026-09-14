@@ -324,6 +324,13 @@ describe("three passes over an unconfirmable follow", () => {
     expect(
       Number(db.rows("bluesky_follow_campaign_runs")[0].attempted_count),
     ).toBe(runBefore);
+
+    // A read-only reconciliation is not a provider failure either. It
+    // must not advance the consecutive-failure breaker or pause the
+    // daily run while the untouched campaign queue is still healthy.
+    const run = db.rows("bluesky_follow_campaign_runs")[0];
+    expect(Number(run.consecutive_failures)).toBe(0);
+    expect(run.status).toBe("running");
   });
 
   it("a terminal FAILED action never becomes a succeeded member", async () => {
