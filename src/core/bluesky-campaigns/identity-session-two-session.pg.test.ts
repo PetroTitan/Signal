@@ -23,6 +23,8 @@ import { dispatchCampaigns } from "./dispatcher.server";
 import { dispatchFairly } from "./dispatch-round.server";
 import { dispatchUnfollowCampaigns } from "@/core/bluesky-unfollow/dispatcher.server";
 import { recoverReauthorizedCampaignsForConnectedIdentities } from "@/repositories/bluesky-campaign-repository";
+import { createPostgrestDouble, type PostgrestDouble } from "@/test/pg/postgrest-double";
+import { createSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
 
 /**
  * Two REAL PostgreSQL sessions contending for one identity's refresh.
@@ -270,5 +272,72 @@ describe("crashes, on real backends", () => {
     expect(inner.createRecords.filter((r) => r.token === "jwt-OLD")).toHaveLength(1);
     expect((await memberCounts(f, c)).succeeded).toBe(6);
     expect((await identityState(f)).status).toBe("connected");
+  });
+});
+
+// =====================================================================
+// The same interleaving through the REAL service-role client — supabase-js
+// over `fetch`, as production runs it — on the real backends, with a
+// Data Cache in the transport. 2026-09-15: the loser's reload must read
+// the row the winner committed, not the row the cache remembered.
+// =====================================================================
+
+describe("B through the real service-role client over PostgREST, with a Data Cache in the transport", () => {
+  const ENV = {
+    NEXT_PUBLIC_SUPABASE_URL: "https://two-session.supabase.co",
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiYW5vbiJ9.anon-signature-test",
+    SUPABASE_SERVICE_ROLE_KEY: "eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.service-signature-test",
+  };
+  const saved: Record<string, string | undefined> = {};
+  const originalFetch = globalThis.fetch;
+  let pgrest: PostgrestDouble;
+
+  beforeAll(() => {
+    for (const [k, v] of Object.entries(ENV)) { saved[k] = process.env[k]; process.env[k] = v; }
+    pgrest = createPostgrestDouble(f.db, { dataCache: true });
+    globalThis.fetch = pgrest.fetch;
+  });
+  afterAll(() => {
+    globalThis.fetch = originalFetch;
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  });
+
+  it("one refresh; the loser reloads the committed N+1 row and retries with jwt-NEW; every request opted out of the cache; both campaigns finish", async () => {
+    await reconnectAccount(f, "jwt-OLD", "refresh-1");
+    const before = await identityState(f);
+    const db = createSupabaseServiceRoleClient();
+    if (!db) throw new Error("service client unavailable");
+    const A = await makeFollowCampaign(f, "pgrest-A", { requestedDailyQuota: 100 });
+    const B = await makeFollowCampaign(f, "pgrest-B", { requestedDailyQuota: 100 });
+    await makeMembers(f, A, 10, "pa");
+    await makeMembers(f, B, 10, "pb");
+    const p = gatedProvider(2);
+    pgrest.clearStats();
+    pgrest.clearLog();
+
+    await Promise.all([
+      dispatchCampaigns({ db, nowIso: T0, fetchImpl: p.fetchImpl, campaignId: A, sleep: realSleep, interRequestMs: 0 }),
+      dispatchCampaigns({ db, nowIso: T0, fetchImpl: p.fetchImpl, campaignId: B, sleep: realSleep, interRequestMs: 0 }),
+    ]);
+
+    expect(p.inner.calls.refreshSession).toBe(1);
+    expect(p.inner.createRecords.filter((r) => r.token === "jwt-OLD")).toHaveLength(2);
+    expect(p.inner.createRecords.filter((r) => r.token === "jwt-NEW" && r.status === 200)).toHaveLength(20);
+    expect((await memberCounts(f, A)).succeeded).toBe(10);
+    expect((await memberCounts(f, B)).succeeded).toBe(10);
+    // The transport: every request said no-store; the cache stored and
+    // served nothing.
+    expect(pgrest.stats.requests).toBeGreaterThan(0);
+    expect(pgrest.stats.noStore).toBe(pgrest.stats.requests);
+    expect(pgrest.stats.cacheStores).toBe(0);
+    expect(pgrest.stats.cacheHits).toBe(0);
+    expect(pgrest.requests.every((r) => r.cache === "no-store" && !r.fromCache)).toBe(true);
+    const after = await identityState(f);
+    expect(after.generation).toBe(before.generation + 1);
+    expect(after.status).toBe("connected");
+    expect((await campaignRow(f, A)).status).toBe("completed");
+    expect((await campaignRow(f, B)).status).toBe("completed");
+    await assertConserved(f, A, expect);
+    await assertConserved(f, B, expect);
   });
 });

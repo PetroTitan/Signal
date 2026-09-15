@@ -48,6 +48,7 @@ import {
   listDueCampaigns,
   reserveAndClaim,
   resumeRateLimitedRun,
+  stopCampaignsForIdentity,
   acquireDispatchLease,
   releaseDispatchLease,
   updateCampaign,
@@ -412,6 +413,7 @@ async function runCampaign(args: {
     fetchImpl: input.fetchImpl,
     sleep: input.sleep,
     nowIso: now.toISOString(),
+    source: "unfollow-dispatcher",
   });
 
   // The identity decides first — see the follow dispatcher. Anything but
@@ -422,26 +424,25 @@ async function runCampaign(args: {
     const message = session.ok
       ? `This Bluesky identity is ${session.connectionStatus}; it must be signed in again before the campaign continues.`
       : session.message;
-    const code = session.ok ? "reauthorization_required" : session.code;
-    await updateCampaign({
+    if (!session.ok && session.code === "session_unreadable") {
+      // A server configuration fault (the cipher), not an identity
+      // state. Stopping the campaign "for reauthorization" would
+      // contradict a connected identity and be reactivated every
+      // delivery. Yield, loudly, and change nothing.
+      out.note = `cannot read the session — ${message}`;
+      return out;
+    }
+    // The IDENTITY-WIDE transition, recorded with the identity's current
+    // token generation: every active campaign on this identity waits,
+    // and recovery requires the generation to MOVE — a completed session
+    // transition — not merely a `connected` status. The dispatcher never
+    // writes a per-campaign reauthorization state on its own.
+    await stopCampaignsForIdentity({
       workspaceId: campaign.workspace_id,
-      campaignId: campaign.id,
-      status: "reauthorization_required",
-      lastErrorCode: code,
-      lastErrorMessage: message,
-      expectedStatuses: ["active"],
+      accountId: campaign.operator_account_id,
+      message,
       db: input.db,
     });
-    if (run.status === "running") {
-      await updateRun({
-        workspaceId: campaign.workspace_id,
-        runId: run.id,
-        status: "waiting_for_auth",
-        lastErrorCode: code,
-        lastErrorMessage: message,
-        db: input.db,
-      });
-    }
     out.note = `waiting for the identity — ${message}`;
     return out;
   }
@@ -792,6 +793,20 @@ async function runChunks(ctx: {
   }
 
   // ── Terminal handling.
+  if (stop?.kind === "stop_campaign" && stop.campaignStatus === "reauthorization_required") {
+    // A non-refreshable rejection of the identity (a takedown, a 403).
+    // Identity-wide, generation-stamped: recovery waits for the operator
+    // to reconnect, never for a `connected` flag that never changed.
+    await stopCampaignsForIdentity({
+      workspaceId: campaign.workspace_id,
+      accountId: campaign.operator_account_id,
+      message: stop.reason,
+      db: input.db,
+    });
+    out.note = stop.reason;
+    return out;
+  }
+
   if (stop?.kind === "stop_campaign") {
     await updateCampaign({
       workspaceId: campaign.workspace_id,

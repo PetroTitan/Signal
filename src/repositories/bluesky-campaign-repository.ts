@@ -1758,6 +1758,37 @@ export async function getCampaignActionRejection(input: {
 }
 
 /**
+ * Stop every ACTIVE campaign of an identity for authentication — the
+ * identity-wide transition, recorded with the identity's current token
+ * generation so recovery can tell a completed session transition from
+ * a merely `connected` status. Running runs become `waiting_for_auth`.
+ * Never touches a paused, rate-limited, completed or cancelled campaign.
+ */
+export async function stopCampaignsForIdentity(input: {
+  workspaceId: string;
+  accountId: string;
+  message: string;
+  db?: Db;
+}): Promise<{ campaignsStopped: number; runsStopped: number }> {
+  const { data, error } = await client(input.db).rpc(
+    "stop_bluesky_campaigns_for_identity",
+    {
+      p_workspace_id: input.workspaceId,
+      p_account_id: input.accountId,
+      p_message: input.message,
+    },
+  );
+  if (error) throw fromPostgres(error, "Could not stop the identity's campaigns.");
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | { campaigns_stopped: number | string | null; runs_stopped: number | string | null }
+    | undefined;
+  return {
+    campaignsStopped: Number(row?.campaigns_stopped ?? 0),
+    runsStopped: Number(row?.runs_stopped ?? 0),
+  };
+}
+
+/**
  * Campaigns stopped for authentication whose identity is CONNECTED again
  * return to `active`, and today's run to `running` — in the database,
  * in one statement, with no provider probe. The proof that the session

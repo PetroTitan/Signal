@@ -2237,6 +2237,7 @@ export interface BlueskyFollowCampaignRow {
    * first served. A hint the scheduler sorts by, never a lock.
    */
   last_dispatched_at?: string | null;
+  auth_stopped_at_generation?: number | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -2873,6 +2874,13 @@ export interface LinkedInCampaignRow {
   daily_task_target: number;
   membership_frozen_at: string | null;
   last_dispatched_at: string | null;
+  /**
+   * `platform_connections.token_generation` at the moment the campaign
+   * was stopped for authentication, or null. Recovery requires the
+   * identity's generation to have MOVED past it — a completed session
+   * transition — not merely a `connected` status.
+   */
+  auth_stopped_at_generation: number | null;
   created_by: string | null;
   activated_at: string | null;
   paused_at: string | null;

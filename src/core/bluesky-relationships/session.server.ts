@@ -91,7 +91,39 @@ export type RelationshipSessionErrorCode =
    * or another worker held the identity's refresh lease for longer than
    * this caller could wait. The identity is untouched. Retry later.
    */
-  | "provider_unavailable";
+  | "provider_unavailable"
+  /**
+   * This session already spent its one refresh (or reload) in this
+   * operation and the provider rejected the result again. Says nothing
+   * about the identity — the coordinator did NOT mark it — so a caller
+   * must yield and let the next delivery resolve a fresh session and
+   * refresh for real. Never map this to "the identity needs the
+   * operator".
+   */
+  | "refresh_exhausted";
+
+/**
+ * A structured, token-free diagnostic from the coordinator. One line per
+ * decision. Contains identifiers, verdicts, generations and reasons —
+ * never a JWT, an encrypted blob, a key or a header.
+ */
+export interface CoordinatorEvent {
+  event: "lease" | "reload" | "refresh" | "commit" | "fail" | "release";
+  /** Who asked: follow-dispatcher, unfollow-dispatcher, publisher, verify-route, … */
+  source: string;
+  workspaceId: string;
+  accountId: string;
+  connectionId: string;
+  verdict?: string | null;
+  observedGeneration?: number | null;
+  storedGeneration?: number | null;
+  outcome?: string | null;
+  reason?: string | null;
+  campaignsRecovered?: number;
+  runsResumed?: number;
+  campaignsStopped?: number;
+  runsStopped?: number;
+}
 
 export interface RelationshipSessionError {
   ok: false;
@@ -194,6 +226,10 @@ export async function resolveRelationshipSession(input: {
    * database's. Defaults to the database's now().
    */
   nowIso?: string;
+  /** Caller name for diagnostics. */
+  source?: string;
+  /** Diagnostic sink; defaults to one JSON line on console.info. */
+  onEvent?: (event: CoordinatorEvent) => void;
 }): Promise<ResolveRelationshipSessionResult> {
   const { workspaceId, accountId, db, fetchImpl } = input;
 
@@ -265,6 +301,8 @@ export async function resolveRelationshipSession(input: {
     sleep: input.sleep,
     refreshWaitMs: input.refreshWaitMs,
     nowIso: input.nowIso,
+    source: input.source ?? "unspecified",
+    onEvent: input.onEvent,
   };
 
   return loadSession(ctx, { refreshAllowed: true });
@@ -283,6 +321,25 @@ interface CoordinatorContext {
   sleep?: (ms: number) => Promise<void>;
   refreshWaitMs?: number;
   nowIso?: string;
+  source: string;
+  onEvent?: (event: CoordinatorEvent) => void;
+}
+
+function emit(ctx: CoordinatorContext, event: Omit<CoordinatorEvent, "source" | "workspaceId" | "accountId" | "connectionId">): void {
+  const full: CoordinatorEvent = {
+    ...event,
+    source: ctx.source,
+    workspaceId: ctx.workspaceId,
+    accountId: ctx.accountId,
+    connectionId: ctx.connectionId,
+  };
+  if (ctx.onEvent) {
+    ctx.onEvent(full);
+    return;
+  }
+  // One line, structured, no credential material by construction: the
+  // event type carries ids, verdicts, generations and reasons only.
+  console.info(`[bluesky-session] ${JSON.stringify(full)}`);
 }
 
 /**
@@ -340,11 +397,17 @@ function buildSession(
     tokenGeneration: s.tokenGeneration,
     refreshOnce: async () => {
       if (!s.refreshAllowed) {
+        // NOT "sign in again": nothing has been decided about the
+        // identity. PRODUCTION, 2026-09-15 15:35Z — a reloaded session
+        // was rejected again (the reload had been served from a cache)
+        // and this branch said `session_expired`; the worker stopped
+        // the campaign as needing the operator while the identity was
+        // connected, and recovery reactivated it every delivery.
         return {
           ok: false,
-          code: "session_expired",
+          code: "refresh_exhausted",
           message:
-            "The Bluesky session was already refreshed once during this operation and is still being rejected. Sign in again.",
+            "The Bluesky session was already renewed once during this operation and was rejected again. Nothing was decided about the identity; the next delivery starts from a fresh session.",
         };
       }
       return coordinateRefresh(ctx, s.tokenGeneration);
@@ -373,6 +436,8 @@ export async function refreshIdentitySession(input: {
   sleep?: (ms: number) => Promise<void>;
   refreshWaitMs?: number;
   nowIso?: string;
+  source?: string;
+  onEvent?: (event: CoordinatorEvent) => void;
 }): Promise<RelationshipSession | RelationshipSessionError> {
   const ctx: CoordinatorContext = {
     workspaceId: input.workspaceId,
@@ -387,6 +452,8 @@ export async function refreshIdentitySession(input: {
     sleep: input.sleep,
     refreshWaitMs: input.refreshWaitMs,
     nowIso: input.nowIso,
+    source: input.source ?? "unspecified",
+    onEvent: input.onEvent,
   };
   return coordinateRefresh(ctx, input.observedGeneration);
 }
@@ -428,12 +495,20 @@ async function coordinateRefresh(
       };
     }
 
+    emit(ctx, {
+      event: "lease",
+      verdict: lease.verdict,
+      observedGeneration,
+      storedGeneration: lease.generation,
+      reason: lease.connectionStatus,
+    });
+
     switch (lease.verdict) {
       case "reload":
         // Another worker already refreshed, or the operator reconnected.
         // The latest stored session is the one to use; no provider
         // refresh is spent here.
-        return reloadLatest(ctx);
+        return reloadLatest(ctx, observedGeneration);
       case "reauthorization_required":
         return {
           ok: false,
@@ -478,14 +553,42 @@ async function coordinateRefresh(
   }
 }
 
-/** Reload whatever is stored now — after someone else's successful refresh or reconnect. */
+/**
+ * Reload whatever is stored now — after someone else's successful
+ * refresh or reconnect.
+ *
+ * A reload is only a reload if it OBSERVES the newer generation. The
+ * verdict that led here proved the stored generation differs from the
+ * one this worker holds; a read that still returns that generation (or
+ * an older one) was not served by the database — on 2026-09-15 it was
+ * served by Next's Data Cache — and its token must not be retried.
+ * That case yields for this delivery; nothing is marked.
+ */
 async function reloadLatest(
   ctx: CoordinatorContext,
+  observedGeneration: number,
 ): Promise<RelationshipSession | RelationshipSessionError> {
   const enc = await readEncryptedTokens(ctx.workspaceId, ctx.connectionId, ctx.db);
   if (!enc) {
+    emit(ctx, { event: "reload", verdict: "not_connected", observedGeneration, storedGeneration: null });
     return { ok: false, code: "not_connected", message: "This Bluesky identity is not signed in." };
   }
+  if (enc.tokenGeneration <= observedGeneration) {
+    emit(ctx, {
+      event: "reload",
+      verdict: "stale_read",
+      observedGeneration,
+      storedGeneration: enc.tokenGeneration,
+      reason: "the reload did not observe a newer generation; the read was not fresh",
+    });
+    return {
+      ok: false,
+      code: "provider_unavailable",
+      message:
+        "The stored session could not be re-read freshly after another worker renewed it. Nothing changed; the next delivery starts from a fresh session.",
+    };
+  }
+  emit(ctx, { event: "reload", verdict: "reloaded", observedGeneration, storedGeneration: enc.tokenGeneration, reason: enc.connectionStatus });
   if (!CONNECTED_ENOUGH.has(enc.connectionStatus) || enc.connectionStatus !== "connected") {
     return {
       ok: false,
@@ -563,13 +666,15 @@ async function refreshUnderLease(
     const enc = await readEncryptedTokens(ctx.workspaceId, ctx.connectionId, ctx.db);
     if (!enc || enc.tokenGeneration !== generation) {
       await release();
-      return reloadLatest(ctx);
+      emit(ctx, { event: "release", verdict: "generation_moved_before_refresh", observedGeneration: generation, storedGeneration: enc?.tokenGeneration ?? null });
+      return reloadLatest(ctx, generation);
     }
     const refreshJwt = enc.refreshTokenEncrypted
       ? decryptForOutboundUse(enc.refreshTokenEncrypted)
       : null;
     if (!refreshJwt) {
-      await fail(true, "Access token rejected and no refresh token is stored.");
+      const v = await fail(true, "Access token rejected and no refresh token is stored.");
+      emit(ctx, { event: "fail", verdict: v?.applied ? "marked" : "not_applied", reason: v?.reason ?? "no_refresh_token", observedGeneration: generation });
       return {
         ok: false,
         code: "session_expired",
@@ -583,6 +688,7 @@ async function refreshUnderLease(
       service: ctx.service,
       fetchImpl: ctx.fetchImpl,
     });
+    emit(ctx, { event: "refresh", outcome: refreshed.outcome, reason: refreshed.outcome === "refreshed" ? null : refreshed.code, observedGeneration: generation });
     if (refreshed.outcome !== "refreshed") {
       // Only a REJECTED refresh token says anything about the
       // credential. A network error or a 5xx is the provider having a
@@ -591,6 +697,15 @@ async function refreshUnderLease(
         refreshed.code === "refresh_rejected" ||
         refreshed.code === "missing_refresh_token";
       const verdict = await fail(definitive, `Refresh failed: ${refreshed.message}`);
+      emit(ctx, {
+        event: "fail",
+        verdict: verdict ? (verdict.applied ? "marked" : "not_applied") : "rpc_failed",
+        reason: verdict?.reason ?? null,
+        observedGeneration: generation,
+        storedGeneration: verdict?.generation ?? null,
+        campaignsStopped: verdict?.campaignsStopped,
+        runsStopped: verdict?.runsStopped,
+      });
       if (!definitive) {
         return {
           ok: false,
@@ -601,7 +716,19 @@ async function refreshUnderLease(
       if (verdict && verdict.reason === "generation_moved") {
         // Our refresh token was refused BECAUSE someone else had already
         // rotated it and stored the result. Use theirs.
-        return reloadLatest(ctx);
+        return reloadLatest(ctx, generation);
+      }
+      if (!verdict || !verdict.applied) {
+        // The rejection was definitive but the coordinator did NOT mark
+        // the identity (the lease had lapsed, or the RPC failed). Saying
+        // "sign in again" here would make a worker stop campaigns for
+        // an identity that still reads `connected`. Yield; the next
+        // delivery takes the lease again and decides for real.
+        return {
+          ok: false,
+          code: "provider_unavailable",
+          message: `The refresh was rejected but the identity could not be marked (${verdict?.reason ?? "coordinator unavailable"}). Nothing changed; the next delivery retries.`,
+        };
       }
       return {
         ok: false,
@@ -681,10 +808,19 @@ async function refreshUnderLease(
         message: "The refreshed session could not be stored. Nothing changed; the next delivery retries.",
       };
     }
+    emit(ctx, {
+      event: "commit",
+      verdict: commit.committed ? "committed" : "not_committed",
+      reason: commit.reason,
+      observedGeneration: generation,
+      storedGeneration: commit.generation,
+      campaignsRecovered: commit.campaignsRecovered,
+      runsResumed: commit.runsResumed,
+    });
     if (!commit.committed) {
       // Someone persisted a newer generation while our provider call
       // was in flight (a reconnect). Theirs stands; ours is discarded.
-      return reloadLatest(ctx);
+      return reloadLatest(ctx, generation);
     }
 
     return buildSession(ctx, {

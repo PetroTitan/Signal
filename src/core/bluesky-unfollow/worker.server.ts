@@ -952,7 +952,7 @@ async function attemptUnfollow(
       const reopenCode = isDefiniteRejectionCode(result.errorCode)
         ? String(result.errorCode)
         : "session_expired";
-      if (renewed.code === "provider_unavailable") {
+      if (renewed.code === "provider_unavailable" || renewed.code === "refresh_exhausted") {
         return {
           kind: "session_unavailable",
           uri: permit.uri,
@@ -987,6 +987,23 @@ async function attemptUnfollow(
       rkey: permit.rkey,
       cid: permit.cid,
       rateLimit: result.rateLimit,
+    };
+  }
+
+  // A second refreshable rejection after a renewal proves nothing about
+  // the identity — see the follow worker. Yield; nothing was deleted.
+  if (!result.ok && isRefreshableAuthFailure(result)) {
+    return {
+      kind: "session_unavailable",
+      uri: permit.uri,
+      rkey: permit.rkey,
+      errorCode: "session_rejected_after_renewal",
+      errorMessage: result.message,
+      rateLimit: result.rateLimit,
+      rejectedBeforeWrite: true,
+      reopenCode: isDefiniteRejectionCode(result.errorCode)
+        ? String(result.errorCode)
+        : "session_expired",
     };
   }
 
