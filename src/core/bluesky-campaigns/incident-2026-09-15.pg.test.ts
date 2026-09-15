@@ -255,16 +255,21 @@ describe("D — the identity is refreshed successfully while the campaign and ru
 });
 
 describe("the fairness stamp", () => {
-  it("does not advance for a campaign that could not be served", async () => {
+  it("does not advance for a campaign that is listed but cannot be served", async () => {
+    // Two shapes the round LISTS and then cannot serve. (A campaign
+    // already stopped for authentication is not listed at all, so it
+    // could never be stamped — that is not the interesting case.)
+    //
+    // 1. ACTIVE campaign whose identity needs the operator — the shape
+    //    right after an operator presses Resume while the identity is
+    //    still revoked, or the first tick after the identity fails.
+    //    The dispatcher must stop it WITHOUT a provider call and
+    //    without recording it as served.
     const c = await makeFollowCampaign(f, "blocked", { requestedDailyQuota: 300 });
     await makeMembers(f, c, 5, "bl");
     await f.db.query(
-      `update public.bluesky_follow_campaigns
-          set status = 'reauthorization_required', last_error_code = 'reauthorization_required',
-              next_run_at = $2, last_dispatched_at = null
-        where id = $1`, [c, later(50)]);
-    // The identity genuinely needs the operator: its current refresh
-    // credential was rejected.
+      `update public.bluesky_follow_campaigns set next_run_at = $2, last_dispatched_at = null where id = $1`,
+      [c, later(50)]);
     await f.db.query(
       `update public.platform_connections
           set connection_status = 'reauthorization_required', health_status = 'expired' where id = $1`,
@@ -274,16 +279,48 @@ describe("the fairness stamp", () => {
       [f.tenant.identityId]);
 
     const provider = providerDouble({});
-    for (let tick = 1; tick <= 3; tick += 1) {
-      await fair(provider.fetchImpl, { nowIso: later(50 + tick * 5), campaignId: c });
-    }
+    const round = await fair(provider.fetchImpl, { nowIso: later(55), campaignId: c });
+    expect(round.served).toHaveLength(0);
+    expect(provider.calls.createRecord).toBe(0);
+    expect(provider.calls.refreshSession).toBe(0);
+    let camp = await campaignRow(f, c);
+    expect(camp.status).toBe("reauthorization_required");
     // Zero chunks, zero provider calls — and therefore no claim to have
     // been served. Production advanced this stamp on every tick, which
     // would push a stopped campaign behind every other one for good.
-    expect(provider.calls.createRecord).toBe(0);
-    expect(provider.calls.refreshSession).toBe(0);
-    const camp = await campaignRow(f, c);
-    expect(camp.status).toBe("reauthorization_required");
     expect(camp.last_dispatched_at).toBeNull();
+
+    // 2. ACTIVE campaign, identity fine, but ANOTHER dispatcher holds
+    //    today's run: listed, considered, not served — not stamped.
+    await reconnectAccount(f, "jwt-NEW", "refresh-2");
+    const held = await makeFollowCampaign(f, "held", { requestedDailyQuota: 300 });
+    await makeMembers(f, held, 5, "hd");
+    await f.db.query(
+      `update public.bluesky_follow_campaigns set next_run_at = $2, last_dispatched_at = null where id = $1`,
+      [held, later(50)]);
+    const run = (await f.db.query<{ id: string }>(
+      `select id from public.ensure_bluesky_campaign_run($1,$2,'2026-09-15',300,300,null)`,
+      [f.tenant.workspaceId, held])).rows[0].id;
+    await f.db.query(
+      `update public.bluesky_follow_campaign_runs
+          set dispatch_lease_owner = 'another-invocation', dispatch_lease_expires_at = now() + interval '10 minutes'
+        where id = $1`, [run]);
+    for (let tick = 1; tick <= 3; tick += 1) {
+      const r = await fair(provider.fetchImpl, { nowIso: later(55 + tick * 5), campaignId: held });
+      expect(r.served).toHaveLength(0);
+      expect(r.follow.notes.join(" ")).toMatch(/another dispatcher holds/);
+    }
+    expect(provider.calls.createRecord).toBe(0);
+    camp = await campaignRow(f, held);
+    expect(camp.status).toBe("active");
+    expect(camp.last_dispatched_at).toBeNull();
+
+    // And once it CAN be served, it is stamped — exactly then.
+    await f.db.query(
+      `update public.bluesky_follow_campaign_runs
+          set dispatch_lease_owner = null, dispatch_lease_expires_at = null where id = $1`, [run]);
+    const served = await fair(provider.fetchImpl, { nowIso: later(80), campaignId: held });
+    expect(served.served.map((s) => s.campaignId)).toEqual([held]);
+    expect((await campaignRow(f, held)).last_dispatched_at).not.toBeNull();
   });
 });

@@ -220,8 +220,41 @@ All on the shipped migrations; only the network is a double.
 
 ## 6. Test-run and mutation-control results
 
-_Filled in from the run logs; see the PR description for the verbatim
-tail._
+Full run on the branch (`npm run typecheck`, `npm run lint`, `npm test`,
+`npm run build`, `git diff --check`), in that order, one process:
+
+| Step | Result |
+| --- | --- |
+| typecheck | exit 0 |
+| lint | "No ESLint warnings or errors" |
+| test | **296 files passed, 2 skipped; 5,337 tests passed, 8 skipped, 0 failed** (644 s; the 100k regression alone 230 s, one refresh per simulated day) |
+| build | route table produced, no error |
+| git diff --check | exit 0 |
+
+**Mutation controls.** Each defect was introduced into the source, the
+named suites run, the failure observed, and the file restored from git.
+A control that stays green is a missing test, and one did: the first
+version of the fairness scenario used a campaign already stopped for
+authentication — which the fixed round no longer lists — so stamping
+before the dispatcher could not be observed. The scenario was rewritten
+around a campaign that IS listed but cannot be served (identity not
+connected; another dispatcher holding today's run), and the control was
+re-run. (A zsh word-splitting slip in the control runner also left the
+m4 edits in place for the first pass of m5–m10; those five were re-run
+on a clean tree and the figures below are from that re-run.)
+
+| # | Defect introduced | Suites | Result |
+| --- | --- | --- | --- |
+| 1 | refresh locking removed (`acquire` never answers `busy`) | two-session | **4 of 6 fail** — B, duplicate delivery, lease lapse, crash-after-provider-refresh |
+| 2 | token-generation CAS removed from acquire, commit and fail | incident + coordinator | **4 of 25 fail** — C, crash-after-persist, generation trigger, stale-failure guard |
+| 3 | a stale worker may mark a newer session (generation and lease guards removed from `fail`) | coordinator + incident | **2 of 25 fail** — C, stale-failure guard |
+| 4 | system auth stop maps to operator `paused` (dispatchers + stop RPC) | coordinator + 09-14 | **3 of 32 fail** — refresh-fails, E, crash-after-provider-refresh |
+| 5 | only one campaign is recovered (`limit 1`) | coordinator | **1 of 22 fails** — E (three campaigns expected recovered, one was) |
+| 6 | refreshed session discarded; stale credentials re-read without a generation check | 09-14 + coordinator | **7 of 32 fail** — A–G, quota-bound day, A, transient, lease lapse, follow+unfollow, five campaigns (every retry carried the stale token) |
+| 7 | `last_dispatched_at` advanced before the dispatcher has proven anything | incident + fair round | **1 of 12 fails** — the rewritten fairness scenario (`expected 2026-09-15T13:55:00.001Z to be null`) |
+| 8 | rejected-before-write sent to reconciliation (`rejectedBeforeWrite: false` on both auth outcomes) | coordinator + 09-14 | **6 of 32 fail** — refresh-fails, reconnect-resumes, E, transient, crash-after-provider-refresh, operator pause (members landed in reconciliation instead of a real retry) |
+| 9 | the same-attempt retry consumes another quota unit | 09-14 + coordinator, then coordinator + two-session | **Two findings.** (a) Making the retry call `consume_bluesky_member_quota` a second time **stayed green (32 of 32)** — because the database refused it: the RPC answers `already_consumed` for an action whose ledger row already carries provider intent. That is a structural defence, not a test gap. (b) Counting the retry directly against the identity's usage ledger (`record_bluesky_identity_usage` +1 attempt on the retry path): **3 of 28 fail** — follow+unfollow (24 units expected), two-session B (30), two-session follow+unfollow (20) |
+| 10 | the Unfollow worker refreshes on its own (independent lock) | two-session | **1 of 6 fails** — follow + unfollow meeting the same expiry (two provider refreshes observed) |
 
 ## 7. Deployment order
 
