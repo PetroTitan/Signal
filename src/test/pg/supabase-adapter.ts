@@ -143,7 +143,7 @@ function compileFilters(filters: Filter[], params: unknown[]): string {
 
 class Builder<T = Record<string, unknown>[]> implements PromiseLike<Result<T>> {
   private filters: Filter[] = [];
-  private orderBy: { column: string; ascending: boolean }[] = [];
+  private orderBy: { column: string; ascending: boolean; nullsFirst: boolean | null }[] = [];
   private limitTo: number | null = null;
   private selectCols = "*";
   private wantCount = false;
@@ -157,6 +157,7 @@ class Builder<T = Record<string, unknown>[]> implements PromiseLike<Result<T>> {
         kind: "upsert";
         rows: Record<string, unknown>[];
         onConflict: string | null;
+        ignoreDuplicates: boolean;
       }
     | { kind: "delete" } = { kind: "select" };
   private returning = false;
@@ -200,6 +201,11 @@ class Builder<T = Record<string, unknown>[]> implements PromiseLike<Result<T>> {
       kind: "upsert",
       rows: Array.isArray(rows) ? rows : [rows],
       onConflict: opts?.onConflict ?? null,
+      // PostgREST: `Prefer: resolution=ignore-duplicates` compiles to
+      // `on conflict do nothing`, and RETURNING then yields only the
+      // rows actually inserted. Mirrored exactly so a caller counting
+      // inserted rows is tested against the real semantics.
+      ignoreDuplicates: opts?.ignoreDuplicates === true,
     };
     return this;
   }
@@ -245,8 +251,12 @@ class Builder<T = Record<string, unknown>[]> implements PromiseLike<Result<T>> {
     this.filters.push({ op: "or", raw });
     return this;
   }
-  order(column: string, opts?: { ascending?: boolean }): Builder<T> {
-    this.orderBy.push({ column, ascending: opts?.ascending !== false });
+  order(column: string, opts?: { ascending?: boolean; nullsFirst?: boolean }): Builder<T> {
+    this.orderBy.push({
+      column,
+      ascending: opts?.ascending !== false,
+      nullsFirst: typeof opts?.nullsFirst === "boolean" ? opts.nullsFirst : null,
+    });
     return this;
   }
   limit(n: number): Builder<T> {
@@ -326,14 +336,20 @@ class Builder<T = Record<string, unknown>[]> implements PromiseLike<Result<T>> {
                 })
                 .join(", ")})`,
           );
-          const conflict =
+          const conflictTarget =
             this.mode.kind === "upsert" && this.mode.onConflict
-              ? ` on conflict (${this.mode.onConflict
+              ? `(${this.mode.onConflict
                   .split(",")
                   .map((c) => ident(c.trim()))
-                  .join(", ")}) do update set ${cols
-                  .map((c) => `${ident(c)} = excluded.${ident(c)}`)
-                  .join(", ")}`
+                  .join(", ")})`
+              : null;
+          const conflict =
+            this.mode.kind === "upsert" && conflictTarget
+              ? this.mode.ignoreDuplicates
+                ? ` on conflict ${conflictTarget} do nothing`
+                : ` on conflict ${conflictTarget} do update set ${cols
+                    .map((c) => `${ident(c)} = excluded.${ident(c)}`)
+                    .join(", ")}`
               : "";
           sql =
             `insert into public.${ident(this.table)} ` +
@@ -379,7 +395,7 @@ class Builder<T = Record<string, unknown>[]> implements PromiseLike<Result<T>> {
     return (
       " order by " +
       this.orderBy
-        .map((o) => `${ident(o.column)} ${o.ascending ? "asc" : "desc"}`)
+        .map((o) => `${ident(o.column)} ${o.ascending ? "asc" : "desc"}${o.nullsFirst === null ? "" : o.nullsFirst ? " nulls first" : " nulls last"}`)
         .join(", ")
     );
   }

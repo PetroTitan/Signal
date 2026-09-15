@@ -64,7 +64,10 @@ const PLATFORMS: PlatformRow[] = [
   { name: "Reddit", publishing: "Pending Reddit API approval (manual fallback)", metrics: "Verified (score, comments)", tone: "partial" },
   { name: "X", publishing: "Automated", metrics: "Unavailable (requires a paid API tier)", tone: "partial" },
   { name: "Hashnode", publishing: "Automated", metrics: "Unavailable (not yet integrated)", tone: "partial" },
-  { name: "LinkedIn", publishing: "Automated", metrics: "Unavailable (requires approved Marketing API)", tone: "partial" },
+  // LinkedIn publishing is NOT automated: `publishToLinkedIn` is a stub
+  // and the scheduler excludes the platform (P0.3). Saying otherwise
+  // here was a false claim — see docs/linkedin-sales/00-audit-and-boundary.md §2.5.
+  { name: "LinkedIn", publishing: "Manual distribution (no automated publishing)", metrics: "Unavailable (requires approved Marketing API)", tone: "partial" },
   { name: "Telegram", publishing: "Automated", metrics: "No post metrics exposed by the API", tone: "partial" },
   { name: "Threads, Instagram, YouTube", publishing: "Not yet automated", metrics: "—", tone: "none" },
 ];

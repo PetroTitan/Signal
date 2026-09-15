@@ -2768,3 +2768,184 @@ export interface Database {
     };
   };
 }
+
+// =====================================================================
+// LinkedIn Sales Workspace (manual outreach — Signal never acts on
+// LinkedIn). Mirrors supabase/migrations/20260917000001.
+// =====================================================================
+
+export type LinkedInSourceType = "customer_csv" | "customer_pasted" | "internal_api";
+export type LinkedInSequenceStepKind =
+  | "manual_connection_request"
+  | "manual_linkedin_message"
+  | "manual_profile_review"
+  | "wait"
+  | "internal_note"
+  | "authorized_email";
+export type LinkedInTaskKind = Exclude<LinkedInSequenceStepKind, "wait">;
+export type LinkedInTaskState =
+  | "scheduled" | "ready" | "opened" | "copied" | "operator_confirmed" | "skipped" | "cancelled";
+export type LinkedInMemberState =
+  | "waiting" | "completed" | "suppressed" | "operator_skipped" | "structurally_invalid" | "cancelled";
+export type LinkedInCampaignStatus = "draft" | "active" | "paused" | "completed" | "cancelled";
+export type LinkedInSequenceStatus = "draft" | "active" | "archived";
+export type LinkedInComplianceEventType =
+  | "import" | "suppression_added" | "suppression_removed" | "export" | "deletion"
+  | "operator_confirmation" | "task_skipped" | "task_opened" | "task_copied"
+  | "campaign_activated" | "campaign_paused" | "campaign_resumed" | "campaign_cancelled"
+  | "retention_purge";
+
+export interface LinkedInLeadListRow {
+  id: string;
+  workspace_id: string;
+  name: string;
+  source_type: LinkedInSourceType;
+  source_note: string | null;
+  status: "active" | "archived";
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LinkedInLeadRow {
+  id: string;
+  workspace_id: string;
+  lead_list_id: string;
+  profile_key: string;
+  canonical_profile_url: string;
+  customer_provided_name: string | null;
+  customer_provided_company: string | null;
+  customer_provided_title: string | null;
+  source_type: LinkedInSourceType;
+  source_reference: string | null;
+  processing_basis_note: string | null;
+  do_not_contact: boolean;
+  do_not_contact_reason: string | null;
+  retention_until: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LinkedInSuppressionEntryRow {
+  id: string;
+  workspace_id: string;
+  profile_key: string;
+  canonical_profile_url: string;
+  reason: string | null;
+  source: "operator" | "import" | "task" | "unsubscribe" | "deletion_request";
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface LinkedInSequenceRow {
+  id: string;
+  workspace_id: string;
+  name: string;
+  status: LinkedInSequenceStatus;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LinkedInSequenceStepRow {
+  id: string;
+  workspace_id: string;
+  sequence_id: string;
+  position: number;
+  kind: LinkedInSequenceStepKind;
+  wait_days: number;
+  template: string | null;
+  required_confirmation: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LinkedInCampaignRow {
+  id: string;
+  workspace_id: string;
+  lead_list_id: string;
+  sequence_id: string;
+  name: string;
+  status: LinkedInCampaignStatus;
+  timezone: string;
+  working_window_start_minute: number;
+  working_window_end_minute: number;
+  daily_task_target: number;
+  membership_frozen_at: string | null;
+  last_dispatched_at: string | null;
+  created_by: string | null;
+  activated_at: string | null;
+  paused_at: string | null;
+  completed_at: string | null;
+  cancelled_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LinkedInCampaignMemberRow {
+  id: string;
+  workspace_id: string;
+  campaign_id: string;
+  lead_id: string;
+  state: LinkedInMemberState;
+  state_reason: string | null;
+  current_position: number;
+  next_step_available_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LinkedInManualTaskRow {
+  id: string;
+  workspace_id: string;
+  campaign_id: string;
+  campaign_member_id: string;
+  sequence_step_id: string;
+  kind: LinkedInTaskKind;
+  state: LinkedInTaskState;
+  draft_text: string | null;
+  profile_url: string;
+  local_date: string;
+  available_at: string;
+  opened_at: string | null;
+  copied_at: string | null;
+  operator_confirmed_at: string | null;
+  operator_confirmed_by: string | null;
+  skip_reason: string | null;
+  cancelled_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LinkedInImportJobRow {
+  id: string;
+  workspace_id: string;
+  lead_list_id: string;
+  status: "running" | "ready" | "failed";
+  source_type: LinkedInSourceType;
+  file_name: string | null;
+  file_fingerprint: string;
+  total_rows: number;
+  cursor_row: number;
+  inserted_count: number;
+  duplicate_count: number;
+  invalid_count: number;
+  suppressed_count: number;
+  error_report: { row: number; value: string; reason: string }[];
+  last_error: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LinkedInComplianceEventRow {
+  id: string;
+  workspace_id: string;
+  event_type: LinkedInComplianceEventType;
+  actor_user_id: string | null;
+  entity_type: string | null;
+  entity_id: string | null;
+  details: Record<string, unknown>;
+  created_at: string;
+}

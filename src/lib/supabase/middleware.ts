@@ -56,6 +56,12 @@ const PUBLIC_PATH_PREFIXES = [
   // not redirect it to /login. Only /api/campaigns/bluesky/tick exists
   // under this prefix.
   "/api/campaigns",
+  // LinkedIn Sales: the task-preparation tick is triggered by Vercel
+  // Cron with the same shared secret. It only prepares internal manual
+  // tasks; the route handler enforces the secret and the deploy-level
+  // switch. Public here only so the middleware does not redirect the
+  // cron to /login. Nothing else under /api/linkedin is public.
+  "/api/linkedin/tick",
   // Phase F9 — OAuth callback path. The OAuth handshake has its own
   // security model:
   //   - PKCE code_verifier persisted server-side at /start; the
