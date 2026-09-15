@@ -27,6 +27,7 @@
 
 import { useState } from "react";
 import { useFormState, useFormStatus } from "react-dom";
+import { reconcileNowAction, type ReconcileNowResult } from "./_actions";
 import {
   addTargetAction,
   followSelectedAction,
@@ -384,6 +385,8 @@ export function RelationshipUi(props: RelationshipUiProps) {
           history={props.history}
           historyPage={props.historyPage}
           targetLabels={props.targetLabels}
+          identityId={identityId}
+          needsReconciliation={props.counts.needsReconciliation}
         />
       ) : null}
 
@@ -966,10 +969,97 @@ function CandidateListView(props: {
 // History
 // =====================================================================
 
+const EMPTY_RECONCILE: ReconcileNowResult = { ok: false, error: "" };
+
+/**
+ * "Reconcile now" for the identity's MANUAL actions whose outcome
+ * Bluesky never confirmed. Reads only; the action behind it has no path
+ * to a follow or an unfollow. Shows exactly what was read: the
+ * profile, the operation that was attempted, what Bluesky reports now,
+ * when it was read, and what that made the action.
+ */
+function ReconcileNowPanel(props: { identityId: string; needsReconciliation: number }) {
+  const [state, dispatch] = useFormState(reconcileNowAction, EMPTY_RECONCILE);
+  return (
+    <section className="card card-padded space-y-3" data-testid="reconcile-now">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="section-title">Reconciliation</h3>
+        <span className="text-sm text-ink-600">
+          {props.needsReconciliation.toLocaleString()} awaiting confirmation
+        </span>
+      </div>
+      <p className="text-sm text-ink-700 leading-relaxed">
+        An action is &ldquo;awaiting confirmation&rdquo; when Bluesky did not answer
+        clearly whether it happened. Reconciling <strong>reads</strong> the current
+        relationship and settles what a read can settle.{" "}
+        <strong>It never re-sends a follow or an unfollow.</strong> What is still
+        ambiguous stays listed, with a fresh note and time.
+      </p>
+      <form action={dispatch}>
+        <input type="hidden" name="operator_account_id" value={props.identityId} />
+        <button
+          type="submit"
+          className="btn-secondary min-h-11 w-full sm:w-auto"
+          disabled={!props.identityId}
+        >
+          Reconcile now
+        </button>
+      </form>
+      {state.ok ? (
+        <div className="space-y-2" role="status">
+          <p className="text-sm text-emerald-900 bg-emerald-50 border border-emerald-200 rounded-md p-3 leading-relaxed">
+            {state.summary}
+          </p>
+          {state.reports.length > 0 ? (
+            <ul className="list-none p-0 m-0 space-y-2" data-testid="reconcile-report">
+              {state.reports.map((r) => (
+                <li key={r.actionId} className="border border-ink-200 rounded-md p-3 space-y-1">
+                  <p className="text-sm text-ink-900 break-all">
+                    {formatHandle(r.subjectHandle, r.subjectDid)}
+                  </p>
+                  <p className="text-xs text-ink-500 break-all">{r.subjectDid}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="badge-neutral">
+                      Attempted: {r.operation === "follow" ? "Follow" : "Unfollow"}
+                    </span>
+                    <span className="badge-neutral">
+                      Bluesky reports: {r.observedState.replace(/_/g, " ")}
+                    </span>
+                    <span
+                      className={
+                        r.status === "succeeded"
+                          ? "badge-low"
+                          : r.status === "failed"
+                            ? "badge-high"
+                            : "badge-medium"
+                      }
+                    >
+                      Now: {r.status.replace(/_/g, " ")}
+                    </span>
+                  </div>
+                  <p className="text-xs text-ink-600 leading-relaxed break-words">
+                    Read {new Date(r.reconciledAt).toLocaleString()} — {r.note}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : state.error ? (
+        <p className="text-sm text-red-900 bg-red-50 border border-red-200 rounded-md p-3 leading-relaxed" role="alert">
+          {state.error}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 function HistoryView(props: {
   history: BlueskyRelationshipActionRow[];
   historyPage: PageInfo;
   targetLabels: Record<string, string>;
+  identityId: string;
+  needsReconciliation: number;
 }) {
   if (props.history.length === 0) {
     return (
@@ -985,6 +1075,10 @@ function HistoryView(props: {
 
   return (
     <div className="space-y-4">
+      <ReconcileNowPanel
+        identityId={props.identityId}
+        needsReconciliation={props.needsReconciliation}
+      />
       <Pager info={props.historyPage} param="hpage" label="History" />
       <ul className="list-none p-0 m-0 space-y-2">
       {props.history.map((action) => (

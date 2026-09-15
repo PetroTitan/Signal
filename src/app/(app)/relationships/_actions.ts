@@ -62,8 +62,11 @@ import {
 import { refreshRelationships } from "@/core/bluesky-relationships/refresh-relationships.server";
 import {
   processBatchActions,
+  reconcileUnresolvedActions,
+  type ReconciledActionReport,
   type RelationshipStateByDid,
 } from "@/core/bluesky-relationships/execute-actions.server";
+import { listManualActionsNeedingReconciliation } from "@/repositories/bluesky-relationship-repository";
 import { resolveRelationshipSession } from "@/core/bluesky-relationships/session.server";
 import {
   BatchMembershipFrozenError,
@@ -336,6 +339,70 @@ export async function setProtectedAction(
 // =====================================================================
 
 export type RefreshActionResult = ActionResult<{ checked: number; unknown: number }>;
+
+export type ReconcileNowResult = ActionResult<{
+  checked: number;
+  settled: number;
+  stillUnknown: number;
+  reports: ReconciledActionReport[];
+  summary: string;
+}>;
+
+/**
+ * Reconcile now — for the MANUAL actions of this identity whose outcome
+ * Bluesky never confirmed. Reads relationship truth and settles what a
+ * read can settle; never sends a follow or unfollow. What is still
+ * ambiguous stays `reconciliation_required`, with a fresh note and
+ * timestamp so the operator sees it was looked at.
+ */
+export async function reconcileNowAction(
+  _prev: ReconcileNowResult,
+  formData: FormData,
+): Promise<ReconcileNowResult> {
+  const operatorAccountId = String(formData.get("operator_account_id") ?? "");
+  const ctx = await requireRelationshipContext(operatorAccountId, "connect_platforms");
+  if (ctx.kind !== "ok") return actionFail(ctx.message);
+
+  const actions = await listManualActionsNeedingReconciliation({
+    workspaceId: ctx.workspaceId,
+    operatorAccountId: ctx.operatorAccountId,
+  });
+  if (actions.length === 0) {
+    return actionOk({
+      checked: 0, settled: 0, stillUnknown: 0, reports: [],
+      summary: "Nothing to reconcile: every manual action's outcome is known.",
+    });
+  }
+
+  const session = await resolveRelationshipSession({
+    workspaceId: ctx.workspaceId,
+    accountId: ctx.operatorAccountId,
+  });
+  if (!session.ok) return actionFail(`${session.message} Reconnect the account, then try again.`);
+
+  try {
+    const reports = await reconcileUnresolvedActions({
+      workspaceId: ctx.workspaceId,
+      operatorAccountId: ctx.operatorAccountId,
+      session,
+      actions,
+    });
+    const settled = reports.filter((r) => r.status !== "reconciliation_required").length;
+    const stillUnknown = reports.length - settled;
+    revalidatePath(RELATIONSHIPS_PATH);
+    return actionOk({
+      checked: reports.length,
+      settled,
+      stillUnknown,
+      reports,
+      summary:
+        `Read Bluesky for ${reports.length} ${reports.length === 1 ? "action" : "actions"}: ` +
+        `${settled} settled from what Bluesky reports, ${stillUnknown} still unknown. Nothing was sent.`,
+    });
+  } catch (err) {
+    return actionFail(err instanceof Error ? err.message : "Could not read Bluesky.");
+  }
+}
 
 export async function refreshRelationshipsAction(
   _prev: RefreshActionResult,

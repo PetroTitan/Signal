@@ -243,6 +243,82 @@ async function persistReconciliation(
   });
 }
 
+// =====================================================================
+// Reconcile now — reads only
+// =====================================================================
+
+export interface ReconciledActionReport {
+  actionId: string;
+  subjectDid: string;
+  subjectHandle: string | null;
+  operation: BlueskyActionType;
+  /** What the read observed. */
+  observedState: BlueskyRelationshipState;
+  /** The action's status after the read. */
+  status: BlueskyActionStatus;
+  note: string;
+  reconciledAt: string;
+}
+
+/**
+ * Read Bluesky's relationship truth for every MANUAL action of this
+ * identity that is `reconciliation_required`, and settle what a read
+ * can settle. Sends nothing: there is no code path from here to
+ * `createFollowRecord` or `deleteFollowRecord`, and the only writes are
+ * the action's reconciliation columns and the candidate's observed
+ * state.
+ *
+ * An action the read still cannot decide stays `reconciliation_required`
+ * with a fresh note and timestamp, so the operator sees that it was
+ * looked at and when. Campaign actions are reconciled by their own
+ * dispatcher in `reconcileOnly` mode, under the campaign's claim
+ * discipline; they are excluded here so a member is never worked by
+ * two paths at once.
+ */
+export async function reconcileUnresolvedActions(input: {
+  workspaceId: string;
+  operatorAccountId: string;
+  session: RelationshipSession;
+  actions: BlueskyRelationshipActionRow[];
+  appView?: string;
+  fetchImpl?: typeof fetch;
+  db?: SupabaseClient;
+}): Promise<ReconciledActionReport[]> {
+  const ctx: ExecuteContext = {
+    workspaceId: input.workspaceId,
+    operatorAccountId: input.operatorAccountId,
+    session: input.session,
+    appView: input.appView,
+    fetchImpl: input.fetchImpl,
+    db: input.db,
+  };
+  const reports: ReconciledActionReport[] = [];
+  for (const action of input.actions) {
+    if (action.status !== "reconciliation_required") continue;
+    if (action.campaign_id) continue;
+    if (action.workspace_id !== input.workspaceId) continue;
+    if (action.operator_account_id !== input.operatorAccountId) continue;
+
+    const truth = await readTruth(ctx, action.subject_did);
+    const reconciliation =
+      action.action_type === "follow"
+        ? reconcileFollow(truth)
+        : reconcileUnfollow(truth);
+    await persistReconciliation(ctx, action, reconciliation, null);
+    reports.push({
+      actionId: action.id,
+      subjectDid: action.subject_did,
+      subjectHandle: action.subject_handle_at_action,
+      operation: action.action_type,
+      observedState: reconciliation.observedState,
+      status: reconciliation.status,
+      note: reconciliation.note,
+      reconciledAt: new Date().toISOString(),
+    });
+  }
+  return reports;
+}
+
 /**
  * A halt: the provider refused to work, and NOTHING was applied.
  *
