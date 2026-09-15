@@ -737,37 +737,69 @@ export async function createImportJob(input: {
   return data as unknown as LinkedInImportJobRow;
 }
 
-export async function advanceImportJob(input: {
-  workspaceId: string;
-  jobId: string;
-  cursorRow: number;
+export interface ImportChunkRow {
+  profile_key: string;
+  canonical_profile_url: string;
+  name: string | null;
+  company: string | null;
+  title: string | null;
+}
+
+export interface ImportChunkOutcome {
+  /** False when the job had already passed this cursor: nothing was re-applied. */
+  applied: boolean;
   inserted: number;
   duplicates: number;
-  invalid: number;
   suppressed: number;
+  status: LinkedInImportJobRow["status"];
+  nextCursorRow: number;
+}
+
+/**
+ * Apply one chunk atomically (rows + cursor + counts in one transaction
+ * inside PostgreSQL). Idempotent by cursor: re-sending an applied chunk
+ * is acknowledged, not repeated.
+ */
+export async function applyImportChunk(input: {
+  workspaceId: string;
+  jobId: string;
+  rows: ImportChunkRow[];
+  nextCursorRow: number;
+  invalid: number;
   errors: { row: number; value: string; reason: string }[];
-  status: "running" | "ready" | "failed";
-  lastError?: string | null;
+  done: boolean;
   db?: Db;
-}): Promise<LinkedInImportJobRow> {
-  const { data, error } = await client(input.db)
-    .from("linkedin_import_jobs")
-    .update({
-      cursor_row: input.cursorRow,
-      inserted_count: input.inserted,
-      duplicate_count: input.duplicates,
-      invalid_count: input.invalid,
-      suppressed_count: input.suppressed,
-      error_report: input.errors.slice(0, 2000),
-      status: input.status,
-      last_error: input.lastError ?? null,
-    } as never)
-    .eq("workspace_id", input.workspaceId)
-    .eq("id", input.jobId)
-    .select("*")
-    .single();
-  if (error || !data) throw fromPostgres(error, "Could not record import progress.");
-  return data as unknown as LinkedInImportJobRow;
+}): Promise<ImportChunkOutcome> {
+  const { data, error } = await client(input.db).rpc("linkedin_apply_import_chunk", {
+    p_workspace_id: input.workspaceId,
+    p_job_id: input.jobId,
+    p_rows: input.rows,
+    p_next_cursor_row: input.nextCursorRow,
+    p_invalid: input.invalid,
+    p_errors: input.errors,
+    p_done: input.done,
+  });
+  if (error) throw fromPostgres(error, "Could not record the imported rows.");
+  const r = (Array.isArray(data) ? data[0] : data) as {
+    applied: boolean; inserted: number; duplicates: number; suppressed: number; job_status: string; next_cursor_row: number;
+  };
+  return {
+    applied: Boolean(r?.applied),
+    inserted: Number(r?.inserted ?? 0),
+    duplicates: Number(r?.duplicates ?? 0),
+    suppressed: Number(r?.suppressed ?? 0),
+    status: (r?.job_status as LinkedInImportJobRow["status"]) ?? "running",
+    nextCursorRow: Number(r?.next_cursor_row ?? input.nextCursorRow),
+  };
+}
+
+export async function markImportJobFailed(input: { workspaceId: string; jobId: string; message: string; db?: Db }): Promise<void> {
+  const { error } = await client(input.db).rpc("linkedin_fail_import_job", {
+    p_workspace_id: input.workspaceId,
+    p_job_id: input.jobId,
+    p_message: input.message,
+  });
+  if (error) throw fromPostgres(error, "Could not record the import failure.");
 }
 
 export async function getImportJob(input: { workspaceId: string; jobId: string; db?: Db }): Promise<LinkedInImportJobRow | null> {
