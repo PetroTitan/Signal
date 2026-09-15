@@ -197,7 +197,70 @@ changed. The pair is what the brief asks for; ship both.
 
 ## 4. Evidence
 
-RESULTS_PLACEHOLDER
+Real PostgreSQL throughout (PGlite for single-backend scenarios,
+embedded PostgreSQL for two-session ones), the shipped migrations plus
+`…000004`, the real supabase-js client where the transport is the
+subject, a provider double for Bluesky. FakeDb is used only by the
+pre-existing worker unit suites (which now model the identity-wide stop
+RPC); every decisive state-machine claim below is on real PostgreSQL.
+
+**Full run on the branch, in order** (`npm run typecheck`, `npm run lint`,
+`npm test`, `npm run build`, `git diff --check`):
+
+| Step | Result |
+| --- | --- |
+| typecheck | exit 0 |
+| lint | "No ESLint warnings or errors" |
+| test | **313 files passed, 3 skipped; 5,547 tests passed, 9 skipped, 0 failed** (708 s) |
+| build | exit 0, route table produced |
+| git diff --check | exit 0 |
+
+**Baseline reproductions on unmodified `c91bf90`** (detached worktree):
+
+| Suite | On `c91bf90` |
+| --- | --- |
+| `incident-2026-09-15-cached-reload.pg.test.ts` — negative control (legacy client on a Data Cache) | **passed**: reload GET served from cache, two `createRecord(jwt-OLD)`, zero `refreshSession`, campaign `reauthorization_required` / run `waiting_for_auth` while the identity read connected at N+1; next delivery: campaign `active` + run `waiting_for_auth` (the stop PATCH replayed) |
+| same file — the two fixed-behaviour tests | **failed** (163 cached stores; the reload returned generation N) |
+| `incident-2026-09-15-active-waiting.pg.test.ts` — the sweep on the production shape | **failed**: `expected [] to deeply equal [ …(2) ]` — zero campaigns recovered, run still `waiting_for_auth`; `bluesky_recovery_health()` does not exist |
+
+**Regression matrix on the branch** (all pass):
+
+| Requirement | Where |
+| --- | --- |
+| exact production shape: connected + active + `waiting_for_auth`, counters 20/18, queued members → same run id, counters byte-for-byte, queue/ledger/reservations/usage unchanged, due now, zero provider calls, idempotent | `active-waiting` §1 |
+| next delivery continues the same run from 20/18, one unit and one intent per member, no duplicate | `active-waiting` §1 |
+| `reauthorization_required` + waiting run; three campaigns on one identity; Follow + Unfollow together | `identity-session-coordinator` E |
+| operator-paused campaign with a waiting run never resumes; cancelled and completed never resume; non-recoverable run stop left alone; not-connected identity recovers nothing | `active-waiting` §2, coordinator "operator's pause" |
+| prior-day waiting run closed with reason, current-day run resumed | coordinator "day boundary" |
+| recovery idempotent under repeated calls; **two simultaneous sweeps on real backends recover each campaign exactly once**; keyset paging with a bound (7 campaigns, page 3, max pages 1 then 5) | `active-waiting`, `identity-session-two-session` |
+| service_role EXECUTE true; anon / authenticated / public false — every coordinator, recovery and health function | coordinator (PGlite), `grants-and-rls-real-session` (real login role) |
+| recovery sends zero provider mutations | every recovery test counts provider calls |
+| cached generation N cannot survive after N+1 (real client, Data Cache in the transport; reload reads N+1; every request `cache: "no-store"`; zero cache stores/hits) | `cached-reload` FIXED ×2, `two-session` "through the real service-role client" |
+| the custom fetch receives `cache: "no-store"` and preserves method, headers, body, signal | `service-role.test.ts` |
+| second refreshable rejection after a renewal yields, identity untouched; `refresh_exhausted`; lease lapsed yields | coordinator |
+| stamped stop not recovered until the generation moves; AccountTakedown bounded to one provider call per reconnect | coordinator |
+| one identity's revocation does not stop another identity's campaign | coordinator "fault isolation" |
+| recovery failure on reconnect reported `recovery_pending: true`; no service client → pending; success reports counts | `connect/route.test.ts` |
+| diagnostics token-free, one JSON line per decision, dispatchers named | coordinator "diagnostics" |
+| 429 resume, structural 4xx per member, breaker, conservation, 100k members | pre-existing suites, unchanged and green |
+
+**Mutation controls.** Each defect was introduced into the source, the
+named suites run, the failure observed, and the file restored from git.
+
+| # | Defect introduced | Suites | Result |
+| --- | --- | --- | --- |
+| 1 | `cache: "no-store"` removed from the wrapper | cached-reload, two-session, service-role, contract | **9 of 31 fail** — both fixed-behaviour reproductions, the real-client two-session case, every wrapper assertion, the static contract |
+| 2 | reload generation guard removed | cached-reload | **1 of 3 fails** — the legacy-client case is no longer contained (the stale row is retried) |
+| 3 | a second refreshable rejection maps to `authentication_expired` again (both workers) | coordinator | **1 of 32 fails** — "second rejection after a renewal yields" |
+| 4 | recovery generation guard removed (selection and the under-lock re-check) | coordinator | **2 of 32 fail** — stamped stop recovered while the identity merely reads connected; AccountTakedown loops (three provider calls) |
+| 5 | the identity-wide stop does not stamp the generation | coordinator | **2 of 32 fail** — stamped stop not recovered until the generation moves; AccountTakedown bounded per reconnect |
+| 6 | `refresh_exhausted` mapped to `session_expired` | coordinator | **1 of 32 fails** |
+| 7 | a diagnostic event carries the access JWT | coordinator | **2 of 32 fail** — the injected-sink event and the console line both contain the JWT |
+| 8 | the dispatcher writes a per-campaign `reauthorization_required` instead of the identity-wide stop | coordinator | **1 of 32 fails** — AccountTakedown loop (three provider calls instead of one) |
+| 9 | a lease-lapsed definitive rejection reports `session_expired` | coordinator | **1 of 32 fails** |
+| 10 | the old `f.status = 'reauthorization_required'` predicate restored in the sweep | active-waiting | **2 of 6 fail** — the production shape is not recovered; the health rows do not clear |
+| 11 | the connect route swallows the recovery state | connect route | **4 of 4 fail** |
+
 
 ## 5. Deployment and supervised recovery order
 
