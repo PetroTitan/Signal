@@ -277,10 +277,13 @@ named suites run, the failure observed, and the file restored from git.
    `20260917000002` after `…000004` reverts `stop_bluesky_campaigns_for_identity`
    to the unstamped body (found by the test suite doing exactly that).
    If a replay is needed, replay the whole tail in order.
-4. **Duplicate version prefix on main.** `20260917000002_identity_session_coordinator.sql`
-   and `20260917000002_linkedin_import_chunk.sql` share a version. The
-   SQL-editor path is unaffected; a CLI `db push` may refuse duplicate
-   versions. Not changed here (both are applied); flagged.
+4. **Migration version collision (resolved after this incident).** At the
+   time of the incident, `20260917000002_identity_session_coordinator.sql`
+   and `20260917000002_linkedin_import_chunk.sql` shared a version. The
+   identity-session migration owned the already-recorded version, so the
+   LinkedIn import migration is now `20260917000005_linkedin_import_chunk.sql`.
+   A repository-wide uniqueness test prevents another collision. Never
+   restore the old filename or mark two migrations under one timestamp.
 5. **Production recovery.** Read-only preflight (as the service role):
    ```sql
    select connection_status, health_status, token_generation, refresh_lease_owner, refresh_lease_expires_at,

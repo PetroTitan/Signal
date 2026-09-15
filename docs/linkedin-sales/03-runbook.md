@@ -10,9 +10,12 @@ connects to LinkedIn.
    registry are the compliance boundary; read them first.
 2. **Apply the migrations** in order, on a staging project first:
    - `20260917000001_linkedin_sales_workspace.sql` — tables, RLS, functions
-   - `20260917000002_linkedin_import_chunk.sql` — atomic import chunk
    - `20260917000003_linkedin_compliance_tools.sql` — suppression, deletion,
      purge, export
+   - `20260917000005_linkedin_import_chunk.sql` — atomic import chunk
+     (independent of the compliance functions; its original `…000002`
+     prefix collided with the identity-session migration and was never
+     executable by a timestamp-based migration runner)
    They are forward-only and additive; no existing table changes.
 3. **Verify on staging** (see "After the migration").
 4. **Deploy the application.** The `/api/linkedin/tick` cron entry in
@@ -27,6 +30,11 @@ connects to LinkedIn.
 
 Do not connect a LinkedIn account to test this feature; it does not need
 one. The existing LinkedIn OAuth (sign-in scopes) is unchanged.
+
+The `…000005` import migration intentionally sorts after `…000003`. Both
+depend only on the tables in `…000001`; neither depends on functions from
+the other migration. Do not restore the old `…000002` filename: that
+version is already owned by `identity_session_coordinator`.
 
 ## After the migration — what to verify
 
