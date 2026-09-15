@@ -341,3 +341,61 @@ describe("B through the real service-role client over PostgREST, with a Data Cac
     await assertConserved(f, B, expect);
   });
 });
+
+describe("the recovery sweep under concurrency, on real backends", () => {
+  it("two simultaneous sweeps over the same connected identity recover each campaign exactly once, and a third finds nothing", async () => {
+    await reconnectAccount(f, "jwt-FRESH", "refresh-fresh");
+    const ids: string[] = [];
+    for (let i = 1; i <= 3; i += 1) {
+      const c = await makeFollowCampaign(f, `sweep-${i}`, { requestedDailyQuota: 100 });
+      await makeMembers(f, c, 3, `sw${i}`);
+      const run = (await f.db.query<{ id: string }>(
+        `select id from public.ensure_bluesky_campaign_run($1,$2,$3,100,100,null)`,
+        [f.tenant.workspaceId, c, DAY])).rows[0].id;
+      await f.db.query(
+        `update public.bluesky_follow_campaign_runs set status = 'waiting_for_auth', last_error_code = 'reauthorization_required',
+                attempted_count = 4, succeeded_count = 3 where id = $1`, [run]);
+      ids.push(c);
+    }
+    const [a, b] = await Promise.all([
+      recoverReauthorizedCampaignsForConnectedIdentities({ workspaceId: f.tenant.workspaceId, nowIso: T0, db: f.client }),
+      recoverReauthorizedCampaignsForConnectedIdentities({ workspaceId: f.tenant.workspaceId, nowIso: T0, db: f.client }),
+    ]);
+    const all = [...a, ...b].map((r) => r.campaignId).sort();
+    expect(all).toEqual(ids.sort());
+    expect(new Set(all).size).toBe(3);
+    const third = await recoverReauthorizedCampaignsForConnectedIdentities({ workspaceId: f.tenant.workspaceId, nowIso: at(1), db: f.client });
+    expect(third).toEqual([]);
+    for (const c of ids) {
+      const runs = await runsFor(f, c);
+      expect(runs).toHaveLength(1);
+      expect(runs[0].status).toBe("running");
+      expect(Number(runs[0].attempted_count)).toBe(4);
+      expect(Number(runs[0].succeeded_count)).toBe(3);
+    }
+  });
+
+  it("a sweep walks pages by keyset — more campaigns than one page, each recovered once, no OFFSET", async () => {
+    await reconnectAccount(f, "jwt-FRESH", "refresh-fresh");
+    const ids: string[] = [];
+    for (let i = 1; i <= 7; i += 1) {
+      const c = await makeFollowCampaign(f, `page-${i}`, { requestedDailyQuota: 100 });
+      await f.db.query(`update public.bluesky_follow_campaigns set status = 'reauthorization_required' where id = $1`, [c]);
+      ids.push(c);
+    }
+    const recovered = await recoverReauthorizedCampaignsForConnectedIdentities({
+      workspaceId: f.tenant.workspaceId, nowIso: T0, db: f.client, pageSize: 3, maxPages: 5,
+    });
+    expect(recovered.map((r) => r.campaignId).sort()).toEqual(ids.sort());
+    // Bounded: with fewer pages than needed, the sweep stops and the next delivery continues.
+    for (const c of ids) await f.db.query(`update public.bluesky_follow_campaigns set status = 'reauthorization_required' where id = $1`, [c]);
+    const partial = await recoverReauthorizedCampaignsForConnectedIdentities({
+      workspaceId: f.tenant.workspaceId, nowIso: at(1), db: f.client, pageSize: 3, maxPages: 1,
+    });
+    expect(partial).toHaveLength(3);
+    const rest = await recoverReauthorizedCampaignsForConnectedIdentities({
+      workspaceId: f.tenant.workspaceId, nowIso: at(2), db: f.client, pageSize: 3, maxPages: 5,
+    });
+    expect(rest).toHaveLength(4);
+  });
+});

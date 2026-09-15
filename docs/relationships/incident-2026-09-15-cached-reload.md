@@ -48,6 +48,31 @@ built it and a Data Cache in the transport —
    `waiting_for_auth`: **production's snapshot, exactly**. A second
    member paid a unit for a request that could not succeed.
 
+### The third finding: the sweep could not see `active` + `waiting_for_auth`
+
+After the operator reconnected (`Signed in — Signal can act as this
+account`), the scheduled slot left campaign `cdbb2b76…` **`active`**
+with today's run **`waiting_for_auth`** (20 attempted, 18 succeeded,
+last success 15:35:55Z), and the identity's other active campaign kept
+an authentication-stopped run too.
+
+`recover_bluesky_reauthorized_campaigns` — the sweep the fair round
+runs before listing — selected `f.status = 'reauthorization_required'`
+only. That valid combination was excluded before the run was inspected,
+so the sweep could never repair it. (The dispatcher's own in-run resume
+would have continued it — but only with a working session, which the
+cached reads above denied.)
+
+**Reproduced on unmodified `c91bf90`** by
+`incident-2026-09-15-active-waiting.pg.test.ts` in the detached
+worktree (log `baseline-c91bf90-active-waiting.log`): with a connected
+connection holding encrypted tokens, an active campaign, today's run
+`waiting_for_auth` with preserved counters and queued members, the same
+entry point `dispatch-round.server.ts` calls returned **zero recovered
+campaigns**, the run stayed `waiting_for_auth`, and no provider call
+was made (the sweep has no provider access at all). The health function
+did not exist.
+
 ## 2. Root cause
 
 `createSupabaseServiceRoleClient()` built supabase-js with no `fetch`
@@ -141,8 +166,28 @@ instead of stopping. Operator pauses are untouched (the RPC selects
 | --- | --- |
 | `bluesky_follow_campaigns.auth_stopped_at_generation bigint` | The identity's `token_generation` when the campaign was stopped for authentication. |
 | `stop_bluesky_campaigns_for_identity` | Locks the identity row first, reads its generation, stamps it on every stopped campaign. |
-| `recover_bluesky_reauthorized_campaigns` | Recovers only when `token_generation > auth_stopped_at_generation` (null = legacy, recovered once as before); clears the stamp. |
-| Grants | Restated: `service_role` only. No token returned. |
+| `bluesky_local_date_safe(timestamptz, text)` | A campaign's local date; falls back to UTC for an unparseable zone so one bad row cannot fail the sweep. |
+| `recover_bluesky_reauthorized_campaigns(ws?, account?, campaign?, now, after_campaign_id?, limit)` | **Dropped and recreated** (two new defaulted parameters; the old signature would make named-argument calls ambiguous). Repairs **A** `reauthorization_required` (generation moved past the stamp; null = legacy), **B** `active` + today's run `waiting_for_auth`, **C** the legacy `paused`/`failed` + recoverable-code run shapes. Eligibility: same workspace/account/platform connection, `connected`, encrypted access token present, campaign `active` or `reauthorization_required` only (never `paused`, `cancelled`, `completed`, …), run stop an explicitly recoverable system state. One transaction per campaign: campaigns (ORDER BY id, FOR UPDATE) → runs; eligibility **re-verified under the lock** so two simultaneous sweeps report a campaign once. Campaign → `active`; only recoverable error fields cleared; the same current-day run → `running` (id, quota, counters, reservations, attempts, queue untouched); prior-day `waiting_for_auth` runs → `completed` with an explicit reason; `next_run_at = now` (the dispatcher's start-date and window checks still apply). Keyset-paged, bounded (`limit ≤ 500`, no OFFSET); returns `campaign_id, kind, run_id, run_resumed, previous_status, next_run_at, identity_id, token_generation`. |
+| `bluesky_recovery_health()` | The rows that must normally be empty: connected identity + `active`/`reauthorization_required` campaign + today's run stopped by the system for authentication. Alert if non-empty for two cron intervals. |
+| Grants | Every function: `revoke all from public, anon, authenticated; grant execute to service_role`. Asserted on real PostgreSQL (real login role) and PGlite. No token content returned. |
+
+### Sweep, connect route, page
+
+- `dispatch-round.server.ts` runs the sweep before listing every round,
+  walking pages by campaign id (200 per page, at most 5 pages per
+  delivery; the next delivery continues), and emits one
+  `[bluesky-recovery]` line per repaired campaign
+  (`identity_id, campaign_id, run_id, token_generation, previous_status,
+  new_status, recovery_verdict, next_run_at`) plus a summary
+  (`recovered_campaigns, resumed_runs`).
+- `/api/identity/:id/bluesky/connect` calls the sweep for the identity
+  after the connection is persisted and returns `recovered_campaigns`,
+  `resumed_runs`, `recovery_pending` (and a message). A reconnect is
+  durable even when recovery fails; then `recovery_pending: true`, and
+  every scheduler delivery repeats the same idempotent sweep.
+- The campaign page says "Recovery pending: … the next scheduler
+  delivery resumes today's run" when the identity is already signed in,
+  and "Sign in again" only when it is not.
 
 **Is a migration required?** The transport fix and the coordinator
 hardening need none. The migration closes the recovery-loop hole

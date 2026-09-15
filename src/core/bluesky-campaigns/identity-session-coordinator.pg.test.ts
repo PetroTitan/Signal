@@ -31,6 +31,8 @@ import {
   stopCampaignsForIdentity,
 } from "@/repositories/bluesky-campaign-repository";
 import { vi } from "vitest";
+import { seedTenant } from "@/test/pg/harness";
+import { getTokenCipher } from "@/core/platform-oauth";
 
 /**
  * The identity-session coordinator, on the shipped migrations.
@@ -506,6 +508,8 @@ describe("privileges and lock order", () => {
     "fail_bluesky_refresh",
     "recover_bluesky_reauthorized_campaigns",
     "stop_bluesky_campaigns_for_identity",
+    "bluesky_local_date_safe",
+    "bluesky_recovery_health",
   ];
   it.each(RPCS)("%s — anon and authenticated cannot execute; service_role can", async (name) => {
     const r = await f.db.query<{ sig: string; auth: boolean; anon: boolean; svc: boolean }>(
@@ -529,7 +533,9 @@ describe("privileges and lock order", () => {
          from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname = 'public' and p.proname = any($1)`, [RPCS]);
     for (const row of r.rows) {
-      expect(row.ret, row.proname).not.toMatch(/token/i);
+      // Token CONTENT, never: an encrypted blob, a JWT, an access or
+      // refresh token. (`token_generation` is a counter and is returned.)
+      expect(row.ret, row.proname).not.toMatch(/(access|refresh)_token|encrypted|jwt/i);
     }
   });
 
@@ -864,5 +870,61 @@ describe("diagnostics", () => {
       expect(parsed.source).toBe("follow-dispatcher");
       expect(line).not.toMatch(/jwt-|refresh-[0-9]|eyJ|Bearer/);
     }
+  });
+});
+
+describe("fault isolation across identities", () => {
+  it("one identity's revoked credential stops ITS campaigns only; another identity's campaign on the same delivery continues", async () => {
+    await reconnectAccount(f, "jwt-OLD", "refresh-dead");
+    const mine = await makeFollowCampaign(f, "revoked-identity", { requestedDailyQuota: 100 });
+    await makeMembers(f, mine, 3, "ri");
+
+    // A second identity in a second workspace, connected with a token
+    // the provider accepts.
+    const other = await seedTenant(f.db as never, "other-identity");
+    const cipher = getTokenCipher();
+    await f.db.query(
+      `update public.growth_accounts set connection_status = 'connected', handle = 'other.bsky.social' where id = $1`,
+      [other.identityId]);
+    await f.db.query(
+      `insert into public.platform_connections
+         (workspace_id, account_id, platform, provider_account_id, handle, display_name,
+          connection_status, health_status, access_token_encrypted, refresh_token_encrypted, connected_at)
+       values ($1,$2,'bluesky','did:plc:otheroperator','other.bsky.social','other.bsky.social',
+               'connected','healthy',$3,$4, now())`,
+      [other.workspaceId, other.identityId, cipher.encrypt("jwt-OTHER"), cipher.encrypt("refresh-other")]);
+    const theirs = (await f.db.query<{ id: string }>(
+      `insert into public.bluesky_follow_campaigns
+         (workspace_id, operator_account_id, name, kind, status, requested_daily_quota,
+          max_consecutive_failures, min_success_rate_percent, timezone,
+          execution_window_start_minute, execution_window_end_minute, created_by)
+       values ($1,$2,'theirs','follow','active',100,50,0,'UTC',0,1440,$3) returning id`,
+      [other.workspaceId, other.identityId, other.ownerId])).rows[0].id;
+    await f.db.query(
+      `insert into public.bluesky_follow_campaign_members (workspace_id, campaign_id, subject_did, current_handle, import_sequence)
+       values ($1,$2,'did:plc:ot1','ot1.bsky.social',1), ($1,$2,'did:plc:ot2','ot2.bsky.social',2)`,
+      [other.workspaceId, theirs]);
+
+    const provider = providerDouble({
+      createRecord: ({ token }) => (token === "jwt-OTHER" ? { status: 200 } : { status: 400, body: { error: "ExpiredToken" } }),
+      refreshSession: () => ({ ok: false, status: 400, body: { error: "ExpiredToken", message: "Token has been revoked" } }),
+    });
+    // One delivery over BOTH workspaces.
+    await dispatchFairly({
+      nowIso: T0, db: f.client, fetchImpl: provider.fetchImpl, sleep: async () => undefined, interRequestMs: 0,
+      deadlineMs: 600_000, chunkCostMs: 1, settleMarginMs: 0,
+    });
+    expect((await campaignRow(f, mine)).status).toBe("reauthorization_required");
+    expect((await identityState(f)).status).toBe("reauthorization_required");
+    const theirRow = (await f.db.query<{ status: string }>(
+      `select status from public.bluesky_follow_campaigns where id = $1`, [theirs])).rows[0];
+    const theirMembers = (await f.db.query<{ n: string }>(
+      `select count(*)::text as n from public.bluesky_follow_campaign_members where campaign_id = $1 and status = 'succeeded'`, [theirs])).rows[0];
+    expect(theirRow.status).toBe("completed");
+    expect(Number(theirMembers.n)).toBe(2);
+    const otherConn = (await f.db.query<{ s: string }>(
+      `select connection_status as s from public.platform_connections where account_id = $1`, [other.identityId])).rows[0];
+    expect(otherConn.s).toBe("connected");
+    expect(provider.calls.refreshSession).toBe(1);
   });
 });

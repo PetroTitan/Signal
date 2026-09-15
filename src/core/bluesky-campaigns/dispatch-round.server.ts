@@ -180,12 +180,42 @@ async function listDueRound(input: FairDispatchInput, nowIso: string): Promise<D
   // provider probe. A campaign still waiting for its identity is not
   // listed at all: it costs the round nothing and is never mistaken
   // for one that was served.
-  await recoverReauthorizedCampaignsForConnectedIdentities({
+  const recovered = await recoverReauthorizedCampaignsForConnectedIdentities({
     workspaceId: input.workspaceId ?? null,
     campaignId: input.campaignId ?? null,
     nowIso,
     db: input.db,
   });
+  // One structured, secret-free line per repaired campaign, and one
+  // summary. Identifiers, statuses, a generation and an instant only.
+  for (const r of recovered) {
+    console.info(
+      `[bluesky-recovery] ${JSON.stringify({
+        event: "campaign_recovered",
+        source: "fair-round",
+        identity_id: r.identityId,
+        campaign_id: r.campaignId,
+        kind: r.kind,
+        run_id: r.runId,
+        token_generation: r.tokenGeneration,
+        previous_status: r.previousStatus,
+        new_status: "active",
+        recovery_verdict: r.runResumed ? "run_resumed" : "campaign_only",
+        next_run_at: r.nextRunAt,
+      })}`,
+    );
+  }
+  if (recovered.length > 0) {
+    console.info(
+      `[bluesky-recovery] ${JSON.stringify({
+        event: "sweep",
+        source: "fair-round",
+        recovered_campaigns: recovered.length,
+        resumed_runs: recovered.filter((r) => r.runResumed).length,
+        at: nowIso,
+      })}`,
+    );
+  }
   const [follow, unfollow] = await Promise.all([
     listDueCampaigns({
       nowIso,

@@ -110,6 +110,9 @@ describe("RPC EXECUTE stays service_role-only", () => {
     "fail_bluesky_refresh",
     "recover_bluesky_reauthorized_campaigns",
     "stop_bluesky_campaigns_for_identity",
+    // 20260917000004
+    "bluesky_local_date_safe",
+    "bluesky_recovery_health",
   ];
 
   it.each(WORKER_RPCS)("%s: every overload — authenticated and anon cannot execute, service_role can", async (name) => {
