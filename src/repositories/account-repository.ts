@@ -93,8 +93,10 @@ export async function listAccounts(
 export async function listAccountsByPlatform(
   workspaceId: string,
   platform: string,
+  /** Optional injected client, as for `getAccountById`. */
+  db?: SupabaseClient,
 ): Promise<GrowthAccountRecord[]> {
-  const supabase = createSupabaseServerClient();
+  const supabase = db ?? createSupabaseServerClient();
   const { data, error } = await supabase
     .from("growth_accounts")
     .select("*")

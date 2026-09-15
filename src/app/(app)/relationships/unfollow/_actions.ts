@@ -43,6 +43,8 @@ import {
   type UnfollowSourceKind,
 } from "@/repositories/bluesky-unfollow-repository";
 import { resumeUnfollowImport } from "@/core/bluesky-unfollow/import.server";
+import { dispatchUnfollowCampaigns } from "@/core/bluesky-unfollow/dispatcher.server";
+import { countUnresolvedCampaignActions } from "@/repositories/bluesky-campaign-repository";
 import { isUnfollowDailyQuota } from "@/core/bluesky-unfollow/quota";
 import {
   computeNextRunAt,
@@ -51,6 +53,12 @@ import {
 } from "@/core/bluesky-campaigns/campaign-day";
 import { requireCampaignServiceDb } from "@/core/bluesky-campaigns/service-db.server";
 import { getImportJob } from "@/repositories/bluesky-campaign-import-repository";
+import { confirmationHandleMatches } from "@/core/bluesky-unfollow/confirm-handle";
+import {
+  describeActivationDrift,
+  loadUnfollowActivationFacts,
+  type UnfollowActivationFacts,
+} from "@/core/bluesky-unfollow/activation-facts.server";
 
 const SETUP_PATH = "/relationships/unfollow";
 const CAMPAIGNS_PATH = "/relationships/campaigns";
@@ -396,6 +404,38 @@ export async function continueUnfollowImportAction(
 
 export type ActivateUnfollowResult = ActionResult<{ summary: string }>;
 
+/**
+ * The facts the confirmation dialog shows — from the PERSISTED campaign
+ * row and its frozen queue. A read; nothing is changed. Called by the
+ * wizard's "Unfollow people…" button so the dialog never renders a
+ * value the form fields happened to hold.
+ */
+export type ActivationFactsResult =
+  | { ok: true; facts: UnfollowActivationFacts }
+  | { ok: false; error: string };
+
+export async function loadUnfollowActivationFactsAction(
+  campaignId: string,
+): Promise<ActivationFactsResult> {
+  const ctx = await requireCtx();
+  if (ctx.kind !== "ok") return { ok: false, error: ctx.message };
+  if (!campaignId) return { ok: false, error: "Build the list first." };
+  try {
+    const facts = await loadUnfollowActivationFacts({
+      workspaceId: ctx.workspaceId,
+      campaignId,
+      db: requireCampaignServiceDb(),
+    });
+    if (!facts) return { ok: false, error: "That campaign is not in your workspace." };
+    return { ok: true, facts };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Could not read the campaign.",
+    };
+  }
+}
+
 export async function activateUnfollowCampaignAction(
   _prev: ActivateUnfollowResult,
   formData: FormData,
@@ -429,12 +469,16 @@ export async function activateUnfollowCampaignAction(
   // Not a checkbox: the handle they typed is compared to the one the
   // session actually resolves to, so a campaign cannot be started
   // against an account they did not mean.
-  const confirmedIdentity = String(formData.get("confirm_identity") ?? "")
-    .trim()
-    .replace(/^@/, "")
-    .toLowerCase();
-  if (!confirmedIdentity) {
+  const confirmedIdentity = String(formData.get("confirm_identity") ?? "");
+  if (!confirmedIdentity.trim()) {
     return actionFail("Type the Bluesky handle this will act as.");
+  }
+  // The fingerprint of the facts the operator was SHOWN. Recomputed
+  // from the database below; a mismatch means the campaign changed
+  // between review and submit and the consent does not cover it.
+  const confirmedVersion = String(formData.get("confirmed_version") ?? "");
+  if (!confirmedVersion) {
+    return actionFail("Review the campaign before starting it.");
   }
 
   let db;
@@ -498,14 +542,39 @@ export async function activateUnfollowCampaignAction(
         `${session.message} Reconnect the account on Accounts, then start.`,
       );
     }
-    const actual = (session.actorHandle ?? "").trim().toLowerCase();
-    if (!actual || actual !== confirmedIdentity) {
+    // THE SAME normalisation the dialog used, on both sides: zero or one
+    // leading `@`, case-insensitive, nothing else tolerated.
+    const actual = session.actorHandle ?? null;
+    if (!confirmationHandleMatches(confirmedIdentity, actual)) {
       return actionFail(
-        `This would act as @${actual || "an unknown account"}, which is not the handle you typed. Nothing was started.`,
+        `This would act as ${actual ? `@${actual}` : "an unknown account"}, which is not the handle you typed. Nothing was started.`,
       );
     }
   } catch {
     return actionFail("That account is no longer in this workspace.");
+  }
+
+  // WHAT WAS CONFIRMED MUST BE WHAT IS STARTED.
+  //
+  // Reload every fact the dialog showed from the database and compare
+  // fingerprints. A quota edited in another tab, a queue that grew, an
+  // allowlist entry added, a window changed — any of them means the
+  // operator consented to a different campaign than the one that would
+  // now run. Refuse, say what moved, and make them look again.
+  const current = await loadUnfollowActivationFacts({
+    workspaceId: ctx.workspaceId,
+    campaignId,
+    db,
+  });
+  if (!current) return actionFail("That campaign is not in your workspace.");
+  if (current.version !== confirmedVersion) {
+    const reviewed = parseReviewedFacts(formData);
+    const drift = reviewed ? describeActivationDrift(reviewed, current) : [];
+    return actionFail(
+      drift.length > 0
+        ? `The campaign changed since you reviewed it (${drift.join(", ")}). Nothing was started — open the confirmation again and check the new values.`
+        : "The campaign changed since you reviewed it. Nothing was started — open the confirmation again and check the new values.",
+    );
   }
 
   const nextRunAt = computeNextRunAt({
@@ -554,6 +623,22 @@ export async function activateUnfollowCampaignAction(
       ? `Started as a DRY RUN. Signal will go through the motions for up to ${campaign.requested_daily_quota.toLocaleString()} profiles a day and send nothing to Bluesky.`
       : `Started. Signal will unfollow up to ${campaign.requested_daily_quota.toLocaleString()} profiles a day until all ${counts.total.toLocaleString()} are done.`,
   });
+}
+
+/**
+ * The reviewed facts, if the dialog sent them, for a better error
+ * message ONLY. They decide nothing: the version comparison above is
+ * against the database, and these are never written anywhere.
+ */
+function parseReviewedFacts(formData: FormData): UnfollowActivationFacts | null {
+  const raw = formData.get("reviewed_facts");
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as UnfollowActivationFacts;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 // =====================================================================
@@ -667,6 +752,77 @@ export async function cancelUnfollowCampaignAction(
       err instanceof Error ? err.message : "Could not cancel the campaign.",
     );
   }
+}
+
+/**
+ * Reconcile now — READ Bluesky's relationship truth for every action of
+ * this campaign whose outcome is unknown, and settle what a read can
+ * settle. Sends nothing.
+ *
+ * It runs the ordinary dispatcher in `reconcileOnly` mode: the
+ * reservation RPC is asked for ZERO units, so it hands back only
+ * reconciliation takeovers on zero-unit reservations, and a DELETE is
+ * impossible by construction — `consume` refuses to fund a zero-unit
+ * reservation, so no permit ever issues. What remains ambiguous after
+ * the read stays `reconciliation_required` with its backoff. The
+ * execution window does not apply to a read; kill switches do.
+ */
+export async function reconcileUnfollowCampaignNowAction(
+  _prev: ControlResult,
+  formData: FormData,
+): Promise<ControlResult> {
+  const ctx = await requireCtx();
+  if (ctx.kind !== "ok") return actionFail(ctx.message);
+  const campaignId = String(formData.get("campaign_id") ?? "");
+
+  const campaign = await getCampaign(ctx.workspaceId, campaignId);
+  if (!campaign) return actionFail("That campaign is not in your workspace.");
+  if (campaign.kind !== "unfollow") {
+    return actionFail("That campaign is not an unfollow campaign.");
+  }
+
+  let db;
+  try {
+    db = requireCampaignServiceDb();
+  } catch (err) {
+    return actionFail(err instanceof Error ? err.message : "Campaign worker unavailable.");
+  }
+
+  const before = await countUnresolvedCampaignActions({
+    workspaceId: ctx.workspaceId,
+    campaignId,
+    db,
+  });
+  if (before === 0) {
+    return actionOk({ summary: "Nothing to reconcile: every outcome for this campaign is known." });
+  }
+
+  const result = await dispatchUnfollowCampaigns({
+    db,
+    workspaceId: ctx.workspaceId,
+    campaignId,
+    reconcileOnly: true,
+    budgetMs: 25_000,
+  });
+  const after = await countUnresolvedCampaignActions({
+    workspaceId: ctx.workspaceId,
+    campaignId,
+    db,
+  });
+
+  revalidatePath(`/relationships/unfollow/${campaignId}`);
+  revalidatePath(CAMPAIGNS_PATH);
+  revalidatePath("/relationships");
+
+  const settled = Math.max(0, before - after);
+  const blocked = result.notes.find((n) => /kill switch|session unavailable|another dispatcher/.test(n));
+  if (blocked && settled === 0) return actionFail(`Could not read Bluesky right now: ${blocked}`);
+  return actionOk({
+    summary:
+      `Read Bluesky for ${before.toLocaleString()} unresolved ${before === 1 ? "action" : "actions"}: ` +
+      `${settled.toLocaleString()} settled from what Bluesky reports, ` +
+      `${after.toLocaleString()} still unknown and kept for a later read. Nothing was sent.`,
+  });
 }
 
 /**
