@@ -33,6 +33,8 @@ const SURFACES: [string, string][] = [
   ["task card", read(`${BASE}tasks/_task-card.tsx`)],
   ["analytics page", read(`${BASE}analytics/page.tsx`)],
   ["compliance page", read(`${BASE}compliance/page.tsx`)],
+  ["suppression panel", read(`${BASE}compliance/_suppression-panel.tsx`)],
+  ["data tools", read(`${BASE}compliance/_data-tools.tsx`)],
 ];
 const INTERACTIVE = SURFACES.filter(([name]) => !["layout", "boundary notice"].includes(name));
 

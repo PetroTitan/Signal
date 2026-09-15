@@ -156,3 +156,26 @@ regions; every control ≥ 44 px; visible focus (`focus-visible` ring
 from the design system); status always carries text, never colour
 alone; no page-level horizontal overflow at 320–1280 (measured by the
 Chromium sweep, not inferred from classes).
+
+
+## Compliance tools (migration 0003)
+
+Five SECURITY DEFINER functions, each one transaction, each writing an
+append-only compliance event, each requiring owner/admin/editor and none
+granted to `service_role`:
+
+| Function | What it does | Event |
+| --- | --- | --- |
+| `suppress_linkedin_profile` | adds the key to the suppression list (idempotent), marks every lead row do-not-contact, ends every `waiting` membership as `suppressed`, cancels every open task for the person, in every campaign | `suppression_added` with counts |
+| `unsuppress_linkedin_profile` | removes the entry and clears the do-not-contact flag on rows it had set; ended memberships and cancelled tasks stay as they are | `suppression_removed` |
+| `delete_linkedin_profile_data` | deletes every lead row (memberships and tasks cascade) and keeps only the key on the suppression list as `deletion_request`, so a later import records the person do-not-contact | `deletion` with counts and a SHA-256 of the key, never the key |
+| `purge_linkedin_expired_leads` | deletes leads with `retention_until <= today`, bounded per call, reports what remains | `retention_purge` |
+| `export_linkedin_profile_data` | returns every lead row, membership, task and the suppression entry for one key as JSON | `export` with a hash of the key |
+
+The UI (`/linkedin/compliance`) requires `edit_content` for suppression and
+export and `manage_settings` (owner/admin) for deletion and purge; the
+database requires `can_edit_linkedin_sales` for all five. The stricter of
+the two applies at each layer.
+
+Related documents: `02-browser-qa.md` (responsive and keyboard evidence),
+`03-runbook.md` (deployment order, operation, stopping).

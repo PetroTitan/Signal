@@ -200,50 +200,6 @@ export async function countLeads(input: { workspaceId: string; leadListId?: stri
   return { total: all.count ?? 0, doNotContact: dnc.count ?? 0 };
 }
 
-/** Leads past their retention date, workspace-wide. Deleted in bounded chunks by keyset. */
-export async function deleteExpiredLeads(input: {
-  workspaceId: string;
-  today: string;
-  limit?: number;
-  db?: Db;
-}): Promise<{ deleted: number; profileKeys: string[] }> {
-  const limit = Math.min(Math.max(input.limit ?? 500, 1), 1000);
-  const { data: due, error } = await client(input.db)
-    .from("linkedin_leads")
-    .select("id, profile_key")
-    .eq("workspace_id", input.workspaceId)
-    .lte("retention_until", input.today)
-    .order("retention_until", { ascending: true })
-    .order("id", { ascending: true })
-    .limit(limit);
-  if (error) throw fromPostgres(error, "Could not read expired leads.");
-  const ids = ((due ?? []) as { id: string; profile_key: string }[]);
-  if (ids.length === 0) return { deleted: 0, profileKeys: [] };
-  const { error: delError } = await client(input.db)
-    .from("linkedin_leads")
-    .delete()
-    .eq("workspace_id", input.workspaceId)
-    .in("id", ids.map((r) => r.id));
-  if (delError) throw fromPostgres(delError, "Could not delete expired leads.");
-  return { deleted: ids.length, profileKeys: ids.map((r) => r.profile_key) };
-}
-
-/** Deletion request for one profile: every lead row for that key, every list. */
-export async function deleteLeadsByProfileKey(input: {
-  workspaceId: string;
-  profileKey: string;
-  db?: Db;
-}): Promise<number> {
-  const { data, error } = await client(input.db)
-    .from("linkedin_leads")
-    .delete()
-    .eq("workspace_id", input.workspaceId)
-    .eq("profile_key", input.profileKey)
-    .select("id");
-  if (error) throw fromPostgres(error, "Could not delete the lead.");
-  return (data ?? []).length;
-}
-
 // =====================================================================
 // Suppression
 // =====================================================================
@@ -313,21 +269,6 @@ export async function removeSuppression(input: { workspaceId: string; profileKey
     .select("id");
   if (error) throw fromPostgres(error, "Could not remove from the suppression list.");
   return (data ?? []).length > 0;
-}
-
-/** Mark every lead row for a key do-not-contact (the suppression list is the authority; this is the visible flag). */
-export async function markLeadsDoNotContact(input: {
-  workspaceId: string;
-  profileKey: string;
-  reason: string;
-  db?: Db;
-}): Promise<void> {
-  const { error } = await client(input.db)
-    .from("linkedin_leads")
-    .update({ do_not_contact: true, do_not_contact_reason: input.reason } as never)
-    .eq("workspace_id", input.workspaceId)
-    .eq("profile_key", input.profileKey);
-  if (error) throw fromPostgres(error, "Could not mark the lead.");
 }
 
 // =====================================================================
@@ -970,4 +911,65 @@ export async function releaseCampaignTasks(input: {
     completedMembers: Number(r?.completed_members ?? 0),
     campaignCompleted: Boolean(r?.campaign_completed),
   };
+}
+
+// =====================================================================
+// Compliance tools (owner/admin/editor; never the service role)
+// =====================================================================
+
+const one = <T,>(data: unknown): T => (Array.isArray(data) ? data[0] : data) as T;
+
+export async function suppressProfile(input: {
+  workspaceId: string; profileKey: string; reason?: string | null;
+  source: "operator" | "import" | "unsubscribe" | "deletion_request"; db?: Db;
+}): Promise<{ added: boolean; leadsMarked: number; membersEnded: number; tasksCancelled: number }> {
+  const { data, error } = await client(input.db).rpc("suppress_linkedin_profile", {
+    p_workspace_id: input.workspaceId, p_profile_key: input.profileKey, p_reason: input.reason ?? null, p_source: input.source,
+  });
+  if (error) throw fromPostgres(error, "Could not add to the suppression list.");
+  const r = one<{ added: boolean; leads_marked: number; members_ended: number; tasks_cancelled: number }>(data);
+  return { added: Boolean(r?.added), leadsMarked: Number(r?.leads_marked ?? 0), membersEnded: Number(r?.members_ended ?? 0), tasksCancelled: Number(r?.tasks_cancelled ?? 0) };
+}
+
+export async function unsuppressProfile(input: { workspaceId: string; profileKey: string; db?: Db }): Promise<{ removed: boolean; leadsCleared: number }> {
+  const { data, error } = await client(input.db).rpc("unsuppress_linkedin_profile", { p_workspace_id: input.workspaceId, p_profile_key: input.profileKey });
+  if (error) throw fromPostgres(error, "Could not remove from the suppression list.");
+  const r = one<{ removed: boolean; leads_cleared: number }>(data);
+  return { removed: Boolean(r?.removed), leadsCleared: Number(r?.leads_cleared ?? 0) };
+}
+
+export async function deleteProfileData(input: { workspaceId: string; profileKey: string; reason?: string | null; db?: Db }): Promise<{
+  leadsDeleted: number; membersDeleted: number; tasksDeleted: number; suppressionKept: boolean;
+}> {
+  const { data, error } = await client(input.db).rpc("delete_linkedin_profile_data", {
+    p_workspace_id: input.workspaceId, p_profile_key: input.profileKey, p_reason: input.reason ?? null,
+  });
+  if (error) throw fromPostgres(error, "Could not delete the profile's data.");
+  const r = one<{ leads_deleted: number; members_deleted: number; tasks_deleted: number; suppression_kept: boolean }>(data);
+  return { leadsDeleted: Number(r?.leads_deleted ?? 0), membersDeleted: Number(r?.members_deleted ?? 0), tasksDeleted: Number(r?.tasks_deleted ?? 0), suppressionKept: Boolean(r?.suppression_kept) };
+}
+
+export async function purgeExpiredLeads(input: { workspaceId: string; today: string; limit?: number; db?: Db }): Promise<{ deleted: number; remaining: number }> {
+  const { data, error } = await client(input.db).rpc("purge_linkedin_expired_leads", {
+    p_workspace_id: input.workspaceId, p_today: input.today, p_limit: input.limit ?? 500,
+  });
+  if (error) throw fromPostgres(error, "Could not run the retention purge.");
+  const r = one<{ deleted: number; remaining: number }>(data);
+  return { deleted: Number(r?.deleted ?? 0), remaining: Number(r?.remaining ?? 0) };
+}
+
+export async function exportProfileData(input: { workspaceId: string; profileKey: string; db?: Db }): Promise<Record<string, unknown>> {
+  const { data, error } = await client(input.db).rpc("export_linkedin_profile_data", { p_workspace_id: input.workspaceId, p_profile_key: input.profileKey });
+  if (error) throw fromPostgres(error, "Could not export the profile's data.");
+  return (data ?? {}) as Record<string, unknown>;
+}
+
+export async function countExpiredLeads(input: { workspaceId: string; today: string; db?: Db }): Promise<number> {
+  const { count, error } = await client(input.db)
+    .from("linkedin_leads")
+    .select("id", { count: "exact", head: true })
+    .eq("workspace_id", input.workspaceId)
+    .lte("retention_until", input.today);
+  if (error) throw fromPostgres(error, "Could not count expired leads.");
+  return count ?? 0;
 }

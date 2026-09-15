@@ -32,16 +32,21 @@ import {
   createCampaign,
   createLeadList,
   createSequence,
+  deleteProfileData,
   getCampaign,
   getTask,
   pauseCampaign,
+  purgeExpiredLeads,
   recordComplianceEvent,
   recordTaskCopied,
   recordTaskOpened,
   skipTask,
   suppressFromTask,
+  suppressProfile,
+  unsuppressProfile,
   type SequenceStepInput,
 } from "@/repositories/linkedin-sales-repository";
+import { normaliseProfileUrl, REFUSAL_LABELS } from "@/core/linkedin-sales/profile-url";
 
 type Ctx =
   | { kind: "ok"; workspaceId: string; userId: string; role: WorkspaceRole }
@@ -433,5 +438,100 @@ export async function suggestDraftAction(_prev: SuggestResult, fd: FormData): Pr
     return actionOk({ taskId, text, flags: safety.flags, providerLabel: provider.meta.label });
   } catch (err) {
     return actionFail(err instanceof Error ? err.message : "Could not produce a suggestion.");
+  }
+}
+
+// ---------------------------------------------------------------------
+// Compliance tools. Suppression: editor+. Deletion and purge: owner/admin
+// (manage_settings) — they remove data and cannot be undone.
+// ---------------------------------------------------------------------
+
+export type ComplianceResult = ActionResult<{ message: string }>;
+
+async function requireAdmin(): Promise<Ctx> {
+  const ctx = await requireCtx();
+  if (ctx.kind === "error") return ctx;
+  if (!can(ctx.role, "manage_settings")) {
+    return { kind: "error", message: "Deleting data needs an owner or admin." };
+  }
+  return ctx;
+}
+
+function keyFromForm(fd: FormData): { ok: true; profileKey: string } | { ok: false; error: string } {
+  const raw = str(fd, "profile", 2100);
+  if (!raw) return { ok: false, error: "Paste the public profile URL." };
+  const result = normaliseProfileUrl(raw);
+  if (!result.ok) return { ok: false, error: REFUSAL_LABELS[result.reason] };
+  return { ok: true, profileKey: result.profileKey };
+}
+
+export async function addSuppressionAction(_prev: ComplianceResult, fd: FormData): Promise<ComplianceResult> {
+  const ctx = await requireCtx();
+  if (ctx.kind === "error") return actionFail(ctx.message);
+  const key = keyFromForm(fd);
+  if (!key.ok) return actionFail(key.error);
+  const reason = str(fd, "reason", 500) || null;
+  const source = str(fd, "source", 32) === "unsubscribe" ? "unsubscribe" : "operator";
+  try {
+    const out = await suppressProfile({ workspaceId: ctx.workspaceId, profileKey: key.profileKey, reason, source });
+    revalidateAll();
+    return actionOk({
+      message: out.added
+        ? `Added. ${out.leadsMarked} lead rows marked, ${out.membersEnded} waiting memberships ended, ${out.tasksCancelled} open tasks cancelled.`
+        : `Already on the list. ${out.membersEnded} waiting memberships ended, ${out.tasksCancelled} open tasks cancelled.`,
+    });
+  } catch (err) {
+    return actionFail(err instanceof Error ? err.message : "Could not add to the suppression list.");
+  }
+}
+
+export async function removeSuppressionAction(_prev: ComplianceResult, fd: FormData): Promise<ComplianceResult> {
+  const ctx = await requireCtx();
+  if (ctx.kind === "error") return actionFail(ctx.message);
+  const profileKey = str(fd, "profile_key", 200);
+  if (!/^[a-z0-9][a-z0-9._%-]{0,199}$/.test(profileKey)) return actionFail("Which profile?");
+  if (str(fd, "confirm", 8) !== "on") return actionFail("Tick the confirmation to remove the entry.");
+  try {
+    const out = await unsuppressProfile({ workspaceId: ctx.workspaceId, profileKey });
+    revalidateAll();
+    return actionOk({
+      message: out.removed
+        ? `Removed. ${out.leadsCleared} lead rows are contactable again. People whose campaign already ended stay ended.`
+        : "That profile was not on the list.",
+    });
+  } catch (err) {
+    return actionFail(err instanceof Error ? err.message : "Could not remove the entry.");
+  }
+}
+
+export async function purgeExpiredAction(_prev: ComplianceResult, fd: FormData): Promise<ComplianceResult> {
+  const ctx = await requireAdmin();
+  if (ctx.kind === "error") return actionFail(ctx.message);
+  if (str(fd, "confirm", 8) !== "on") return actionFail("Tick the confirmation to delete expired leads.");
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const out = await purgeExpiredLeads({ workspaceId: ctx.workspaceId, today, limit: 500 });
+    revalidateAll();
+    return actionOk({ message: `Deleted ${out.deleted} leads past their retention date. ${out.remaining} remain; run again to continue.` });
+  } catch (err) {
+    return actionFail(err instanceof Error ? err.message : "Could not run the retention purge.");
+  }
+}
+
+export async function deleteProfileAction(_prev: ComplianceResult, fd: FormData): Promise<ComplianceResult> {
+  const ctx = await requireAdmin();
+  if (ctx.kind === "error") return actionFail(ctx.message);
+  const key = keyFromForm(fd);
+  if (!key.ok) return actionFail(key.error);
+  if (str(fd, "confirm", 8) !== "on") return actionFail("Tick the confirmation to delete this person's data.");
+  const reason = str(fd, "reason", 500) || null;
+  try {
+    const out = await deleteProfileData({ workspaceId: ctx.workspaceId, profileKey: key.profileKey, reason });
+    revalidateAll();
+    return actionOk({
+      message: `Deleted ${out.leadsDeleted} lead rows, ${out.membersDeleted} campaign memberships and ${out.tasksDeleted} tasks. The profile key stays on the suppression list so an import cannot bring them back.`,
+    });
+  } catch (err) {
+    return actionFail(err instanceof Error ? err.message : "Could not delete the profile's data.");
   }
 }
