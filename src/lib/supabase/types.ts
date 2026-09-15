@@ -2215,6 +2215,12 @@ export interface BlueskyFollowCampaignRow {
   last_error_code: string | null;
   last_error_message: string | null;
   rate_limited_until: string | null;
+  /**
+   * When the dispatcher last served this campaign a chunk. Scheduling
+   * state for round-robin fairness across cron deliveries; null until
+   * first served. A hint the scheduler sorts by, never a lock.
+   */
+  last_dispatched_at?: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;

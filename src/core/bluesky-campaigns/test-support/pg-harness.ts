@@ -237,6 +237,74 @@ export async function makeMembers(
   }
 }
 
+/** An UNFOLLOW campaign on the fixture identity, same shape as makeFollowCampaign. */
+export async function makeUnfollowCampaign(
+  f: FollowFixture,
+  name: string,
+  opts: {
+    status?: string;
+    requestedDailyQuota?: number;
+    timezone?: string;
+    windowStart?: number;
+    windowEnd?: number;
+    dryRun?: boolean;
+  } = {},
+): Promise<string> {
+  const r = await f.db.query<{ id: string }>(
+    `insert into public.bluesky_follow_campaigns
+       (workspace_id, operator_account_id, name, kind, status, dry_run,
+        requested_daily_quota, max_consecutive_failures, min_success_rate_percent,
+        timezone, execution_window_start_minute, execution_window_end_minute,
+        created_by)
+     values ($1,$2,$3,'unfollow',$4,$5,$6,50,0,$7,$8,$9,$10) returning id`,
+    [
+      f.tenant.workspaceId, f.tenant.identityId, name,
+      opts.status ?? "active", opts.dryRun ?? false, opts.requestedDailyQuota ?? 300,
+      opts.timezone ?? "UTC", opts.windowStart ?? 0, opts.windowEnd ?? 1440,
+      f.tenant.ownerId,
+    ],
+  );
+  return r.rows[0].id;
+}
+
+/** The record key the double reports for a DID it says the actor follows. */
+export const followRkeyFor = (did: string) => `pre-${did.slice(-6)}`;
+export const followUriFor = (did: string) =>
+  `at://${ACTOR_DID}/app.bsky.graph.follow/${followRkeyFor(did)}`;
+
+/**
+ * Unfollow members `did:plc:<prefix><n>` whose STORED record identity is
+ * exactly what the double will report on a live read, so the worker's
+ * exactness check passes and the delete proceeds.
+ */
+export async function makeUnfollowMembers(
+  f: FollowFixture,
+  campaignId: string,
+  count: number,
+  prefix = "u",
+): Promise<string[]> {
+  const dids: string[] = [];
+  const CHUNK = 500;
+  for (let start = 1; start <= count; start += CHUNK) {
+    const values: string[] = [];
+    for (let i = start; i < Math.min(start + CHUNK, count + 1); i += 1) {
+      const did = `did:plc:${prefix}${i}`;
+      dids.push(did);
+      values.push(
+        `('${f.tenant.workspaceId}','${campaignId}','${did}','${prefix}${i}.bsky.social',${i},` +
+          `'${followUriFor(did)}','${followRkeyFor(did)}','list_records')`,
+      );
+    }
+    await f.db.query(
+      `insert into public.bluesky_follow_campaign_members
+         (workspace_id, campaign_id, subject_did, current_handle, import_sequence,
+          provider_record_uri, provider_record_rkey, provider_record_source)
+       values ${values.join(",")}`,
+    );
+  }
+  return dids;
+}
+
 // =====================================================================
 // The provider double
 // =====================================================================
@@ -248,6 +316,12 @@ export type CreateRecordScript = (call: {
 }) => { status: number; body?: unknown; headers?: Record<string, string> };
 
 export interface ProviderScript {
+  /** Decide each deleteRecord. Default: 200 unless the token is jwt-OLD. */
+  deleteRecord?: (call: { index: number; token: string; rkey: string }) => {
+    status: number;
+    body?: unknown;
+    headers?: Record<string, string>;
+  };
   /** DID → following? (default: not following). */
   following?: Set<string>;
   /** Decide each createRecord. Default: 200 for any token but jwt-OLD. */
@@ -265,6 +339,7 @@ export interface ProviderDouble {
   fetchImpl: typeof fetch;
   calls: {
     createRecord: number;
+    deleteRecord: number;
     refreshSession: number;
     getSession: number;
     getRelationships: number;
@@ -277,6 +352,8 @@ export interface ProviderDouble {
    * else may have landed.
    */
   createRecords: { token: string; subjectDid: string; status: number }[];
+  /** Every deleteRecord, in order. */
+  deleteRecords: { token: string; rkey: string; status: number }[];
   refreshTokensUsed: string[];
 }
 
@@ -290,8 +367,9 @@ function json(body: unknown, status = 200, headers: Record<string, string> = {})
 export function providerDouble(script: ProviderScript = {}): ProviderDouble {
   const state: ProviderDouble = {
     fetchImpl: (async () => json({})) as typeof fetch,
-    calls: { createRecord: 0, refreshSession: 0, getSession: 0, getRelationships: 0 },
+    calls: { createRecord: 0, deleteRecord: 0, refreshSession: 0, getSession: 0, getRelationships: 0 },
     createRecords: [],
+    deleteRecords: [],
     refreshTokensUsed: [],
   };
   let recordSeq = 0;
@@ -316,6 +394,34 @@ export function providerDouble(script: ProviderScript = {}): ProviderDouble {
             : {}),
         })),
       });
+    }
+
+    if (href.includes("deleteRecord")) {
+      state.calls.deleteRecord += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as { rkey?: string };
+      const rkey = body.rkey ?? "";
+      const entry = { token, rkey, status: 0 };
+      state.deleteRecords.push(entry);
+      let verdict: { status: number; body?: unknown; headers?: Record<string, string> };
+      try {
+        verdict = script.deleteRecord
+          ? script.deleteRecord({ index: state.calls.deleteRecord, token, rkey })
+          : token === "jwt-OLD"
+            ? { status: 400, body: { error: "ExpiredToken", message: "Token has expired" } }
+            : { status: 200 };
+      } catch (err) {
+        entry.status = -1;
+        throw err;
+      }
+      entry.status = verdict.status;
+      if (verdict.status === 200) {
+        // The record is gone: a later read no longer reports it.
+        for (const did of script.following ?? []) {
+          if (followRkeyFor(did) === rkey) script.following?.delete(did);
+        }
+        return json(verdict.body ?? {});
+      }
+      return json(verdict.body ?? {}, verdict.status, verdict.headers);
     }
 
     if (href.includes("refreshSession")) {
