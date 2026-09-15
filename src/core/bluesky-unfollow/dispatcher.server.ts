@@ -117,6 +117,16 @@ export interface UnfollowDispatchInput {
   interRequestMs?: number;
   monotonicNowMs?: () => number;
   currentTime?: () => Date;
+  /** At most this many chunks per campaign in this call. See the follow dispatcher. */
+  maxChunks?: number;
+  /**
+   * READ ONLY: reserve nothing, so the RPC hands back only reconciliation
+   * takeovers on zero-unit reservations, and read truth for them. No
+   * DELETE is possible — `consume` refuses to fund a zero-unit
+   * reservation, and the permit never issues. The execution window is
+   * ignored; kill switches are not.
+   */
+  reconcileOnly?: boolean;
 }
 
 const empty = (): UnfollowDispatchResult => ({
@@ -309,7 +319,7 @@ async function runCampaign(args: {
     startMinute: campaign.execution_window_start_minute,
     endMinute: campaign.execution_window_end_minute,
   };
-  if (!isWithinWindow(now, campaign.timezone, window)) {
+  if (!input.reconcileOnly && !isWithinWindow(now, campaign.timezone, window)) {
     await updateCampaign({
       workspaceId: campaign.workspace_id,
       campaignId: campaign.id,
@@ -326,7 +336,7 @@ async function runCampaign(args: {
     return out;
   }
 
-  if (campaign.start_date && clock.localDate < campaign.start_date) {
+  if (!input.reconcileOnly && campaign.start_date && clock.localDate < campaign.start_date) {
     out.note = `starts on ${campaign.start_date} (local date is ${clock.localDate})`;
     return out;
   }
@@ -640,14 +650,22 @@ async function runChunks(ctx: {
    */
   const handledThisPass = new Set<string>();
 
+  const chunkCap = input.maxChunks ?? Number.POSITIVE_INFINITY;
+  let cappedWithWorkLeft = false;
+
   while (args.remainingBudgetMs() > 0) {
+    if (out.ranChunks >= chunkCap) {
+      // One chunk per campaign per round; the run stays open.
+      cappedWithWorkLeft = true;
+      break;
+    }
     const reservation = await reserveAndClaim({
       workspaceId: campaign.workspace_id,
       campaignId: campaign.id,
       runId: run.id,
       operatorAccountId: campaign.operator_account_id,
       usageDate,
-      requested: live.effective,
+      requested: input.reconcileOnly ? 0 : live.effective,
       identityCeiling: IDENTITY_DAILY_MUTATION_CEILING,
       chunkSize: UNFOLLOW_CHUNK_SIZE,
       leaseSeconds: LEASE_SECONDS,
@@ -823,6 +841,13 @@ async function runChunks(ctx: {
       });
     }
     out.note = stop.reason;
+    return out;
+  }
+
+  if (cappedWithWorkLeft) {
+    // Stopped by the per-round chunk cap, not by the queue or quota.
+    // Nothing is closed; the next round or delivery continues.
+    out.note = "chunk cap for this round reached; continues next round";
     return out;
   }
 

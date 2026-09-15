@@ -110,6 +110,23 @@ export interface DispatchInput {
   interRequestMs?: number;
   /** Injected so a test can drive the clock without waiting. */
   monotonicNowMs?: () => number;
+  /**
+   * At most this many chunks per campaign in this call. The fair round
+   * dispatcher passes 1: one chunk, then the next campaign, then
+   * another round if time remains. Stopping at the cap leaves the run
+   * OPEN — the next call continues it.
+   */
+  maxChunks?: number;
+  /**
+   * READ ONLY. Reserve nothing (`requested: 0`), so the reservation RPC
+   * hands back only reconciliation takeovers — members whose earlier
+   * request has an unknown outcome — and the pass reads relationship
+   * truth for them. No provider mutation is possible: a zero-unit
+   * reservation cannot fund one and `consume` refuses. The execution
+   * window is ignored (reads are harmless at any hour); kill switches
+   * are not.
+   */
+  reconcileOnly?: boolean;
 }
 
 /** The later of two optional instants, or null when neither is set. */
@@ -283,7 +300,7 @@ async function runCampaign(args: {
     startMinute: campaign.execution_window_start_minute,
     endMinute: campaign.execution_window_end_minute,
   };
-  if (!isWithinWindow(now, campaign.timezone, window)) {
+  if (!input.reconcileOnly && !isWithinWindow(now, campaign.timezone, window)) {
     await updateCampaign({
       workspaceId: campaign.workspace_id,
       campaignId: campaign.id,
@@ -301,7 +318,7 @@ async function runCampaign(args: {
   }
 
   // ── Start date.
-  if (campaign.start_date && clock.localDate < campaign.start_date) {
+  if (!input.reconcileOnly && campaign.start_date && clock.localDate < campaign.start_date) {
     out.note = `starts on ${campaign.start_date} (local date is ${clock.localDate})`;
     return out;
   }
@@ -624,14 +641,25 @@ async function runChunks(ctx: {
   // this is the floor under it: a pass never works one member twice.
   const handledThisPass = new Set<string>();
 
+  const chunkCap = input.maxChunks ?? Number.POSITIVE_INFINITY;
+  let cappedWithWorkLeft = false;
+
   while (args.remainingBudgetMs() > 0) {
+    if (out.ranChunks >= chunkCap) {
+      // One chunk per campaign per round. The run stays open and the
+      // next round — or the next delivery — continues it.
+      cappedWithWorkLeft = true;
+      break;
+    }
     const reservation = await reserveAndClaim({
       workspaceId: campaign.workspace_id,
       campaignId: campaign.id,
       runId: run.id,
       operatorAccountId: campaign.operator_account_id,
       usageDate,
-      requested: live.effective,
+      // Read-only passes reserve NOTHING: the RPC then hands back only
+      // reconciliation takeovers, on zero-unit reservations.
+      requested: input.reconcileOnly ? 0 : live.effective,
       identityCeiling: IDENTITY_DAILY_FOLLOW_CEILING,
       chunkSize: CAMPAIGN_CHUNK_SIZE,
       leaseSeconds: LEASE_SECONDS,
@@ -796,6 +824,14 @@ async function runChunks(ctx: {
   }
 
   // Why the loop ended decides what happens now.
+  if (cappedWithWorkLeft) {
+    // Stopped by the per-round chunk cap, not by the queue or the
+    // quota. Nothing is closed; the run is left open for the next
+    // round or delivery. Reported so the tick's notes say why a
+    // campaign with work left made only one chunk.
+    out.note = "chunk cap for this round reached; continues next round";
+    return out;
+  }
   const after = await countMembersByStatus({
     workspaceId: campaign.workspace_id,
     campaignId: campaign.id,

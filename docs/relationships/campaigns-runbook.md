@@ -1,3 +1,9 @@
+> **2026-09-16:** operational procedures — pre-flight queries, migration
+> order, rollback, supervised dry runs and canaries, reconciliation
+> verification — are consolidated in `production-runbook.md`. This file
+> remains the reference for the follow subsystem's architecture and
+> environment.
+
 # Follow Campaigns — operational runbook
 
 Everything an on-call operator needs when a campaign misbehaves.
@@ -57,6 +63,17 @@ immutable snapshot cursor. Existing campaign members are retained and
 deduplicated; do not delete or recreate them during rollout.
 
 ## Environment variables
+
+`BLUESKY_TICK_BUDGET_MS` — wall-clock budget the campaign tick plans
+against (default 55,000; maximum 240,000). The dispatcher stops
+CLAIMING new work once less than one chunk's cost (30 s) plus a settle
+margin (5 s) remains, so a platform clamp cannot kill a chunk
+mid-flight. Under the default that is about one 20-member chunk per
+delivery, shared fairly across every due campaign of both kinds:
+**300/day means 300 spread over the day's deliveries, never 300 in one
+request.** Raise it only on a runtime known to allow more.
+
+
 
 | Variable | Required | Purpose |
 | --- | --- | --- |

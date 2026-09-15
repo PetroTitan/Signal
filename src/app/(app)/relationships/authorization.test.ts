@@ -62,6 +62,7 @@ describe("every server action is gated", () => {
       "continueBatchAction",
       "followSelectedAction",
       "importFollowersAction",
+      "reconcileNowAction",
       "refreshRelationshipsAction",
       "removeTargetAction",
       "setProtectedAction",

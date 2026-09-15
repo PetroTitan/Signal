@@ -37,19 +37,36 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
+import {
+  canonicalConfirmationHandle,
+  confirmationHandleMatches,
+  displayConfirmationHandle,
+} from "@/core/bluesky-unfollow/confirm-handle";
 
+/**
+ * What the dialog shows. Every field is read from the PERSISTED
+ * campaign row and its frozen queue by `loadUnfollowActivationFacts`
+ * on the server; nothing here is derived from the wizard's form state.
+ * `version` fingerprints the facts a consent covers, and the server
+ * refuses to activate if the campaign no longer matches it.
+ */
 export interface ActivationFacts {
   campaignId: string;
   /** The Bluesky identity every deletion will be performed as. */
   actorLabel: string;
-  /** The handle the operator must type back, without the @. */
-  actorHandle: string;
+  /**
+   * The handle the operator must type back. Canonical (no `@`), or
+   * null when the identity has no usable handle — in which case the
+   * dialog cannot be satisfied and says so.
+   */
+  actorHandle: string | null;
   sourceLabel: string;
   /** Null when the count is not yet knowable. */
   discovered: number | null;
   stillBuilding: boolean;
   protectedExcluded: number;
   remainingEligible: number;
+  allowlistCount: number;
   requestedDailyQuota: number;
   effectiveDailyQuota: number;
   effectiveQuotaReason: string | null;
@@ -57,6 +74,7 @@ export interface ActivationFacts {
   windowLabel: string;
   estimatedDays: number | null;
   dryRun: boolean;
+  version: string;
 }
 
 function ConfirmButton({ disabled }: { disabled: boolean }) {
@@ -133,11 +151,14 @@ export function ConfirmActivationDialog(props: {
     return <dialog ref={ref} className="hidden" aria-hidden="true" />;
   }
 
-  const handleMatches =
-    typedHandle.trim().replace(/^@/, "").toLowerCase() ===
-    facts.actorHandle.toLowerCase();
+  // ONE normalisation for both sides — the same function the server
+  // action uses. The displayed value is, by construction, an accepted
+  // value: it is `displayConfirmationHandle` of the same input.
+  const shownHandle = displayConfirmationHandle(facts.actorHandle);
+  const handleMatches = confirmationHandleMatches(typedHandle, facts.actorHandle);
   const phraseMatches = typedPhrase.trim().toLowerCase() === PHRASE;
-  const ready = handleMatches && phraseMatches && !facts.stillBuilding;
+  const ready =
+    shownHandle !== null && handleMatches && phraseMatches && !facts.stillBuilding;
 
   return (
     <dialog
@@ -196,6 +217,9 @@ export function ConfirmActivationDialog(props: {
             <dt className="stat-label">Protected / excluded</dt>
             <dd className="text-ink-900">
               {facts.protectedExcluded.toLocaleString()}
+              {facts.allowlistCount > 0
+                ? ` (${facts.allowlistCount.toLocaleString()} on the never-unfollow list)`
+                : ""}
             </dd>
           </div>
           <div>
@@ -287,7 +311,19 @@ export function ConfirmActivationDialog(props: {
               <label className="block">
                 <span className="stat-label">
                   Type the handle this will act as
+                  {shownHandle ? (
+                    <>
+                      {": "}
+                      <span className="font-mono break-all">{shownHandle}</span>
+                    </>
+                  ) : null}
                 </span>
+                {shownHandle === null ? (
+                  <p className="text-sm text-red-700 mt-1 leading-relaxed" role="alert">
+                    This account has no usable handle, so it cannot be confirmed
+                    here. Fix the handle on Accounts first.
+                  </p>
+                ) : null}
                 <input
                   type="text"
                   inputMode="text"
@@ -295,7 +331,7 @@ export function ConfirmActivationDialog(props: {
                   spellCheck={false}
                   value={typedHandle}
                   onChange={(e) => setTypedHandle(e.target.value)}
-                  placeholder={facts.actorHandle}
+                  placeholder={shownHandle ?? ""}
                   aria-label="Confirm the Bluesky handle"
                   className="input mt-1 w-full min-h-11"
                 />
@@ -340,8 +376,14 @@ export function ConfirmActivationDialog(props: {
                 <input
                   type="hidden"
                   name="confirm_identity"
-                  value={typedHandle.trim().replace(/^@/, "")}
+                  value={canonicalConfirmationHandle(typedHandle) ?? ""}
                 />
+                {/* The fingerprint of what was SHOWN. The server reloads
+                    the campaign and refuses if it no longer matches. */}
+                <input type="hidden" name="confirmed_version" value={facts.version} />
+                {/* For the error message only — the server decides on
+                    its own reload, never on these. */}
+                <input type="hidden" name="reviewed_facts" value={JSON.stringify(facts)} />
                 <ConfirmButton disabled={!ready} />
               </form>
             </div>

@@ -40,9 +40,17 @@ describe("a cancelled confirmation makes ZERO server-action calls", () => {
     expect(WIZARD).not.toMatch(/<form[^>]*action=\{\s*activateDispatch/);
   });
 
-  it("the trigger is a plain button that only sets state", () => {
-    // A submit inside any surrounding form would fire on Enter.
-    expect(WIZARD).toMatch(/type="button"[\s\S]{0,300}setConfirming\(\{/);
+  it("the trigger is a plain button that reads the facts from the SERVER and only sets state", () => {
+    // A submit inside any surrounding form would fire on Enter. And the
+    // facts it opens the dialog with come from
+    // `loadUnfollowActivationFactsAction` — the persisted row — never
+    // from an object literal built out of the form fields, which is how
+    // production showed 09:00–20:00 for a 00:00–01:00 campaign.
+    expect(WIZARD).toMatch(
+      /type="button"[\s\S]{0,900}loadUnfollowActivationFactsAction\(campaignId\)[\s\S]{0,300}setConfirming\(loaded\.facts\)/,
+    );
+    expect(WIZARD).not.toMatch(/setConfirming\(\{/);
+    expect(WIZARD).not.toMatch(/windowLabel:/);
     expect(WIZARD).not.toMatch(/<Submit[^>]*label="Start automatic unfollowing"/);
   });
 
@@ -90,7 +98,9 @@ describe("the operator must confirm the identity AND the action", () => {
   it("both typed fields gate the submit control", () => {
     expect(DIALOG).toMatch(/const handleMatches =/);
     expect(DIALOG).toMatch(/const phraseMatches =/);
-    expect(DIALOG).toMatch(/ready = handleMatches && phraseMatches/);
+    expect(DIALOG).toMatch(
+      /ready =\s*shownHandle !== null && handleMatches && phraseMatches && !facts\.stillBuilding/,
+    );
     expect(DIALOG).toMatch(/<ConfirmButton disabled=\{!ready\} \/>/);
   });
 
@@ -107,8 +117,42 @@ describe("the operator must confirm the identity AND the action", () => {
     expect(ACTIONS).toMatch(
       /formData\.get\("confirm"\)[\s\S]{0,200}!== "start automatic unfollowing"/,
     );
-    expect(ACTIONS).toMatch(/const actual = \(session\.actorHandle \?\? ""\)/);
-    expect(ACTIONS).toMatch(/actual !== confirmedIdentity/);
+    expect(ACTIONS).toMatch(/const actual = session\.actorHandle \?\? null/);
+    expect(ACTIONS).toMatch(/confirmationHandleMatches\(confirmedIdentity, actual\)/);
+  });
+
+  it("ONE normalisation on both sides — no inline @-stripping remains anywhere", () => {
+    // The defect: the dialog stripped one `@` from the typed value and
+    // none from the stored handle, so only `@@handle` passed. Both sides
+    // now call the same function and nothing else compares handles.
+    expect(DIALOG).toMatch(/confirmationHandleMatches\(typedHandle, facts\.actorHandle\)/);
+    expect(DIALOG).toMatch(/displayConfirmationHandle\(facts\.actorHandle\)/);
+    expect(DIALOG).toMatch(/canonicalConfirmationHandle\(typedHandle\)/);
+    expect(DIALOG).not.toMatch(/replace\(\/\^@/);
+    expect(ACTIONS).not.toMatch(/replace\(\/\^@/);
+    expect(ACTIONS).not.toMatch(/\.toLowerCase\(\)[\s\S]{0,80}confirmedIdentity/);
+  });
+
+  it("the placeholder, the instruction and the comparison are the SAME value", () => {
+    // Placeholder and instruction both render `shownHandle`, which is
+    // `displayConfirmationHandle(facts.actorHandle)`; the comparison is
+    // `confirmationHandleMatches(typedHandle, facts.actorHandle)`. The
+    // shown value is therefore an accepted value by construction.
+    expect(DIALOG).toMatch(/placeholder=\{shownHandle \?\? ""\}/);
+    expect(DIALOG).toMatch(/<span className="font-mono break-all">\{shownHandle\}<\/span>/);
+  });
+
+  it("activation carries the fingerprint of what was shown, and the server compares it to the DATABASE", () => {
+    expect(DIALOG).toMatch(/name="confirmed_version" value=\{facts\.version\}/);
+    expect(ACTIONS).toMatch(/formData\.get\("confirmed_version"\)/);
+    expect(ACTIONS).toMatch(/loadUnfollowActivationFacts\(\{[\s\S]{0,120}campaignId,[\s\S]{0,40}db,[\s\S]{0,20}\}\)/);
+    // The comparison itself, as the branch condition — not merely
+    // mentioned. `if (false && …)` must not pass this.
+    expect(ACTIONS).toMatch(/if \(current\.version !== confirmedVersion\) \{/);
+    expect(ACTIONS).not.toMatch(/if \(false/);
+    // The client-sent facts are used for the MESSAGE only, never the decision.
+    expect(ACTIONS).toMatch(/parseReviewedFacts\(formData\)/);
+    expect(ACTIONS).not.toMatch(/reviewed\.version/);
   });
 
   it("activation is refused while the queue is incomplete or failed", () => {

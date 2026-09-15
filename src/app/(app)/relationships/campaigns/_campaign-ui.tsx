@@ -19,6 +19,7 @@ import {
   cancelCampaignAction,
   changeQuotaAction,
   importCampaignMembersAction,
+  reconcileCampaignNowAction,
   pauseCampaignAction,
   setKillSwitchAction,
   type CampaignLifecycleResult,
@@ -34,7 +35,10 @@ import type {
   BlueskyCampaignKillSwitchRow,
   BlueskyFollowCampaignRow,
 } from "@/lib/supabase/types";
-import type { CampaignDetail } from "@/core/bluesky-campaigns/load-campaigns.server";
+import type {
+  CampaignDetail,
+  CampaignKindFilter,
+} from "@/core/bluesky-campaigns/load-campaigns.server";
 
 const EMPTY_LIFECYCLE: CampaignLifecycleResult = { ok: false, error: "" };
 const EMPTY_IMPORT: ImportCampaignResult = { ok: false, error: "" };
@@ -102,9 +106,11 @@ function Stat({ label, value, hint }: { label: string; value: string; hint?: str
 export function CampaignUi(props: {
   identities: { id: string; handle: string | null; displayName: string | null }[];
   campaigns: BlueskyFollowCampaignRow[];
+  kindFilter?: CampaignKindFilter;
   detail: CampaignDetail | null;
   killSwitches: BlueskyCampaignKillSwitchRow[];
 }) {
+  const kindFilter = props.kindFilter ?? "all";
   const [activateState, runActivate] = useFormState(
     activateCampaignAction,
     EMPTY_LIFECYCLE,
@@ -160,6 +166,33 @@ export function CampaignUi(props: {
         </div>
       ) : null}
 
+      {/* Kind filter. Follow and unfollow campaigns share this list;
+          each entry says which it is, and an unfollow entry opens its
+          own screen. */}
+      <nav aria-label="Campaign kind" className="flex flex-wrap gap-2" data-testid="kind-filter">
+        {(
+          [
+            ["all", "All campaigns"],
+            ["follow", "Follow"],
+            ["unfollow", "Unfollow"],
+          ] as const
+        ).map(([value, label]) => (
+          <Link
+            key={value}
+            href={value === "all" ? "/relationships/campaigns" : `/relationships/campaigns?kind=${value}`}
+            aria-current={kindFilter === value ? "page" : undefined}
+            className={`btn min-h-11 inline-flex items-center ${
+              kindFilter === value ? "nav-item-active border-signal-300" : ""
+            }`}
+          >
+            {label}
+          </Link>
+        ))}
+        <Link href="/relationships/unfollow" className="btn-secondary min-h-11 inline-flex items-center">
+          Unfollow people…
+        </Link>
+      </nav>
+
       {/* Campaign picker */}
       {props.campaigns.length > 0 ? (
         <nav
@@ -170,12 +203,20 @@ export function CampaignUi(props: {
             {props.campaigns.map((c) => (
               <li key={c.id}>
                 <Link
-                  href={`/relationships/campaigns?campaign=${c.id}`}
+                  href={
+                    c.kind === "unfollow"
+                      ? `/relationships/unfollow/${c.id}`
+                      : `/relationships/campaigns?campaign=${c.id}`
+                  }
                   aria-current={d?.campaign.id === c.id ? "page" : undefined}
-                  className={`btn whitespace-nowrap ${
+                  className={`btn min-h-11 inline-flex items-center whitespace-nowrap ${
                     d?.campaign.id === c.id ? "nav-item-active border-signal-300" : ""
                   }`}
+                  data-kind={c.kind}
                 >
+                  <span className={`mr-1.5 ${c.kind === "unfollow" ? "badge-neutral" : "badge-info"}`}>
+                    {c.kind === "unfollow" ? "Unfollow" : "Follow"}
+                  </span>
                   {c.name}
                   <span className={`ml-1.5 ${STATUS_BADGE[c.status] ?? "badge-neutral"}`}>
                     {c.status.replace(/_/g, " ")}
@@ -205,10 +246,13 @@ export function CampaignUi(props: {
           killState={killState}
         />
       ) : (
-        <div className="card card-padded">
+        <div className="card card-padded" data-testid="campaigns-empty">
           <p className="text-sm text-ink-600 leading-relaxed">
-            No campaigns yet. Create one to queue profiles and follow them on a
-            daily schedule.
+            {kindFilter === "unfollow"
+              ? "No unfollow campaigns yet. Use “Unfollow people…” to choose who to stop following, how many a day, and confirm once."
+              : kindFilter === "follow"
+                ? "No follow campaigns yet. Create one below to queue profiles and follow them on a daily schedule."
+                : "No campaigns yet. Create a follow campaign below, or use “Unfollow people…” to set up automatic unfollowing. Each campaign is labelled with what it does."}
           </p>
         </div>
       )}
@@ -236,6 +280,10 @@ function CampaignDetailView(props: {
   const c = d.campaign;
   const today = d.today;
   const identity = props.identities.find((i) => i.id === c.operator_account_id);
+  const [reconcileState, runReconcile] = useFormState(
+    reconcileCampaignNowAction,
+    EMPTY_LIFECYCLE,
+  );
 
   return (
     <div className="space-y-4">
@@ -508,6 +556,23 @@ function CampaignDetailView(props: {
         <Notice result={props.pauseState} />
         <Notice result={props.cancelState} />
         <Notice result={props.killState} />
+
+        {/* Reconcile now: READS Bluesky for every action whose outcome is
+            unknown. Runs the dispatcher with zero reserved units, so no
+            follow can be funded and none is sent. */}
+        <div className="mt-3 border border-ink-200 rounded-md p-3 space-y-2" data-testid="reconcile-now">
+          <p className="text-sm text-ink-800 leading-relaxed">
+            <strong>{d.outcomes.pending.reconciling.toLocaleString()}</strong>{" "}
+            {d.outcomes.pending.reconciling === 1 ? "action" : "actions"} awaiting confirmation
+            from Bluesky. Reconciling reads the current relationship and settles what a read can
+            settle. <strong>It never sends a follow or an unfollow.</strong>
+          </p>
+          <form action={runReconcile}>
+            <input type="hidden" name="campaign_id" value={c.id} />
+            <SubmitButton>Reconcile now</SubmitButton>
+          </form>
+          <Notice result={reconcileState} />
+        </div>
 
         {c.status === "draft" ? (
           <p className="text-sm text-ink-700 mt-3 leading-relaxed border border-amber-200 bg-amber-50 rounded-md p-3">

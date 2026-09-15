@@ -125,8 +125,25 @@ describe("the campaign status panel", () => {
     ]) {
       expect(PANEL, field).toContain(field);
     }
-    expect(PANEL).toContain("View campaign");
-    expect(PANEL).toContain("Pause");
+    expect(PANEL).toContain("Open campaign");
+    // Every card says which KIND of campaign it is, and links to that
+    // campaign's own screen — an unfollow campaign is never described
+    // as, or opened as, a follow campaign.
+    expect(PANEL).toContain('summary.kind === "unfollow" ? "Unfollow" : "Follow"');
+    expect(PANEL).toContain("summary.href");
+    expect(PANEL).toContain("summary.failedToday");
+  });
+
+  it("shows EVERY live campaign on the identity and states the shared ceiling", () => {
+    // Two follow campaigns can be active on one identity, with an
+    // unfollow campaign beside them. The panel maps over all of them
+    // and says, once, that they share the identity's daily ceiling.
+    expect(PANEL).toMatch(/overview\.campaigns\.map\(/);
+    expect(PANEL).toContain('data-testid="shared-ceiling"');
+    expect(PANEL).toContain("overview.ceiling");
+    expect(PANEL).toContain("overview.followsToday");
+    expect(PANEL).toContain("overview.unfollowsToday");
+    expect(PANEL).toMatch(/"campaigns"\} running as/);
   });
 
   it("reports requested and effective quota as different numbers", () => {
@@ -144,16 +161,20 @@ describe("the campaign status panel", () => {
     expect(SUMMARY).toContain("countMembersByStatus");
   });
 
-  it("says plainly when the campaign is finished", () => {
-    expect(PANEL).toMatch(/will not follow anyone else/i);
+  it("says plainly when nothing is running for the selected identity", () => {
+    // A finished or paused campaign is not "running"; the panel says
+    // nothing is, rather than borrowing another identity's campaign.
+    expect(PANEL).toContain("Nothing running for this identity");
   });
 
-  it("does not make Pause look like a destructive stop", () => {
-    // Pause is secondary here and stopping for good is not offered at
-    // all — it lives on the campaign page with its own confirmation.
-    const controls = PANEL.slice(PANEL.indexOf("View campaign"));
-    expect(controls).toContain("btn-secondary");
-    expect(controls).not.toMatch(/\bCancel campaign\b|\bStop\b|\bDelete\b/);
+  it("offers no destructive control on a card", () => {
+    // The only control is a secondary link to the campaign's own
+    // screen, where pause, cancel and stop live with their
+    // confirmations.
+    const card = PANEL.slice(PANEL.indexOf("function CampaignCard"), PANEL.indexOf("export function AutomationPanel"));
+    expect(card).toContain("Open campaign");
+    expect(card).toContain("btn-secondary");
+    expect(card).not.toMatch(/\bCancel campaign\b|\bStop\b|\bDelete\b|\bPause\b/);
   });
 });
 

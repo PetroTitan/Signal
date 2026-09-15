@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { authorizeCronRequest } from "@/lib/cron-auth";
-import { dispatchCampaigns } from "@/core/bluesky-campaigns/dispatcher.server";
-import { dispatchUnfollowCampaigns } from "@/core/bluesky-unfollow/dispatcher.server";
+import {
+  dispatchFairly,
+  tickDeadlineMs,
+} from "@/core/bluesky-campaigns/dispatch-round.server";
 import { isGloballyDisabledByEnv } from "@/core/bluesky-campaigns/kill-switch.server";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
 
@@ -19,63 +21,66 @@ import { createSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
  * publish must not eat the follow window, and a campaign fault must not
  * stop the publisher.
  *
- * WHY UNFOLLOW SHARES THIS CRON AND NOT A NEW ONE
- * -----------------------------------------------
- * The two dispatchers compete for the SAME per-identity daily budget
- * and, on a shared serverless egress, the same per-IP request limit.
- * Two independent crons would run them concurrently and make both facts
- * invisible to each other — the reservation RPC would still keep them
- * correct, but they would spend the whole day discovering contention
- * they could simply have taken turns over.
+ * ONE DELIVERY, SHARED FAIRLY
+ * ---------------------------
+ * Both kinds of campaign compete for the same per-identity daily
+ * budget and the same provider request limit, so they run inside ONE
+ * invocation and take turns rather than discovering contention in
+ * parallel. The turn-taking is `dispatchFairly`: rounds, at most one
+ * chunk per campaign per round, ordered by when each campaign was last
+ * served (persisted, so the order survives between deliveries), with
+ * another round only while safe time remains.
  *
- * Running in sequence inside one invocation also fixes the ORDER, and
- * the order is a decision: FOLLOW GOES FIRST. If the identity's budget
- * runs out, the work that does not happen is the irreversible, publicly
- * visible deletion, not the creation. The reverse ordering would make
- * an unfollow campaign able to starve a follow campaign of a resource
- * they both approved — and it would do so by spending it on the act
- * that cannot be undone.
+ * Follow's priority over unfollow is a QUOTA rule, not an ordering:
+ * an unfollow campaign stands aside only when the identity's remaining
+ * budget today is no more than what the due follow campaigns on it
+ * still need. When the budget is fine, both kinds progress every
+ * delivery. The previous shape — follow first with the whole budget —
+ * starved unfollow whenever a follow campaign was continuously due.
  *
- * Each dispatcher is given its own wall-clock budget from what REMAINS,
- * so the second is not handed a deadline the first has already passed.
+ * THE DEADLINE
+ * ------------
+ * `maxDuration = 300` is declared, but a platform may clamp it (Vercel
+ * Hobby: 60 s) and the plan this project deploys under was not
+ * verifiable from the repository. The dispatcher therefore assumes a
+ * 60-second ceiling unless `BLUESKY_TICK_BUDGET_MS` says otherwise, and
+ * stops CLAIMING new work once less than one chunk's cost remains — a
+ * claimed chunk is always settled or released by its own code. Under
+ * the default that is about one 20-member chunk per delivery; a
+ * 300/day campaign is 300 spread across the day's deliveries, never
+ * 300 in one request. See docs/relationships/campaigns-runbook.md.
  *
  * REPLAY PROTECTION
  * -----------------
  * The bearer secret alone authenticates the caller but does not make a
- * REPLAYED request harmless — an attacker who captured one could send
- * it repeatedly. That is handled where it actually matters rather than
- * with a nonce cache that a serverless deployment cannot share:
+ * REPLAYED request harmless. That is handled where it actually matters
+ * rather than with a nonce cache that a serverless deployment cannot
+ * share:
  *
  *   - the day's run is unique per (campaign, local_date), so a replay
  *     finds the existing run;
  *   - claiming is `FOR UPDATE SKIP LOCKED`, so a replay racing the real
  *     request claims different rows, not the same ones;
  *   - one action per (campaign, member) is a unique index, so no member
- *     can be followed twice however many times this endpoint is hit;
+ *     can be followed or unfollowed twice however many times this
+ *     endpoint is hit;
  *   - the daily quota is consumed in the database, so N replays cannot
- *     attempt N times the approved volume.
- *
- * In other words a replay is bounded by the same invariants that make
- * at-least-once cron delivery safe — which is the only defence that
- * works when the attacker can also simply wait for the next real tick.
+ *     attempt N times the approved volume;
+ *   - the dispatch lease is one dispatcher per campaign-day.
  *
  * Method: GET, to match the existing cron routes and because Vercel
  * Cron issues GET. It takes no body and no client-supplied workspace,
- * campaign or quota: everything is read from the database.
+ * campaign, quota or deadline: everything is read from the database
+ * and the deployment's own environment.
  */
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * 300s is the Vercel Pro ceiling and matches `/api/scheduler/tick`. The
- * dispatcher stops its chunk loop at 240s, leaving a full minute to
- * persist the run's state and respond — being killed mid-write is the
- * only outcome that loses information rather than just time.
- *
- * On Hobby the platform clamps this to 60s. The system stays correct
- * (fewer chunks per tick, next delivery continues); it is simply
- * slower. See the runbook.
+ * 300 s is the Vercel Pro ceiling and matches `/api/scheduler/tick`.
+ * It is NOT what the dispatcher plans against — `tickDeadlineMs` is —
+ * so a platform clamp to 60 s cannot kill a chunk mid-flight.
  */
 export const maxDuration = 300;
 
@@ -112,30 +117,22 @@ export async function GET(request: Request) {
     );
   }
 
-  const startedAt = Date.now();
   try {
-    // FOLLOW FIRST — see the ordering note above. Its own budget is
-    // unchanged; nothing about the follow pass is altered by the
-    // unfollow pass existing.
-    const follow = await dispatchCampaigns({ db });
-
-    // Whatever is left of the request, minus a margin to persist state
-    // and respond. A negative or tiny remainder means the follow pass
-    // used the invocation; the unfollow pass simply waits for the next
-    // cron delivery rather than being started with no time to finish a
-    // chunk it has already claimed.
-    const remainingMs = 240_000 - (Date.now() - startedAt);
-    const unfollow =
-      remainingMs > 20_000
-        ? await dispatchUnfollowCampaigns({ db, budgetMs: remainingMs })
-        : null;
-
+    const round = await dispatchFairly({
+      db,
+      deadlineMs: tickDeadlineMs(process.env),
+    });
     return NextResponse.json({
       ok: true,
-      ...follow,
-      unfollow: unfollow ?? {
-        skipped: "no time left in this invocation; the next delivery continues",
-      },
+      deadlineMs: round.deadlineMs,
+      rounds: round.rounds,
+      served: round.served,
+      deferred: round.deferred,
+      // Kept flat for the follow figures, as before, so anything reading
+      // the old shape still finds them.
+      ...round.follow,
+      unfollow: round.unfollow,
+      notes: [...round.notes, ...round.follow.notes],
     });
   } catch (err) {
     // Deliberately a 200 with ok:false rather than a 500. A cron

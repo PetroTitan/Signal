@@ -229,6 +229,14 @@ class Builder<T = Record<string, unknown>[]> implements PromiseLike<Result<T>> {
     this.filters.push({ op: "gte", column, value });
     return this;
   }
+  gt(column: string, value: unknown): Builder<T> {
+    this.filters.push({ op: "gt", column, value });
+    return this;
+  }
+  lt(column: string, value: unknown): Builder<T> {
+    this.filters.push({ op: "lt", column, value });
+    return this;
+  }
   lte(column: string, value: unknown): Builder<T> {
     this.filters.push({ op: "lte", column, value });
     return this;

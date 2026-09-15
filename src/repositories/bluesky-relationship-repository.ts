@@ -1234,6 +1234,30 @@ export async function listActionHistoryPage(input: {
  * a standing condition the operator must not be able to page past, so
  * the banner that reports it has to be independent of pagination.
  */
+/**
+ * The MANUAL actions of this identity whose outcome is unknown. Campaign
+ * actions are excluded: their campaign's dispatcher reconciles them
+ * under the campaign's own claim discipline.
+ */
+export async function listManualActionsNeedingReconciliation(input: {
+  workspaceId: string;
+  operatorAccountId: string;
+  limit?: number;
+  db?: Db;
+}): Promise<BlueskyRelationshipActionRow[]> {
+  const { data, error } = await client(input.db)
+    .from("bluesky_relationship_actions")
+    .select("*")
+    .eq("workspace_id", input.workspaceId)
+    .eq("operator_account_id", input.operatorAccountId)
+    .eq("status", "reconciliation_required")
+    .is("campaign_id", null)
+    .order("requested_at", { ascending: true })
+    .limit(Math.min(Math.max(input.limit ?? 50, 1), 100));
+  if (error) throw fromPostgres(error, "Failed to list actions needing reconciliation.");
+  return (data ?? []) as BlueskyRelationshipActionRow[];
+}
+
 export async function countActionsNeedingReconciliation(input: {
   workspaceId: string;
   operatorAccountId: string;

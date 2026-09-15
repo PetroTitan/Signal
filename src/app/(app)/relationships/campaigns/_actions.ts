@@ -56,6 +56,8 @@ import {
   parseMinutes,
 } from "@/core/bluesky-campaigns/campaign-day";
 import { requireCampaignServiceDb } from "@/core/bluesky-campaigns/service-db.server";
+import { dispatchCampaigns } from "@/core/bluesky-campaigns/dispatcher.server";
+import { countUnresolvedCampaignActions } from "@/repositories/bluesky-campaign-repository";
 
 const CAMPAIGNS_PATH = "/relationships/campaigns";
 
@@ -510,6 +512,60 @@ export async function cancelCampaignAction(
     status: "cancelled",
     summary:
       "Cancelled. No further follows will be attempted. Everything already followed stays followed — this does not unfollow anyone.",
+  });
+}
+
+/**
+ * Reconcile now — READ Bluesky's relationship truth for every action of
+ * this campaign whose outcome is unknown. Sends nothing: the dispatcher
+ * runs in `reconcileOnly` mode, reserving zero units, so no follow can
+ * be funded and none is sent. See the unfollow counterpart.
+ */
+export async function reconcileCampaignNowAction(
+  _prev: CampaignLifecycleResult,
+  formData: FormData,
+): Promise<CampaignLifecycleResult> {
+  const ctx = await requireCampaignContext();
+  if (ctx.kind !== "ok") return actionFail(ctx.message);
+  const campaignId = String(formData.get("campaign_id") ?? "");
+  const campaign = await requireCampaign(ctx, campaignId);
+  if (!campaign) return actionFail("That campaign is not in your workspace.");
+  if (campaign.kind !== "follow") {
+    return actionFail("That campaign is not a follow campaign.");
+  }
+
+  let db;
+  try {
+    db = requireCampaignServiceDb();
+  } catch (err) {
+    return actionFail(err instanceof Error ? err.message : "Campaign worker unavailable.");
+  }
+
+  const before = await countUnresolvedCampaignActions({ workspaceId: ctx.workspaceId, campaignId, db });
+  if (before === 0) {
+    return actionOk({ status: campaign.status, summary: "Nothing to reconcile: every outcome for this campaign is known." });
+  }
+  const result = await dispatchCampaigns({
+    db,
+    workspaceId: ctx.workspaceId,
+    campaignId,
+    reconcileOnly: true,
+    budgetMs: 25_000,
+  });
+  const after = await countUnresolvedCampaignActions({ workspaceId: ctx.workspaceId, campaignId, db });
+
+  revalidatePath(CAMPAIGNS_PATH);
+  revalidatePath("/relationships");
+
+  const settled = Math.max(0, before - after);
+  const blocked = result.notes.find((n) => /kill switch|session unavailable|another dispatcher/.test(n));
+  if (blocked && settled === 0) return actionFail(`Could not read Bluesky right now: ${blocked}`);
+  return actionOk({
+    status: campaign.status,
+    summary:
+      `Read Bluesky for ${before.toLocaleString()} unresolved ${before === 1 ? "action" : "actions"}: ` +
+      `${settled.toLocaleString()} settled from what Bluesky reports, ` +
+      `${after.toLocaleString()} still unknown and kept for a later read. Nothing was sent.`,
   });
 }
 

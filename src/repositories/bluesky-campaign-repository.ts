@@ -205,6 +205,29 @@ export async function updateCampaign(
  * not `follow`, and `claim_bluesky_unfollow_action` raises on one whose
  * kind is not `unfollow` — so a bug here cannot become a public act.
  */
+/**
+ * Record that the dispatcher is about to serve this campaign a chunk.
+ *
+ * Written BEFORE the chunk runs, so an invocation killed mid-chunk has
+ * already moved the campaign to the back of the next round: fairness
+ * does not depend on the invocation surviving. Workspace-scoped like
+ * every other write here. Never fails the tick — a lost hint costs one
+ * round of ordering, nothing else.
+ */
+export async function touchCampaignDispatched(input: {
+  workspaceId: string;
+  campaignId: string;
+  nowIso?: string;
+  db?: Db;
+}): Promise<void> {
+  const { error } = await client(input.db)
+    .from("bluesky_follow_campaigns")
+    .update({ last_dispatched_at: input.nowIso ?? new Date().toISOString() })
+    .eq("workspace_id", input.workspaceId)
+    .eq("id", input.campaignId);
+  if (error) throw fromPostgres(error, "Failed to record dispatch order.");
+}
+
 export async function listDueCampaigns(input: {
   nowIso: string;
   limit?: number;
@@ -1404,6 +1427,90 @@ export async function updateRun(input: {
 export interface RunPage {
   rows: BlueskyFollowCampaignRunRow[];
   info: PageInfo;
+}
+
+/**
+ * Runs, newest first, by KEYSET on `local_date` (unique per campaign).
+ * `nextCursor` is the local date to pass back as `beforeLocalDate` for
+ * the next page; null when there is no more.
+ */
+export interface RunKeysetPage {
+  rows: BlueskyFollowCampaignRunRow[];
+  nextCursor: string | null;
+}
+
+export async function listRunsKeyset(input: {
+  workspaceId: string;
+  campaignId: string;
+  beforeLocalDate?: string | null;
+  pageSize?: number;
+  db?: Db;
+}): Promise<RunKeysetPage> {
+  const pageSize = Math.min(Math.max(input.pageSize ?? CAMPAIGN_RUN_PAGE_SIZE, 1), 100);
+  let query = client(input.db)
+    .from("bluesky_follow_campaign_runs")
+    .select("*")
+    .eq("workspace_id", input.workspaceId)
+    .eq("campaign_id", input.campaignId);
+  if (input.beforeLocalDate) query = query.lt("local_date", input.beforeLocalDate);
+  const { data, error } = await query
+    .order("local_date", { ascending: false })
+    .limit(pageSize + 1);
+  if (error) throw fromPostgres(error, "Could not list runs.");
+  const rows = ((data ?? []) as unknown as BlueskyFollowCampaignRunRow[]);
+  const page = rows.slice(0, pageSize);
+  return {
+    rows: page,
+    nextCursor:
+      rows.length > pageSize
+        ? (() => {
+            const v: unknown = page[page.length - 1].local_date;
+            return v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10);
+          })()
+        : null,
+  };
+}
+
+/**
+ * Members by KEYSET on `import_sequence`, which is unique per campaign
+ * and never changes — so a page taken while the dispatcher is moving
+ * rows between states never skips or repeats a member, which OFFSET
+ * paging over a mutable queue does. `nextCursor` is the sequence to
+ * pass back as `afterSequence`.
+ */
+export interface MemberKeysetPage {
+  rows: BlueskyFollowCampaignMemberRow[];
+  nextCursor: number | null;
+}
+
+export async function listMembersKeyset(input: {
+  workspaceId: string;
+  campaignId: string;
+  afterSequence?: number | null;
+  statuses?: BlueskyCampaignMemberStatus[];
+  pageSize?: number;
+  db?: Db;
+}): Promise<MemberKeysetPage> {
+  const pageSize = Math.min(Math.max(input.pageSize ?? CAMPAIGN_MEMBER_PAGE_SIZE, 1), 100);
+  let query = client(input.db)
+    .from("bluesky_follow_campaign_members")
+    .select("*")
+    .eq("workspace_id", input.workspaceId)
+    .eq("campaign_id", input.campaignId);
+  if (input.statuses && input.statuses.length > 0) query = query.in("status", input.statuses);
+  if (input.afterSequence !== undefined && input.afterSequence !== null) {
+    query = query.gt("import_sequence", input.afterSequence);
+  }
+  const { data, error } = await query
+    .order("import_sequence", { ascending: true })
+    .limit(pageSize + 1);
+  if (error) throw fromPostgres(error, "Could not list members.");
+  const rows = ((data ?? []) as unknown as BlueskyFollowCampaignMemberRow[]);
+  const page = rows.slice(0, pageSize);
+  return {
+    rows: page,
+    nextCursor: rows.length > pageSize ? Number(page[page.length - 1].import_sequence) : null,
+  };
 }
 
 export async function listRunsPage(input: {

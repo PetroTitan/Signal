@@ -24,6 +24,7 @@ import Link from "next/link";
 import {
   activateUnfollowCampaignAction,
   continueUnfollowImportAction,
+  loadUnfollowActivationFactsAction,
   previewUnfollowSourceAction,
   startUnfollowSetupAction,
   type ActivateUnfollowResult,
@@ -37,7 +38,6 @@ import {
 } from "./_confirm-activation";
 import {
   UNFOLLOW_DAILY_QUOTA_OPTIONS,
-  estimateDays,
   IDENTITY_DAILY_MUTATION_CEILING,
 } from "@/core/bluesky-unfollow/quota";
 import { COMMON_TIMEZONES } from "@/core/bluesky-campaigns/campaign-day";
@@ -177,25 +177,17 @@ export function UnfollowWizard(props: {
    * cancellation path sets it back to null.
    */
   const [confirming, setConfirming] = useState<ActivationFacts | null>(null);
+  const [loadingFacts, setLoadingFacts] = useState(false);
+  const [factsError, setFactsError] = useState<string | null>(null);
 
   const campaignId = start.ok ? start.campaignId : null;
   const building = start.ok && !start.complete;
   const latest = cont.ok ? cont : start.ok ? start : null;
   const ready = Boolean(latest && latest.complete);
 
-  const identity = props.identities.find((i) => i.id === identityId);
-  const identityLabel = identity
-    ? formatIdentityLabel({
-        id: identity.id,
-        handle: identity.handle,
-        displayName: identity.displayName,
-      })
-    : "no account selected";
 
   const queued = latest?.imported ?? 0;
   const protectedExcluded = latest?.protectedExcluded ?? 0;
-  const effective = Math.min(quota, IDENTITY_DAILY_MUTATION_CEILING);
-  const days = estimateDays(queued, effective);
 
   // A finished activation closes the prompt and shows the result IN
   // PLACE of the form — so the same campaign cannot be started twice.
@@ -553,36 +545,38 @@ export function UnfollowWizard(props: {
             {/* A plain button. It sets state; it does not submit
                 anything. The only form that can dispatch lives inside
                 the dialog and does not exist until it opens. */}
+            {/* The facts come from the SERVER — the persisted campaign
+                row and its frozen queue — never from the form fields
+                above, which may have been edited since "start" or reset
+                by a reload. This is a plain button: it reads, then sets
+                state. The only form that can activate lives inside the
+                dialog. */}
             <button
               type="button"
               className="btn-danger-solid min-h-11 w-full sm:w-auto"
-              onClick={() =>
-                setConfirming({
-                  campaignId,
-                  actorLabel: identityLabel,
-                  actorHandle: identity?.handle ?? "",
-                  sourceLabel:
-                    SOURCES.find((s) => s.value === sourceKind)?.label ??
-                    sourceKind,
-                  discovered: queued,
-                  stillBuilding: !ready,
-                  protectedExcluded,
-                  remainingEligible: queued,
-                  requestedDailyQuota: quota,
-                  effectiveDailyQuota: effective,
-                  effectiveQuotaReason:
-                    effective < quota
-                      ? `Reduced to ${effective.toLocaleString()} a day: this account's daily allowance is shared with any follow campaign using it.`
-                      : null,
-                  timezone,
-                  windowLabel: `${windowStart}–${windowEnd}`,
-                  estimatedDays: days,
-                  dryRun,
-                })
-              }
+              disabled={loadingFacts}
+              onClick={async () => {
+                setLoadingFacts(true);
+                setFactsError(null);
+                try {
+                  const loaded = await loadUnfollowActivationFactsAction(campaignId);
+                  if (!loaded.ok) {
+                    setFactsError(loaded.error);
+                    return;
+                  }
+                  setConfirming(loaded.facts);
+                } finally {
+                  setLoadingFacts(false);
+                }
+              }}
             >
-              Unfollow people…
+              {loadingFacts ? "Checking the campaign…" : "Unfollow people…"}
             </button>
+            {factsError ? (
+              <p className="text-sm text-red-700 leading-relaxed" role="alert">
+                {factsError}
+              </p>
+            ) : null}
           </>
         )}
       </section>

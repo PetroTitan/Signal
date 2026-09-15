@@ -20,6 +20,7 @@ import { useFormState, useFormStatus } from "react-dom";
 import {
   cancelUnfollowCampaignAction,
   pauseUnfollowCampaignAction,
+  reconcileUnfollowCampaignNowAction,
   resumeUnfollowCampaignAction,
   stopIdentityAction,
   type ControlResult,
@@ -66,7 +67,13 @@ export function CampaignControls(props: {
   identityLabel: string;
   status: string;
   canManage: boolean;
+  /** Actions whose outcome is unknown. Enables "Reconcile now". */
+  unresolvedCount?: number;
 }) {
+  const [reconcile, reconcileDispatch] = useFormState(
+    reconcileUnfollowCampaignNowAction,
+    EMPTY,
+  );
   const [pause, pauseDispatch] = useFormState(pauseUnfollowCampaignAction, EMPTY);
   const [resume, resumeDispatch] = useFormState(
     resumeUnfollowCampaignAction,
@@ -147,6 +154,26 @@ export function CampaignControls(props: {
         >
           Export results
         </a>
+      </div>
+
+      {/* Reconcile now: READS Bluesky for every action whose outcome is
+          unknown. It cannot send an unfollow — the dispatcher runs with
+          zero reserved units, so no delete can be funded. */}
+      <div className="border border-ink-200 rounded-md p-3 space-y-2" data-testid="reconcile-now">
+        <p className="text-sm text-ink-800 leading-relaxed">
+          <strong>{(props.unresolvedCount ?? 0).toLocaleString()}</strong>{" "}
+          {props.unresolvedCount === 1 ? "action" : "actions"} awaiting confirmation from Bluesky.
+          Reconciling reads the current relationship and settles what a read can settle.{" "}
+          <strong>It never sends a follow or an unfollow.</strong>
+        </p>
+        <form action={reconcileDispatch}>
+          <input type="hidden" name="campaign_id" value={props.campaignId} />
+          <Submit
+            label="Reconcile now"
+            className="btn-secondary min-h-11 w-full sm:w-auto"
+          />
+        </form>
+        <Notice state={reconcile} />
       </div>
 
       {confirmingCancel ? (

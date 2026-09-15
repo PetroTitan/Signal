@@ -27,8 +27,11 @@ describe("the imported-list workflow", () => {
     expect(UI).toMatch(
       /href=\{props\.automation\.href\} className="btn-primary[^"]*"/,
     );
-    expect(PAGE).toContain("hasCampaign: automation !== null");
-    expect(PAGE).toContain("/relationships/campaigns?campaign=");
+    // "Has a campaign" means at least one LIVE campaign on the selected
+    // identity — the panel shows all of them, so the link goes to the
+    // campaigns list rather than to one campaign chosen silently.
+    expect(PAGE).toContain("hasCampaign: liveCampaigns.length > 0");
+    expect(PAGE).toContain('"/relationships/campaigns"');
   });
 
   it("offers unfollowing beside it, at SECONDARY weight", () => {
