@@ -362,6 +362,7 @@ describe("command authorization", () => {
       "createCampaignAction",
       "importCampaignMembersAction",
       "pauseCampaignAction",
+      "reconcileCampaignNowAction",
       "setKillSwitchAction",
     ]);
   });
@@ -478,17 +479,22 @@ describe("the cron endpoint is protected and bounded", () => {
     // import of dispatchCampaigns naturally appears first.
     const handler = route.slice(route.indexOf("export async function GET"));
     const killAt = handler.indexOf("isGloballyDisabledByEnv()");
-    const dispatchAt = handler.indexOf("dispatchCampaigns({");
+    // One fair round for both kinds replaced the two dispatcher calls.
+    const dispatchAt = handler.indexOf("dispatchFairly({");
     expect(killAt).toBeGreaterThan(-1);
     expect(dispatchAt).toBeGreaterThan(-1);
     expect(killAt).toBeLessThan(dispatchAt);
   });
 
-  it("creates the service-role client and passes it into the dispatcher", () => {
+  it("creates the service-role client and passes it into the dispatcher, with a deadline from the environment", () => {
     expect(route).toContain("createSupabaseServiceRoleClient()");
-    expect(route).toContain("dispatchCampaigns({ db })");
+    expect(route).toMatch(/dispatchFairly\(\{\s*db,\s*deadlineMs: tickDeadlineMs\(process\.env\),\s*\}\)/);
     expect(route).toMatch(/if \(!db\)[\s\S]{0,300}status: 503/);
-    expect(route).not.toContain("dispatchCampaigns({})");
+    expect(route).not.toContain("dispatchFairly({})");
+    // The route no longer calls either dispatcher directly: fairness
+    // between kinds is not something the route can get wrong.
+    expect(route).not.toContain("dispatchCampaigns(");
+    expect(route).not.toContain("dispatchUnfollowCampaigns(");
   });
 
   it("accepts no client input at all", () => {
