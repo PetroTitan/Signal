@@ -222,6 +222,10 @@ thing to get wrong about this data.
 - `production-runbook.md` — the operational runbook (2026-09-16): pre-flight
   queries, migration order, rollback and kill switch, supervised dry runs
   and canaries, reconciliation verification, exact queries.
+- `incident-2026-09-15-cached-reload.md` — the second 2026-09-15 incident: the
+  service-role client's reads were served by Next's Data Cache, so a reload after
+  the lease verdict returned the stale generation; the no-store transport, the
+  reload guard, the yield on a second rejection, and generation-stamped stops.
 - `incident-2026-09-15-identity-session.md` — a routine token expiry stopped a
   campaign and a successful refresh did not bring it back: the identity-scoped
   session coordinator (lease + token generation, atomic campaign recovery),

@@ -111,6 +111,7 @@ export async function POST(
       workspaceId: membership.workspace.id,
       accountId: identityId,
       db: serviceDb ?? undefined,
+      source: "verify-route",
     });
 
     if (!session.ok) {

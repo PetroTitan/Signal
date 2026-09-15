@@ -320,7 +320,13 @@ export async function loadCampaigns(input: {
           }).toISOString(),
       identityFollowsToday: usage?.follows_created ?? 0,
       identityCeiling: IDENTITY_DAILY_FOLLOW_CEILING,
-      nextUserAction: describeNextAction(campaign, counts, effectiveQuota, today),
+      nextUserAction: describeNextAction(
+        campaign,
+        counts,
+        effectiveQuota,
+        today,
+        accounts.find((a) => a.id === campaign.operator_account_id)?.connectionStatus === "connected",
+      ),
       lastSuccessAt:
         runPage.rows.find((r) => r.succeeded_count > 0)?.last_chunk_at ?? null,
       outcomes,
@@ -340,17 +346,26 @@ function describeNextAction(
   counts: MemberStatusCounts,
   quota: { effective: number; reason: string | null; halted: boolean },
   today: BlueskyFollowCampaignRunRow | null = null,
+  identityConnected = false,
 ): string | null {
   // An ACTIVE campaign whose run for today is paused for a recoverable
   // reason is waiting on the operator, and must say so — the deployed
   // page said "active" over a day in which nothing would happen.
+  //
+  // Unless the identity is ALREADY signed in again: then "sign in again"
+  // is stale advice (2026-09-15: the operator had reconnected and the
+  // page still asked them to). What is true then is that recovery is
+  // pending — the sweep before the next scheduler delivery resumes the
+  // run — and that is what the page says.
   if (
     campaign.status === "active" &&
     today &&
     (today.status === "waiting_for_auth" || today.status === "paused" || today.status === "failed") &&
     today.last_error_code === "reauthorization_required"
   ) {
-    return "Sign in to this Bluesky identity again on Accounts. Signal resumes today's run automatically once the session works — no need to press Resume.";
+    return identityConnected
+      ? "Recovery pending: this identity is signed in again, and the next scheduler delivery resumes today's run automatically — no need to press Resume. If this message survives two deliveries, check the tick response."
+      : "Sign in to this Bluesky identity again on Accounts. Signal resumes today's run automatically once the session works — no need to press Resume.";
   }
   switch (campaign.status) {
     case "draft":
@@ -358,7 +373,9 @@ function describeNextAction(
         ? "Import profiles into the queue, then activate."
         : "Review the configuration and activate when you are ready.";
     case "reauthorization_required":
-      return "Sign in to this Bluesky identity again on Accounts. Signal checks on its next tick and resumes the campaign — and today's run — automatically.";
+      return identityConnected
+        ? "Recovery pending: this identity is signed in again; the next scheduler delivery resumes the campaign — and today's run — automatically."
+        : "Sign in to this Bluesky identity again on Accounts. Signal checks on its next tick and resumes the campaign — and today's run — automatically.";
     case "failed":
       return describeFailedCampaign({
         errorCode: campaign.last_error_code,

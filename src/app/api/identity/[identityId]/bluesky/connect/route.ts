@@ -168,6 +168,17 @@ export async function POST(
       }
     }
 
+    // Recovery state, reported truthfully. The reconnect itself is
+    // durable the moment the connection row says `connected`; whether
+    // the campaigns stopped for this identity were brought back HERE is
+    // a separate fact, and the response says which.
+    let recovery: {
+      recovered_campaigns: number;
+      resumed_runs: number;
+      recovery_pending: boolean;
+      recovery_message: string | null;
+    } | null = null;
+
     if (plan.promoteGrowthAccount) {
       try {
         await setAccountConnectionStatus({
@@ -184,28 +195,68 @@ export async function POST(
 
       // EVERY campaign stopped for this identity comes back with it —
       // the same run, the same counters, the same queue. No Resume
-      // button. The RPC is guarded (only reauthorization_required
-      // campaigns whose connection is now `connected`; never one the
-      // operator paused) and service_role-only; if this deployment has
-      // no service client, the dispatcher performs the same recovery on
-      // its next delivery. Nothing is lost, only delayed by one tick.
+      // button. The RPC is guarded (a connected identity; never a
+      // campaign the operator paused, cancelled or completed) and
+      // service_role-only. If it cannot run here — no service client,
+      // a transient database fault — the response says
+      // `recovery_pending: true` and every scheduler delivery performs
+      // the same idempotent sweep. Retrying this route is harmless.
       try {
         const serviceDb = createSupabaseServiceRoleClient();
-        if (serviceDb) {
-          await recoverReauthorizedCampaignsForConnectedIdentities({
+        if (!serviceDb) {
+          recovery = {
+            recovered_campaigns: 0,
+            resumed_runs: 0,
+            recovery_pending: true,
+            recovery_message:
+              "Signed in. Campaign recovery runs on the next scheduler delivery (no service client on this deployment).",
+          };
+        } else {
+          const recovered = await recoverReauthorizedCampaignsForConnectedIdentities({
             workspaceId: membership.workspace.id,
             accountId: identityId,
             db: serviceDb,
           });
+          recovery = {
+            recovered_campaigns: recovered.length,
+            resumed_runs: recovered.filter((r) => r.runResumed).length,
+            recovery_pending: false,
+            recovery_message: null,
+          };
+          for (const r of recovered) {
+            console.info(
+              `[bluesky-recovery] ${JSON.stringify({
+                event: "campaign_recovered",
+                source: "connect-route",
+                identity_id: identityId,
+                campaign_id: r.campaignId,
+                kind: r.kind,
+                run_id: r.runId,
+                token_generation: r.tokenGeneration,
+                previous_status: r.previousStatus,
+                new_status: "active",
+                recovery_verdict: r.runResumed ? "run_resumed" : "campaign_only",
+                next_run_at: r.nextRunAt,
+              })}`,
+            );
+          }
         }
       } catch (err) {
         console.error("[bluesky/connect] campaign recovery deferred to the dispatcher", err);
+        recovery = {
+          recovered_campaigns: 0,
+          resumed_runs: 0,
+          recovery_pending: true,
+          recovery_message:
+            "Signed in. Campaign recovery could not be completed right now; the next scheduler delivery repeats it automatically.",
+        };
       }
     }
 
-    return NextResponse.json(plan.response.body, {
-      status: plan.response.status,
-    });
+    return NextResponse.json(
+      recovery ? { ...plan.response.body, ...recovery } : plan.response.body,
+      { status: plan.response.status },
+    );
   } catch (err) {
     console.error("[bluesky/connect] unexpected error", err);
     return jsonError(500, "unknown", "Unexpected error.");

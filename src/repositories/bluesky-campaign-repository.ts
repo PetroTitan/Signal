@@ -1758,6 +1758,37 @@ export async function getCampaignActionRejection(input: {
 }
 
 /**
+ * Stop every ACTIVE campaign of an identity for authentication — the
+ * identity-wide transition, recorded with the identity's current token
+ * generation so recovery can tell a completed session transition from
+ * a merely `connected` status. Running runs become `waiting_for_auth`.
+ * Never touches a paused, rate-limited, completed or cancelled campaign.
+ */
+export async function stopCampaignsForIdentity(input: {
+  workspaceId: string;
+  accountId: string;
+  message: string;
+  db?: Db;
+}): Promise<{ campaignsStopped: number; runsStopped: number }> {
+  const { data, error } = await client(input.db).rpc(
+    "stop_bluesky_campaigns_for_identity",
+    {
+      p_workspace_id: input.workspaceId,
+      p_account_id: input.accountId,
+      p_message: input.message,
+    },
+  );
+  if (error) throw fromPostgres(error, "Could not stop the identity's campaigns.");
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | { campaigns_stopped: number | string | null; runs_stopped: number | string | null }
+    | undefined;
+  return {
+    campaignsStopped: Number(row?.campaigns_stopped ?? 0),
+    runsStopped: Number(row?.runs_stopped ?? 0),
+  };
+}
+
+/**
  * Campaigns stopped for authentication whose identity is CONNECTED again
  * return to `active`, and today's run to `running` — in the database,
  * in one statement, with no provider probe. The proof that the session
@@ -1768,35 +1799,78 @@ export async function getCampaignActionRejection(input: {
  * (the manual "run now" recovers that campaign only). Never touches a
  * campaign an operator paused.
  */
+export interface RecoveredCampaign {
+  campaignId: string;
+  kind: "follow" | "unfollow";
+  runId: string | null;
+  runResumed: boolean;
+  previousStatus: string | null;
+  nextRunAt: string | null;
+  identityId: string | null;
+  tokenGeneration: number | null;
+}
+
+/** One page of the sweep, keyset by campaign id. Never OFFSET. */
+export const RECOVERY_PAGE_SIZE = 200;
+/** Pages one sweep may walk; the next delivery continues. */
+export const RECOVERY_MAX_PAGES = 5;
+
 export async function recoverReauthorizedCampaignsForConnectedIdentities(input: {
   workspaceId?: string | null;
   accountId?: string | null;
   campaignId?: string | null;
   nowIso?: string;
+  /** Override for tests. */
+  pageSize?: number;
+  maxPages?: number;
   db?: Db;
-}): Promise<{ campaignId: string; kind: "follow" | "unfollow"; runId: string | null; runResumed: boolean }[]> {
-  const { data, error } = await client(input.db).rpc(
-    "recover_bluesky_reauthorized_campaigns",
-    {
-      p_workspace_id: input.workspaceId ?? null,
-      p_account_id: input.accountId ?? null,
-      p_campaign_id: input.campaignId ?? null,
-      p_now: input.nowIso ?? new Date().toISOString(),
-    },
-  );
-  if (error) throw fromPostgres(error, "Could not recover campaigns for the identity.");
-  const rows = (Array.isArray(data) ? data : data ? [data] : []) as {
-    campaign_id: string;
-    kind: string;
-    run_id: string | null;
-    run_resumed: boolean;
-  }[];
-  return rows.map((r) => ({
-    campaignId: r.campaign_id,
-    kind: r.kind === "unfollow" ? "unfollow" : "follow",
-    runId: r.run_id ?? null,
-    runResumed: r.run_resumed === true,
-  }));
+}): Promise<RecoveredCampaign[]> {
+  const pageSize = input.pageSize ?? RECOVERY_PAGE_SIZE;
+  const maxPages = input.maxPages ?? RECOVERY_MAX_PAGES;
+  const out: RecoveredCampaign[] = [];
+  let after: string | null = null;
+  for (let page = 0; page < maxPages; page += 1) {
+    const { data, error } = await client(input.db).rpc(
+      "recover_bluesky_reauthorized_campaigns",
+      {
+        p_workspace_id: input.workspaceId ?? null,
+        p_account_id: input.accountId ?? null,
+        p_campaign_id: input.campaignId ?? null,
+        p_now: input.nowIso ?? new Date().toISOString(),
+        p_after_campaign_id: after,
+        p_limit: pageSize,
+      },
+    );
+    if (error) throw fromPostgres(error, "Could not recover campaigns for the identity.");
+    const rows = (Array.isArray(data) ? data : data ? [data] : []) as {
+      campaign_id: string;
+      kind: string;
+      run_id: string | null;
+      run_resumed: boolean;
+      previous_status: string | null;
+      next_run_at: string | Date | null;
+      identity_id: string | null;
+      token_generation: number | string | null;
+    }[];
+    for (const r of rows) {
+      out.push({
+        campaignId: r.campaign_id,
+        kind: r.kind === "unfollow" ? "unfollow" : "follow",
+        runId: r.run_id ?? null,
+        runResumed: r.run_resumed === true,
+        previousStatus: r.previous_status ?? null,
+        nextRunAt:
+          r.next_run_at instanceof Date ? r.next_run_at.toISOString() : r.next_run_at ?? null,
+        identityId: r.identity_id ?? null,
+        tokenGeneration:
+          r.token_generation === null || r.token_generation === undefined ? null : Number(r.token_generation),
+      });
+    }
+    if (rows.length < pageSize) break;
+    // Keyset: the RPC orders by id and every row has one.
+    after = rows[rows.length - 1].campaign_id;
+  }
+  return out;
 }
 
 /**

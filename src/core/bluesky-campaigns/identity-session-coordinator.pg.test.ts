@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeAll, afterAll, afterEach } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import {
   actionsFor,
@@ -25,8 +25,14 @@ import {
 import { dispatchCampaigns } from "./dispatcher.server";
 import { dispatchFairly } from "./dispatch-round.server";
 import { dispatchUnfollowCampaigns } from "@/core/bluesky-unfollow/dispatcher.server";
-import { resolveRelationshipSession } from "@/core/bluesky-relationships/session.server";
-import { recoverReauthorizedCampaignsForConnectedIdentities } from "@/repositories/bluesky-campaign-repository";
+import { resolveRelationshipSession, type CoordinatorEvent } from "@/core/bluesky-relationships/session.server";
+import {
+  recoverReauthorizedCampaignsForConnectedIdentities,
+  stopCampaignsForIdentity,
+} from "@/repositories/bluesky-campaign-repository";
+import { vi } from "vitest";
+import { seedTenant } from "@/test/pg/harness";
+import { getTokenCipher } from "@/core/platform-oauth";
 
 /**
  * The identity-session coordinator, on the shipped migrations.
@@ -502,6 +508,8 @@ describe("privileges and lock order", () => {
     "fail_bluesky_refresh",
     "recover_bluesky_reauthorized_campaigns",
     "stop_bluesky_campaigns_for_identity",
+    "bluesky_local_date_safe",
+    "bluesky_recovery_health",
   ];
   it.each(RPCS)("%s — anon and authenticated cannot execute; service_role can", async (name) => {
     const r = await f.db.query<{ sig: string; auth: boolean; anon: boolean; svc: boolean }>(
@@ -525,7 +533,9 @@ describe("privileges and lock order", () => {
          from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname = 'public' and p.proname = any($1)`, [RPCS]);
     for (const row of r.rows) {
-      expect(row.ret, row.proname).not.toMatch(/token/i);
+      // Token CONTENT, never: an encrypted blob, a JWT, an access or
+      // refresh token. (`token_generation` is a counter and is returned.)
+      expect(row.ret, row.proname).not.toMatch(/(access|refresh)_token|encrypted|jwt/i);
     }
   });
 
@@ -555,10 +565,25 @@ describe("privileges and lock order", () => {
     expect(commit.indexOf("growth_accounts")).toBeLessThan(commit.indexOf("recover_bluesky_reauthorized_campaigns("));
   });
 
-  it("the migration is idempotent", async () => {
+  it("the migration is idempotent — replayed together with every later migration, in order", async () => {
+    // Re-applying ONE older migration on its own is not idempotent in
+    // the presence of a later `create or replace` of the same function:
+    // 20260917000002 defines `stop_bluesky_campaigns_for_identity`, and
+    // 20260917000004 replaces it with the generation stamp. Replaying
+    // 000002 alone reverted the stamp and broke every test after this
+    // one — which is exactly what an operator re-running an old file
+    // would do to production. So the tail is replayed in order.
+    const dir = path.join(process.cwd(), "supabase/migrations");
+    const tail = readdirSync(dir)
+      .filter((name) => name.endsWith(".sql") && name >= "20260917000002")
+      .sort();
+    expect(tail[0]).toBe("20260917000002_identity_session_coordinator.sql");
     // Multi-statement: PGlite needs the simple protocol (`exec`).
     const raw = f.db as unknown as { exec?: (sql: string) => Promise<unknown> };
-    if (raw.exec) await raw.exec(MIGRATION); else await f.db.query(MIGRATION);
+    for (const name of tail) {
+      const sql = readFileSync(path.join(dir, name), "utf8");
+      if (raw.exec) await raw.exec(sql); else await f.db.query(sql);
+    }
     const col = await f.db.query<{ n: string }>(
       `select count(*)::text as n from information_schema.columns
         where table_name = 'platform_connections' and column_name in ('token_generation','refresh_lease_owner','refresh_lease_expires_at')`);
@@ -607,5 +632,299 @@ describe("privileges and lock order", () => {
     expect(r.rows[0].reason).toBe("generation_moved");
     expect((await identityState(f)).status).toBe("connected");
     expect((await identityState(f)).leaseOwner).toBeNull();
+  });
+});
+
+// =====================================================================
+// 2026-09-15, second incident: a renewal that is rejected again, and
+// recovery that must not reactivate from a merely `connected` status.
+// =====================================================================
+
+describe("a second refreshable rejection after a renewal", () => {
+  it("yields: the identity is untouched (the coordinator never marked it), the campaign stays active, the run running, the member re-opened — and the next delivery refreshes for real", async () => {
+    await reconnectAccount(f, "jwt-OLD", "refresh-1");
+    const before = await identityState(f);
+    const c = await makeFollowCampaign(f, "renewed-rejected", { requestedDailyQuota: 100 });
+    await makeMembers(f, c, 5, "rj");
+    // The renewed token is refused too (a provider anomaly, a clock, a
+    // stale read somewhere): NOT evidence about the credential.
+    const provider = providerDouble({
+      createRecord: ({ token }) =>
+        token === "jwt-OLD" || token === "jwt-NEW"
+          ? { status: 400, body: { error: "ExpiredToken", message: "Token has expired" } }
+          : { status: 200 },
+    });
+    const r = await dispatch(provider.fetchImpl, { campaignId: c });
+    expect(provider.calls.refreshSession).toBe(1);
+    expect(provider.createRecords.map((x) => x.token)).toEqual(["jwt-OLD", "jwt-NEW"]);
+    expect(r.notes.join(" ")).toMatch(/next delivery/);
+
+    const id = await identityState(f);
+    expect(id.status).toBe("connected");
+    expect(id.accountStatus).toBe("connected");
+    expect(id.generation).toBe(before.generation + 1);
+    const camp = await campaignRow(f, c);
+    expect(camp.status).toBe("active");
+    expect(camp.auth_stopped_at_generation).toBeNull();
+    expect((await runsFor(f, c))[0].status).toBe("running");
+    const a = await actionsFor(f, c);
+    expect(a).toHaveLength(1);
+    expect(a[0].status).toBe("pending");
+    expect(a[0].provider_in_flight_at).toBeNull();
+    expect(a[0].provider_error_code).toBe("ExpiredToken");
+    expect((await memberCounts(f, c)).retryable).toBe(1);
+
+    // Next delivery: a fresh session at the new generation, one real refresh.
+    await f.db.query(
+      `update public.bluesky_follow_campaign_members set next_attempt_at = now() - interval '1 minute'
+        where campaign_id = $1 and status = 'retryable'`, [c]);
+    const healthy = providerDouble({
+      createRecord: ({ token }) => (token === "jwt-NEW" ? { status: 400, body: { error: "ExpiredToken" } } : { status: 200 }),
+      refreshSession: () => ({ ok: true, accessJwt: "jwt-NEW2", refreshJwt: "refresh-3" }),
+    });
+    await dispatch(healthy.fetchImpl, { campaignId: c, nowIso: at(5) });
+    expect(healthy.calls.refreshSession).toBe(1);
+    expect((await memberCounts(f, c)).succeeded).toBe(5);
+    expect((await identityState(f)).generation).toBe(before.generation + 2);
+    // The refused member: exactly one action row, counted once.
+    expect((await actionsFor(f, c)).filter((x) => x.subject_did === a[0].subject_did)).toHaveLength(1);
+    await assertConserved(f, c, expect);
+  });
+
+  it("a session that already spent its renewal reports refresh_exhausted — never session_expired", async () => {
+    await reconnectAccount(f, "jwt-OLD", "refresh-1");
+    const provider = providerDouble({});
+    const s = await resolveRelationshipSession({
+      workspaceId: f.tenant.workspaceId, accountId: f.tenant.identityId, db: f.client, fetchImpl: provider.fetchImpl,
+    });
+    if (!s.ok) throw new Error(s.message);
+    const renewed = await s.refreshOnce();
+    if (!renewed.ok) throw new Error(renewed.message);
+    const again = await renewed.refreshOnce();
+    expect(again.ok).toBe(false);
+    if (again.ok) throw new Error("unreachable");
+    expect(again.code).toBe("refresh_exhausted");
+    expect(provider.calls.refreshSession).toBe(1);
+    expect((await identityState(f)).status).toBe("connected");
+  });
+
+  it("a definitive rejection whose lease had lapsed does not mark the identity and yields", async () => {
+    await reconnectAccount(f, "jwt-OLD", "refresh-1");
+    const c = await makeFollowCampaign(f, "lease-lapsed", { requestedDailyQuota: 100 });
+    await makeMembers(f, c, 3, "ll");
+    const inner = providerDouble({
+      refreshSession: () => ({ ok: false, status: 400, body: { error: "ExpiredToken", message: "Token has been revoked" } }),
+    });
+    // The provider takes so long that the lease lapses before it answers.
+    const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes("refreshSession")) {
+        await f.db.query(
+          `update public.platform_connections set refresh_lease_expires_at = now() - interval '1 second' where id = $1`,
+          [f.connectionId]);
+      }
+      return inner.fetchImpl(url, init);
+    }) as typeof fetch;
+    const r = await dispatch(fetchImpl, { campaignId: c });
+    expect(inner.calls.refreshSession).toBe(1);
+    expect(r.notes.join(" ")).toMatch(/next delivery/);
+    const id = await identityState(f);
+    expect(id.status).toBe("connected");
+    expect(id.leaseOwner).toBeNull();
+    expect((await campaignRow(f, c)).status).toBe("active");
+    expect((await runsFor(f, c))[0].status).toBe("running");
+    expect((await memberCounts(f, c)).retryable).toBe(1);
+  });
+});
+
+describe("recovery requires a completed session transition", () => {
+  it("a campaign stopped at generation N is NOT recovered while the identity merely still says connected at N; it is recovered once the generation moves", async () => {
+    await reconnectAccount(f, "jwt-OLD", "refresh-1");
+    const c = await makeFollowCampaign(f, "guarded-recovery", { requestedDailyQuota: 100 });
+    await makeMembers(f, c, 3, "gr");
+    await f.db.query(
+      `select id from public.ensure_bluesky_campaign_run($1,$2,$3,100,100,null)`,
+      [f.tenant.workspaceId, c, DAY]);
+    const n = (await identityState(f)).generation;
+
+    const stopped = await stopCampaignsForIdentity({
+      workspaceId: f.tenant.workspaceId, accountId: f.tenant.identityId, message: "stopped for the test", db: f.client,
+    });
+    expect(stopped.campaignsStopped).toBe(1);
+    expect(stopped.runsStopped).toBe(1);
+    const camp = await campaignRow(f, c);
+    expect(camp.status).toBe("reauthorization_required");
+    expect(Number(camp.auth_stopped_at_generation)).toBe(n);
+    expect((await runsFor(f, c))[0].status).toBe("waiting_for_auth");
+    // The identity still says connected — the contradiction production
+    // showed. Three deliveries: nothing is reactivated, nothing is called.
+    expect((await identityState(f)).status).toBe("connected");
+    const provider = providerDouble({});
+    for (let i = 1; i <= 3; i += 1) {
+      const recovered = await recoverReauthorizedCampaignsForConnectedIdentities({
+        workspaceId: f.tenant.workspaceId, accountId: f.tenant.identityId, nowIso: at(5 * i), db: f.client,
+      });
+      expect(recovered).toEqual([]);
+      await fair(provider.fetchImpl, { nowIso: at(5 * i) });
+    }
+    expect(provider.calls.createRecord).toBe(0);
+    expect((await campaignRow(f, c)).status).toBe("reauthorization_required");
+
+    // A completed transition — a reconnect, a coordinator commit —
+    // moves the generation, and THAT recovers it.
+    await reconnectAccount(f, "jwt-NEW", "refresh-2");
+    const recovered = await recoverReauthorizedCampaignsForConnectedIdentities({
+      workspaceId: f.tenant.workspaceId, accountId: f.tenant.identityId, nowIso: at(20), db: f.client,
+    });
+    expect(recovered.map((r) => r.campaignId)).toEqual([c]);
+    const after = await campaignRow(f, c);
+    expect(after.status).toBe("active");
+    expect(after.auth_stopped_at_generation).toBeNull();
+    expect((await runsFor(f, c))[0].status).toBe("running");
+    await dispatch(provider.fetchImpl, { campaignId: c, nowIso: at(25) });
+    expect((await memberCounts(f, c)).succeeded).toBe(3);
+  });
+
+  it("a NON-refreshable rejection (AccountTakedown) stops the identity's campaigns with the generation stamped; no loop; one provider call per reconnect", async () => {
+    await reconnectAccount(f, "jwt-NEW", "refresh-2");
+    const n = (await identityState(f)).generation;
+    const c1 = await makeFollowCampaign(f, "takedown-1", { requestedDailyQuota: 100 });
+    const c2 = await makeFollowCampaign(f, "takedown-2", { requestedDailyQuota: 100 });
+    await makeMembers(f, c1, 3, "tk");
+    await makeMembers(f, c2, 3, "tl");
+    const provider = providerDouble({
+      createRecord: () => ({ status: 400, body: { error: "AccountTakedown", message: "taken down" } }),
+    });
+    await dispatch(provider.fetchImpl, { campaignId: c1 });
+    expect(provider.calls.createRecord).toBe(1);
+    expect(provider.calls.refreshSession).toBe(0);
+    for (const c of [c1, c2]) {
+      const row = await campaignRow(f, c);
+      expect(row.status, c).toBe("reauthorization_required");
+      expect(Number(row.auth_stopped_at_generation), c).toBe(n);
+    }
+    // The identity is untouched: only fail_bluesky_refresh marks it.
+    expect((await identityState(f)).status).toBe("connected");
+    expect((await identityState(f)).generation).toBe(n);
+    // Deliveries: nothing reactivates, nothing is sent.
+    for (let i = 1; i <= 3; i += 1) await fair(provider.fetchImpl, { nowIso: at(5 * i) });
+    expect(provider.calls.createRecord).toBe(1);
+    expect((await campaignRow(f, c1)).status).toBe("reauthorization_required");
+    // The operator reconnects: recovered, tried once more, stopped again
+    // at the NEW generation. Bounded by the operator, never by the clock.
+    await reconnectAccount(f, "jwt-X", "refresh-x");
+    await recoverReauthorizedCampaignsForConnectedIdentities({
+      workspaceId: f.tenant.workspaceId, accountId: f.tenant.identityId, nowIso: at(20), db: f.client,
+    });
+    expect((await campaignRow(f, c1)).status).toBe("active");
+    await fair(provider.fetchImpl, { nowIso: at(25) });
+    expect(provider.calls.createRecord).toBe(2);
+    expect((await campaignRow(f, c1)).status).toBe("reauthorization_required");
+    expect(Number((await campaignRow(f, c1)).auth_stopped_at_generation)).toBe(n + 1);
+    for (let i = 6; i <= 8; i += 1) await fair(provider.fetchImpl, { nowIso: at(5 * i) });
+    expect(provider.calls.createRecord).toBe(2);
+    for (const c of [c1, c2]) await assertConserved(f, c, expect);
+  });
+});
+
+describe("diagnostics", () => {
+  it("emits one structured event per coordinator decision — source, verdict, generations, outcome, reason — and never a credential", async () => {
+    await reconnectAccount(f, "jwt-OLD", "refresh-1");
+    const provider = providerDouble({});
+    const events: CoordinatorEvent[] = [];
+    const s = await resolveRelationshipSession({
+      workspaceId: f.tenant.workspaceId, accountId: f.tenant.identityId, db: f.client,
+      fetchImpl: provider.fetchImpl, source: "test-caller", onEvent: (e) => events.push(e),
+    });
+    if (!s.ok) throw new Error(s.message);
+    const g = s.tokenGeneration;
+    const renewed = await s.refreshOnce();
+    expect(renewed.ok).toBe(true);
+    expect(events.map((e) => `${e.event}:${e.verdict ?? e.outcome}`)).toEqual([
+      "lease:acquired",
+      "refresh:refreshed",
+      "commit:committed",
+    ]);
+    expect(events[0]).toMatchObject({ source: "test-caller", observedGeneration: g, storedGeneration: g, workspaceId: f.tenant.workspaceId, accountId: f.tenant.identityId });
+    expect(events[2]).toMatchObject({ storedGeneration: g + 1, campaignsRecovered: 0 });
+    const text = JSON.stringify(events);
+    expect(text).not.toMatch(/jwt-|refresh-[0-9]|eyJ|Bearer/);
+    for (const e of events) expect(Object.keys(e)).not.toContain("accessJwt");
+  });
+
+  it("the default sink is one token-free JSON line per event on console.info, and the dispatchers name themselves", async () => {
+    await reconnectAccount(f, "jwt-OLD", "refresh-1");
+    const c = await makeFollowCampaign(f, "diag", { requestedDailyQuota: 100 });
+    await makeMembers(f, c, 2, "dg");
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    let lines: string[];
+    try {
+      await dispatch(providerDouble({}).fetchImpl, { campaignId: c });
+      // Read before restore: mockRestore() also resets the recorded calls.
+      lines = info.mock.calls.map((call) => call.map(String).join(" ")).filter((l) => l.startsWith("[bluesky-session]"));
+    } finally {
+      info.mockRestore();
+    }
+    expect(lines.length).toBeGreaterThanOrEqual(3);
+    for (const line of lines) {
+      const parsed = JSON.parse(line.slice("[bluesky-session] ".length)) as CoordinatorEvent;
+      expect(parsed.source).toBe("follow-dispatcher");
+      expect(line).not.toMatch(/jwt-|refresh-[0-9]|eyJ|Bearer/);
+    }
+  });
+});
+
+describe("fault isolation across identities", () => {
+  it("one identity's revoked credential stops ITS campaigns only; another identity's campaign on the same delivery continues", async () => {
+    await reconnectAccount(f, "jwt-OLD", "refresh-dead");
+    const mine = await makeFollowCampaign(f, "revoked-identity", { requestedDailyQuota: 100 });
+    await makeMembers(f, mine, 3, "ri");
+
+    // A second identity in a second workspace, connected with a token
+    // the provider accepts.
+    const other = await seedTenant(f.db as never, "other-identity");
+    const cipher = getTokenCipher();
+    await f.db.query(
+      `update public.growth_accounts set connection_status = 'connected', handle = 'other.bsky.social' where id = $1`,
+      [other.identityId]);
+    await f.db.query(
+      `insert into public.platform_connections
+         (workspace_id, account_id, platform, provider_account_id, handle, display_name,
+          connection_status, health_status, access_token_encrypted, refresh_token_encrypted, connected_at)
+       values ($1,$2,'bluesky','did:plc:otheroperator','other.bsky.social','other.bsky.social',
+               'connected','healthy',$3,$4, now())`,
+      [other.workspaceId, other.identityId, cipher.encrypt("jwt-OTHER"), cipher.encrypt("refresh-other")]);
+    const theirs = (await f.db.query<{ id: string }>(
+      `insert into public.bluesky_follow_campaigns
+         (workspace_id, operator_account_id, name, kind, status, requested_daily_quota,
+          max_consecutive_failures, min_success_rate_percent, timezone,
+          execution_window_start_minute, execution_window_end_minute, created_by)
+       values ($1,$2,'theirs','follow','active',100,50,0,'UTC',0,1440,$3) returning id`,
+      [other.workspaceId, other.identityId, other.ownerId])).rows[0].id;
+    await f.db.query(
+      `insert into public.bluesky_follow_campaign_members (workspace_id, campaign_id, subject_did, current_handle, import_sequence)
+       values ($1,$2,'did:plc:ot1','ot1.bsky.social',1), ($1,$2,'did:plc:ot2','ot2.bsky.social',2)`,
+      [other.workspaceId, theirs]);
+
+    const provider = providerDouble({
+      createRecord: ({ token }) => (token === "jwt-OTHER" ? { status: 200 } : { status: 400, body: { error: "ExpiredToken" } }),
+      refreshSession: () => ({ ok: false, status: 400, body: { error: "ExpiredToken", message: "Token has been revoked" } }),
+    });
+    // One delivery over BOTH workspaces.
+    await dispatchFairly({
+      nowIso: T0, db: f.client, fetchImpl: provider.fetchImpl, sleep: async () => undefined, interRequestMs: 0,
+      deadlineMs: 600_000, chunkCostMs: 1, settleMarginMs: 0,
+    });
+    expect((await campaignRow(f, mine)).status).toBe("reauthorization_required");
+    expect((await identityState(f)).status).toBe("reauthorization_required");
+    const theirRow = (await f.db.query<{ status: string }>(
+      `select status from public.bluesky_follow_campaigns where id = $1`, [theirs])).rows[0];
+    const theirMembers = (await f.db.query<{ n: string }>(
+      `select count(*)::text as n from public.bluesky_follow_campaign_members where campaign_id = $1 and status = 'succeeded'`, [theirs])).rows[0];
+    expect(theirRow.status).toBe("completed");
+    expect(Number(theirMembers.n)).toBe(2);
+    const otherConn = (await f.db.query<{ s: string }>(
+      `select connection_status as s from public.platform_connections where account_id = $1`, [other.identityId])).rows[0];
+    expect(otherConn.s).toBe("connected");
+    expect(provider.calls.refreshSession).toBe(1);
   });
 });

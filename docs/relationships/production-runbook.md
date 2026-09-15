@@ -114,6 +114,68 @@ Production's stopped campaign recovers on the first delivery after the
 deploy (`recover_bluesky_reauthorized_campaigns` recognises the
 `paused` + `reauthorization_required` shape).
 
+### 2b. The cached-reload fix (added 2026-09-15, second incident)
+
+See `incident-2026-09-15-cached-reload.md`. One more forward-only
+migration, `20260917000004_campaign_auth_stop_generation.sql`: a column
+on `bluesky_follow_campaigns` (`auth_stopped_at_generation`, default
+null) and `create or replace` of `stop_bluesky_campaigns_for_identity`
+and `recover_bluesky_reauthorized_campaigns` (same signatures).
+
+**Order: migration first, then code.** Old code + new schema: the
+column is unused and the replaced RPCs behave as before with no stamps.
+New code + old schema: works, without the recovery generation guard —
+acceptable for one deploy window, not for long.
+
+**Never re-run an older migration on its own.** Re-applying
+`20260917000002` after `…000004` reverts the stop RPC to its unstamped
+body (the test suite found this by doing it). Replay the whole tail in
+order if a replay is ever needed.
+
+**Known hazard, not changed here:** two files on main share the version
+`20260917000002` (`…_identity_session_coordinator.sql` and
+`…_linkedin_import_chunk.sql`). Both are applied; a CLI `db push` may
+object to the duplicate version.
+
+The transport fix (`cache: "no-store"` on every service-role request)
+needs no schema change and takes effect on deploy. Watch the
+`[bluesky-session]` lines on the first two deliveries: `lease:acquired`
+→ `refresh:refreshed` → `commit:committed` at most once per identity per
+expiry, and never `reload:stale_read` — that event means a cache is
+still in the path.
+
+### 2c. Deployment and canary order for the 2026-09-15 recovery fix
+
+1. **Review** `20260917000004_campaign_auth_stop_generation.sql`: one
+   nullable column (no rewrite, no default backfill), one `drop function`
+   + `create` of the recovery RPC (instant catalog change; the previous
+   signature must go or named-argument calls become ambiguous), three
+   `create or replace`. Row locks only inside RPCs; no table locks
+   beyond the ALTER's brief one.
+2. **Read-only preflight** (as the service role) — the queries in
+   `incident-2026-09-15-cached-reload.md` §5, plus
+   `select * from public.bluesky_recovery_health()` after the migration.
+3. **Apply the migration.**
+4. **Deploy** the code (compatible scheduler, no-store client).
+5. **Let recovery run normally** — the next cron delivery's sweep, or
+   `select * from public.recover_bluesky_reauthorized_campaigns(p_workspace_id := :ws, p_account_id := :identity)`
+   as the service role. Do not hand-edit campaign or run rows.
+6. **Verify** the existing run ids and counters were preserved (compare
+   with the preflight: same `id`, same `attempted_count`/`succeeded_count`,
+   `status = running`, error fields null).
+7. **Observe one scheduler delivery.**
+8. **Confirm** `waiting_for_auth → running` and the counters advance.
+9. **Verify** exactly the expected provider mutations: one intent per
+   member, no duplicate `succeeded` for one subject.
+10. **Check every active campaign** on the identity, not only
+    `cdbb2b76…`; `bluesky_recovery_health()` must be empty.
+
+**Abort the canary on:** a duplicate provider intent; counters above
+quota; an operator-paused campaign resumed; `token_generation`
+decreasing; any plaintext secret in logs; connected + active +
+`waiting_for_auth` persisting after two deliveries (a
+`[bluesky-recovery]` line should have named it).
+
 ## 3. Rollback and kill switch
 
 Three independent stops, from least to most blast radius:

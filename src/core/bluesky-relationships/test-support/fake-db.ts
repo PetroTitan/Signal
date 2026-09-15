@@ -203,6 +203,8 @@ export class FakeDb {
         // (src/core/bluesky-campaigns/identity-session*.pg.test.ts);
         // the in-memory double has nothing to recover.
         return { data: [], error: null };
+      case "stop_bluesky_campaigns_for_identity":
+        return this.stopCampaignsForIdentity(args);
       default:
         return {
           data: null,
@@ -1504,6 +1506,31 @@ export class FakeDb {
    * and incident regression suites exercise the REAL function against
    * PGlite; this exists so the FakeDb-based follow suites keep running.
    */
+  private stopCampaignsForIdentity(args: Record<string, unknown>): QueryResult {
+    let campaigns = 0;
+    let runs = 0;
+    for (const c of this.rows("bluesky_follow_campaigns")) {
+      if (
+        c.workspace_id !== args.p_workspace_id ||
+        c.operator_account_id !== args.p_account_id ||
+        c.status !== "active"
+      ) continue;
+      c.status = "reauthorization_required";
+      c.last_error_code = "reauthorization_required";
+      c.last_error_message = args.p_message ?? null;
+      campaigns += 1;
+      for (const r of this.rows("bluesky_follow_campaign_runs")) {
+        if (r.campaign_id === c.id && r.status === "running") {
+          r.status = "waiting_for_auth";
+          r.last_error_code = "reauthorization_required";
+          r.last_error_message = args.p_message ?? null;
+          runs += 1;
+        }
+      }
+    }
+    return { data: [{ campaigns_stopped: campaigns, runs_stopped: runs }], error: null };
+  }
+
   private resumeRunAfterRecovery(args: Record<string, unknown>): QueryResult {
     const run = this.rows("bluesky_follow_campaign_runs").find(
       (r) =>

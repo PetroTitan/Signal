@@ -288,6 +288,7 @@ export async function publishBlueskyForIdentity(
     observedGeneration: enc.tokenGeneration,
     service,
     db,
+    source: "publisher",
   });
   if (!renewed.ok) {
     if (renewed.code === "provider_unavailable") {

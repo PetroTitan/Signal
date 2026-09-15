@@ -818,7 +818,7 @@ async function attemptFollow(
       const reopenCode = isDefiniteRejectionCode(result.errorCode)
         ? String(result.errorCode)
         : "session_expired";
-      if (renewed.code === "provider_unavailable") {
+      if (renewed.code === "provider_unavailable" || renewed.code === "refresh_exhausted") {
         // Transient: the identity is untouched and the run stays open.
         return {
           kind: "session_unavailable",
@@ -858,6 +858,27 @@ async function attemptFollow(
       rkey: result.record.rkey,
       cid: result.record.cid,
       rateLimit: result.rateLimit,
+    };
+  }
+
+  // A SECOND refreshable rejection — the renewed or reloaded session was
+  // refused too — proves nothing about the identity: the coordinator
+  // did not mark it, and only `fail_bluesky_refresh` may. PRODUCTION,
+  // 2026-09-15 15:35Z: this case fell through to `authentication_expired`
+  // and stopped the campaign as needing the operator while the identity
+  // read `connected`; recovery reactivated it every delivery. Yield:
+  // the member was refused before any write and is owed a retry; the
+  // next delivery resolves a fresh session and refreshes for real.
+  if (!result.ok && isRefreshableAuthFailure(result)) {
+    return {
+      kind: "session_unavailable",
+      errorCode: "session_rejected_after_renewal",
+      errorMessage: result.message,
+      rateLimit: result.rateLimit,
+      rejectedBeforeWrite: true,
+      reopenCode: isDefiniteRejectionCode(result.errorCode)
+        ? String(result.errorCode)
+        : "session_expired",
     };
   }
 
