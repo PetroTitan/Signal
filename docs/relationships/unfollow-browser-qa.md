@@ -2,6 +2,42 @@
 
 Reproducible procedure for the responsive sweep, and what it measured.
 
+## 2026-09-16 sweep — detail dashboard, campaigns list, status panel, confirmation
+
+The harness (`RENDER_QA=1 npx vitest run src/core/bluesky-unfollow/render-qa.test.ts`)
+now also renders `UnfollowCampaignDetailView`, `CampaignUi` (the kind
+filter and picker) and `AutomationPanel` with the same hostile content,
+beside the wizard, the allowlist panel, the controls and the
+confirmation dialog (forced open with `dialog.show()`). The sweep
+measures page overflow, every element whose box escapes the viewport
+**outside** an ancestor that scrolls horizontally within it, and the
+size of every `button`, `a[href]`, `input`, `select`, `textarea` and
+`[role=button]`.
+
+| Width | Page overflow | Escaping elements | Controls measured | Under 44 × 44 |
+| --- | --- | --- | --- | --- |
+| 320 | **0** | 0 | 53 | 0 |
+| 375 | **0** | 0 | 53 | 0 |
+| 390 | **0** | 0 | 53 | 0 |
+| 768 | **0** | 0 | 53 | 0 |
+| 1280 | **0** | 0 | 53 | 0 |
+
+(Radio and checkbox glyphs are 20 px, as before; the enclosing label
+row is the target — see the click test below.)
+
+**What the first run found, before the fixes:** a 30 px page overflow
+at 320 from the status panel's heading, which rendered the identity's
+unbreakable 54-character handle with no break class; and four controls
+under 44 px — the detail page's "← All campaigns" (17 px), the panel's
+"all campaigns" link (17 px), and both campaign-picker entries on the
+campaigns page (34 px), which had shipped that way. All four are 44 px
+or taller now.
+
+Screenshots for the record: `/tmp/unfollow-qa/shot-<width>.png`
+(not committed).
+
+
+
 ## Why this is not a committed test
 
 Playwright is not a dependency of this repository, so a committed test

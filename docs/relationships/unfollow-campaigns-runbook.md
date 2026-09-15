@@ -1,3 +1,8 @@
+> **2026-09-16:** the supervised canary procedures (§5, §6, §12) are
+> superseded by `production-runbook.md`, which also covers the fair
+> dispatcher, "Reconcile now" and the dry-run labelling. This file
+> remains the reference for invariants, lock order and state machines.
+
 # Bulk Unfollow Campaigns — production runbook
 
 Applies to the Bluesky unfollow campaign subsystem introduced by

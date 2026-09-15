@@ -219,6 +219,13 @@ thing to get wrong about this data.
 
 ## Related documents
 
+- `production-runbook.md` — the operational runbook (2026-09-16): pre-flight
+  queries, migration order, rollback and kill switch, supervised dry runs
+  and canaries, reconciliation verification, exact queries.
+- `canary-followup-2026-09-15.md` — the nine defects the 2026-09-15 canary
+  surfaced: root causes, negative controls, fixes, evidence.
+
+
 * [`phase-0-audit.md`](./phase-0-audit.md) — what the AT Protocol
   actually does, measured against the live API, and why each design
   decision follows from it.
