@@ -573,6 +573,36 @@ export async function listMembersKeyset(input: {
   return { rows: page, nextCursor: rows.length > pageSize ? { id: page[page.length - 1].id } : null };
 }
 
+export async function getMembersByIds(input: { workspaceId: string; ids: string[]; db?: Db }): Promise<LinkedInCampaignMemberRow[]> {
+  const out: LinkedInCampaignMemberRow[] = [];
+  const unique = [...new Set(input.ids)];
+  for (let i = 0; i < unique.length; i += 200) {
+    const { data, error } = await client(input.db)
+      .from("linkedin_campaign_members")
+      .select("*")
+      .eq("workspace_id", input.workspaceId)
+      .in("id", unique.slice(i, i + 200));
+    if (error) throw fromPostgres(error, "Could not read members.");
+    out.push(...((data ?? []) as unknown as LinkedInCampaignMemberRow[]));
+  }
+  return out;
+}
+
+export async function getLeadsByIds(input: { workspaceId: string; ids: string[]; db?: Db }): Promise<LinkedInLeadRow[]> {
+  const out: LinkedInLeadRow[] = [];
+  const unique = [...new Set(input.ids)];
+  for (let i = 0; i < unique.length; i += 200) {
+    const { data, error } = await client(input.db)
+      .from("linkedin_leads")
+      .select("*")
+      .eq("workspace_id", input.workspaceId)
+      .in("id", unique.slice(i, i + 200));
+    if (error) throw fromPostgres(error, "Could not read leads.");
+    out.push(...((data ?? []) as unknown as LinkedInLeadRow[]));
+  }
+  return out;
+}
+
 // =====================================================================
 // Manual tasks
 // =====================================================================
@@ -768,6 +798,8 @@ export async function applyImportChunk(input: {
   invalid: number;
   errors: { row: number; value: string; reason: string }[];
   done: boolean;
+  processingBasisNote?: string | null;
+  retentionUntil?: string | null;
   db?: Db;
 }): Promise<ImportChunkOutcome> {
   const { data, error } = await client(input.db).rpc("linkedin_apply_import_chunk", {
@@ -778,6 +810,8 @@ export async function applyImportChunk(input: {
     p_invalid: input.invalid,
     p_errors: input.errors,
     p_done: input.done,
+    p_processing_basis_note: input.processingBasisNote ?? null,
+    p_retention_until: input.retentionUntil ?? null,
   });
   if (error) throw fromPostgres(error, "Could not record the imported rows.");
   const r = (Array.isArray(data) ? data[0] : data) as {

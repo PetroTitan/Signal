@@ -103,6 +103,25 @@ describe("importing a customer-provided CSV", () => {
     expect(ev.rows[0].details.inserted).toBe(2);
   });
 
+  it("the operator's processing-basis statement and retention date are stored on every imported lead", async () => {
+    const list = await newList("basis");
+    const out = await asOwner(() => importLeadsFromText({
+      workspaceId: t.workspaceId, leadListId: list.id, sourceType: "customer_pasted",
+      text: "https://www.linkedin.com/in/b-1\nhttps://www.linkedin.com/in/b-2",
+      processingBasisNote: "Existing customers under contract; account managers asked for follow-up.",
+      retentionUntil: "2027-03-31", db,
+    }));
+    expect(out.ok && out.job.inserted_count).toBe(2);
+    const rows = await h.db.query<{ processing_basis_note: string | null; retention_until: unknown }>(
+      `select processing_basis_note, retention_until from public.linkedin_leads where lead_list_id = $1`, [list.id],
+    );
+    expect(rows.rows).toHaveLength(2);
+    for (const r of rows.rows) {
+      expect(r.processing_basis_note).toMatch(/^Existing customers/);
+      expect(new Date(r.retention_until as string).toISOString().slice(0, 10)).toBe("2027-03-31");
+    }
+  });
+
   it("a second file with an overlapping URL counts it as a duplicate across imports", async () => {
     const list = await newList("overlap");
     const first = await asOwner(() => importLeadsFromText({

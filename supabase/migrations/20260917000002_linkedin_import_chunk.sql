@@ -21,7 +21,9 @@ create or replace function public.linkedin_apply_import_chunk(
   p_next_cursor_row integer,
   p_invalid integer,
   p_errors jsonb,
-  p_done boolean
+  p_done boolean,
+  p_processing_basis_note text default null,
+  p_retention_until date default null
 )
 returns table (
   applied boolean,
@@ -89,13 +91,16 @@ begin
     insert into public.linkedin_leads (
       workspace_id, lead_list_id, profile_key, canonical_profile_url,
       customer_provided_name, customer_provided_company, customer_provided_title,
-      source_type, source_reference, do_not_contact, do_not_contact_reason
+      source_type, source_reference, processing_basis_note, retention_until,
+      do_not_contact, do_not_contact_reason
     )
     select
       p_workspace_id, v_job.lead_list_id, c.profile_key, c.canonical_profile_url,
       c.name, c.company, c.title,
       v_job.source_type,
       left(coalesce(v_job.file_name, 'import ' || v_job.id::text), 300),
+      nullif(left(p_processing_basis_note, 1000), ''),
+      p_retention_until,
       (s.profile_key is not null),
       case when s.profile_key is not null then 'suppression_list' end
       from candidates c
@@ -157,8 +162,8 @@ begin
 end;
 $$;
 
-revoke all on function public.linkedin_apply_import_chunk(uuid, uuid, jsonb, integer, integer, jsonb, boolean) from public;
-grant execute on function public.linkedin_apply_import_chunk(uuid, uuid, jsonb, integer, integer, jsonb, boolean) to authenticated;
+revoke all on function public.linkedin_apply_import_chunk(uuid, uuid, jsonb, integer, integer, jsonb, boolean, text, date) from public;
+grant execute on function public.linkedin_apply_import_chunk(uuid, uuid, jsonb, integer, integer, jsonb, boolean, text, date) to authenticated;
 
 -- Mark a job failed without touching its counters. The next attempt
 -- with the same file resumes from cursor_row.

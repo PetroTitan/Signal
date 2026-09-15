@@ -17,6 +17,7 @@ import type {
   LinkedInCampaignStatus,
   LinkedInMemberState,
   LinkedInSequenceStepKind,
+  LinkedInSourceType,
   LinkedInTaskKind,
   LinkedInTaskState,
 } from "@/lib/supabase/types";
@@ -175,3 +176,22 @@ export function memberReasonLabel(reason: string | null): string | null {
   }
   return MEMBER_REASON_LABELS[reason] ?? reason;
 }
+
+/** Where a list came from. Mandatory on every list and lead. */
+export const SOURCE_TYPE_LABELS: Record<LinkedInSourceType, string> = {
+  customer_csv: "A file my organisation already holds",
+  customer_pasted: "Profile URLs I pasted in",
+  internal_api: "Sent by an internal system of ours",
+};
+
+/** Kinds an operator may put in a sequence in this release. */
+export const SELECTABLE_STEP_KINDS: readonly LinkedInSequenceStepKind[] = [
+  "manual_connection_request",
+  "manual_linkedin_message",
+  "manual_profile_review",
+  "wait",
+  "internal_note",
+];
+
+/** Steps an operator may put in one sequence through the UI. The schema allows 50 positions. */
+export const MAX_SEQUENCE_STEPS = 20;

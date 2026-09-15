@@ -65,6 +65,10 @@ export interface ImportRequest {
   text: string;
   fileName?: string | null;
   createdBy?: string | null;
+  /** The operator's statement of why these people may be processed. Evidence of a statement, not proof of a basis. */
+  processingBasisNote?: string | null;
+  /** YYYY-MM-DD; the retention purge deletes leads past it. */
+  retentionUntil?: string | null;
   db?: SupabaseClient;
   /** Stop after this many chunks (tests of resumption). Default: all. */
   maxChunks?: number;
@@ -197,6 +201,8 @@ export async function importLeadsFromText(input: ImportRequest): Promise<ImportO
         invalid,
         errors,
         done,
+        processingBasisNote: input.processingBasisNote ?? null,
+        retentionUntil: input.retentionUntil ?? null,
         db: input.db,
       });
       cursor = Math.max(end, applied.nextCursorRow);
