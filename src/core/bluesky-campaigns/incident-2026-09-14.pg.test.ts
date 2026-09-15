@@ -175,19 +175,24 @@ describe("when the refresh FAILS", () => {
     expect(provider.calls.refreshSession).toBe(1);
     expect(result.notes.join(" ")).toMatch(/reauthorization|rejected/i);
 
-    // ACCOUNTS: the connection AND its mirror on the identity say
-    // expired — which the Accounts page renders as "Sign in again".
+    // ACCOUNTS: the connection AND its mirror on the identity say the
+    // operator is needed — which the Accounts page renders as "Sign in
+    // again". Since 2026-09-15 the state is `reauthorization_required`
+    // (written by the coordinator, only for a DEFINITIVE rejection on
+    // the latest generation), not `expired`; both are rendered the same.
     const tokens = await storedTokens(f);
-    expect(tokens.status).toBe("expired");
-    expect(tokens.accountStatus).toBe("expired");
+    expect(tokens.status).toBe("reauthorization_required");
+    expect(tokens.accountStatus).toBe("reauthorization_required");
 
     // CAMPAIGN / RUN / MEMBER agree.
     const camp = await campaignRow(f, c);
     expect(camp.status).toBe("reauthorization_required");
     const runs = await runsFor(f, c);
     expect(runs).toHaveLength(1);
-    // NOT failed. Paused, with the reason, so recovery can find it.
-    expect(runs[0].status).toBe("paused");
+    // NOT failed, and NOT `paused` — that is the operator's state. A
+    // run waiting for its identity has its own status, so recovery can
+    // move it without ever touching an operator's pause.
+    expect(runs[0].status).toBe("waiting_for_auth");
     expect(runs[0].last_error_code).toBe("reauthorization_required");
 
     const counts = await memberCounts(f, c);
@@ -200,7 +205,9 @@ describe("when the refresh FAILS", () => {
     expect(actions).toHaveLength(1);
     expect(actions[0].status).toBe("pending");
     expect(actions[0].provider_in_flight_at).toBeNull();
-    expect(actions[0].provider_error_code).toBe("session_expired");
+    // The re-open records the PROVIDER's own definite rejection — the
+    // code production's rows carry — rather than a worker-side label.
+    expect(actions[0].provider_error_code).toBe("ExpiredToken");
     // The unit it spent stays spent — the request was made.
     expect(Number(runs[0].attempted_count)).toBe(1);
     expect(await intentsFor(f, c)).toBe(1);

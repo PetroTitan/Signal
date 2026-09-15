@@ -347,7 +347,7 @@ function describeNextAction(
   if (
     campaign.status === "active" &&
     today &&
-    (today.status === "paused" || today.status === "failed") &&
+    (today.status === "waiting_for_auth" || today.status === "paused" || today.status === "failed") &&
     today.last_error_code === "reauthorization_required"
   ) {
     return "Sign in to this Bluesky identity again on Accounts. Signal resumes today's run automatically once the session works — no need to press Resume.";

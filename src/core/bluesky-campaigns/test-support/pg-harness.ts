@@ -527,3 +527,85 @@ export const conservation = async (f: FollowFixture, id: string) =>
     `select * from public.bluesky_campaign_conservation($1, $2)`,
     [f.tenant.workspaceId, id],
   )).rows[0];
+
+// =====================================================================
+// Identity-session coordination readers (2026-09-15)
+// =====================================================================
+
+/** The identity row as the coordinator sees it. No token content. */
+export async function identityState(f: FollowFixture): Promise<{
+  status: string;
+  health: string;
+  generation: number;
+  leaseOwner: string | null;
+  leaseExpiresAt: Date | null;
+  metadata: Record<string, unknown>;
+  accountStatus: string;
+}> {
+  const r = await f.db.query<{
+    s: string; h: string; g: string; o: string | null; e: Date | null; m: Record<string, unknown>;
+  }>(
+    `select connection_status as s, health_status as h, token_generation::text as g,
+            refresh_lease_owner as o, refresh_lease_expires_at as e, metadata as m
+       from public.platform_connections where id = $1`,
+    [f.connectionId],
+  );
+  const g = await f.db.query<{ s: string }>(
+    `select connection_status as s from public.growth_accounts where id = $1`,
+    [f.tenant.identityId],
+  );
+  return {
+    status: r.rows[0].s,
+    health: r.rows[0].h,
+    generation: Number(r.rows[0].g),
+    leaseOwner: r.rows[0].o,
+    leaseExpiresAt: r.rows[0].e ? new Date(r.rows[0].e) : null,
+    metadata: r.rows[0].m,
+    accountStatus: g.rows[0].s,
+  };
+}
+
+/** Put the identity into the state the coordinator writes for a revoked credential. */
+export async function markIdentityReauthorizationRequired(f: FollowFixture): Promise<void> {
+  await f.db.query(
+    `update public.platform_connections
+        set connection_status = 'reauthorization_required', health_status = 'expired'
+      where id = $1`, [f.connectionId]);
+  await f.db.query(
+    `update public.growth_accounts set connection_status = 'reauthorization_required' where id = $1`,
+    [f.tenant.identityId]);
+}
+
+/** A refresh lease left behind by a worker that died. */
+export async function leaveDeadLease(f: FollowFixture, owner: string, seconds: number): Promise<void> {
+  await f.db.query(
+    `update public.platform_connections
+        set refresh_lease_owner = $2,
+            refresh_lease_expires_at = now() + make_interval(secs => $3)
+      where id = $1`, [f.connectionId, owner, seconds]);
+}
+
+/** Every member is in exactly one category, and the categories sum to the frozen total. */
+export async function assertConserved(
+  f: FollowFixture,
+  campaignId: string,
+  expect: { (v: unknown): { toBe(x: unknown): void } },
+): Promise<Record<string, string>> {
+  const c = await conservation(f, campaignId);
+  const n = (k: string) => Number(c[k]);
+  const terminal =
+    n("succeeded") + n("already_following") + n("protected") + n("actor_not_found") +
+    n("blocked") + n("invalid") + n("failed_structural") + n("cancelled");
+  const open = n("pending") + n("retryable") + n("running") + n("reconciliation_required");
+  expect(terminal + open).toBe(n("queued_total"));
+  expect(n("categorised_total")).toBe(n("queued_total"));
+  return c;
+}
+
+export const identityUsage = async (f: FollowFixture, usageDate: string) =>
+  (await f.db.query<{ attempts_made: string; follows_created: string; unfollows_deleted: string }>(
+    `select attempts_made::text, follows_created::text, coalesce(unfollows_deleted, 0)::text as unfollows_deleted
+       from public.bluesky_identity_daily_usage
+      where operator_account_id = $1 and usage_date = $2`,
+    [f.tenant.identityId, usageDate],
+  )).rows[0] ?? { attempts_made: "0", follows_created: "0", unfollows_deleted: "0" };

@@ -210,6 +210,53 @@ select status, last_error_code, attempted_count, succeeded_count
 -- running, null, N, M after recovery; paused/reauthorization_required before
 ```
 
+## Identity-session coordination (added 2026-09-15)
+
+See `incident-2026-09-15-identity-session.md`. Supersedes the
+mechanics in the previous section; the operator-facing promise is the
+same and stronger.
+
+**The rule.** Authentication belongs to the IDENTITY, not to each
+campaign. A refresh is coordinated in the database per identity
+(`platform_connections.token_generation` + a refresh lease): however
+many campaigns, publishers or buttons meet the same expired token, the
+provider sees ONE `refreshSession`; everyone else reloads the stored
+result. A stale failure can never overwrite newer credentials.
+
+**What you will see for a routine expiry.** Nothing. The worker
+refreshes once, retries the same attempt once, and continues. The
+identity's `token_generation` moves by one and `metadata.last_message`
+says `Session refreshed for …`.
+
+**What you will see when the credential is genuinely revoked.**
+Connection `reauthorization_required` (not `expired`); identity mirror
+the same; **every** active campaign on the identity
+`reauthorization_required`; their running runs **`waiting_for_auth`**
+(never `paused` — that word is the operator's); zero further provider
+calls for that identity; the refused member `retryable` with its
+action re-opened.
+
+**What to do.** Sign the identity in again on Accounts, or press
+"Check account access" if you believe the stored session is fine. Both
+recover every campaign and today's run in the same transaction; the
+next delivery continues. No Resume. A campaign you paused yourself
+stays paused.
+
+**Transient provider trouble during a refresh** (network, 5xx, another
+worker still refreshing): the identity is untouched, the run stays
+`running`, the member is re-opened, and the tick note ends "the next
+delivery retries".
+
+**Verify.**
+```sql
+select connection_status, health_status, token_generation, refresh_lease_owner,
+       metadata->>'last_message'
+  from public.platform_connections where platform = 'bluesky' and account_id = :identity;
+select status, last_error_code from public.bluesky_follow_campaigns where operator_account_id = :identity;
+select status, last_error_code, attempted_count, succeeded_count
+  from public.bluesky_follow_campaign_runs where campaign_id = :campaign and local_date = current_date;
+```
+
 ## Rejected versus ambiguous (added 2026-09-14)
 
 A member whose action is `reconciliation_required` is waiting on a

@@ -1143,6 +1143,15 @@ export interface PlatformConnectionRow {
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+  /**
+   * Monotonic session generation. Bumped by a database trigger whenever
+   * either token column changes, so every writer moves it. The
+   * compare-and-swap key for identity-session coordination.
+   */
+  token_generation: number;
+  /** Owner of an in-progress provider refresh, or null. */
+  refresh_lease_owner: string | null;
+  refresh_lease_expires_at: string | null;
 }
 
 export interface PlatformConnectionInsert {
@@ -2186,6 +2195,13 @@ export type BlueskyCampaignRunStatus =
   | "running"
   | "completed"
   | "paused"
+  /**
+   * Stopped by the system because the IDENTITY needs the operator.
+   * Distinct from `paused` so it can be resumed automatically the
+   * moment the identity's session works again, and so an operator's
+   * pause never shares a transition with it.
+   */
+  | "waiting_for_auth"
   | "rate_limited"
   | "failed"
   | "cancelled";

@@ -130,6 +130,15 @@ vi.mock("@/core/identity-verifiers/bluesky-session", () => ({
   refreshBlueskySession: vi.fn(),
 }));
 
+// The refresh is coordinated per identity by session.server.ts (a
+// database lease + token generation, service_role RPCs, proven on real
+// PostgreSQL in src/core/bluesky-campaigns/identity-session*.pg.test.ts).
+// Here it is a double: what the orchestrator does with each verdict is
+// the contract under test.
+vi.mock("@/core/bluesky-relationships/session.server", () => ({
+  refreshIdentitySession: vi.fn(),
+}));
+
 vi.mock("@/core/identity-verifiers/bluesky-resolve", () => ({
   normalizeBlueskyHandle: vi.fn((s: string | null) => s),
 }));
@@ -310,8 +319,7 @@ describe("publishBlueskyForIdentity — outcomes", () => {
 import * as publishBlueskyModule from "./publish-bluesky";
 import * as platformOAuthModule from "@/core/platform-oauth";
 import * as platformConnRepoModule from "@/repositories/platform-connection-repository";
-import * as tokenStorageModule from "@/core/platform-oauth/token-storage";
-import * as blueskySessionModule from "@/core/identity-verifiers/bluesky-session";
+import * as sessionModule from "@/core/bluesky-relationships/session.server";
 
 describe("publishBlueskyForIdentity — session_expired triggers refresh path", () => {
   beforeEach(() => {
@@ -329,11 +337,13 @@ describe("publishBlueskyForIdentity — session_expired triggers refresh path", 
       handle: "handle.bsky.social",
     };
     // Encrypted-token envelope present so the orchestrator picks the
-    // identity-session path.
+    // identity-session path. The generation travels with it.
     vi.mocked(platformConnRepoModule.readEncryptedTokens).mockResolvedValue({
       accessTokenEncrypted: "ciphertext-access",
       refreshTokenEncrypted: "ciphertext-refresh",
       expiresAt: null,
+      tokenGeneration: 7,
+      connectionStatus: "connected",
     });
     // Decrypt always returns a JWT-shaped string (the test never
     // sends this to a real PDS — publishToBlueskyAsIdentity is mocked).
@@ -342,60 +352,7 @@ describe("publishBlueskyForIdentity — session_expired triggers refresh path", 
     );
   });
 
-  it("publisher session_expired → refreshBlueskySession runs → second publish retried", async () => {
-    // First publish call returns session_expired (the prod case after
-    // body-error routing kicks in). Second call returns published.
-    vi.mocked(publishBlueskyModule.publishToBlueskyAsIdentity)
-      .mockResolvedValueOnce({
-        status: "failed",
-        reasonCode: "session_expired",
-        reasonDetail: "Bluesky: createRecord failed: ExpiredToken — Token has expired",
-        externalId: null,
-        externalUrl: null,
-        metadata: { atproto_error: "ExpiredToken", http_status: 400 },
-      })
-      .mockResolvedValueOnce({
-        status: "published",
-        reasonCode: "ok",
-        reasonDetail: null,
-        externalId: "at://did:plc:test/app.bsky.feed.post/abc",
-        externalUrl: "https://bsky.app/profile/handle.bsky.social/post/abc",
-        metadata: {},
-      });
-
-    vi.mocked(blueskySessionModule.refreshBlueskySession).mockResolvedValueOnce({
-      outcome: "refreshed",
-      accessJwt: "new-access",
-      refreshJwt: "new-refresh",
-      did: "did:plc:test",
-      handle: "handle.bsky.social",
-    } as never);
-
-    vi.mocked(tokenStorageModule.encryptTokenResponse).mockReturnValueOnce({
-      ok: true,
-      accessTokenEncrypted: "new-ciphertext-access",
-      refreshTokenEncrypted: "new-ciphertext-refresh",
-      expiresAt: null,
-    } as never);
-
-    const outcome = await publishBlueskyForIdentity({
-      request: baseRequest(),
-      db: FAKE_DB,
-    });
-
-    expect(outcome.status).toBe("published");
-    expect(
-      vi.mocked(publishBlueskyModule.publishToBlueskyAsIdentity),
-    ).toHaveBeenCalledTimes(2);
-    expect(
-      vi.mocked(blueskySessionModule.refreshBlueskySession),
-    ).toHaveBeenCalledTimes(1);
-    // Refreshed token persisted via upsert under service-role db.
-    expect(calls.upsertPlatformConnection).toHaveLength(1);
-    expect(calls.upsertPlatformConnection[0].db).toBe(FAKE_DB);
-  });
-
-  it("publisher session_expired → refresh fails → markIdentityExpired + session_expired outcome", async () => {
+  const expiredFirst = () =>
     vi.mocked(publishBlueskyModule.publishToBlueskyAsIdentity).mockResolvedValueOnce({
       status: "failed",
       reasonCode: "session_expired",
@@ -405,28 +362,94 @@ describe("publishBlueskyForIdentity — session_expired triggers refresh path", 
       metadata: { atproto_error: "ExpiredToken", http_status: 400 },
     });
 
-    vi.mocked(blueskySessionModule.refreshBlueskySession).mockResolvedValueOnce({
-      outcome: "failed",
-      code: "refresh_rejected",
-      message: "Refresh JWT also expired",
-    } as never);
-
-    const outcome = await publishBlueskyForIdentity({
-      request: baseRequest(),
-      db: FAKE_DB,
+  it("publisher session_expired → the shared coordinator refreshes → second publish retried with the renewed session", async () => {
+    expiredFirst().mockResolvedValueOnce({
+      status: "published",
+      reasonCode: "ok",
+      reasonDetail: null,
+      externalId: "at://did:plc:test/app.bsky.feed.post/abc",
+      externalUrl: "https://bsky.app/profile/handle.bsky.social/post/abc",
+      metadata: {},
     });
+    vi.mocked(sessionModule.refreshIdentitySession).mockResolvedValueOnce({
+      ok: true,
+      actorDid: "did:plc:test",
+      actorHandle: "handle.bsky.social",
+      accessJwt: "new-access",
+      service: "https://bsky.social",
+      connectionId: "conn-1",
+      connectionStatus: "connected",
+      tokenGeneration: 8,
+      refreshOnce: async () => ({ ok: false, code: "session_expired", message: "once" }),
+    });
+
+    const outcome = await publishBlueskyForIdentity({ request: baseRequest(), db: FAKE_DB });
+
+    expect(outcome.status).toBe("published");
+    expect(vi.mocked(publishBlueskyModule.publishToBlueskyAsIdentity)).toHaveBeenCalledTimes(2);
+    // The retry carries the RENEWED access token, not the rejected one.
+    const second = vi.mocked(publishBlueskyModule.publishToBlueskyAsIdentity).mock.calls[1][0];
+    expect(second.accessJwt).toBe("new-access");
+    // One coordinated refresh, quoting the generation the rejected
+    // token was read at, under the service-role client — never its own
+    // refreshSession call, never its own upsert.
+    expect(vi.mocked(sessionModule.refreshIdentitySession)).toHaveBeenCalledTimes(1);
+    const args = vi.mocked(sessionModule.refreshIdentitySession).mock.calls[0][0];
+    expect(args.observedGeneration).toBe(7);
+    expect(args.db).toBe(FAKE_DB);
+    expect(args.workspaceId).toBe("ws-1");
+    expect(args.accountId).toBe("acct-1");
+    expect(calls.upsertPlatformConnection).toHaveLength(0);
+    expect(calls.markConnectionStatus).toHaveLength(0);
+  });
+
+  it("publisher session_expired → coordinator says the identity needs the operator → session_expired, no retry, no direct status write", async () => {
+    expiredFirst();
+    vi.mocked(sessionModule.refreshIdentitySession).mockResolvedValueOnce({
+      ok: false,
+      code: "session_expired",
+      message: "The Bluesky session could not be refreshed (refresh_rejected). Sign in again.",
+    });
+
+    const outcome = await publishBlueskyForIdentity({ request: baseRequest(), db: FAKE_DB });
 
     expect(outcome.status).toBe("failed");
     expect(outcome.reasonCode).toBe("session_expired");
-    // Second publish was NOT attempted — refresh failed.
-    expect(
-      vi.mocked(publishBlueskyModule.publishToBlueskyAsIdentity),
-    ).toHaveBeenCalledTimes(1);
-    // Connection marked expired under service-role db.
-    expect(calls.markConnectionStatus).toHaveLength(1);
-    expect(calls.markConnectionStatus[0].db).toBe(FAKE_DB);
-    expect(calls.setAccountConnectionStatus).toHaveLength(1);
-    expect(calls.setAccountConnectionStatus[0].db).toBe(FAKE_DB);
+    expect(vi.mocked(publishBlueskyModule.publishToBlueskyAsIdentity)).toHaveBeenCalledTimes(1);
+    // The identity's state is the coordinator's to change (guarded by
+    // lease and generation). The orchestrator writes nothing itself.
+    expect(calls.markConnectionStatus).toHaveLength(0);
+    expect(calls.setAccountConnectionStatus).toHaveLength(0);
+    expect(calls.upsertPlatformConnection).toHaveLength(0);
+  });
+
+  it("publisher session_expired → coordinator could not run (transient) → retryable platform_api_error, identity untouched", async () => {
+    expiredFirst();
+    vi.mocked(sessionModule.refreshIdentitySession).mockResolvedValueOnce({
+      ok: false,
+      code: "provider_unavailable",
+      message: "Another worker is refreshing this identity's session and did not finish in time.",
+    });
+
+    const outcome = await publishBlueskyForIdentity({ request: baseRequest(), db: FAKE_DB });
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.reasonCode).toBe("platform_api_error");
+    expect(vi.mocked(publishBlueskyModule.publishToBlueskyAsIdentity)).toHaveBeenCalledTimes(1);
+    expect(calls.markConnectionStatus).toHaveLength(0);
+    expect(calls.setAccountConnectionStatus).toHaveLength(0);
+  });
+
+  it("publisher session_expired → coordinator reports a handle drift → handle_mismatch, no retry", async () => {
+    expiredFirst();
+    vi.mocked(sessionModule.refreshIdentitySession).mockResolvedValueOnce({
+      ok: false,
+      code: "handle_mismatch",
+      message: "The refreshed Bluesky session belongs to a different account.",
+    });
+    const outcome = await publishBlueskyForIdentity({ request: baseRequest(), db: FAKE_DB });
+    expect(outcome.reasonCode).toBe("handle_mismatch");
+    expect(vi.mocked(publishBlueskyModule.publishToBlueskyAsIdentity)).toHaveBeenCalledTimes(1);
   });
 
   it("publisher platform_api_error (non-auth) → NO refresh attempted, outcome bubbles up", async () => {
@@ -442,17 +465,10 @@ describe("publishBlueskyForIdentity — session_expired triggers refresh path", 
       metadata: { atproto_error: "InvalidRequest", http_status: 400 },
     });
 
-    const outcome = await publishBlueskyForIdentity({
-      request: baseRequest(),
-      db: FAKE_DB,
-    });
+    const outcome = await publishBlueskyForIdentity({ request: baseRequest(), db: FAKE_DB });
 
     expect(outcome.reasonCode).toBe("platform_api_error");
-    expect(
-      vi.mocked(publishBlueskyModule.publishToBlueskyAsIdentity),
-    ).toHaveBeenCalledTimes(1);
-    expect(
-      vi.mocked(blueskySessionModule.refreshBlueskySession),
-    ).not.toHaveBeenCalled();
+    expect(vi.mocked(publishBlueskyModule.publishToBlueskyAsIdentity)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sessionModule.refreshIdentitySession)).not.toHaveBeenCalled();
   });
 });

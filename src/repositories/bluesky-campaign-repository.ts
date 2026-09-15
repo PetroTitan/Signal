@@ -1758,6 +1758,48 @@ export async function getCampaignActionRejection(input: {
 }
 
 /**
+ * Campaigns stopped for authentication whose identity is CONNECTED again
+ * return to `active`, and today's run to `running` — in the database,
+ * in one statement, with no provider probe. The proof that the session
+ * works is the refresh (or reconnect) that set the connection to
+ * `connected`; the next chunk's first request re-proves it.
+ *
+ * Optionally scoped to a workspace, an identity or a single campaign
+ * (the manual "run now" recovers that campaign only). Never touches a
+ * campaign an operator paused.
+ */
+export async function recoverReauthorizedCampaignsForConnectedIdentities(input: {
+  workspaceId?: string | null;
+  accountId?: string | null;
+  campaignId?: string | null;
+  nowIso?: string;
+  db?: Db;
+}): Promise<{ campaignId: string; kind: "follow" | "unfollow"; runId: string | null; runResumed: boolean }[]> {
+  const { data, error } = await client(input.db).rpc(
+    "recover_bluesky_reauthorized_campaigns",
+    {
+      p_workspace_id: input.workspaceId ?? null,
+      p_account_id: input.accountId ?? null,
+      p_campaign_id: input.campaignId ?? null,
+      p_now: input.nowIso ?? new Date().toISOString(),
+    },
+  );
+  if (error) throw fromPostgres(error, "Could not recover campaigns for the identity.");
+  const rows = (Array.isArray(data) ? data : data ? [data] : []) as {
+    campaign_id: string;
+    kind: string;
+    run_id: string | null;
+    run_resumed: boolean;
+  }[];
+  return rows.map((r) => ({
+    campaignId: r.campaign_id,
+    kind: r.kind === "unfollow" ? "unfollow" : "follow",
+    runId: r.run_id ?? null,
+    runResumed: r.run_resumed === true,
+  }));
+}
+
+/**
  * Return today's run to `running` after a RECOVERABLE stop.
  *
  * Guarded in the database: only `paused`, `failed` or an elapsed

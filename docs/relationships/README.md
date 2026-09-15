@@ -222,6 +222,10 @@ thing to get wrong about this data.
 - `production-runbook.md` — the operational runbook (2026-09-16): pre-flight
   queries, migration order, rollback and kill switch, supervised dry runs
   and canaries, reconciliation verification, exact queries.
+- `incident-2026-09-15-identity-session.md` — a routine token expiry stopped a
+  campaign and a successful refresh did not bring it back: the identity-scoped
+  session coordinator (lease + token generation, atomic campaign recovery),
+  reproduction, deployment order, production recovery and canary plans.
 - `canary-followup-2026-09-15.md` — the nine defects the 2026-09-15 canary
   surfaced: root causes, negative controls, fixes, evidence.
 

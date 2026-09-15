@@ -41,6 +41,8 @@ const session = (): RelationshipSession => ({
   accessJwt: "jwt",
   service: "https://bsky.social",
   connectionId: "c",
+  connectionStatus: "connected",
+  tokenGeneration: 0,
   refreshOnce: async () => ({
     ok: false,
     code: "session_expired",

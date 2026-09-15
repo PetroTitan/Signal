@@ -656,14 +656,15 @@ function CampaignDetailView(props: {
                   className={
                     r.status === "completed"
                       ? "badge-low"
-                      : r.status === "rate_limited" || r.status === "paused"
+                      : r.status === "rate_limited" || r.status === "paused" || r.status === "waiting_for_auth"
                         ? "badge-medium"
                         : r.status === "failed"
                           ? "badge-high"
                           : "badge-info"
                   }
                 >
-                  {r.status === "paused" && r.last_error_code === "reauthorization_required"
+                  {r.status === "waiting_for_auth" ||
+                  (r.status === "paused" && r.last_error_code === "reauthorization_required")
                     ? "waiting for sign-in"
                     : r.status === "paused"
                       ? "paused by the system"

@@ -95,6 +95,25 @@ No other schema change. The previous change's migration
 (`20260915000001_campaign_run_recovery.sql`) must already be applied —
 it is, per the canary evidence.
 
+### 2a. The identity-session coordinator (added 2026-09-15)
+
+One more migration, `20260917000002_identity_session_coordinator.sql`
+(see `incident-2026-09-15-identity-session.md` §7): three columns on
+`platform_connections` (defaults), one trigger, one widened run-status
+CHECK, six service_role-only RPCs, one partial index.
+
+**Order: migration first, then code — and this time it matters.** Old
+code with the new schema is safe indefinitely. New code with the old
+schema cannot refresh a session at all (the RPCs do not exist): every
+expiry would yield until the migration lands. Nothing would be marked
+and nothing lost, but nothing would progress either.
+
+Post-apply check: the three columns exist, the six functions exist,
+`bluesky_follow_campaign_runs_status_check` contains `waiting_for_auth`.
+Production's stopped campaign recovers on the first delivery after the
+deploy (`recover_bluesky_reauthorized_campaigns` recognises the
+`paused` + `reauthorization_required` shape).
+
 ## 3. Rollback and kill switch
 
 Three independent stops, from least to most blast radius:

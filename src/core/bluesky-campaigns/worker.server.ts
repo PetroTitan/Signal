@@ -804,23 +804,44 @@ async function attemptFollow(
   let result = await send(input.session);
 
   if (!result.ok && isRefreshableAuthFailure(result)) {
+    // The refresh is COORDINATED PER IDENTITY (session.server.ts): under
+    // a database lease, generation-checked, and exactly one provider
+    // refresh however many workers share this account. `refreshOnce`
+    // returns either the renewed session, the newer session another
+    // worker already stored, or a failure that says which kind it is.
     const renewed = await input.session.refreshOnce();
     if (!renewed.ok) {
-      // `refreshOnce` has already marked the connection expired. Stop
-      // the campaign rather than spend a provider call per remaining
-      // member to be told the same thing.
-      //
       // The request itself was REFUSED at the door (HTTP 400
       // ExpiredToken): nothing was written, so this member is owed a
-      // real retry once the operator reconnects — not a reconciliation
-      // that can never conclude.
+      // real retry — not a reconciliation that can never conclude. The
+      // re-open code is the provider's own definite rejection.
+      const reopenCode = isDefiniteRejectionCode(result.errorCode)
+        ? String(result.errorCode)
+        : "session_expired";
+      if (renewed.code === "provider_unavailable") {
+        // Transient: the identity is untouched and the run stays open.
+        return {
+          kind: "session_unavailable",
+          errorCode: "session_refresh_unavailable",
+          errorMessage: renewed.message,
+          rateLimit: result.rateLimit,
+          rejectedBeforeWrite: true,
+          reopenCode,
+        };
+      }
+      // Definitive: the coordinator has marked the identity (and every
+      // active campaign on it) as needing the operator — or refused to,
+      // because a newer generation exists, in which case the next
+      // delivery starts from that generation. Stop this campaign rather
+      // than spend a provider call per remaining member to be told the
+      // same thing.
       return {
         kind: "authentication_expired",
         errorCode: "session_expired",
         errorMessage: renewed.message,
         rateLimit: result.rateLimit,
         rejectedBeforeWrite: true,
-        reopenCode: "session_expired",
+        reopenCode,
       };
     }
     // Adopted for every remaining member in this tick. `input.session`
