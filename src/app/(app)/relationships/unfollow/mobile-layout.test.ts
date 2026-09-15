@@ -35,7 +35,7 @@ const read = (rel: string) =>
 
 const DIALOG = read("src/app/(app)/relationships/unfollow/_confirm-activation.tsx");
 const WIZARD = read("src/app/(app)/relationships/unfollow/_unfollow-wizard.tsx");
-const DETAIL = read("src/app/(app)/relationships/unfollow/[id]/page.tsx");
+const DETAIL = read("src/app/(app)/relationships/unfollow/[id]/_detail-view.tsx");
 const CONTROLS = read("src/app/(app)/relationships/unfollow/[id]/_controls.tsx");
 const ALLOWLIST = read("src/app/(app)/relationships/unfollow/_allowlist-panel.tsx");
 const RELATIONSHIPS_PAGE = read("src/app/(app)/relationships/page.tsx");
@@ -145,7 +145,8 @@ describe("controls stack rather than overflow on a narrow screen", () => {
 describe("the page container is bounded and padded at every width", () => {
   it("both pages use the app's responsive padding scale", () => {
     for (const [name, source] of [
-      ["detail", DETAIL],
+      // The padding is the page wrapper's; the view renders inside it.
+      ["detail", read("src/app/(app)/relationships/unfollow/[id]/page.tsx")],
       ["setup", read("src/app/(app)/relationships/unfollow/page.tsx")],
     ] as [string, string][]) {
       expect(source, name).toMatch(/px-4 sm:px-6 lg:px-10/);

@@ -9,7 +9,7 @@ import {
   StartAutomationCta,
   StartUnfollowCta,
 } from "./_automation-panel";
-import { loadCampaignSummary } from "@/core/bluesky-campaigns/load-campaign-summary.server";
+import { loadIdentityAutomation } from "@/core/bluesky-campaigns/load-campaign-summary.server";
 import { can } from "@/core/teams/permissions";
 
 export const dynamic = "force-dynamic";
@@ -96,16 +96,19 @@ export default async function RelationshipsPage({
     );
   }
 
-  const [view, automation] = await Promise.all([
-    loadRelationships({
-      workspaceId: membership.workspace.id,
-      operatorAccountId: searchParams?.identity ?? null,
-      searchParams,
-    }),
-    // A summary, not the campaign. The queue behind it may hold 100,000
-    // members and none of them are read to draw the panel.
-    loadCampaignSummary({ workspaceId: membership.workspace.id }),
-  ]);
+  const view = await loadRelationships({
+    workspaceId: membership.workspace.id,
+    operatorAccountId: searchParams?.identity ?? null,
+    searchParams,
+  });
+  // Summaries, not campaigns. Every live campaign of both kinds on the
+  // SELECTED identity — the queues behind them may hold 100,000
+  // members and none of them are read to draw the panel.
+  const automation = await loadIdentityAutomation({
+    workspaceId: membership.workspace.id,
+    operatorAccountId: view.selectedIdentityId ?? null,
+  });
+  const liveCampaigns = automation?.campaigns ?? [];
 
   // Starting automatic following is a write, so the button is not shown
   // to a member who could not complete it.
@@ -129,8 +132,8 @@ export default async function RelationshipsPage({
         }
       />
       <div className="px-4 sm:px-6 lg:px-10 py-6 sm:py-8 max-w-4xl space-y-6">
-        {automation ? (
-          <AutomationPanel summary={automation} />
+        {automation && liveCampaigns.length > 0 ? (
+          <AutomationPanel overview={automation} />
         ) : canManage ? (
           <section className="card card-padded" data-testid="automation-empty">
             <h2 className="section-title">Let Signal do the following</h2>
@@ -168,11 +171,12 @@ export default async function RelationshipsPage({
           batches={view.batches}
           counts={view.counts}
           automation={{
-            hasCampaign: automation !== null,
+            hasCampaign: liveCampaigns.length > 0,
             canManage,
-            href: automation
-              ? `/relationships/campaigns?campaign=${encodeURIComponent(automation.id)}`
-              : "/relationships/campaigns/setup",
+            href:
+              liveCampaigns.length > 0
+                ? "/relationships/campaigns"
+                : "/relationships/campaigns/setup",
           }}
           // A Map cannot cross the server/client boundary; the object is
           // the same data in a serialisable shape.

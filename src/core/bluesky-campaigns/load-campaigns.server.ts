@@ -87,10 +87,22 @@ export interface CampaignOutcomeBreakdown {
   };
 }
 
+export type CampaignKindFilter = "all" | "follow" | "unfollow";
+
 export interface CampaignsView {
   identities: { id: string; handle: string | null; displayName: string | null }[];
+  /** Every campaign of every kind, for the picker; filtered by `kindFilter`. */
   campaigns: BlueskyFollowCampaignRow[];
+  kindFilter: CampaignKindFilter;
+  /** The FOLLOW campaign shown in detail. Never an unfollow campaign. */
   selected: CampaignDetail | null;
+  /**
+   * Set when the requested campaign is an UNFOLLOW campaign: the page
+   * must send the operator to that campaign's own screen rather than
+   * render it inside the follow detail, which is how production showed
+   * a setup form with default values under an unfollow campaign.
+   */
+  redirectTo: string | null;
   killSwitches: BlueskyCampaignKillSwitchRow[];
   failure: ReadFailure | null;
 }
@@ -98,6 +110,7 @@ export interface CampaignsView {
 export async function loadCampaigns(input: {
   workspaceId: string;
   campaignId?: string | null;
+  kind?: CampaignKindFilter | null;
   memberPage?: number;
   memberStatus?: BlueskyCampaignMemberStatus | null;
   runPage?: number;
@@ -105,7 +118,9 @@ export async function loadCampaigns(input: {
   db?: SupabaseClient;
 }): Promise<CampaignsView> {
   const now = input.now ?? new Date();
-  const accounts = await listAccountsByPlatform(input.workspaceId, "bluesky");
+  const kindFilter: CampaignKindFilter =
+    input.kind === "follow" || input.kind === "unfollow" ? input.kind : "all";
+  const accounts = await listAccountsByPlatform(input.workspaceId, "bluesky", input.db);
   const identities = accounts.map((a) => ({
     id: a.id,
     handle: a.handle,
@@ -125,18 +140,39 @@ export async function loadCampaigns(input: {
     return {
       identities,
       campaigns: [],
+      kindFilter,
       selected: null,
+      redirectTo: null,
       killSwitches: [],
       failure: classifyReadFailure(err),
     };
   }
 
+  const visible =
+    kindFilter === "all" ? campaigns : campaigns.filter((c) => c.kind === kindFilter);
+
+  // An unfollow campaign has its own screen. It is never rendered
+  // through the follow detail, whatever the URL asked for.
+  const requested = input.campaignId
+    ? campaigns.find((c) => c.id === input.campaignId) ?? null
+    : null;
+  if (requested && requested.kind === "unfollow") {
+    return {
+      identities,
+      campaigns: visible,
+      kindFilter,
+      selected: null,
+      redirectTo: `/relationships/unfollow/${requested.id}`,
+      killSwitches,
+      failure: null,
+    };
+  }
+
   const campaign =
-    (input.campaignId && campaigns.find((c) => c.id === input.campaignId)) ||
-    campaigns[0] ||
-    null;
+    requested ??
+    (kindFilter === "unfollow" ? null : visible.find((c) => c.kind === "follow") ?? null);
   if (!campaign) {
-    return { identities, campaigns, selected: null, killSwitches, failure: null };
+    return { identities, campaigns: visible, kindFilter, selected: null, redirectTo: null, killSwitches, failure: null };
   }
 
   const clock = localClockAt(now, campaign.timezone);
@@ -251,7 +287,9 @@ export async function loadCampaigns(input: {
 
   return {
     identities,
-    campaigns,
+    campaigns: visible,
+    kindFilter,
+    redirectTo: null,
     killSwitches,
     failure: null,
     selected: {

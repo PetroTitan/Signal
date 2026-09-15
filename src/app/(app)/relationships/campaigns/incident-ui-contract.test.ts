@@ -16,7 +16,7 @@ const code = (t: string) =>
 const read = (rel: string) => code(readFileSync(path.join(process.cwd(), rel), "utf8"));
 
 const FOLLOW_UI = read("src/app/(app)/relationships/campaigns/_campaign-ui.tsx");
-const UNFOLLOW_UI = read("src/app/(app)/relationships/unfollow/[id]/page.tsx");
+const UNFOLLOW_UI = read("src/app/(app)/relationships/unfollow/[id]/_detail-view.tsx");
 const LOADER = read("src/core/bluesky-campaigns/load-campaigns.server.ts");
 
 describe("the primary UI says, in plain language, that the campaign continues", () => {

@@ -1,17 +1,24 @@
 import Link from "next/link";
-import type { CampaignSummary } from "@/core/bluesky-campaigns/load-campaign-summary.server";
+import type {
+  CampaignSummary,
+  IdentityAutomationOverview,
+} from "@/core/bluesky-campaigns/load-campaign-summary.server";
 import { formatIdentityLabel } from "@/core/bluesky-relationships/handle-display";
 
 /**
- * What automatic following is doing, on the page where the work starts.
+ * What automatic following AND unfollowing are doing for the selected
+ * identity, on the page where the work starts.
  *
- * Before this, /relationships said "Nothing here runs on its own" while
- * a campaign could be following people all day — the only way to see it
- * was a nav entry that lived inside the More sheet on mobile. An
- * operator could not tell, from the page they were on, whether Signal
- * was acting for them.
+ * THE DEFECT THIS FIXES
+ * ---------------------
+ * The panel showed one campaign — the most live in the workspace — and
+ * so implied that was the only thing running. Two follow campaigns can
+ * be active on one identity, and an unfollow campaign beside them; all
+ * three share the identity's 1,000-action daily ceiling. Every live
+ * campaign on the selected identity is now a card, each says which
+ * kind it is, and the shared ceiling is stated once at the top.
  *
- * Reads nothing but a summary. The queue behind it may hold 100,000
+ * Reads nothing but summaries. The queues behind them may hold 100,000
  * members; none of them are loaded to draw this.
  */
 
@@ -19,7 +26,7 @@ const STATUS_COPY: Record<
   string,
   { label: string; tone: "running" | "attention" | "stopped" | "done" }
 > = {
-  active: { label: "Following automatically", tone: "running" },
+  active: { label: "Running", tone: "running" },
   rate_limited: { label: "Waiting — Bluesky rate limit", tone: "attention" },
   reauthorization_required: { label: "Reconnect needed", tone: "attention" },
   paused: { label: "Paused", tone: "stopped" },
@@ -45,35 +52,30 @@ function formatNextRun(iso: string | null): string {
   })}`;
 }
 
-export function AutomationPanel({ summary }: { summary: CampaignSummary }) {
+function CampaignCard({ summary }: { summary: CampaignSummary }) {
   const copy = STATUS_COPY[summary.status] ?? {
     label: summary.status,
     tone: "stopped" as const,
   };
-  const identity = formatIdentityLabel({
-    id: summary.id,
-    handle: summary.identityHandle,
-    displayName: summary.identityDisplayName,
-  });
   const percent =
     summary.total > 0
       ? Math.min(100, Math.round((summary.completed / summary.total) * 100))
       : 0;
-  const finished = summary.status === "completed";
+  const verb = summary.kind === "unfollow" ? "Unfollowed" : "Followed";
 
   return (
-    <section
-      className="card card-padded"
-      aria-label="Automatic following status"
-      data-testid="automation-panel"
+    <article
+      className="border border-ink-200 rounded-md p-3 sm:p-4 space-y-3"
+      data-testid="automation-campaign"
+      data-kind={summary.kind}
     >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="section-title truncate">{summary.name}</h2>
-          <p className="text-sm text-ink-500 mt-0.5 break-words">
-            Acting as {identity}
-          </p>
-        </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={summary.kind === "unfollow" ? "badge-neutral" : "badge-info"}>
+          {summary.kind === "unfollow" ? "Unfollow" : "Follow"}
+        </span>
+        <h3 className="text-sm font-semibold text-ink-900 break-words min-w-0">
+          {summary.name}
+        </h3>
         <span
           className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${
             TONE_CLASS[copy.tone]
@@ -81,28 +83,13 @@ export function AutomationPanel({ summary }: { summary: CampaignSummary }) {
         >
           {copy.label}
         </span>
+        {summary.dryRun ? <span className="badge-info">Dry run — sends nothing</span> : null}
       </div>
 
-      {summary.dryRun ? (
-        <p className="mt-3 text-sm text-ink-600">
-          Test mode: Signal is not sending any follows.
-        </p>
-      ) : null}
-
-      {finished ? (
-        // The most important sentence on the panel once it is over. An
-        // operator must not have to infer that nothing more will happen.
-        <p className="mt-3 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-800">
-          All {summary.total.toLocaleString()} profiles have been processed.
-          Signal will not follow anyone else for this campaign.
-        </p>
-      ) : null}
-
-      <div className="mt-4">
+      <div>
         <div className="flex items-baseline justify-between gap-2 text-sm">
           <span className="text-ink-600">
-            {summary.completed.toLocaleString()} of{" "}
-            {summary.total.toLocaleString()} profiles done
+            {summary.completed.toLocaleString()} of {summary.total.toLocaleString()} profiles done
           </span>
           <span className="text-ink-500 tabular-nums">{percent}%</span>
         </div>
@@ -112,7 +99,7 @@ export function AutomationPanel({ summary }: { summary: CampaignSummary }) {
           aria-valuenow={percent}
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-label="Campaign progress"
+          aria-label={`${summary.name} progress`}
         >
           <div
             className="h-full rounded-full bg-emerald-500 transition-[width]"
@@ -121,64 +108,101 @@ export function AutomationPanel({ summary }: { summary: CampaignSummary }) {
         </div>
       </div>
 
-      <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
         <div>
           <dt className="stat-label">Tried today</dt>
-          <dd className="text-sm text-ink-900 tabular-nums">
-            {summary.attemptedToday.toLocaleString()}
-          </dd>
+          <dd className="text-sm text-ink-900 tabular-nums">{summary.attemptedToday.toLocaleString()}</dd>
         </div>
         <div>
-          <dt className="stat-label">Followed today</dt>
-          <dd className="text-sm text-ink-900 tabular-nums">
-            {summary.succeededToday.toLocaleString()}
-          </dd>
+          <dt className="stat-label">{verb} today</dt>
+          <dd className="text-sm text-ink-900 tabular-nums">{summary.succeededToday.toLocaleString()}</dd>
+        </div>
+        <div>
+          <dt className="stat-label">Failed today</dt>
+          <dd className="text-sm text-ink-900 tabular-nums">{summary.failedToday.toLocaleString()}</dd>
         </div>
         <div>
           <dt className="stat-label">You asked for</dt>
-          <dd className="text-sm text-ink-900 tabular-nums">
-            {summary.requestedDailyQuota.toLocaleString()}/day
-          </dd>
+          <dd className="text-sm text-ink-900 tabular-nums">{summary.requestedDailyQuota.toLocaleString()}/day</dd>
         </div>
-        <div className="col-span-2 sm:col-span-3">
+        <div className="col-span-2">
           <dt className="stat-label">Today&apos;s limit</dt>
           <dd className="text-sm text-ink-900">
-            <span className="tabular-nums">
-              {summary.effectiveDailyQuota.toLocaleString()}
-            </span>
+            <span className="tabular-nums">{summary.effectiveDailyQuota.toLocaleString()}</span>
             {summary.effectiveQuotaReason ? (
-              // Requested and actual are shown separately on purpose:
-              // the number asked for is not a promise, and the reason it
-              // differs is the operator's business.
               <span className="text-ink-500"> — {summary.effectiveQuotaReason}</span>
             ) : null}
           </dd>
         </div>
       </dl>
 
-      {!finished ? (
-        <p className="mt-3 text-sm text-ink-500">{formatNextRun(summary.nextRunAt)}</p>
-      ) : null}
-
-      <div className="mt-4 flex flex-wrap gap-2">
-        <Link
-          href={`/relationships/campaigns?campaign=${summary.id}`}
-          className="btn-secondary min-h-11 inline-flex items-center"
-        >
-          View campaign
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-ink-500">{formatNextRun(summary.nextRunAt)}</p>
+        <Link href={summary.href} className="btn-secondary min-h-11 inline-flex items-center">
+          Open campaign
         </Link>
-        {summary.status === "active" || summary.status === "rate_limited" ? (
-          // Pause only. Stopping for good is a different, destructive
-          // decision and lives on the campaign page with its own
-          // confirmation — it must not sit here looking like this one.
-          <Link
-            href={`/relationships/campaigns?campaign=${summary.id}#pause`}
-            className="btn-secondary min-h-11 inline-flex items-center"
-          >
-            Pause
-          </Link>
+      </div>
+    </article>
+  );
+}
+
+export function AutomationPanel({ overview }: { overview: IdentityAutomationOverview }) {
+  const identity = formatIdentityLabel({
+    id: overview.identityId,
+    handle: overview.identityHandle,
+    displayName: overview.identityDisplayName,
+  });
+  const n = overview.campaigns.length;
+
+  return (
+    <section
+      className="card card-padded space-y-4"
+      aria-label="Automatic campaigns for this identity"
+      data-testid="automation-panel"
+    >
+      <div>
+        <h2 className="section-title break-words">
+          {n === 0 ? (
+            "Nothing running for this identity"
+          ) : (
+            <>
+              {n} {n === 1 ? "campaign" : "campaigns"} running as{" "}
+              <span className="break-all">{identity}</span>
+            </>
+          )}
+        </h2>
+        <p className="mt-1 text-sm text-ink-600 leading-relaxed" data-testid="shared-ceiling">
+          Every campaign acting as this account shares one daily ceiling of{" "}
+          <strong>{overview.ceiling.toLocaleString()} actions</strong> — follows and unfollows
+          together. Used today: {overview.attemptsToday.toLocaleString()} (
+          {overview.followsToday.toLocaleString()} follows, {overview.unfollowsToday.toLocaleString()}{" "}
+          unfollows). A campaign&apos;s daily number is what it may take from that ceiling, not a
+          promise.
+        </p>
+        {overview.otherIdentitiesLive > 0 ? (
+          <p className="mt-1 text-sm text-ink-500 leading-relaxed">
+            {overview.otherIdentitiesLive === 1
+              ? "One other identity in this workspace also has a running campaign"
+              : `${overview.otherIdentitiesLive} other identities in this workspace also have running campaigns`}{" "}
+            — see{" "}
+            <Link
+              href="/relationships/campaigns"
+              className="underline inline-flex items-center min-h-11"
+            >
+              all campaigns
+            </Link>
+            .
+          </p>
         ) : null}
       </div>
+
+      {n > 0 ? (
+        <div className="space-y-3">
+          {overview.campaigns.map((c) => (
+            <CampaignCard key={c.id} summary={c} />
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -216,9 +240,6 @@ export function StartAutomationCta({
  *
  * Sits in the page HEADER beside "Start automatic following", so it is
  * on screen on a 320px phone without opening any secondary navigation.
- * The follow flow had to learn this the hard way: it lived behind a nav
- * entry inside the mobile More sheet, and an operator working on a
- * phone had no way to discover it existed.
  *
  * `btn-secondary`, not `btn-primary`. Both are primary ACTIONS on this
  * page, but only one of them is irreversible, and the visual weight
