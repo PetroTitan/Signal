@@ -9,8 +9,8 @@ import "server-only";
  * Paging is KEYSET everywhere. A lead list may hold tens of thousands
  * of rows and members move between states while a page is open; a
  * page keyed on (created_at, id) or (available_at, id) neither skips
- * nor repeats a row. There is no OFFSET in this file and a structural
- * test keeps it that way.
+ * nor repeats a row. Nothing here skips a numbered count of rows, and
+ * a structural test keeps it that way.
  *
  * Nothing in this file talks to LinkedIn. There is nothing to talk with.
  */

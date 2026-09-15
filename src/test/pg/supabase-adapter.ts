@@ -143,7 +143,7 @@ function compileFilters(filters: Filter[], params: unknown[]): string {
 
 class Builder<T = Record<string, unknown>[]> implements PromiseLike<Result<T>> {
   private filters: Filter[] = [];
-  private orderBy: { column: string; ascending: boolean }[] = [];
+  private orderBy: { column: string; ascending: boolean; nullsFirst: boolean | null }[] = [];
   private limitTo: number | null = null;
   private selectCols = "*";
   private wantCount = false;
@@ -251,8 +251,12 @@ class Builder<T = Record<string, unknown>[]> implements PromiseLike<Result<T>> {
     this.filters.push({ op: "or", raw });
     return this;
   }
-  order(column: string, opts?: { ascending?: boolean }): Builder<T> {
-    this.orderBy.push({ column, ascending: opts?.ascending !== false });
+  order(column: string, opts?: { ascending?: boolean; nullsFirst?: boolean }): Builder<T> {
+    this.orderBy.push({
+      column,
+      ascending: opts?.ascending !== false,
+      nullsFirst: typeof opts?.nullsFirst === "boolean" ? opts.nullsFirst : null,
+    });
     return this;
   }
   limit(n: number): Builder<T> {
@@ -391,7 +395,7 @@ class Builder<T = Record<string, unknown>[]> implements PromiseLike<Result<T>> {
     return (
       " order by " +
       this.orderBy
-        .map((o) => `${ident(o.column)} ${o.ascending ? "asc" : "desc"}`)
+        .map((o) => `${ident(o.column)} ${o.ascending ? "asc" : "desc"}${o.nullsFirst === null ? "" : o.nullsFirst ? " nulls first" : " nulls last"}`)
         .join(", ")
     );
   }
