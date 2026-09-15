@@ -43,12 +43,22 @@ export type UnfollowOutcomeKind =
   | "retryable_transport_failure"
   | "rate_limited"
   | "authentication_expired"
+  /**
+   * Rejected, and the coordinated refresh could not run for a
+   * TRANSIENT reason (provider unreachable, or another worker holding
+   * the identity's refresh lease). Nothing about the identity changed;
+   * the member was refused before any delete and is owed a real retry;
+   * the run stays open for the next delivery.
+   */
+  | "session_unavailable"
   | "structural_provider_failure"
   | "cancelled";
 
 export type NextAction =
   | { kind: "continue" }
   | { kind: "stop_run"; reason: string; resumeAfter?: Date | null }
+  /** Stop this chunk; leave the run running and the campaign active. Transient. */
+  | { kind: "yield"; reason: string }
   | { kind: "stop_campaign"; campaignStatus: UnfollowHaltStatus; reason: string };
 
 export type UnfollowHaltStatus =
@@ -261,6 +271,25 @@ export function classifyUnfollowOutcome(
         retryable: !exhausted,
       };
     }
+
+    case "session_unavailable":
+      // Refused before any delete; the refresh could not run right now
+      // for a reason that says nothing about the credential. Retryable
+      // member, identity untouched, run left open. Bounded by the cron
+      // cadence, never a spin.
+      return {
+        kind,
+        memberStatus: "retryable",
+        consumesQuota: false,
+        countsAsSuccess: false,
+        countsAsFailure: false,
+        next: {
+          kind: "yield",
+          reason:
+            "The session could not be refreshed right now (provider unreachable or another worker refreshing). Nothing changed; the next delivery retries.",
+        },
+        retryable: true,
+      };
 
     case "structural_provider_failure":
       return {

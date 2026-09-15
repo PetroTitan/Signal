@@ -127,6 +127,8 @@ export interface UnfollowDispatchInput {
    * ignored; kill switches are not.
    */
   reconcileOnly?: boolean;
+  /** See the follow dispatcher: called after the lease and session are held, before the first chunk. */
+  beforeFirstChunk?: (campaign: BlueskyFollowCampaignRow) => Promise<void>;
 }
 
 const empty = (): UnfollowDispatchResult => ({
@@ -408,11 +410,44 @@ async function runCampaign(args: {
     accountId: campaign.operator_account_id,
     db: input.db,
     fetchImpl: input.fetchImpl,
+    sleep: input.sleep,
+    nowIso: now.toISOString(),
   });
 
+  // The identity decides first — see the follow dispatcher. Anything but
+  // a `connected` identity means no provider call for this campaign; it
+  // waits for the identity (compare-and-set from active) and today's run
+  // becomes waiting_for_auth, never `paused`.
+  if (!session.ok || session.connectionStatus !== "connected") {
+    const message = session.ok
+      ? `This Bluesky identity is ${session.connectionStatus}; it must be signed in again before the campaign continues.`
+      : session.message;
+    const code = session.ok ? "reauthorization_required" : session.code;
+    await updateCampaign({
+      workspaceId: campaign.workspace_id,
+      campaignId: campaign.id,
+      status: "reauthorization_required",
+      lastErrorCode: code,
+      lastErrorMessage: message,
+      expectedStatuses: ["active"],
+      db: input.db,
+    });
+    if (run.status === "running") {
+      await updateRun({
+        workspaceId: campaign.workspace_id,
+        runId: run.id,
+        status: "waiting_for_auth",
+        lastErrorCode: code,
+        lastErrorMessage: message,
+        db: input.db,
+      });
+    }
+    out.note = `waiting for the identity — ${message}`;
+    return out;
+  }
+
   if (
-    session.ok &&
-    (run.status === "paused" || run.status === "failed") &&
+    (run.status === "paused" || run.status === "failed" || run.status === "waiting_for_auth") &&
     isRecoverableRunStop(run.last_error_code)
   ) {
     const resumed = await resumeRunAfterRecovery({
@@ -537,28 +572,6 @@ async function runCampaign(args: {
     }
   }
 
-  if (!session.ok) {
-    await updateCampaign({
-      workspaceId: campaign.workspace_id,
-      campaignId: campaign.id,
-      status: "reauthorization_required",
-      lastErrorCode: session.code,
-      lastErrorMessage: session.message,
-      expectedStatuses: ["active"],
-      db: input.db,
-    });
-    await updateRun({
-      workspaceId: campaign.workspace_id,
-      runId: run.id,
-      status: "paused",
-      lastErrorCode: session.code,
-      lastErrorMessage: session.message,
-      db: input.db,
-    });
-    out.note = `session unavailable — ${session.message}`;
-    return out;
-  }
-
   const claimedBy = `unfollow-${now.toISOString()}-${Math.random()
     .toString(36)
     .slice(2, 8)}`;
@@ -578,6 +591,13 @@ async function runCampaign(args: {
   }
 
   try {
+    if (input.beforeFirstChunk) {
+      try {
+        await input.beforeFirstChunk(campaign);
+      } catch (err) {
+        out.note = `could not record dispatch order — ${err instanceof Error ? err.message : "unknown"}`;
+      }
+    }
     return await runChunks({
       args,
       input,
@@ -793,12 +813,18 @@ async function runChunks(ctx: {
         stop.campaignStatus === "rate_limited"
           ? "rate_limited"
           : stop.campaignStatus === "reauthorization_required"
-            ? "paused"
+            ? "waiting_for_auth"
             : "failed",
       lastErrorCode: stop.campaignStatus,
       lastErrorMessage: stop.reason,
       db: input.db,
     });
+    out.note = stop.reason;
+    return out;
+  }
+
+  if (stop?.kind === "yield") {
+    // Transient: run stays running, campaign active, next delivery retries.
     out.note = stop.reason;
     return out;
   }

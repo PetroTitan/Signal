@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase";
+import { createSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
 import { getPrimaryWorkspace } from "@/repositories/workspace-repository";
 import { getAccountById } from "@/repositories/account-repository";
 import type { FounderPlatform } from "@/core/publishing/platform-guidance";
@@ -93,11 +94,23 @@ export async function POST(
     // showing "Signed in" while every follow was being refused.
     //
     // So: exercise the session. If the token has aged out, spend the
-    // stored refresh token once — the same one-refresh rule the
-    // mutations use — and report honestly if that fails.
+    // stored refresh token once — through the SAME identity-scoped
+    // coordinator the campaign workers and the publisher use, so this
+    // button can never race a worker for the single-use refresh token,
+    // and so a refresh that succeeds here recovers every campaign and
+    // run stopped for this identity in the same transaction. That is
+    // what makes "Check account access" more than a cosmetic health
+    // mark: the next scheduler delivery finds the campaigns active.
+    //
+    // The coordinator's RPCs are service_role-only (a signed-in client
+    // must not be able to move token state directly), so the session is
+    // resolved through the service client, scoped to the workspace and
+    // identity this request has already been authorised for above.
+    const serviceDb = createSupabaseServiceRoleClient();
     const session = await resolveRelationshipSession({
       workspaceId: membership.workspace.id,
       accountId: identityId,
+      db: serviceDb ?? undefined,
     });
 
     if (!session.ok) {
@@ -122,8 +135,25 @@ export async function POST(
     if (!probe.ok && isRefreshableAuthFailure(probe)) {
       const renewed = await session.refreshOnce();
       if (!renewed.ok) {
-        // `refreshOnce` has already marked the connection expired, so
-        // the Accounts panel will offer "Sign in again" on reload.
+        if (renewed.code === "provider_unavailable") {
+          // Nothing about the identity changed: the provider could not
+          // be reached, or a worker is refreshing it right now. Not a
+          // signed-out account.
+          return NextResponse.json(
+            {
+              ok: false,
+              code: "provider_unavailable",
+              platform: "bluesky",
+              identity_id: identityId,
+              message: `${renewed.message} Your sign-in has not changed.`,
+            },
+            { status: 503 },
+          );
+        }
+        // The coordinator has marked the identity as needing the
+        // operator (guarded: only on the latest generation, only for a
+        // definitive rejection), so the Accounts panel will offer
+        // "Sign in again" on reload.
         return NextResponse.json(
           {
             ok: false,

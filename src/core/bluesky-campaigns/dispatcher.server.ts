@@ -34,19 +34,16 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { resolveRelationshipSession } from "@/core/bluesky-relationships/session.server";
 import {
-  getSessionInfo,
-  isRefreshableAuthFailure,
-} from "@/core/bluesky-relationships/atproto-graph";
-import { getAccountById } from "@/repositories/account-repository";
-import {
   applyRunOutcome,
   campaignMayComplete,
   resumeRunAfterRecovery,
   countMembersByStatus,
   countUnresolvedCampaignActions,
   ensureRun,
+  getCampaign,
   getIdentityUsage,
   listDueCampaigns,
+  recoverReauthorizedCampaignsForConnectedIdentities,
   reserveAndClaim,
   resumeRateLimitedRun,
   type ReservationReason,
@@ -127,6 +124,15 @@ export interface DispatchInput {
    * are not.
    */
   reconcileOnly?: boolean;
+  /**
+   * Called ONCE per campaign, after this worker holds the run's dispatch
+   * lease and a usable session, immediately before its first chunk. The
+   * fair round records `last_dispatched_at` here — after the worker has
+   * proven it can serve the campaign, before any provider work, so a
+   * campaign that could not be served is never recorded as served and a
+   * worker killed mid-chunk has already moved it to the back.
+   */
+  beforeFirstChunk?: (campaign: BlueskyFollowCampaignRow) => Promise<void>;
 }
 
 /** The later of two optional instants, or null when neither is set. */
@@ -392,7 +398,46 @@ async function runCampaign(args: {
     accountId: campaign.operator_account_id,
     db: input.db,
     fetchImpl: input.fetchImpl,
+    sleep: input.sleep,
+    nowIso: now.toISOString(),
   });
+
+  // THE IDENTITY DECIDES FIRST. Authentication is a property of the
+  // identity, not of each campaign: if its connection is anything but
+  // `connected` — the coordinator marked it reauthorization_required,
+  // the operator signed it out, a legacy `expired` — no provider call
+  // is made for ANY campaign on it. The campaign is recorded as waiting
+  // for the identity (compare-and-set from active only, so an operator
+  // pause is never overwritten) and today's run as waiting_for_auth —
+  // a state distinct from `paused`, which is what makes it safe to
+  // resume automatically the moment the identity is connected again.
+  if (!session.ok || session.connectionStatus !== "connected") {
+    const message = session.ok
+      ? `This Bluesky identity is ${session.connectionStatus}; it must be signed in again before the campaign continues.`
+      : session.message;
+    const code = session.ok ? "reauthorization_required" : session.code;
+    await updateCampaign({
+      workspaceId: campaign.workspace_id,
+      campaignId: campaign.id,
+      status: "reauthorization_required",
+      lastErrorCode: code,
+      lastErrorMessage: message,
+      expectedStatuses: ["active"],
+      db: input.db,
+    });
+    if (run.status === "running") {
+      await updateRun({
+        workspaceId: campaign.workspace_id,
+        runId: run.id,
+        status: "waiting_for_auth",
+        lastErrorCode: code,
+        lastErrorMessage: message,
+        db: input.db,
+      });
+    }
+    out.note = `waiting for the identity — ${message}`;
+    return out;
+  }
 
   // A run stopped for a RECOVERABLE reason returns to life the moment
   // the campaign is active and the session resolves.
@@ -407,8 +452,7 @@ async function runCampaign(args: {
   // for auth, an internal error or an elapsed rate limit — never one
   // belonging to a campaign an operator paused, which is not listed.
   if (
-    session.ok &&
-    (run.status === "paused" || run.status === "failed") &&
+    (run.status === "paused" || run.status === "failed" || run.status === "waiting_for_auth") &&
     isRecoverableRunStop(run.last_error_code)
   ) {
     const resumed = await resumeRunAfterRecovery({
@@ -517,28 +561,6 @@ async function runCampaign(args: {
   // back reconciliation work regardless of headroom, and says WHY when
   // it grants nothing — and the end of the loop acts on that reason.
 
-  if (!session.ok) {
-    await updateCampaign({
-      workspaceId: campaign.workspace_id,
-      campaignId: campaign.id,
-      status: "reauthorization_required",
-      lastErrorCode: session.code,
-      lastErrorMessage: session.message,
-      expectedStatuses: ["active"],
-      db: input.db,
-    });
-    await updateRun({
-      workspaceId: campaign.workspace_id,
-      runId: run.id,
-      status: "paused",
-      lastErrorCode: session.code,
-      lastErrorMessage: session.message,
-      db: input.db,
-    });
-    out.note = `session unavailable — ${session.message}`;
-    return out;
-  }
-
   // ── The chunk loop.
   //
   // Each iteration RESERVES quota and receives exactly the members that
@@ -572,6 +594,16 @@ async function runCampaign(args: {
   }
 
   try {
+    // Proven: this worker owns the campaign-day and holds a usable
+    // session. The fair round records service HERE — before provider
+    // work, after the proof.
+    if (input.beforeFirstChunk) {
+      try {
+        await input.beforeFirstChunk(campaign);
+      } catch (err) {
+        out.note = `could not record dispatch order — ${err instanceof Error ? err.message : "unknown"}`;
+      }
+    }
     return await runChunks({
       args,
       input,
@@ -776,12 +808,19 @@ async function runChunks(ctx: {
         stop.campaignStatus === "rate_limited"
           ? "rate_limited"
           : stop.campaignStatus === "reauthorization_required"
-            ? "paused"
+            ? "waiting_for_auth"
             : "failed",
       lastErrorCode: stop.campaignStatus,
       lastErrorMessage: stop.reason,
       db: input.db,
     });
+    out.note = stop.reason;
+    return out;
+  }
+
+  if (stop?.kind === "yield") {
+    // Transient. The run stays running and the campaign active; the
+    // next delivery simply tries again. Nothing is closed or moved.
     out.note = stop.reason;
     return out;
   }
@@ -1019,15 +1058,16 @@ export function isRecoverableRunStop(code: string | null): boolean {
 }
 
 /**
- * Campaigns stopped for reauthorization whose account is signed in again.
+ * Campaigns stopped for authentication whose identity is CONNECTED again.
  *
- * Cheap by construction: the database is asked first whether the
- * account's connection is `connected` — which only a reconnect on
- * Accounts sets after `markExpired` cleared it — and the provider is
- * probed only for those. The probe is `getSession`, a read; on a
- * refreshable rejection it refreshes ONCE, and a refresh that fails
- * marks the connection expired again, so the next tick asks the
- * database and stops. Nothing here can loop against the provider.
+ * Decided by the database, atomically, with no provider probe: the
+ * refresh or reconnect that set the connection to `connected` already
+ * proved the session, and the identity-scoped coordinator recovers the
+ * identity's campaigns in the SAME transaction it commits the tokens.
+ * This call is the safety net for the paths that write `connected`
+ * without the coordinator (an App-Password reconnect whose follow-up
+ * recovery call failed; the state production was left in before this
+ * code shipped): one statement, bounded, no network.
  *
  * A recovered campaign returns to `active` by compare-and-set from
  * `reauthorization_required` ONLY. A campaign an operator paused in the
@@ -1039,101 +1079,40 @@ export async function recoverReauthorizedCampaigns(ctx: {
   notes: string[];
   kind?: "follow" | "unfollow";
 }): Promise<BlueskyFollowCampaignRow[]> {
-  let stopped = await listDueCampaigns({
+  const recovered = await recoverReauthorizedCampaignsForConnectedIdentities({
+    workspaceId: ctx.input.workspaceId ?? null,
+    // A dispatch scoped to one campaign (the manual "run now") recovers
+    // that campaign only; it must not reach into others.
+    campaignId: ctx.input.campaignId ?? null,
     nowIso: ctx.nowIso,
-    kind: ctx.kind ?? "follow",
-    statuses: ["reauthorization_required"],
-    limit: 25,
     db: ctx.input.db,
   });
-  // A dispatch scoped to one campaign (the manual "run now") recovers
-  // that campaign only; it must not reach into others.
-  if (ctx.input.campaignId) {
-    stopped = stopped.filter((c) => c.id === ctx.input.campaignId);
+  const wanted = ctx.kind ?? "follow";
+  const rows: BlueskyFollowCampaignRow[] = [];
+  const now = new Date(ctx.nowIso);
+  for (const r of recovered) {
+    if (r.kind !== wanted) continue;
+    // Re-read: the row's `next_run_at` and error fields were just
+    // rewritten by the RPC, and this pass works from the row.
+    const workspaceId = ctx.input.workspaceId;
+    const row = workspaceId
+      ? await getCampaign(workspaceId, r.campaignId, ctx.input.db)
+      : (
+          await listDueCampaigns({
+            nowIso: now.toISOString(),
+            kind: wanted,
+            statuses: ["active"],
+            limit: 200,
+            db: ctx.input.db,
+          })
+        ).find((c) => c.id === r.campaignId) ?? null;
+    if (!row) continue;
+    ctx.notes.push(
+      `${row.name}: identity is signed in again — recovered from reauthorization_required${
+        r.runResumed ? " (today's run resumed)" : ""
+      }`,
+    );
+    rows.push(row);
   }
-  if (ctx.input.workspaceId) {
-    stopped = stopped.filter((c) => c.workspace_id === ctx.input.workspaceId);
-  }
-  const recovered: BlueskyFollowCampaignRow[] = [];
-
-  for (const campaign of stopped) {
-    try {
-      const identity = await getAccountById(
-        campaign.workspace_id,
-        campaign.operator_account_id,
-        ctx.input.db,
-      );
-      if (identity.connectionStatus !== "connected") continue;
-
-      const session = await resolveRelationshipSession({
-        workspaceId: campaign.workspace_id,
-        accountId: campaign.operator_account_id,
-        db: ctx.input.db,
-        fetchImpl: ctx.input.fetchImpl,
-      });
-      if (!session.ok) continue;
-
-      let probe = await getSessionInfo({
-        accessJwt: session.accessJwt,
-        pds: session.service,
-        fetchImpl: ctx.input.fetchImpl,
-      });
-      if (!probe.ok && isRefreshableAuthFailure(probe)) {
-        const renewed = await session.refreshOnce();
-        if (!renewed.ok) continue;
-        probe = await getSessionInfo({
-          accessJwt: renewed.accessJwt,
-          pds: renewed.service,
-          fetchImpl: ctx.input.fetchImpl,
-        });
-      }
-      if (!probe.ok) continue;
-
-      const now = new Date(ctx.nowIso);
-      const window = {
-        startMinute: campaign.execution_window_start_minute,
-        endMinute: campaign.execution_window_end_minute,
-      };
-      const updated = await updateCampaign({
-        workspaceId: campaign.workspace_id,
-        campaignId: campaign.id,
-        status: "active",
-        lastErrorCode: null,
-        lastErrorMessage: null,
-        nextRunAt: (isWithinWindow(now, campaign.timezone, window)
-          ? now
-          : computeNextRunAt({
-              from: now,
-              timezone: campaign.timezone,
-              window,
-              notBeforeLocalDate: campaign.start_date,
-            })
-        ).toISOString(),
-        expectedStatuses: ["reauthorization_required"],
-        db: ctx.input.db,
-      });
-      if (!updated) continue;
-
-      // Today's run, if it was stopped for authentication, comes back
-      // with it — same run, same counters.
-      await resumeRunAfterRecovery({
-        workspaceId: campaign.workspace_id,
-        campaignId: campaign.id,
-        localDate: localClockAt(now, campaign.timezone).localDate,
-        db: ctx.input.db,
-      });
-
-      ctx.notes.push(
-        `${campaign.name}: session works again — recovered from reauthorization_required`,
-      );
-      recovered.push(updated);
-    } catch (err) {
-      ctx.notes.push(
-        `${campaign.name}: reauthorization probe failed — ${
-          err instanceof Error ? err.message : "unknown"
-        }`,
-      );
-    }
-  }
-  return recovered;
+  return rows;
 }

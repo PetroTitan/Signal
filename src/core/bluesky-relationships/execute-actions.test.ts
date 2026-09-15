@@ -29,6 +29,8 @@ function session(): RelationshipSession {
     accessJwt: "jwt-value",
     service: "https://bsky.social",
     connectionId: "conn-1",
+    connectionStatus: "connected",
+    tokenGeneration: 0,
     refreshOnce: async () => ({
       ok: false,
       code: "session_expired",

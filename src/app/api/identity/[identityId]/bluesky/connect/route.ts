@@ -10,6 +10,8 @@ import {
   upsertPlatformConnection,
 } from "@/repositories/platform-connection-repository";
 import { recordActivity } from "@/repositories/activity-repository";
+import { recoverReauthorizedCampaignsForConnectedIdentities } from "@/repositories/bluesky-campaign-repository";
+import { createSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
 import {
   connectBlueskyWithAppPassword,
   buildBlueskySessionPlan,
@@ -178,6 +180,26 @@ export async function POST(
           "[bluesky/connect] growth_accounts promote failed",
           err,
         );
+      }
+
+      // EVERY campaign stopped for this identity comes back with it —
+      // the same run, the same counters, the same queue. No Resume
+      // button. The RPC is guarded (only reauthorization_required
+      // campaigns whose connection is now `connected`; never one the
+      // operator paused) and service_role-only; if this deployment has
+      // no service client, the dispatcher performs the same recovery on
+      // its next delivery. Nothing is lost, only delayed by one tick.
+      try {
+        const serviceDb = createSupabaseServiceRoleClient();
+        if (serviceDb) {
+          await recoverReauthorizedCampaignsForConnectedIdentities({
+            workspaceId: membership.workspace.id,
+            accountId: identityId,
+            db: serviceDb,
+          });
+        }
+      } catch (err) {
+        console.error("[bluesky/connect] campaign recovery deferred to the dispatcher", err);
       }
     }
 

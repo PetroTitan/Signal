@@ -299,6 +299,8 @@ export function mockSession(
       accessJwt: "test-access-jwt-never-persisted",
       service: "https://bsky.social",
       connectionId: "conn-1",
+      connectionStatus: "connected",
+      tokenGeneration: 0,
       refreshOnce:
         overrides.refreshOnce ??
         (async () => ({

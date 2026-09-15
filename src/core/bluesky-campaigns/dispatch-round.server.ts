@@ -57,6 +57,7 @@ import {
   getIdentityUsage,
   getRunForLocalDate,
   listDueCampaigns,
+  recoverReauthorizedCampaignsForConnectedIdentities,
   touchCampaignDispatched,
 } from "@/repositories/bluesky-campaign-repository";
 import { INTER_REQUEST_MS } from "@/core/bluesky-relationships/execute-actions.server";
@@ -174,18 +175,29 @@ export function orderForFairness<T extends Due>(campaigns: T[]): T[] {
 }
 
 async function listDueRound(input: FairDispatchInput, nowIso: string): Promise<Due[]> {
+  // Campaigns whose identity has been signed in again come back BEFORE
+  // the round is listed — one bounded statement in the database, no
+  // provider probe. A campaign still waiting for its identity is not
+  // listed at all: it costs the round nothing and is never mistaken
+  // for one that was served.
+  await recoverReauthorizedCampaignsForConnectedIdentities({
+    workspaceId: input.workspaceId ?? null,
+    campaignId: input.campaignId ?? null,
+    nowIso,
+    db: input.db,
+  });
   const [follow, unfollow] = await Promise.all([
     listDueCampaigns({
       nowIso,
       kind: "follow",
-      statuses: ["active", "reauthorization_required"],
+      statuses: ["active"],
       limit: 25,
       db: input.db,
     }),
     listDueCampaigns({
       nowIso,
       kind: "unfollow",
-      statuses: ["active", "rate_limited", "reauthorization_required"],
+      statuses: ["active", "rate_limited"],
       limit: 25,
       db: input.db,
     }),
@@ -370,20 +382,26 @@ export async function dispatchFairly(
         }
       }
 
-      // Persist the rotation BEFORE the chunk, so an invocation killed
-      // mid-chunk has already moved this campaign to the back.
-      try {
+      // The rotation is persisted by the dispatcher itself, through
+      // this hook, at the one moment it is true: after the worker holds
+      // the run's dispatch lease and a usable session, before its first
+      // provider call. Recording it earlier — as the first version did,
+      // before the dispatcher had even looked at the campaign — stamped
+      // a campaign that was then NOT served (identity waiting for the
+      // operator, another dispatcher holding the lease, outside its
+      // window) as served, and every tick pushed it further behind the
+      // others. Recording it later, after the chunk, would let a killed
+      // invocation serve the same campaign first again. Here, a killed
+      // invocation has already moved the campaign to the back, and a
+      // campaign that could not be served keeps its place.
+      const beforeFirstChunk = async () => {
         await touchCampaignDispatched({
           workspaceId: campaign.workspace_id,
           campaignId: campaign.id,
           nowIso: new Date(now.getTime() + (monotonic() - startedAt)).toISOString(),
           db: input.db,
         });
-      } catch (err) {
-        result.notes.push(
-          `${campaign.name}: could not record dispatch order — ${err instanceof Error ? err.message : "unknown"}`,
-        );
-      }
+      };
 
       const budgetMs = Math.max(0, remaining() - settle);
       const passthrough = {
@@ -393,6 +411,7 @@ export async function dispatchFairly(
         workspaceId: campaign.workspace_id,
         maxChunks: 1,
         budgetMs,
+        beforeFirstChunk,
         appView: input.appView,
         fetchImpl: input.fetchImpl,
         sleep: input.sleep,

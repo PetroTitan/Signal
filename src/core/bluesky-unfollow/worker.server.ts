@@ -943,11 +943,27 @@ async function attemptUnfollow(
   let result = await send(input.session);
 
   if (!result.ok && isRefreshableAuthFailure(result)) {
+    // The SAME identity-scoped coordinator the follow worker uses
+    // (session.server.ts): one lease, one generation, one provider
+    // refresh per identity, whichever kind of campaign asks first.
     const renewed = await input.session.refreshOnce();
     if (!renewed.ok) {
-      // `refreshOnce` has already marked the connection expired. Stop
-      // rather than spend a provider call per remaining member to be
-      // told the same thing.
+      // Refused at the door: nothing was deleted, a real retry is owed.
+      const reopenCode = isDefiniteRejectionCode(result.errorCode)
+        ? String(result.errorCode)
+        : "session_expired";
+      if (renewed.code === "provider_unavailable") {
+        return {
+          kind: "session_unavailable",
+          uri: permit.uri,
+          rkey: permit.rkey,
+          errorCode: "session_refresh_unavailable",
+          errorMessage: renewed.message,
+          rateLimit: result.rateLimit,
+          rejectedBeforeWrite: true,
+          reopenCode,
+        };
+      }
       return {
         kind: "authentication_expired",
         uri: permit.uri,
@@ -955,9 +971,8 @@ async function attemptUnfollow(
         errorCode: "session_expired",
         errorMessage: renewed.message,
         rateLimit: result.rateLimit,
-        // Refused at the door: nothing was deleted, a real retry is owed.
         rejectedBeforeWrite: true,
-        reopenCode: "session_expired",
+        reopenCode,
       };
     }
     // Adopted for every remaining member in this tick.

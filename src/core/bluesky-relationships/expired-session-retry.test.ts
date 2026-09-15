@@ -60,6 +60,8 @@ function refreshableSession(counters: { refreshes: number }): RelationshipSessio
     accessJwt: "jwt-NEW",
     service: "https://bsky.social",
     connectionId: "conn-1",
+    connectionStatus: "connected",
+    tokenGeneration: 0,
     refreshOnce: async () => ({
       ok: false,
       code: "session_expired",
@@ -73,6 +75,8 @@ function refreshableSession(counters: { refreshes: number }): RelationshipSessio
     accessJwt: "jwt-OLD",
     service: "https://bsky.social",
     connectionId: "conn-1",
+    connectionStatus: "connected",
+    tokenGeneration: 0,
     refreshOnce: async () => {
       counters.refreshes += 1;
       return renewed;
@@ -88,6 +92,8 @@ function unrefreshableSession(counters: { refreshes: number }): RelationshipSess
     accessJwt: "jwt-OLD",
     service: "https://bsky.social",
     connectionId: "conn-1",
+    connectionStatus: "connected",
+    tokenGeneration: 0,
     refreshOnce: async () => {
       counters.refreshes += 1;
       return {

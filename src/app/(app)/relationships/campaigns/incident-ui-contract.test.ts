@@ -63,16 +63,16 @@ describe("outcomes are reported in three honest groups, never as 'all followed'"
 });
 
 describe("Daily Runs, the campaign and Accounts agree", () => {
-  it("a run paused for reauthorization is labelled 'waiting for sign-in', never 'failed'", () => {
+  it("a run waiting for the identity — the new state, or the pre-coordinator paused shape — is labelled 'waiting for sign-in', never 'failed'", () => {
     expect(FOLLOW_UI).toMatch(
-      /r\.status === "paused" && r\.last_error_code === "reauthorization_required"\s*\? "waiting for sign-in"/,
+      /r\.status === "waiting_for_auth" \|\|\s*\(r\.status === "paused" && r\.last_error_code === "reauthorization_required"\)\s*\? "waiting for sign-in"/,
     );
     expect(FOLLOW_UI).toMatch(/r\.status === "failed"\s*\? "stopped — needs review"/);
   });
 
   it("an ACTIVE campaign with today's run waiting for sign-in tells the operator exactly what to do", () => {
     expect(LOADER).toMatch(
-      /campaign\.status === "active" &&\s*today &&\s*\(today\.status === "paused" \|\| today\.status === "failed"\) &&\s*today\.last_error_code === "reauthorization_required"/,
+      /campaign\.status === "active" &&\s*today &&\s*\(today\.status === "waiting_for_auth" \|\| today\.status === "paused" \|\| today\.status === "failed"\) &&\s*today\.last_error_code === "reauthorization_required"/,
     );
     expect(LOADER).toMatch(/Signal resumes today's run automatically once the session works/);
   });

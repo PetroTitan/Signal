@@ -34,6 +34,15 @@ export type CampaignOutcomeKind =
   | "retryable_transport_failure"
   | "rate_limited"
   | "authentication_expired"
+  /**
+   * The session was rejected AND the coordinated refresh could not be
+   * completed for a TRANSIENT reason — the provider unreachable, or
+   * another worker still holding the identity's refresh lease. Nothing
+   * about the identity changed; the member was refused before any
+   * write and is owed a real retry; the run stays open and the next
+   * delivery tries again.
+   */
+  | "session_unavailable"
   | "structural_provider_failure"
   | "cancelled";
 
@@ -43,6 +52,12 @@ export type NextAction =
   | { kind: "continue" }
   /** Stop this chunk; the run may continue later today. */
   | { kind: "stop_run"; reason: string; resumeAfter?: Date | null }
+  /**
+   * Stop this chunk and leave the run RUNNING and the campaign active.
+   * The condition is transient and the next delivery retries. Nothing
+   * is closed, paused or rescheduled.
+   */
+  | { kind: "yield"; reason: string }
   /** Stop the whole campaign; it needs a human. */
   | { kind: "stop_campaign"; campaignStatus: CampaignHaltStatus; reason: string };
 
@@ -237,6 +252,28 @@ export function classifyOutcome(input: ClassifyInput): OutcomeDecision {
           campaignStatus: "reauthorization_required",
           reason:
             "Bluesky rejected this identity's session. The campaign is stopped until the identity is reconnected; no further follows will be attempted.",
+        },
+        retryable: true,
+      };
+
+    case "session_unavailable":
+      // Refused before any write, and the refresh could not run right
+      // now for a reason that says nothing about the credential: the
+      // provider was unreachable, or another worker holds the identity's
+      // refresh lease and did not finish within the wait. The member is
+      // owed a real retry; the identity is untouched; the run stays
+      // open so the next delivery — five minutes away — simply tries
+      // again. Bounded by the cron cadence, never by a spin.
+      return {
+        kind,
+        memberStatus: "retryable",
+        consumesQuota: false,
+        countsAsSuccess: false,
+        countsAsFailure: false,
+        next: {
+          kind: "yield",
+          reason:
+            "The session could not be refreshed right now (provider unreachable or another worker refreshing). Nothing changed; the next delivery retries.",
         },
         retryable: true,
       };

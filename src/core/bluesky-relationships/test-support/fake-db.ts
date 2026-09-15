@@ -198,6 +198,11 @@ export class FakeDb {
         return this.mayComplete(args);
       case "defer_bluesky_campaign_member":
         return this.deferMember(args);
+      case "recover_bluesky_reauthorized_campaigns":
+        // The identity-session coordinator lives in real PostgreSQL
+        // (src/core/bluesky-campaigns/identity-session*.pg.test.ts);
+        // the in-memory double has nothing to recover.
+        return { data: [], error: null };
       default:
         return {
           data: null,

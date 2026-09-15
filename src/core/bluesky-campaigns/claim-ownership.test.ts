@@ -40,6 +40,8 @@ vi.mock("@/core/bluesky-relationships/session.server", () => ({
     accessJwt: "jwt",
     service: "https://bsky.social",
     connectionId: "conn",
+      connectionStatus: "connected",
+      tokenGeneration: 0,
     refreshOnce: async () => ({
       ok: false as const,
       code: "session_expired" as const,

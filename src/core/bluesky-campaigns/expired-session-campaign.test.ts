@@ -59,6 +59,8 @@ vi.mock("@/core/bluesky-relationships/session.server", () => ({
       accessJwt: "jwt-NEW",
       service: "https://bsky.social",
       connectionId: "conn",
+      connectionStatus: "connected",
+      tokenGeneration: 0,
       // The session a refresh returns refuses to refresh again — the
       // real one carries `refreshAllowed: false`.
       refreshOnce: async () => ({
@@ -74,6 +76,8 @@ vi.mock("@/core/bluesky-relationships/session.server", () => ({
       accessJwt: "jwt-OLD",
       service: "https://bsky.social",
       connectionId: "conn",
+      connectionStatus: "connected",
+      tokenGeneration: 0,
       refreshOnce: async () => {
         counters.refreshes += 1;
         return refreshSucceeds ? renewed : {

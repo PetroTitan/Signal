@@ -102,6 +102,14 @@ describe("RPC EXECUTE stays service_role-only", () => {
     "bluesky_campaign_conservation",
     "bluesky_campaign_may_complete",
     "record_bluesky_identity_usage",
+    // Identity-session coordination (20260917000002). Token state moves
+    // ONLY through these, and only the service role may call them.
+    "acquire_bluesky_refresh_lease",
+    "release_bluesky_refresh_lease",
+    "commit_bluesky_refreshed_session",
+    "fail_bluesky_refresh",
+    "recover_bluesky_reauthorized_campaigns",
+    "stop_bluesky_campaigns_for_identity",
   ];
 
   it.each(WORKER_RPCS)("%s: every overload — authenticated and anon cannot execute, service_role can", async (name) => {

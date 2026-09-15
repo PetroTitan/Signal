@@ -301,15 +301,16 @@ export async function readEncryptedTokens(
    * pattern as getAccountById.
    */
   db?: SupabaseClient,
-): Promise<{
-  accessTokenEncrypted: string | null;
-  refreshTokenEncrypted: string | null;
-  expiresAt: string | null;
-} | null> {
+): Promise<EncryptedTokenRead | null> {
   const supabase = db ?? createSupabaseServerClient();
+  // ONE read. The generation and the status travel with the tokens
+  // they describe, so a caller can never pair a token from one instant
+  // with a generation from another.
   const { data, error } = await supabase
     .from("platform_connections")
-    .select("access_token_encrypted, refresh_token_encrypted, expires_at")
+    .select(
+      "access_token_encrypted, refresh_token_encrypted, expires_at, token_generation, connection_status",
+    )
     .eq("workspace_id", workspaceId)
     .eq("id", connectionId)
     .maybeSingle();
@@ -319,11 +320,210 @@ export async function readEncryptedTokens(
     access_token_encrypted: string | null;
     refresh_token_encrypted: string | null;
     expires_at: string | null;
+    token_generation: number | string | null;
+    connection_status: string;
   };
   return {
     accessTokenEncrypted: row.access_token_encrypted,
     refreshTokenEncrypted: row.refresh_token_encrypted,
     expiresAt: row.expires_at,
+    tokenGeneration: Number(row.token_generation ?? 0),
+    connectionStatus: row.connection_status,
+  };
+}
+
+export interface EncryptedTokenRead {
+  accessTokenEncrypted: string | null;
+  refreshTokenEncrypted: string | null;
+  expiresAt: string | null;
+  /**
+   * `platform_connections.token_generation` at the instant the tokens
+   * were read. Bumped by a database trigger on every token change, so
+   * a later compare against it detects ANY concurrent rotation.
+   */
+  tokenGeneration: number;
+  /** `platform_connections.connection_status` at the same instant. */
+  connectionStatus: string;
+}
+
+// =====================================================================
+// Identity-session coordination (Bluesky)
+// =====================================================================
+//
+// Thin wrappers over the service_role-only RPCs in
+// 20260917000002_identity_session_coordinator.sql. Each takes the
+// whole tenant tuple explicitly: the RPCs are SECURITY DEFINER and see
+// no RLS context. None of them returns a token, encrypted or plain.
+
+export type RefreshLeaseVerdict =
+  | "acquired"
+  | "reload"
+  | "busy"
+  | "reauthorization_required"
+  | "not_connected";
+
+export async function acquireBlueskyRefreshLease(
+  input: {
+    workspaceId: string;
+    accountId: string;
+    owner: string;
+    observedGeneration: number;
+    leaseSeconds: number;
+  },
+  db?: SupabaseClient,
+): Promise<{
+  verdict: RefreshLeaseVerdict;
+  generation: number | null;
+  connectionStatus: string | null;
+  leaseExpiresAt: string | null;
+}> {
+  const supabase = db ?? createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("acquire_bluesky_refresh_lease", {
+    p_workspace_id: input.workspaceId,
+    p_account_id: input.accountId,
+    p_owner: input.owner,
+    p_observed_generation: input.observedGeneration,
+    p_lease_seconds: input.leaseSeconds,
+  });
+  if (error) throw fromPostgres(error, "Could not acquire the session refresh lease.");
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | {
+        verdict: string;
+        generation: number | string | null;
+        connection_status: string | null;
+        lease_expires_at: string | Date | null;
+      }
+    | undefined;
+  if (!row) throw new Error("acquire_bluesky_refresh_lease returned no verdict.");
+  return {
+    verdict: row.verdict as RefreshLeaseVerdict,
+    generation: row.generation === null || row.generation === undefined ? null : Number(row.generation),
+    connectionStatus: row.connection_status ?? null,
+    leaseExpiresAt:
+      row.lease_expires_at instanceof Date
+        ? row.lease_expires_at.toISOString()
+        : row.lease_expires_at ?? null,
+  };
+}
+
+export async function releaseBlueskyRefreshLease(
+  input: { workspaceId: string; accountId: string; owner: string },
+  db?: SupabaseClient,
+): Promise<boolean> {
+  const supabase = db ?? createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("release_bluesky_refresh_lease", {
+    p_workspace_id: input.workspaceId,
+    p_account_id: input.accountId,
+    p_owner: input.owner,
+  });
+  if (error) throw fromPostgres(error, "Could not release the session refresh lease.");
+  return data === true;
+}
+
+export async function commitBlueskyRefreshedSession(
+  input: {
+    workspaceId: string;
+    accountId: string;
+    owner: string;
+    expectedGeneration: number;
+    accessTokenEncrypted: string;
+    refreshTokenEncrypted: string | null;
+    providerAccountId: string | null;
+    handle: string | null;
+    message: string;
+    /** The caller's clock (a tick's injected instant); defaults to the database's now(). */
+    nowIso?: string;
+  },
+  db?: SupabaseClient,
+): Promise<{
+  committed: boolean;
+  generation: number | null;
+  reason: string | null;
+  campaignsRecovered: number;
+  runsResumed: number;
+}> {
+  const supabase = db ?? createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("commit_bluesky_refreshed_session", {
+    p_workspace_id: input.workspaceId,
+    p_account_id: input.accountId,
+    p_owner: input.owner,
+    p_expected_generation: input.expectedGeneration,
+    p_access_token_encrypted: input.accessTokenEncrypted,
+    p_refresh_token_encrypted: input.refreshTokenEncrypted,
+    p_provider_account_id: input.providerAccountId,
+    p_handle: input.handle,
+    p_message: input.message,
+    ...(input.nowIso ? { p_now: input.nowIso } : {}),
+  });
+  if (error) throw fromPostgres(error, "Could not store the refreshed session.");
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | {
+        committed: boolean;
+        generation: number | string | null;
+        reason: string | null;
+        campaigns_recovered: number | string | null;
+        runs_resumed: number | string | null;
+      }
+    | undefined;
+  if (!row) throw new Error("commit_bluesky_refreshed_session returned no verdict.");
+  return {
+    committed: row.committed === true,
+    generation: row.generation === null || row.generation === undefined ? null : Number(row.generation),
+    reason: row.reason ?? null,
+    campaignsRecovered: Number(row.campaigns_recovered ?? 0),
+    runsResumed: Number(row.runs_resumed ?? 0),
+  };
+}
+
+export async function failBlueskyRefresh(
+  input: {
+    workspaceId: string;
+    accountId: string;
+    owner: string;
+    expectedGeneration: number;
+    /** True only when the provider REJECTED the refresh credential, or none was stored. */
+    definitive: boolean;
+    message: string;
+    nowIso?: string;
+  },
+  db?: SupabaseClient,
+): Promise<{
+  applied: boolean;
+  generation: number | null;
+  connectionStatus: string | null;
+  reason: string | null;
+  campaignsStopped: number;
+  runsStopped: number;
+}> {
+  const supabase = db ?? createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("fail_bluesky_refresh", {
+    p_workspace_id: input.workspaceId,
+    p_account_id: input.accountId,
+    p_owner: input.owner,
+    p_expected_generation: input.expectedGeneration,
+    p_definitive: input.definitive,
+    p_message: input.message,
+    ...(input.nowIso ? { p_now: input.nowIso } : {}),
+  });
+  if (error) throw fromPostgres(error, "Could not record the failed refresh.");
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | {
+        applied: boolean;
+        generation: number | string | null;
+        connection_status: string | null;
+        reason: string | null;
+        campaigns_stopped: number | string | null;
+        runs_stopped: number | string | null;
+      }
+    | undefined;
+  if (!row) throw new Error("fail_bluesky_refresh returned no verdict.");
+  return {
+    applied: row.applied === true,
+    generation: row.generation === null || row.generation === undefined ? null : Number(row.generation),
+    connectionStatus: row.connection_status ?? null,
+    reason: row.reason ?? null,
+    campaignsStopped: Number(row.campaigns_stopped ?? 0),
+    runsStopped: Number(row.runs_stopped ?? 0),
   };
 }
 
